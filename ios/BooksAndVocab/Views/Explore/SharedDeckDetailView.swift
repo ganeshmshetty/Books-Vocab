@@ -28,7 +28,7 @@ struct SharedDeckDetailView: View {
     @State private var deck: SharedDeck?
     @State private var deckLoadState: DeckLoadState = .loading
     @State private var cardsState: CardsState = .loading
-    @State private var copyController = SharedDeckCopyController()
+    @State private var copyController: SharedDeckCopyController
     @State private var showCopySheet = false
     /// 已確認的複製目標名稱 —— failure 態的「重試」沿用同一名稱（配合 controller 沿用
     /// 同一把 idempotencyKey）。
@@ -42,6 +42,7 @@ struct SharedDeckDetailView: View {
 
     init(deckId: String) {
         self.deckId = deckId
+        _copyController = State(initialValue: SharedDeckCopyRegistry.shared.controller(for: deckId))
         self.injectedCards = nil
         self.previewCopyState = nil
     }
@@ -53,6 +54,7 @@ struct SharedDeckDetailView: View {
         previewCopyState: SharedDeckCopyController.CopyState? = nil
     ) {
         self.deckId = deckId
+        _copyController = State(initialValue: SharedDeckCopyRegistry.shared.controller(for: deckId))
         self.injectedCards = previewCards
         self.previewCopyState = previewCopyState
     }

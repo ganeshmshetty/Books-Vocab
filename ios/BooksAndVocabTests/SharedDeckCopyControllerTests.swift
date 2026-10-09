@@ -218,5 +218,48 @@ struct SharedDeckCopyControllerTests {
         #expect(SharedDeckCopyController.message(for: errorCase.error) == L10n.string(errorCase.expectedMessageKey))
     }
 
+
+    // MARK: - Registry (#2748: controller survives view pop/reopen)
+
+    @Test func registry_returns_same_controller_for_same_deck_while_key_held() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1")
+        let fake = FakeDeckCopier([.failure(URLError(.timedOut))])
+        await c1.copy(deckId: "d1", notebookName: nil, using: fake)
+        let key = c1.currentIdempotencyKey
+        #expect(key != nil)
+        let c2 = registry.controller(for: "d1")
+        #expect(c2 === c1, "reopen after failure must reuse the controller (and its idempotency key)")
+        #expect(c2.currentIdempotencyKey == key)
+        #expect(registry.controller(for: "d2") !== c1)
+    }
+
+    @Test func registry_returns_same_controller_while_inflight() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1")
+        let gate = GatedCopier()
+        let task = Task { await c1.copy(deckId: "d1", notebookName: nil, using: gate) }
+        while !c1.isInflight { await Task.yield() }
+        #expect(registry.controller(for: "d1") === c1)
+        gate.release(response())
+        await task.value
+    }
+
+    @Test func registry_hands_out_fresh_controller_after_success() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1")
+        await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response())]))
+        let c2 = registry.controller(for: "d1")
+        #expect(c2 !== c1)
+        #expect(c2.state == .idle)
+    }
+
+    private final class GatedCopier: DeckCopying {
+        private var continuation: CheckedContinuation<DeckCopyResponse, Error>?
+        func copyDeck(deckId: String, idempotencyKey: String, notebookName: String?) async throws -> DeckCopyResponse {
+            try await withCheckedThrowingContinuation { continuation = $0 }
+        }
+        func release(_ r: DeckCopyResponse) { continuation?.resume(returning: r) }
+    }
 }
 #endif
