@@ -242,17 +242,17 @@ final class AddLinkCoordinator {
 
     nonisolated static func lookupEvidence(
         for entry: VocabularyEntry,
-        recoveringProviderError: Bool = false
+        recoveringProviderError: Bool = false,
+        compact: Bool = false
     ) -> String {
         func normalized(_ value: String?) -> String {
             guard let value else { return "" }
             return value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         }
 
-        let detail = dictionaryDetailProjection(
-            for: entry,
-            recoveringProviderError: recoveringProviderError
-        )
+        let detail = compact
+            ? compactDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
+            : dictionaryDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
         let primarySense = detail.senses.first?.definition
         let primaryExample = detail.senses.first?.examples.first
         var evidence = [
@@ -293,15 +293,33 @@ final class AddLinkCoordinator {
         return evidence.joined(separator: " | ")
     }
 
+    /// Full projection: every sense, example, form and provenance level.
     nonisolated static func dictionaryDetailProjection(
         for entry: VocabularyEntry,
         recoveringProviderError: Bool = false
+    ) -> AddLinkDetailProjection {
+        detailProjection(for: entry, recoveringProviderError: recoveringProviderError, senseLimit: nil)
+    }
+
+    /// Collapsed candidate row: the first sense only. `state` still counts every sense,
+    /// so the row's materialization verdict matches the expanded view (#2407).
+    nonisolated static func compactDetailProjection(
+        for entry: VocabularyEntry,
+        recoveringProviderError: Bool = false
+    ) -> AddLinkDetailProjection {
+        detailProjection(for: entry, recoveringProviderError: recoveringProviderError, senseLimit: 1)
+    }
+
+    private nonisolated static func detailProjection(
+        for entry: VocabularyEntry,
+        recoveringProviderError: Bool,
+        senseLimit: Int?
     ) -> AddLinkDetailProjection {
         switch decodeDetailPayload(entry.explanation) {
         case .plain:
             return legacyDetailProjection(for: entry, state: nil)
         case .decoded(let payload):
-            return payloadDetailProjection(payload, for: entry)
+            return payloadDetailProjection(payload, for: entry, senseLimit: senseLimit)
         case .malformed:
             if recoveringProviderError {
                 return legacyDetailProjection(
@@ -356,6 +374,10 @@ final class AddLinkCoordinator {
         "\(detailIdentifier(for: entry)).provenance"
     }
 
+    nonisolated static func detailExpandIdentifier(for entry: VocabularyEntry) -> String {
+        "\(detailIdentifier(for: entry)).expand"
+    }
+
     nonisolated static func detailRetryIdentifier(for entry: VocabularyEntry) -> String {
         "\(detailIdentifier(for: entry)).provider.retry"
     }
@@ -381,9 +403,13 @@ final class AddLinkCoordinator {
 
     private nonisolated static func payloadDetailProjection(
         _ payload: AddLinkDetailPayload,
-        for entry: VocabularyEntry
+        for entry: VocabularyEntry,
+        senseLimit: Int?
     ) -> AddLinkDetailProjection {
-        let senses = payload.senses.enumerated().map { index, value in
+        // The verdict is taken over every sense; only the materialized list is limited.
+        let senseCount = payload.senses.count
+        let hasMissingExample = payload.senses.contains { cleanedValues($0.examples ?? []).isEmpty }
+        let senses = payload.senses.prefix(senseLimit ?? senseCount).enumerated().map { index, value in
             AddLinkDetailProjection.Sense(
                 id: cleaned(value.id) ?? "sense-\(index + 1)",
                 partOfSpeech: cleaned(value.partOfSpeech) ?? cleaned(entry.partOfSpeech),
@@ -392,9 +418,9 @@ final class AddLinkCoordinator {
                 examples: cleanedValues(value.examples ?? [])
             )
         }
-        let state: AddLinkDetailMaterializationState = senses.contains { $0.examples.isEmpty }
-            ? .missingExample(senseCount: senses.count)
-            : .ready(senseCount: senses.count)
+        let state: AddLinkDetailMaterializationState = hasMissingExample
+            ? .missingExample(senseCount: senseCount)
+            : .ready(senseCount: senseCount)
         return AddLinkDetailProjection(
             word: entry.word,
             translation: entry.translation,

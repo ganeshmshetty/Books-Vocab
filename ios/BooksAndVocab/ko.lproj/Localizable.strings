@@ -1089,6 +1089,8 @@
 "聲音回饋" = "사운드 피드백";
 "觸覺回饋" = "햅틱 피드백";
 "addLink.localSection" = "이 단어장";
+"addLink.candidate.expand" = "자세히 보기";
+"addLink.candidate.collapse" = "자세히 숨기기";
 "addLink.error.linkFailed" = "연결을 만들 수 없습니다. 다시 시도할 수 있도록 선택을 유지했습니다.";
 
 /* MARK: - Review card layout editor */
