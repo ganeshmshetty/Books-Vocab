@@ -276,6 +276,7 @@ run_one() {
       ./ops/tests/test_github_workflows.sh &&
       ./ops/tests/test_ops_suite_bootstrap.sh &&
       ./ops/tests/test_ci_scope_router.sh &&
+      ./ops/tests/test_ci_macos_queue_probe.sh &&
       ./ops/tests/test_ci_confidence_verdict.sh &&
       ./ops/tests/test_ci_apt_install.sh
       ;;

@@ -22,10 +22,12 @@ permissions:
   contents: read
   issues: write
 
-# Serialize runs so two red suites of one push cannot both create an issue for
-# the same area.  Never cancel: a dropped run would lose the alert.
+# One group per area (workflow name): GitHub keeps a single pending run per
+# group and cancels older pending ones even with cancel-in-progress false, so a
+# shared group would silently drop the middle of three red suites.  Per-area
+# groups still serialise the same-area create/comment race.
 concurrency:
-  group: main-watch
+  group: main-watch-${{ github.event.workflow_run.name }}
   cancel-in-progress: false
 
 jobs:

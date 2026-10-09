@@ -37,7 +37,8 @@ on:
       - '.claude/skills/ios-simulator-verification/scripts/test_run_ui_evidence.sh'
       - '.github/workflows/ops-suite.yml'
 # 三個 job 都只 checkout（含 fetch-depth: 0）後跑本地 script；token 不進 step env，
-# 不需要 contents 以外的 scope。
+# 不需要 contents 以外的 scope（macos-native-ops 例外：job 層加 actions: read，
+# 只供 ci_macos_queue_probe.sh 讀自己 run 的排隊時間，#2641）。
 permissions:
   contents: read
 
@@ -156,10 +157,17 @@ jobs:
     if: ${{ inputs.macos_ops != 'false' }}
     runs-on: macos-26
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Record macOS queue wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./ops/ci_macos_queue_probe.sh
       - name: Install uv
         # macos-26 映像清單有 jq/git/pipx，但沒有 uv 也沒有 ripgrep；ios-ops 的
         # test_ios_ops.sh 與 backend pytest 都經 `uv run`，缺了會在中段以 rc=127

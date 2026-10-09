@@ -854,7 +854,8 @@ ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); w = y[true]["workflow_run"
   exit 1 unless w["types"] == ["completed"] && w["branches"] == ["main"]
   exit 1 unless (%w[backend-quality ios-quality ops-suite design-system ui-quality-gate llm-eval] - w["workflows"]).empty?
   exit 1 unless y["permissions"] == {"contents" => "read", "issues" => "write"}
-  exit 1 unless y["concurrency"]["cancel-in-progress"] == false' "$MAIN_WATCH" \
+  exit 1 unless y["concurrency"]["cancel-in-progress"] == false
+  exit 1 unless y["concurrency"]["group"] == "main-watch-${{ github.event.workflow_run.name }}"' "$MAIN_WATCH" \
   || fail "main-watch must watch every area suite on main with contents:read + issues:write and never cancel a run"
 if grep -Eq '^[[:space:]]+ref:' "$MAIN_WATCH"; then
   fail "main-watch checks out a non-default ref; it must run default-branch code only"
@@ -866,6 +867,18 @@ grep -Fq 'github.event.workflow_run.event == '"'"'push'"'"'' "$MAIN_WATCH" \
   || fail "main-watch does not restrict itself to push-triggered runs"
 grep -Fq 'ops/main_watch.py' "$MAIN_WATCH" \
   || fail "main-watch does not run ops/main_watch.py"
+
+# macOS queue-wait probe (Issue #2641): every macos-26 job must run it with actions:read.
+ruby -e 'require "yaml"; bad = []
+  { ARGV[0] => %w[macos-native-ops], ARGV[1] => %w[ios-build ios-tests ios-targeted] }.each do |f, jobs|
+    y = YAML.load_file(f)
+    jobs.each do |j|
+      job = y["jobs"][j]
+      bad << "#{f}:#{j}" unless job["permissions"] == {"contents" => "read", "actions" => "read"} && job["steps"].any? { |s| s["run"] == "./ops/ci_macos_queue_probe.sh" }
+    end
+  end
+  abort bad.join(" ") unless bad.empty?' .github/workflows/ops-suite.yml .github/workflows/ios-quality.yml \
+  || fail "macos jobs must run ops/ci_macos_queue_probe.sh with actions: read"
 
 # Keep Actions on the Node 24 generation.  Pinned SHAs preserve supply-chain
 # review while avoiding the hosted-runner Node 20 deprecation path.

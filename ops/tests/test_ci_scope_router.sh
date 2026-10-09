@@ -128,10 +128,10 @@ done
 for p in ops/backup_verify.sh ops/review_flip_probe.sh ops/ui_quality_plane.py ops/app_review/2.0.0.json ops/app_review_evidence.py ops/app_review_gate.py ops/asc.sh ops/asc_text_bundle.py ops/sentry_release.sh ops/sentry_tool.py ops/sentry_api.py ops/kg_disk_guard.sh ops/kg_reconcile.sh ops/release.sh ops/p9_review_calendar_evidence.py ops/lldb_crash_forensics.py ops/install_lldb_forensics.sh ops/tests/test_ios_ops_release_heartbeat.sh ops/tests/test_lldb_crash_forensics.sh ops/tests/test_sentry_wiring.sh ops/test_ios_ops.sh ops/test_ops.sh .github/workflows/ops-suite.yml; do
   assert_macos "macOS native ops only for $p (#2641)" "$p" true false
 done
-for p in ios/BooksAndVocab/Views/Foo.swift ios/BooksAndVocab.xcodeproj/project.pbxproj ios/Info.plist ios/BooksAndVocab/Services/AppCrashReporting.swift ios/BooksAndVocabUITests/FooFlowUITests.swift ops/fixtures/ui_worlds/marketing_demo.json .github/workflows/ios-quality.yml; do
+for p in ios/BooksAndVocab/Views/Foo.swift ios/BooksAndVocab.xcodeproj/project.pbxproj ios/BooksAndVocab/Services/AppCrashReporting.swift ios/BooksAndVocabUITests/FooFlowUITests.swift ops/fixtures/ui_worlds/marketing_demo.json .github/workflows/ios-quality.yml; do
   assert_macos "ui-smoke only for $p (#2641)" "$p" false true
 done
-for p in ops/ios_ops.sh ops/ios_test.sh ops/lib/ios_ops_core.sh ops/lib/signal_traps.sh ops/ui_world_manifest.py ops/ci_scope_router.sh .github/workflows/pr-gate.yml newdir/x; do
+for p in ios/Info.plist ios/BooksAndVocab/Services/SentryReporter.swift ios/BooksAndVocab/Services/SentryConfiguration.swift ios/BooksAndVocab/Services/SentryPrivacyPolicy.swift ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved ops/ios_ops.sh ops/ios_test.sh ops/lib/ios_ops_core.sh ops/lib/signal_traps.sh ops/ui_world_manifest.py ops/ci_scope_router.sh .github/workflows/pr-gate.yml newdir/x; do
   assert_macos "macOS native ops and ui-smoke for $p (#2641)" "$p" true true
 done
 
