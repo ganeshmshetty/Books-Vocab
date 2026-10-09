@@ -3,8 +3,9 @@
 //  Books & Vocab
 //
 //  Explore 複製流程狀態機（idle/inflight/success/failure）+ idempotencyKey 穩定性。
-//  擁有者 = `SharedDeckCopyRegistry`（依 deckId，跨 view pop/reopen；#2748）。純狀態 + 一支 async `copy`；網路只透過注入的
-//  `any DeckCopying`（窄協定），故可完整單元測試（無 SwiftData / 無真實網路）。
+//  擁有者 = `SharedDeckCopyRegistry`（依 deckId，跨 view pop/reopen；#2748）。
+//  純狀態 + 一支 async `copy`；網路只透過注入的 `any DeckCopying`（窄協定），
+//  故可完整單元測試（無 SwiftData / 無真實網路）。
 //
 
 import Foundation
@@ -37,6 +38,10 @@ final class SharedDeckCopyController {
     /// 與 dismiss/reopen 保留是刻意的：讓「回應遺失但 server 已成功」的複製在下次嘗試
     /// 自癒（server replay `alreadyCopied`）。
     private var idempotencyKey: String?
+
+    /// 當前意圖的目標 notebook 名稱；與 key 同生命週期（成功時一併清除），讓 pop/reopen
+    /// 後的「重試」沿用使用者當初確認的名稱，而非退回 deck 標題（#2748）。
+    private(set) var lastNotebookName: String?
 
     /// Test seam：注入決定性的 key 產生器。
     private let makeKey: () -> String
@@ -76,6 +81,7 @@ final class SharedDeckCopyController {
         guard !isInflight else { return }
         let key = idempotencyKey ?? makeKey()
         idempotencyKey = key
+        lastNotebookName = notebookName
         state = .inflight
         let startedAt = Date()
         AppCrashReporting.addBreadcrumb(
@@ -89,6 +95,7 @@ final class SharedDeckCopyController {
             )
             await afterCopy(resp)
             idempotencyKey = nil   // 意圖已達成 → 下一次複製為新意圖
+            lastNotebookName = nil
             state = .success(Outcome(
                 notebookId: resp.notebookId,
                 notebookName: resp.notebookName,
@@ -165,22 +172,34 @@ final class SharedDeckCopyController {
 
 /// 以 deckId 為鍵的 controller 註冊表（#2748）。`SharedDeckDetailView` 的 `@State`
 /// 在 pop 時被丟棄，但 `performCopy` 的 unstructured `Task` 仍在跑、idempotencyKey 也
-/// 需跨 reopen 保留；controller 因此改由行程級註冊表持有，view 只借用。
-/// 只在上一個已成功（意圖達成）時才換新 controller；其餘（idle / inflight / failure）
-/// 都原樣回傳，故 reopen 的 view 會接回 inflight 或仍持有 key 的 failure 態，且 View
-/// init 被重複求值也不會把註冊表與 view 手上的 controller 拆開。
+/// 需跨 reopen 保留；有進行中／失敗意圖的 controller 因此由行程級註冊表持有，view 只借用。
+/// 只有複製真的開始（`track`）才登記，故單純瀏覽 deck 不會累積條目；上一個已成功
+/// （意圖達成）的條目在查詢時剔除，其餘（inflight / failure）原樣回傳。登出時
+/// `removeAll()`，避免前一個帳號的失敗卡殘留到下一個帳號。
 @MainActor
 final class SharedDeckCopyRegistry {
     static let shared = SharedDeckCopyRegistry()
 
     private var controllers: [String: SharedDeckCopyController] = [:]
 
+    /// 已登記（複製已開始且尚未成功）的 deck 數；供測試斷言不累積。
+    var trackedDeckCount: Int { controllers.count }
+
+    /// 已登記且未成功者原樣回傳；否則給一個**尚未登記**的新 controller。
     func controller(for deckId: String) -> SharedDeckCopyController {
-        if let existing = controllers[deckId], !existing.isSucceeded {
-            return existing
+        if let existing = controllers[deckId] {
+            if !existing.isSucceeded { return existing }
+            controllers[deckId] = nil
         }
-        let fresh = SharedDeckCopyController()
-        controllers[deckId] = fresh
-        return fresh
+        return SharedDeckCopyController()
+    }
+
+    /// 複製開始時登記，讓 pop/reopen 的 view 接回同一 controller。
+    func track(_ controller: SharedDeckCopyController, for deckId: String) {
+        controllers[deckId] = controller
+    }
+
+    func removeAll() {
+        controllers.removeAll()
     }
 }

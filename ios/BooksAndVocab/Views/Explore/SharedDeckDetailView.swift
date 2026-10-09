@@ -30,9 +30,6 @@ struct SharedDeckDetailView: View {
     @State private var cardsState: CardsState = .loading
     @State private var copyController: SharedDeckCopyController
     @State private var showCopySheet = false
-    /// 已確認的複製目標名稱 —— failure 態的「重試」沿用同一名稱（配合 controller 沿用
-    /// 同一把 idempotencyKey）。
-    @State private var confirmedCopyName: String?
 
     /// DEBUG catalog seam：直接注入預覽 sample cards，跳過網路 fetch。
     private let injectedCards: [SharedDeckCard]?
@@ -146,7 +143,6 @@ struct SharedDeckDetailView: View {
         switch state {
         case .idle:
             Button {
-                confirmedCopyName = nil
                 showCopySheet = true
             } label: {
                 Label(L10n.string("explore.copy.cta"), systemImage: "square.and.arrow.down.on.square")
@@ -238,7 +234,7 @@ struct SharedDeckDetailView: View {
             description: nil
         ) {
             Button(L10n.string("explore.retry")) {
-                Task { await performCopy(notebookName: confirmedCopyName) }
+                Task { await performCopy(notebookName: copyController.lastNotebookName) }
             }
             .font(AppFonts.caption(weight: .medium))
             .accessibilityIdentifier("explore.copy.retryButton")
@@ -250,7 +246,8 @@ struct SharedDeckDetailView: View {
 
     @MainActor
     private func performCopy(notebookName: String?) async {
-        confirmedCopyName = notebookName
+        // 複製開始才登記，pop/reopen 後的 view 才接得回 inflight／failure 態。
+        SharedDeckCopyRegistry.shared.track(copyController, for: deckId)
         let container = modelContext.container
         await copyController.copy(
             deckId: deckId,

@@ -218,12 +218,26 @@ struct SharedDeckCopyControllerTests {
         #expect(SharedDeckCopyController.message(for: errorCase.error) == L10n.string(errorCase.expectedMessageKey))
     }
 
+    // MARK: - Notebook name travels with the key (#2748)
+
+    @Test func failed_copy_remembers_notebook_name_for_retry() async {
+        let c = controller()
+        let fake = FakeDeckCopier([.failure(URLError(.timedOut)), .success(response())])
+        await c.copy(deckId: "d1", notebookName: "My Name", using: fake)
+        #expect(c.lastNotebookName == "My Name")
+        await c.copy(deckId: "d1", notebookName: c.lastNotebookName, using: fake)
+        #expect(fake.receivedNames == ["My Name", "My Name"])
+        #expect(c.lastNotebookName == nil, "intent fulfilled → name cleared with the key")
+    }
 
     // MARK: - Registry (#2748: controller survives view pop/reopen)
+    // View wiring (`State(initialValue: registry.controller(for:))` + `track` in
+    // performCopy) is covered by review only; these tests pin the registry contract.
 
     @Test func registry_returns_same_controller_for_same_deck_while_key_held() async {
         let registry = SharedDeckCopyRegistry()
         let c1 = registry.controller(for: "d1")
+        registry.track(c1, for: "d1")
         let fake = FakeDeckCopier([.failure(URLError(.timedOut))])
         await c1.copy(deckId: "d1", notebookName: nil, using: fake)
         let key = c1.currentIdempotencyKey
@@ -237,9 +251,10 @@ struct SharedDeckCopyControllerTests {
     @Test func registry_returns_same_controller_while_inflight() async {
         let registry = SharedDeckCopyRegistry()
         let c1 = registry.controller(for: "d1")
+        registry.track(c1, for: "d1")
         let gate = GatedCopier()
         let task = Task { await c1.copy(deckId: "d1", notebookName: nil, using: gate) }
-        while !c1.isInflight { await Task.yield() }
+        while !gate.hasStarted { await Task.yield() }
         #expect(registry.controller(for: "d1") === c1)
         gate.release(response())
         await task.value
@@ -248,16 +263,44 @@ struct SharedDeckCopyControllerTests {
     @Test func registry_hands_out_fresh_controller_after_success() async {
         let registry = SharedDeckCopyRegistry()
         let c1 = registry.controller(for: "d1")
+        registry.track(c1, for: "d1")
         await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response())]))
+        let c2 = registry.controller(for: "d1")
+        #expect(c2 !== c1)
+        #expect(c2.state == .idle)
+        #expect(registry.trackedDeckCount == 0, "succeeded entries are pruned on lookup")
+    }
+
+    @Test func registry_does_not_retain_controllers_that_never_started_a_copy() {
+        let registry = SharedDeckCopyRegistry()
+        _ = registry.controller(for: "d1")
+        _ = registry.controller(for: "d2")
+        #expect(registry.trackedDeckCount == 0)
+    }
+
+    @Test func registry_removeAll_drops_failure_state_on_logout() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1")
+        registry.track(c1, for: "d1")
+        await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+        registry.removeAll()
         let c2 = registry.controller(for: "d1")
         #expect(c2 !== c1)
         #expect(c2.state == .idle)
     }
 
+    /// `@MainActor` (nested types don't inherit the suite's isolation) so
+    /// `continuation` is never touched off-main; `hasStarted` flips only once the
+    /// continuation exists, so `release` cannot race ahead of it.
+    @MainActor
     private final class GatedCopier: DeckCopying {
+        private(set) var hasStarted = false
         private var continuation: CheckedContinuation<DeckCopyResponse, Error>?
         func copyDeck(deckId: String, idempotencyKey: String, notebookName: String?) async throws -> DeckCopyResponse {
-            try await withCheckedThrowingContinuation { continuation = $0 }
+            try await withCheckedThrowingContinuation {
+                continuation = $0
+                hasStarted = true
+            }
         }
         func release(_ r: DeckCopyResponse) { continuation?.resume(returning: r) }
     }

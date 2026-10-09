@@ -236,6 +236,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             self.avatarURL = nil
             self.sessionStore.clearSession()
             self.isLoggedIn = false
+            SharedDeckCopyRegistry.shared.removeAll()   // 前帳號的 Explore 複製失敗態不可殘留（#2748）
             PerfLog.auth.mark("auth.state.logout", "reason=\(reason)")
 
             // Chain：等前一次 logout 的 cleanup 收尾再動工。連續「登出→重登→登出」
