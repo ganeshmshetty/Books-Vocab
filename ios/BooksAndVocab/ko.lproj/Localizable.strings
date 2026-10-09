@@ -1158,6 +1158,8 @@
 "reader.settings.section.highlight" = "단어 마커";
 "reader.settings.section.debug" = "개발자 및 디버그";
 "reader.settings.fontSize" = "글자 크기";
+"reader.settings.adjust.decrease" = "%@ 줄이기";
+"reader.settings.adjust.increase" = "%@ 늘리기";
 "reader.settings.lineHeight" = "행간";
 "reader.settings.letterSpacing" = "자간";
 "reader.settings.readingMode" = "읽기 모드";

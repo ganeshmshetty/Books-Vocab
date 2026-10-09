@@ -283,12 +283,14 @@ private struct ReaderTypographyAdjustmentRow: View {
             Spacer(minLength: AppSpacing.s2)
             adjustmentButton(
                 systemName: "minus",
+                label: L10n.format("reader.settings.adjust.decrease", title),
                 identifier: decrementIdentifier,
                 disabled: !canDecrement,
                 action: onDecrement
             )
             adjustmentButton(
                 systemName: "plus",
+                label: L10n.format("reader.settings.adjust.increase", title),
                 identifier: incrementIdentifier,
                 disabled: !canIncrement,
                 action: onIncrement
@@ -302,6 +304,7 @@ private struct ReaderTypographyAdjustmentRow: View {
 
     private func adjustmentButton(
         systemName: String,
+        label: String,
         identifier: String,
         disabled: Bool,
         action: @escaping () -> Void
@@ -315,6 +318,7 @@ private struct ReaderTypographyAdjustmentRow: View {
         }
         .buttonStyle(.appCompactAction(.neutral))
         .disabled(disabled)
+        .accessibilityLabel(label)
         .accessibilityIdentifier(identifier)
     }
 }

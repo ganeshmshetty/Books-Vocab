@@ -185,6 +185,16 @@ struct ReaderSettingsReleaseContractTests {
         #expect(pickerSource.contains("supportsOpacity: false"))
     }
 
+    @Test func typographyAdjustmentButtonsCarryDirectionalAccessibilityLabels() throws {
+        let presenterSource = try String(
+            contentsOf: Self.sourceURL(named: "ReaderSettingsPresenter+Vocab.swift"),
+            encoding: .utf8
+        )
+        #expect(presenterSource.contains("accessibilityLabel(label)"))
+        #expect(presenterSource.contains("reader.settings.adjust.decrease"))
+        #expect(presenterSource.contains("reader.settings.adjust.increase"))
+    }
+
     private static func sourceURL(named name: String) -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

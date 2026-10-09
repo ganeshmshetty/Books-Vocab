@@ -1177,6 +1177,8 @@
 "reader.settings.section.highlight" = "Vocabulary Markers";
 "reader.settings.section.debug" = "Developer and Debug";
 "reader.settings.fontSize" = "Text Size";
+"reader.settings.adjust.decrease" = "Decrease %@";
+"reader.settings.adjust.increase" = "Increase %@";
 "reader.settings.lineHeight" = "Line Spacing";
 "reader.settings.letterSpacing" = "Letter Spacing";
 "reader.settings.readingMode" = "Reading Mode";

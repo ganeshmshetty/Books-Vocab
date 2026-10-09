@@ -1158,6 +1158,8 @@
 "reader.settings.section.highlight" = "生词标记";
 "reader.settings.section.debug" = "开发者与调试";
 "reader.settings.fontSize" = "字级";
+"reader.settings.adjust.decrease" = "减小%@";
+"reader.settings.adjust.increase" = "增大%@";
 "reader.settings.lineHeight" = "行距";
 "reader.settings.letterSpacing" = "字间距";
 "reader.settings.readingMode" = "阅读模式";
