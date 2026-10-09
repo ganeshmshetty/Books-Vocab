@@ -33,6 +33,7 @@ struct KGVocabView: View {
     @State private var coordinator = KGVocabCoordinator()
     @State private var query: VocabularyLibraryQuery
     @State private var selectionState = SelectionModeState()
+    @State private var batchDeleteConfirmation = BatchDeleteConfirmation()
     @State private var selectedRowID: UUID?
     @State private var loginGate = LoginGateState()
     @Query private var pendingDeletes: [VocabularyEntry]
@@ -208,12 +209,24 @@ struct KGVocabView: View {
                 SelectionToolbar(
                     selectionCount: selectionState.selectionCount,
                     onArchive: { handleBatchArchive() },
-                    onDelete: { handleBatchDelete() }
+                    onDelete: { batchDeleteConfirmation.request(selectionCount: selectionState.selectionCount) }
                 )
                 .transition(.readerPanelReveal)
             }
         }
         .animateSpring(selectionState.isSelecting)
+        .confirmationDialog(
+            KGVocabCopy.batchDeleteTitle(count: selectionState.selectionCount),
+            isPresented: $batchDeleteConfirmation.isPending,
+            titleVisibility: .visible
+        ) {
+            Button(WordDetailCopy.delete, role: .destructive) {
+                batchDeleteConfirmation.confirm { handleBatchDelete() }
+            }
+            Button(WordDetailCopy.cancel, role: .cancel) { batchDeleteConfirmation.cancel() }
+        } message: {
+            Text(KGVocabCopy.batchDeleteMessage)
+        }
         .onChange(of: query) { _, _ in
             selectionState.exit()
         }
