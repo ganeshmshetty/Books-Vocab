@@ -692,7 +692,8 @@ RUBY
 #!/usr/bin/env bash
 # Fake gh: PR N has head sha %040x(N) and a passing trusted agent-review run 9000+N.
 # Per-PR faults: FAKE_NO_REVIEW_FOR=N (no review check-run), FAKE_FAIL_REVIEW_FOR=N
-# (review concluded failure), FAKE_DRIFT_FOR=N (pulls API head differs from the queue).
+# (review concluded failure), FAKE_DRIFT_FOR=N (pulls API head differs from the queue),
+# FAKE_ISSUE_COMMENT_RUN_FOR=N (N's review run is an unbound issue_comment run).
 set -euo pipefail
 [[ "${1:-}" == "api" ]] || exit 2
 endpoint="${2:-}"
@@ -712,7 +713,12 @@ case "$endpoint" in
       details_url: "https://github.com/Books-Vocab/Books-Vocab/actions/runs/\($run)",
       output: {title: "Independent agent review passed", summary: "Exact head \($sha) reviewed"}}]}' ;;
   repos/*/actions/runs/*)
-    jq -n '{path: ".github/workflows/agent-review.yml", event: "issue_comment", head_branch: "main", workflow_id: 4242, pull_requests: []}' ;;
+    run_n=$(( ${endpoint##*/} - 9000 ))
+    if [[ "${FAKE_ISSUE_COMMENT_RUN_FOR:-}" == "$run_n" ]]; then
+      jq -n '{path: ".github/workflows/agent-review.yml", event: "issue_comment", head_branch: "main", workflow_id: 4242, pull_requests: []}'
+    else
+      jq -n --argjson n "$run_n" --arg sha "$(printf '%040x' "$run_n")" '{path: ".github/workflows/agent-review.yml", event: "pull_request_target", head_branch: "lane", workflow_id: 4242, pull_requests: [{number: $n, head: {sha: $sha}, base: {ref: "main"}}]}'
+    fi ;;
   repos/*/pulls/*)
     n="${endpoint##*/}"; shown="$n"; [[ "${FAKE_DRIFT_FOR:-}" != "$n" ]] || shown=$((n + 1000))
     jq -n --arg sha "$(printf '%040x' "$shown")" '{state: "open", base: {ref: "main"}, head: {sha: $sha}}' ;;
@@ -759,6 +765,8 @@ FAKE_GH
       "latest trusted exact-head agent-review observation is not completed successfully"
     FAKE_DRIFT_FOR=7 verify_expect_reject "earlier PR #7 whose head drifted from its queue entry" 8 "7,8" \
       "group PR #7 HEAD/base/state drifted"
+    FAKE_ISSUE_COMMENT_RUN_FOR=7 verify_expect_reject "comment-triggered run with no PR binding (#2765)" 8 "7,8" \
+      "group PR #7 has no trusted exact-head review provenance"
     FAKE_NO_REVIEW_FOR=8 verify_expect_reject "target PR #8 without exact-head review" 8 "7,8" \
       "group PR #8 has no trusted exact-head review provenance"
     verify_expect_reject "singleton subset of a cumulative group (review P1)" 8 "8" "at or ahead of the target"
@@ -810,8 +818,9 @@ FAKE_GH
     || fail "merge-group independent review gate does not verify PR association"
   grep -q 'head.sha' "$MERGE_GROUP_REQUIRED" \
     || fail "merge-group independent review gate does not bind PR association to exact HEAD"
-  grep -q 'issue_comment' "$MERGE_GROUP_REQUIRED" \
-    || fail "merge-group independent review gate does not handle trusted issue-comment provenance"
+  if grep -q 'issue_comment' "$MERGE_GROUP_REQUIRED"; then
+    fail "merge-group independent review gate trusts comment-triggered runs that carry no PR binding (#2765)"
+  fi
   grep -q 'Independent agent review' "$MERGE_GROUP_REQUIRED" \
     || fail "merge-group independent review gate does not validate trusted review output"
   grep -q 'startswith' "$MERGE_GROUP_REQUIRED" \
