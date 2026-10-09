@@ -1091,6 +1091,8 @@
 "addLink.localSection" = "この単語帳";
 "addLink.candidate.expand" = "詳細を表示";
 "addLink.candidate.collapse" = "詳細を隠す";
+"addLink.candidate.expand.named" = "%@ の詳細を表示";
+"addLink.candidate.collapse.named" = "%@ の詳細を隠す";
 "addLink.error.linkFailed" = "リンクを作成できませんでした。選択内容は再試行用に保持されています。";
 
 /* MARK: - Review card layout editor */

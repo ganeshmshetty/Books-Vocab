@@ -1110,6 +1110,8 @@
 "addLink.localSection" = "This notebook";
 "addLink.candidate.expand" = "Show details";
 "addLink.candidate.collapse" = "Hide details";
+"addLink.candidate.expand.named" = "Show details for %@";
+"addLink.candidate.collapse.named" = "Hide details for %@";
 "addLink.error.linkFailed" = "The link could not be created. Your selection is still available to retry.";
 
 /* MARK: - Review card layout editor */

@@ -266,6 +266,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         let fortuitousDetailID = "addLink.local.result.vocab-linked-fortuitous"
         guard expandCandidate(fortuitousDetailID, named: "AddLink fortuitous expand") else {
             captureStep("add-link-fortuitous-expand-missing", app: app)
+            XCTFail("AddLink fortuitous expand control must exist before its detail is asserted")
             return
         }
         guard let fortuitousState = app.descendants(matching: .any)
@@ -329,6 +330,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         let fortunateDetailID = "addLink.local.result.vocab-linked-fortunate"
         guard expandCandidate(fortunateDetailID, named: "AddLink fortunate expand") else {
             captureStep("add-link-fortunate-expand-missing", app: app)
+            XCTFail("AddLink fortunate expand control must exist before its detail is asserted")
             return
         }
         guard let fortunateState = app.descendants(matching: .any)
@@ -426,6 +428,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         XCTAssertTrue(providerError.waitUntilGone(timeout: 5))
         guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
             captureStep("add-link-revelation-expand-missing", app: app)
+            XCTFail("AddLink revelation expand control must exist before its detail is asserted")
             return
         }
         guard let recoveredSense = app.descendants(matching: .any)

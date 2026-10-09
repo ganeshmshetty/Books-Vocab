@@ -263,9 +263,11 @@ struct AddLinkSheet: View {
                     // is built for the one row the user expanded (#2407).
                     let isExpanded = expandedCandidateIDs.contains(entry.id)
                     let recovering = recoveredProviderErrors.contains(entry.id)
-                    let projection = isExpanded
-                        ? AddLinkCoordinator.dictionaryDetailProjection(for: entry, recoveringProviderError: recovering)
-                        : AddLinkCoordinator.compactDetailProjection(for: entry, recoveringProviderError: recovering)
+                    let projection = AddLinkCoordinator.candidateProjection(
+                        for: entry,
+                        isExpanded: isExpanded,
+                        recoveringProviderError: recovering
+                    )
                     let isLinkingRow = entry.kgCardId != nil
                         && coordinator.linkingTargetCardID == entry.kgCardId
                     VStack(alignment: .leading, spacing: appSkin.metrics.cardBlockInnerGap) {
@@ -296,13 +298,7 @@ struct AddLinkSheet: View {
                         // One link at a time: every row is locked while one is in flight.
                         .disabled(coordinator.linkingTargetCardID != nil)
                         .accessibilityIdentifier(AddLinkCoordinator.detailIdentifier(for: entry))
-                        .accessibilityValue(
-                            AddLinkCoordinator.lookupEvidence(
-                                for: entry,
-                                recoveringProviderError: recovering,
-                                compact: !isExpanded
-                            )
-                        )
+                        .accessibilityValue(AddLinkCoordinator.lookupEvidence(for: entry, detail: projection))
                         .overlay(alignment: .trailing) {
                             // Return will link exactly this word (#2038). Applied after the
                             // button's own id/value so the hint keeps an id of its own.
@@ -349,6 +345,10 @@ struct AddLinkSheet: View {
         .buttonStyle(.appCompactAction(.neutral))
         // Same lock as the row button: one link at a time.
         .disabled(coordinator.linkingTargetCardID != nil)
+        // Every row shares the visible title, so VoiceOver names the word it belongs to.
+        .accessibilityLabel(
+            L10n.format(isExpanded ? "addLink.candidate.collapse.named" : "addLink.candidate.expand.named", entry.word)
+        )
         .accessibilityIdentifier(AddLinkCoordinator.detailExpandIdentifier(for: entry))
         .accessibilityValue(isExpanded ? "expanded" : "collapsed")
     }
