@@ -17,6 +17,10 @@ from `git merge-base <base> <head>` to <head>, so commits that landed on the
 base branch after the fork never count as this change; no merge base selects
 every suite.
 
+The plan also carries macos_ops and ui_smoke (Issue #2641): the macOS native ops
+job and the ui-smoke leg run only when their own scope changed, or on any
+fail-closed fan-out.
+
 The iOS suite additionally carries ios_mode=full|targeted. Targeted is admitted
 only for exactly one changed top-level ios/BooksAndVocabUITests/*UITests.swift
 file whose `ios_test.sh --ui --list --file` discovery returns fully qualified
@@ -91,6 +95,11 @@ DISCOVERY="${KG_CI_IOS_SELECTOR_DISCOVERY:-$ROOT/ops/ios_test.sh}"
 backend=false
 ops=false
 ios=false
+# macOS runner scope (Issue #2641). The runner pool is small, so the two
+# macOS-only extras are routed separately from `ops`/`ios`: macos_ops gates the
+# macOS native ops job, ui_smoke gates the ui-smoke leg of ios-quality.
+macos_ops=false
+ui_smoke=false
 path_count=0
 single_path=''
 ios_mode=full
@@ -100,6 +109,8 @@ select_all() {
   backend=true
   ops=true
   ios=true
+  macos_ops=true
+  ui_smoke=true
 }
 
 classify_path() {
@@ -107,6 +118,23 @@ classify_path() {
   [[ -n "$path" ]] || return
   path_count=$((path_count + 1))
   single_path="$path"
+
+  # macOS-only extras. Flag-only: no return, so the normal tree selection below
+  # still applies. macos_ops covers the groups ops-suite runs natively
+  # (ios-ops, ios-sentry-wiring, lldb-forensics) and what they read.
+  case "$path" in
+    ops/ios_*|ops/test_ios_*|ops/lib/*|ops/lldb_*|ops/install_lldb_forensics.sh|ops/tests/test_ios_*|ops/tests/test_lldb_*|ops/tests/lldb_*|ops/tests/test_sentry_wiring.sh|ops/test_ops.sh|.github/workflows/ops-suite.yml|ios/BooksAndVocab.xcodeproj/*|ios/Info.plist|ios/BooksAndVocab/Services/AppCrashReporting.swift)
+      macos_ops=true
+      ;;
+  esac
+  # ui_smoke: anything that can change what the app or the UI test harness
+  # does. Unit-test-only sources (ios/BooksAndVocabTests) do not.
+  case "$path" in
+    ios/BooksAndVocabTests/*) ;;
+    ios/*|ops/ios_*|ops/lib/ios_*|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py|.github/workflows/ios-quality.yml)
+      ui_smoke=true
+      ;;
+  esac
 
   # Router, verdict, and contract-test changes alter either test selection or
   # the meaning of a confidence result. They must receive a complete fan-out.
@@ -307,11 +335,12 @@ fi
 case "$format" in
   json)
     jq -cn --argjson backend "$backend" --argjson ops "$ops" --argjson ios "$ios" \
+      --argjson macos_ops "$macos_ops" --argjson ui_smoke "$ui_smoke" \
       --arg mode "$ios_mode" --arg selectors "$ios_selectors" \
-      '{backend:$backend,ops:$ops,ios:$ios,ios_mode:$mode,ios_selectors:$selectors}'
+      '{backend:$backend,ops:$ops,ios:$ios,macos_ops:$macos_ops,ui_smoke:$ui_smoke,ios_mode:$mode,ios_selectors:$selectors}'
     ;;
   github-output)
-    printf 'backend=%s\nops=%s\nios=%s\nios_mode=%s\nios_selectors=%s\n' \
-      "$backend" "$ops" "$ios" "$ios_mode" "$ios_selectors"
+    printf 'backend=%s\nops=%s\nios=%s\nmacos_ops=%s\nui_smoke=%s\nios_mode=%s\nios_selectors=%s\n' \
+      "$backend" "$ops" "$ios" "$macos_ops" "$ui_smoke" "$ios_mode" "$ios_selectors"
     ;;
 esac

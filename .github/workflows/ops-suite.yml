@@ -6,6 +6,15 @@ name: ops-suite
 
 on:
   workflow_call:
+    inputs:
+      # Routed by ops/ci_scope_router.sh (Issue #2641). Only an explicit
+      # 'false' skips the macOS native ops job; push runs (no inputs) and any
+      # unknown value keep it running.
+      macos_ops:
+        description: Whether the macOS native ops groups are in scope (true or false)
+        required: false
+        default: 'true'
+        type: string
   push:
     branches: [main]
     paths:
@@ -142,6 +151,9 @@ jobs:
 
   macos-native-ops:
     name: macOS native ops groups
+    # macos-26 runners are the scarce pool: run only when the change touches
+    # what these groups exercise (ops/ci_scope_router.sh `macos_ops`).
+    if: ${{ inputs.macos_ops != 'false' }}
     runs-on: macos-26
     timeout-minutes: 30
     steps:

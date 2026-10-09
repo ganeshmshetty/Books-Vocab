@@ -134,6 +134,8 @@ jobs:
       ios: ${{ steps.plan.outputs.ios }}
       ios_mode: ${{ steps.plan.outputs.ios_mode }}
       ios_selectors: ${{ steps.plan.outputs.ios_selectors }}
+      macos_ops: ${{ steps.plan.outputs.macos_ops }}
+      ui_smoke: ${{ steps.plan.outputs.ui_smoke }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -181,6 +183,8 @@ jobs:
     needs: changed-paths
     if: ${{ needs.changed-paths.outputs.ops == 'true' }}
     uses: ./.github/workflows/ops-suite.yml
+    with:
+      macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}
 
   ios-quality:
     name: ios-quality
@@ -191,6 +195,7 @@ jobs:
     with:
       ios_mode: ${{ needs.changed-paths.outputs.ios_mode }}
       ios_selectors: ${{ needs.changed-paths.outputs.ios_selectors }}
+      ui_smoke: ${{ needs.changed-paths.outputs.ui_smoke }}
 
   required:
     name: required

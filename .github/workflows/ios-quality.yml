@@ -20,6 +20,13 @@ on:
         required: false
         default: ''
         type: string
+      # Routed by ops/ci_scope_router.sh (Issue #2641). Only an explicit
+      # 'false' drops the ui-smoke leg of the full path.
+      ui_smoke:
+        description: Whether the ui-smoke leg is in scope for the full path (true or false)
+        required: false
+        default: 'true'
+        type: string
   workflow_dispatch:
     inputs:
       runner:
@@ -78,12 +85,14 @@ jobs:
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       selectors: ${{ steps.plan.outputs.selectors }}
+      scopes: ${{ steps.plan.outputs.scopes }}
     steps:
       - name: Resolve iOS confidence mode
         id: plan
         env:
           REQUESTED_MODE: ${{ inputs.ios_mode }}
           REQUESTED_SELECTORS: ${{ inputs.ios_selectors }}
+          REQUESTED_UI_SMOKE: ${{ inputs.ui_smoke }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,8 +112,14 @@ jobs:
               selectors="${items[*]}"
             fi
           fi
-          printf 'mode=%s\nselectors=%s\n' "$mode" "$selectors" >> "$GITHUB_OUTPUT"
-          echo "ios confidence mode: $mode"
+          # Full path test scopes: unit always; ui-smoke unless the router
+          # explicitly reports ui_smoke=false (absent input => full set).
+          scopes='["unit","ui-smoke"]'
+          if [[ "$REQUESTED_UI_SMOKE" == 'false' ]]; then
+            scopes='["unit"]'
+          fi
+          printf 'mode=%s\nselectors=%s\nscopes=%s\n' "$mode" "$selectors" "$scopes" >> "$GITHUB_OUTPUT"
+          echo "ios confidence mode: $mode scopes: $scopes"
 
   ios-build:
     name: ios-build
@@ -221,9 +236,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - scope: unit
-          - scope: ui-smoke
+        scope: ${{ fromJSON(needs.plan.outputs.scopes) }}
 
     steps:
       - name: Checkout

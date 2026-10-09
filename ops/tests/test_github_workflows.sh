@@ -934,8 +934,33 @@ full_gate="if: \${{ always() && (needs.plan.outputs.mode != 'targeted' || needs.
   || fail "ios-build and ios-tests are not both gated as full-unless-targeted-accepted"
 grep -Fq "if: \${{ needs.plan.outputs.mode == 'targeted' }}" "$IOS" \
   || fail "targeted job is not gated on a validated targeted plan"
-grep -Fq "matrix.scope" "$IOS" && grep -Fq -- '- scope: unit' "$IOS" && grep -Fq -- '- scope: ui-smoke' "$IOS" \
-  || fail "full iOS matrix (unit, ui-smoke) was altered"
+# The matrix is planned (Issue #2641): the full set stays unit + ui-smoke, and
+# ui-smoke is dropped only when the router reports ui_smoke=false.
+grep -Fq "matrix.scope" "$IOS" && grep -Fq 'scope: ${{ fromJSON(needs.plan.outputs.scopes) }}' "$IOS" \
+  || fail "ios-tests matrix is not driven by the plan job's scopes output"
+grep -Fq -- "scopes='[\"unit\",\"ui-smoke\"]'" "$IOS" \
+  || fail "full iOS matrix (unit, ui-smoke) is not the plan default"
+grep -Fq -- "scopes='[\"unit\"]'" "$IOS" \
+  || fail "ios-quality plan cannot drop ui-smoke when the router reports ui_smoke=false"
+grep -Fq "[[ \"\$REQUESTED_UI_SMOKE\" == 'false' ]]" "$IOS" \
+  || fail "ui-smoke is dropped on something other than an explicit ui_smoke=false"
+ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call"]["inputs"]["ui_smoke"]
+  exit 1 unless i["default"] == "true" && i["type"] == "string" && i["required"] == false' "$IOS" \
+  || fail "ios-quality ui_smoke input is not an optional string defaulting to true"
+grep -Fq 'ui_smoke: ${{ steps.plan.outputs.ui_smoke }}' "$PR_GATE" \
+  || fail "pr-gate changed-paths does not export the router ui_smoke"
+grep -Fq 'ui_smoke: ${{ needs.changed-paths.outputs.ui_smoke }}' "$PR_GATE" \
+  || fail "pr-gate does not forward ui_smoke to ios-quality"
+# macOS native ops job (Issue #2641): scoped by the router, fail-open to run on
+# push/dispatch where the input is absent.
+grep -Fq 'macos_ops: ${{ steps.plan.outputs.macos_ops }}' "$PR_GATE" \
+  || fail "pr-gate changed-paths does not export the router macos_ops"
+grep -Fq 'macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}' "$PR_GATE" \
+  || fail "pr-gate does not forward macos_ops to ops-suite"
+ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call"]["inputs"]["macos_ops"]
+  exit 1 unless i["default"] == "true" && i["type"] == "string" && i["required"] == false
+  exit 1 unless y["jobs"]["macos-native-ops"]["if"].to_s.include?("inputs.macos_ops != \x27false\x27")' ".github/workflows/ops-suite.yml" \
+  || fail "ops-suite macos-native-ops is not gated on an explicit macos_ops=false"
 # Targeted invocation: exactly the planned selectors, no video/visual capture.
 grep -Fq "KG_IOS_VISUAL_CAPTURE: '0'" "$IOS" \
   || fail "targeted iOS run does not pin KG_IOS_VISUAL_CAPTURE=0"
@@ -970,9 +995,22 @@ extract_step_run ios-targeted verdict > "$wf_tmp/verdict.sh"
 plan_mode() {
   local out="$wf_tmp/plan.out"
   : > "$out"
-  REQUESTED_MODE="$1" REQUESTED_SELECTORS="$2" GITHUB_OUTPUT="$out" bash "$wf_tmp/plan.sh" >/dev/null 2>&1 || { echo ERROR; return; }
+  REQUESTED_MODE="$1" REQUESTED_SELECTORS="$2" REQUESTED_UI_SMOKE="${PLAN_UI_SMOKE:-}" GITHUB_OUTPUT="$out" bash "$wf_tmp/plan.sh" >/dev/null 2>&1 || { echo ERROR; return; }
   grep '^mode=' "$out" | head -1 | cut -d= -f2-
 }
+# Full-path test scopes (Issue #2641): only an explicit 'false' drops ui-smoke.
+plan_scopes() {
+  local out="$wf_tmp/plan.out"
+  : > "$out"
+  REQUESTED_MODE=full REQUESTED_SELECTORS='' REQUESTED_UI_SMOKE="$1" GITHUB_OUTPUT="$out" bash "$wf_tmp/plan.sh" >/dev/null 2>&1 || { echo ERROR; return; }
+  grep '^scopes=' "$out" | head -1 | cut -d= -f2-
+}
+for ui_value in '' true TRUE garbage; do
+  [[ "$(plan_scopes "$ui_value")" == '["unit","ui-smoke"]' ]] \
+    || fail "ios plan: ui_smoke='$ui_value' must keep the full (unit, ui-smoke) matrix, got $(plan_scopes "$ui_value")"
+done
+[[ "$(plan_scopes false)" == '["unit"]' ]] \
+  || fail "ios plan: ui_smoke=false must run unit only, got $(plan_scopes false)"
 expect_plan() {
   local label="$1" mode="$2" selectors="$3" expected="$4" actual
   actual="$(plan_mode "$mode" "$selectors")"
