@@ -1,0 +1,51 @@
+name: main-watch
+
+# Watches `main` after every push (Issue #2642). When a push-triggered area suite
+# finishes red, ops/main_watch.py opens one P1 fix issue for that area (or links
+# the run to the area's open issue), so the first red push is noticed before the
+# next PR is gated.  The script runs from the default branch; this workflow never
+# checks out or executes PR code.  Run fields reach it as env vars only.
+
+on:
+  workflow_run:
+    workflows:
+      - backend-quality
+      - ios-quality
+      - ops-suite
+      - design-system
+      - ui-quality-gate
+      - llm-eval
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+# Serialize runs so two red suites of one push cannot both create an issue for
+# the same area.  Never cancel: a dropped run would lose the alert.
+concurrency:
+  group: main-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: open or link main fix issue
+    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Open or link the fix issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WATCH_WORKFLOW: ${{ github.event.workflow_run.name }}
+          WATCH_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WATCH_EVENT: ${{ github.event.workflow_run.event }}
+          WATCH_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WATCH_SHA: ${{ github.event.workflow_run.head_sha }}
+          WATCH_URL: ${{ github.event.workflow_run.html_url }}
+        run: ./ops/main_watch.py --repo "$GITHUB_REPOSITORY"

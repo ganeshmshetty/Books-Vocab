@@ -847,6 +847,26 @@ FAKE_GH
     || fail "review fixture accepts malformed provenance"
 fi
 
+# main-watch (Issue #2642): a red area suite on a main push must reach a fix issue
+# without running untrusted code or interpolating event data into a shell.
+MAIN_WATCH=".github/workflows/main-watch.yml"
+ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); w = y[true]["workflow_run"]
+  exit 1 unless w["types"] == ["completed"] && w["branches"] == ["main"]
+  exit 1 unless (%w[backend-quality ios-quality ops-suite design-system ui-quality-gate llm-eval] - w["workflows"]).empty?
+  exit 1 unless y["permissions"] == {"contents" => "read", "issues" => "write"}
+  exit 1 unless y["concurrency"]["cancel-in-progress"] == false' "$MAIN_WATCH" \
+  || fail "main-watch must watch every area suite on main with contents:read + issues:write and never cancel a run"
+if grep -Eq '^[[:space:]]+ref:' "$MAIN_WATCH"; then
+  fail "main-watch checks out a non-default ref; it must run default-branch code only"
+fi
+if awk '/^        run:/ { grab=1 } grab' "$MAIN_WATCH" | grep -q '\${{'; then
+  fail "main-watch interpolates event data into a run script; pass it through env"
+fi
+grep -Fq 'github.event.workflow_run.event == '"'"'push'"'"'' "$MAIN_WATCH" \
+  || fail "main-watch does not restrict itself to push-triggered runs"
+grep -Fq 'ops/main_watch.py' "$MAIN_WATCH" \
+  || fail "main-watch does not run ops/main_watch.py"
+
 # Keep Actions on the Node 24 generation.  Pinned SHAs preserve supply-chain
 # review while avoiding the hosted-runner Node 20 deprecation path.
 for workflow_path in .github/workflows/*.yml; do
