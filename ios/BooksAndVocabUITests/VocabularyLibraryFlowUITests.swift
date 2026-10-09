@@ -205,6 +205,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             guard let toggle = app.descendants(matching: .any)
                 .matching(identifier: "\(detailID).expand")
                 .exactlyOneElement(timeout: 5, named: named) else { return false }
+            toggle.scrollIntoView()
             toggle.tapWhenReady()
             return true
         }
