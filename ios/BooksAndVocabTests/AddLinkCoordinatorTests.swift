@@ -296,6 +296,26 @@ struct AddLinkCoordinatorTests {
         #expect(evidence.contains("detail.provenance.chapter=Linked Cards"))
     }
 
+    @Test("compact candidate projection keeps only the first sense while the state still counts every sense")
+    func compactDetailProjectionKeepsFirstSenseOnly() {
+        let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
+        entry.translation = "偶然發生而幸運的"
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance.","partOfSpeech":"adj.","examples":["First example."]},{"definition":"Second sense.","partOfSpeech":"adj.","examples":["Second example."]}]}"#
+        entry.bookTitle = "The Weight of Words"
+
+        let compact = AddLinkCoordinator.compactDetailProjection(for: entry)
+        let full = AddLinkCoordinator.dictionaryDetailProjection(for: entry)
+
+        #expect(compact.senses.map(\.definition) == ["Happening by chance."])
+        #expect(compact.senses[0].examples == ["First example."])
+        #expect(compact.state == .ready(senseCount: 2))
+        #expect(full.senses.count == 2)
+        #expect(full.state == compact.state)
+        #expect(AddLinkCoordinator.lookupEvidence(for: entry, compact: true).contains("detail.senses=1"))
+        #expect(AddLinkCoordinator.lookupEvidence(for: entry, compact: true).contains("sense=Happening by chance."))
+        #expect(!AddLinkCoordinator.lookupEvidence(for: entry, compact: true).contains("Second sense."))
+    }
+
     @Test("dictionary detail projection makes an absent explicit example observable")
     func dictionaryDetailProjectionMissingExample() {
         let entry = Self.entry("fortunate", cardID: "target", notebook: "nb")

@@ -199,6 +199,16 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             return query.count == 0
         }
 
+        // Collapsed candidates expose only the first sense; detail assertions below run
+        // after the row is expanded (#2407).
+        func expandCandidate(_ detailID: String, named: String) -> Bool {
+            guard let toggle = app.descendants(matching: .any)
+                .matching(identifier: "\(detailID).expand")
+                .exactlyOneElement(timeout: 5, named: named) else { return false }
+            toggle.tapWhenReady()
+            return true
+        }
+
         func openAddLinkSheet() -> Bool {
             guard let trigger = addLinkTriggerQuery().exactlyOneElement(
                 timeout: 5,
@@ -254,6 +264,10 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         captureStep("add-link-word-candidates", app: app)
 
         let fortuitousDetailID = "addLink.local.result.vocab-linked-fortuitous"
+        guard expandCandidate(fortuitousDetailID, named: "AddLink fortuitous expand") else {
+            captureStep("add-link-fortuitous-expand-missing", app: app)
+            return
+        }
         guard let fortuitousState = app.descendants(matching: .any)
             .matching(identifier: "\(fortuitousDetailID).state")
             .exactlyOneElement(timeout: 5, named: "AddLink fortuitous detail state") else {
@@ -313,6 +327,10 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         )
 
         let fortunateDetailID = "addLink.local.result.vocab-linked-fortunate"
+        guard expandCandidate(fortunateDetailID, named: "AddLink fortunate expand") else {
+            captureStep("add-link-fortunate-expand-missing", app: app)
+            return
+        }
         guard let fortunateState = app.descendants(matching: .any)
             .matching(identifier: "\(fortunateDetailID).state")
             .exactlyOneElement(timeout: 5, named: "AddLink fortunate detail state"),
@@ -406,6 +424,10 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             "provider retry must recover to a deterministic local detail"
         )
         XCTAssertTrue(providerError.waitUntilGone(timeout: 5))
+        guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
+            captureStep("add-link-revelation-expand-missing", app: app)
+            return
+        }
         guard let recoveredSense = app.descendants(matching: .any)
             .matching(identifier: "\(revelationDetailID).sense.1")
             .exactlyOneElement(timeout: 5, named: "AddLink recovered revelation sense"),

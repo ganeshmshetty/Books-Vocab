@@ -53,6 +53,7 @@ struct AddLinkSheet: View {
     @State private var awaitingCreationOutcome = false
     @State private var didCompleteCreation = false
     @State private var recoveredProviderErrors: Set<UUID> = []
+    @State private var expandedCandidateIDs: Set<UUID> = []
     @FocusState private var isSearchFocused: Bool
     @Environment(\.toastCoordinator) private var toastCoordinator
     @Environment(\.networkMonitor) private var networkMonitor
@@ -258,10 +259,13 @@ struct AddLinkSheet: View {
                     .accessibilityIdentifier("addLink.local.empty")
             } else {
                 ForEach(snapshot.candidates) { entry in
-                    let projection = AddLinkCoordinator.dictionaryDetailProjection(
-                        for: entry,
-                        recoveringProviderError: recoveredProviderErrors.contains(entry.id)
-                    )
+                    // Collapsed rows materialize only the first sense; the full projection
+                    // is built for the one row the user expanded (#2407).
+                    let isExpanded = expandedCandidateIDs.contains(entry.id)
+                    let recovering = recoveredProviderErrors.contains(entry.id)
+                    let projection = isExpanded
+                        ? AddLinkCoordinator.dictionaryDetailProjection(for: entry, recoveringProviderError: recovering)
+                        : AddLinkCoordinator.compactDetailProjection(for: entry, recoveringProviderError: recovering)
                     let isLinkingRow = entry.kgCardId != nil
                         && coordinator.linkingTargetCardID == entry.kgCardId
                     VStack(alignment: .leading, spacing: appSkin.metrics.cardBlockInnerGap) {
@@ -295,7 +299,8 @@ struct AddLinkSheet: View {
                         .accessibilityValue(
                             AddLinkCoordinator.lookupEvidence(
                                 for: entry,
-                                recoveringProviderError: recoveredProviderErrors.contains(entry.id)
+                                recoveringProviderError: recovering,
+                                compact: !isExpanded
                             )
                         )
                         .overlay(alignment: .trailing) {
@@ -311,7 +316,11 @@ struct AddLinkSheet: View {
                         }
                         .animation(AppMotion.contentFade, value: returnBehavior)
 
-                        dictionaryDetail(projection, for: entry)
+                        dictionaryDetail(projection, for: entry, isExpanded: isExpanded)
+
+                        if projection.state != .providerDecodeError {
+                            expandToggle(for: entry, isExpanded: isExpanded)
+                        }
                     }
                     .listRowBackground(Color.clear)
                 }
@@ -324,10 +333,33 @@ struct AddLinkSheet: View {
         }
     }
 
+    private func expandToggle(for entry: VocabularyEntry, isExpanded: Bool) -> some View {
+        Button {
+            if isExpanded {
+                expandedCandidateIDs.remove(entry.id)
+            } else {
+                expandedCandidateIDs.insert(entry.id)
+            }
+        } label: {
+            Label(
+                L10n.string(isExpanded ? "addLink.candidate.collapse" : "addLink.candidate.expand"),
+                systemImage: isExpanded ? "chevron.up" : "chevron.down"
+            )
+        }
+        .buttonStyle(.appCompactAction(.neutral))
+        // Same lock as the row button: one link at a time.
+        .disabled(coordinator.linkingTargetCardID != nil)
+        .accessibilityIdentifier(AddLinkCoordinator.detailExpandIdentifier(for: entry))
+        .accessibilityValue(isExpanded ? "expanded" : "collapsed")
+    }
+
+    /// Collapsed rows show the first sense (part of speech + definition) only; examples,
+    /// per-sense translations, forms and provenance appear once the row is expanded.
     @ViewBuilder
     private func dictionaryDetail(
         _ projection: AddLinkDetailProjection,
-        for entry: VocabularyEntry
+        for entry: VocabularyEntry,
+        isExpanded: Bool
     ) -> some View {
         let detailID = AddLinkCoordinator.detailIdentifier(for: entry)
         Color.clear
@@ -371,7 +403,7 @@ struct AddLinkSheet: View {
                         .accessibilityIdentifier(
                             AddLinkCoordinator.detailSenseIdentifier(for: entry, index: senseIndex)
                         )
-                    if let translation = sense.translation,
+                    if isExpanded, let translation = sense.translation,
                        translation != projection.translation {
                         Text(translation)
                             .font(appSkin.typography.caption)
@@ -381,7 +413,9 @@ struct AddLinkSheet: View {
                                 "\(AddLinkCoordinator.detailSenseIdentifier(for: entry, index: senseIndex)).translation"
                             )
                     }
-                    if sense.examples.isEmpty {
+                    if !isExpanded {
+                        EmptyView()
+                    } else if sense.examples.isEmpty {
                         Color.clear
                             .frame(width: 1, height: 1)
                             .accessibilityElement()
@@ -411,7 +445,7 @@ struct AddLinkSheet: View {
                 .accessibilityElement(children: .contain)
             }
 
-            if !projection.forms.isEmpty {
+            if isExpanded, !projection.forms.isEmpty {
                 Text(L10n.string("變化形") + ": " + projection.forms.joined(separator: ", "))
                     .font(appSkin.typography.caption)
                     .foregroundStyle(appSkin.palette.tertiaryText)
@@ -419,6 +453,7 @@ struct AddLinkSheet: View {
                     .accessibilityIdentifier(AddLinkCoordinator.detailFormsIdentifier(for: entry))
             }
 
+            if isExpanded {
             VStack(alignment: .leading, spacing: AppSpacing.microGap) {
                 Text(L10n.string("來源") + ": " + projection.provenance.source)
                     .fixedSize(horizontal: false, vertical: true)
@@ -436,6 +471,7 @@ struct AddLinkSheet: View {
             .foregroundStyle(appSkin.palette.tertiaryText)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(AddLinkCoordinator.detailProvenanceIdentifier(for: entry))
+            }
         }
     }
 
