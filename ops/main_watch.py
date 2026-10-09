@@ -24,6 +24,8 @@ from typing import Any
 
 LABEL = "main-red"
 PRIORITY = "P1"
+# Taxonomy labels (issue_management.md): one status, one area, one type.
+TAXONOMY = ["needs-triage", "area/ops-ci", "bug"]
 RED = frozenset({"failure", "timed_out", "startup_failure"})
 # Workflows that run on every push to main, named by the area a failure breaks.
 AREAS = {
@@ -58,7 +60,8 @@ def plan(run: Mapping[str, str], open_issues: list[dict[str, Any]]) -> dict[str,
     area, name = area_of(run["workflow"]), _plain(run["workflow"])
     for issue in open_issues:
         if marker(area) in issue["body"]:
-            if any(run["url"] in t for t in [issue["body"], *issue["comments"]]):
+            linked = re.compile(re.escape(run["url"]) + r"(?![0-9])")
+            if any(linked.search(t) for t in [issue["body"], *issue["comments"]]):
                 return {"action": "noop", "reason": "run already linked"}
             return {
                 "action": "comment",
@@ -69,7 +72,7 @@ def plan(run: Mapping[str, str], open_issues: list[dict[str, Any]]) -> dict[str,
     return {
         "action": "create",
         "title": f"main is red: {area} ({name}) at {run['sha'][:9]}",
-        "labels": [PRIORITY, LABEL],
+        "labels": [PRIORITY, *TAXONOMY, LABEL],
         "body": f"{marker(area)}\n`main` went red in the **{area}** area; the next "
         f"PR should not be the one that finds out.\n\n- Workflow: `{name}` "
         f"({run['conclusion']})\n- Commit: {run['sha']}\n- Run: {run['url']}\n\n"

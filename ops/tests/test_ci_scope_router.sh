@@ -122,16 +122,16 @@ assert_macos() { # label path macos_ops ui_smoke
     fail "$label: expected macos_ops=$3 ui_smoke=$4, got $actual"
   fi
 }
-for p in ops/backup_verify.sh ops/doctor.py ops/tests/test_main_watch.py lab/podcast/pipeline.py backend/src/kg/app.py docs/reference/tech_index.md .github/workflows/main-watch.yml ios/BooksAndVocabTests/FooTests.swift; do
+for p in ops/doctor.py ops/tests/test_main_watch.py lab/podcast/pipeline.py backend/src/kg/app.py docs/reference/tech_index.md .github/workflows/main-watch.yml ios/BooksAndVocabTests/FooTests.swift; do
   assert_macos "no macOS job for $p (#2641)" "$p" false false
 done
-for p in ops/lldb_crash_forensics.py ops/install_lldb_forensics.sh ops/tests/test_ios_ops_release_heartbeat.sh ops/tests/test_lldb_crash_forensics.sh ops/tests/test_sentry_wiring.sh ops/test_ios_ops.sh ops/test_ops.sh .github/workflows/ops-suite.yml; do
+for p in ops/backup_verify.sh ops/review_flip_probe.sh ops/ui_quality_plane.py ops/app_review/2.0.0.json ops/app_review_evidence.py ops/app_review_gate.py ops/asc.sh ops/asc_text_bundle.py ops/sentry_release.sh ops/sentry_tool.py ops/sentry_api.py ops/kg_disk_guard.sh ops/kg_reconcile.sh ops/release.sh ops/p9_review_calendar_evidence.py ops/lldb_crash_forensics.py ops/install_lldb_forensics.sh ops/tests/test_ios_ops_release_heartbeat.sh ops/tests/test_lldb_crash_forensics.sh ops/tests/test_sentry_wiring.sh ops/test_ios_ops.sh ops/test_ops.sh .github/workflows/ops-suite.yml; do
   assert_macos "macOS native ops only for $p (#2641)" "$p" true false
 done
-for p in ios/BooksAndVocab/Views/Foo.swift ios/BooksAndVocabUITests/FooFlowUITests.swift ops/fixtures/ui_worlds/marketing_demo.json ops/ui_world_manifest.py .github/workflows/ios-quality.yml; do
+for p in ios/BooksAndVocab/Views/Foo.swift ios/BooksAndVocab.xcodeproj/project.pbxproj ios/Info.plist ios/BooksAndVocab/Services/AppCrashReporting.swift ios/BooksAndVocabUITests/FooFlowUITests.swift ops/fixtures/ui_worlds/marketing_demo.json .github/workflows/ios-quality.yml; do
   assert_macos "ui-smoke only for $p (#2641)" "$p" false true
 done
-for p in ops/ios_ops.sh ops/ios_test.sh ops/lib/ios_ops_core.sh ops/lib/signal_traps.sh ios/BooksAndVocab.xcodeproj/project.pbxproj ios/Info.plist ios/BooksAndVocab/Services/AppCrashReporting.swift ops/ci_scope_router.sh .github/workflows/pr-gate.yml newdir/x; do
+for p in ops/ios_ops.sh ops/ios_test.sh ops/lib/ios_ops_core.sh ops/lib/signal_traps.sh ops/ui_world_manifest.py ops/ci_scope_router.sh .github/workflows/pr-gate.yml newdir/x; do
   assert_macos "macOS native ops and ui-smoke for $p (#2641)" "$p" true true
 done
 
@@ -419,6 +419,26 @@ if [[ "$(fork_plan trunk unrelated)" == '{"backend":true,"ops":true,"ios":true}'
   pass 'commit-range without a merge base selects every suite (fail-closed)'
 else
   fail "commit-range without a merge base was narrowed: $(fork_plan trunk unrelated)"
+fi
+
+
+# Closure: every ops/<file> the macOS groups reference must route to macos_ops
+# (Issue #2641), so the allowlist cannot drift behind the scripts it guards.
+closure_srcs=()
+for f in "$ROOT"/ops/ios_*.sh "$ROOT"/ops/lib/ios_*.sh "$ROOT"/ops/test_ios_*.sh "$ROOT"/ops/tests/test_ios_*.sh "$ROOT"/ops/tests/test_lldb*.sh "$ROOT"/ops/tests/test_sentry_wiring.sh; do
+  [[ -f "$f" ]] && closure_srcs+=("$f")
+done
+closure_refs="$(grep -ohE 'ops/[A-Za-z0-9_./-]+' "${closure_srcs[@]}" | sed -E 's/[.,:;]+$//' | sort -u)"
+closure_missing=''
+while IFS= read -r ref; do
+  [[ -f "$ROOT/$ref" ]] || continue
+  routed="$(printf '%s\n' "$ref" | "$ROUTER" --paths-stdin --format json | jq -r '.macos_ops')"
+  [[ "$routed" == true ]] || closure_missing+=" $ref"
+done <<<"$closure_refs"
+if [[ -z "$closure_missing" ]]; then
+  pass 'every ops file the macOS groups reference routes to macos_ops'
+else
+  fail "macos_ops allowlist misses referenced files:$closure_missing"
 fi
 
 if (( failures > 0 )); then

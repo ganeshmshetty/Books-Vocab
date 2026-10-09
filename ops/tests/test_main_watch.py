@@ -38,7 +38,13 @@ def issue(area: str, body: str = "", comments: list[str] | None = None) -> dict:
 def test_a_red_main_push_run_opens_a_p1_fix_issue(conclusion: str) -> None:
     decision = main_watch.plan(run(conclusion=conclusion), [])
     assert decision["action"] == "create"
-    assert decision["labels"] == ["P1", main_watch.LABEL]
+    assert decision["labels"] == [
+        "P1",
+        "needs-triage",
+        "area/ops-ci",
+        "bug",
+        main_watch.LABEL,
+    ]
     assert "backend" in decision["title"] and SHA[:9] in decision["title"]
     assert URL in decision["body"] and SHA in decision["body"]
     assert main_watch.marker("backend") in decision["body"]
@@ -103,3 +109,9 @@ def test_dry_run_prints_the_decision_without_writing_to_github(
     monkeypatch.setattr(main_watch, "gh", lambda *a, **k: pytest.fail(f"gh {a}"))
     assert main_watch.main(["--dry-run"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "create"
+
+
+def test_a_longer_run_id_does_not_count_as_linking_a_shorter_one() -> None:
+    longer = {**run(), "url": URL + "1"}
+    decision = main_watch.plan(run(), [issue("backend", comments=[longer["url"]])])
+    assert decision["action"] == "comment"
