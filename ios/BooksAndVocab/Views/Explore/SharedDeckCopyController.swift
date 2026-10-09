@@ -3,7 +3,7 @@
 //  Books & Vocab
 //
 //  Explore 複製流程狀態機（idle/inflight/success/failure）+ idempotencyKey 穩定性。
-//  唯一擁有者 = `SharedDeckDetailView`。純狀態 + 一支 async `copy`；網路只透過注入的
+//  擁有者 = `SharedDeckCopyRegistry`（依 deckId，跨 view pop/reopen；#2748）。純狀態 + 一支 async `copy`；網路只透過注入的
 //  `any DeckCopying`（窄協定），故可完整單元測試（無 SwiftData / 無真實網路）。
 //
 
@@ -43,6 +43,11 @@ final class SharedDeckCopyController {
 
     init(makeKey: @escaping () -> String = { UUID().uuidString }) {
         self.makeKey = makeKey
+    }
+
+    var isSucceeded: Bool {
+        if case .success = state { return true }
+        return false
     }
 
     var isInflight: Bool {
@@ -155,5 +160,27 @@ final class SharedDeckCopyController {
             return offlineURLErrorCodes.contains(urlError.code)
         }
         return false
+    }
+}
+
+/// 以 deckId 為鍵的 controller 註冊表（#2748）。`SharedDeckDetailView` 的 `@State`
+/// 在 pop 時被丟棄，但 `performCopy` 的 unstructured `Task` 仍在跑、idempotencyKey 也
+/// 需跨 reopen 保留；controller 因此改由行程級註冊表持有，view 只借用。
+/// 只在上一個已成功（意圖達成）時才換新 controller；其餘（idle / inflight / failure）
+/// 都原樣回傳，故 reopen 的 view 會接回 inflight 或仍持有 key 的 failure 態，且 View
+/// init 被重複求值也不會把註冊表與 view 手上的 controller 拆開。
+@MainActor
+final class SharedDeckCopyRegistry {
+    static let shared = SharedDeckCopyRegistry()
+
+    private var controllers: [String: SharedDeckCopyController] = [:]
+
+    func controller(for deckId: String) -> SharedDeckCopyController {
+        if let existing = controllers[deckId], !existing.isSucceeded {
+            return existing
+        }
+        let fresh = SharedDeckCopyController()
+        controllers[deckId] = fresh
+        return fresh
     }
 }
