@@ -880,6 +880,22 @@ ruby -e 'require "yaml"; bad = []
   abort bad.join(" ") unless bad.empty?' .github/workflows/ops-suite.yml .github/workflows/ios-quality.yml \
   || fail "macos jobs must run ops/ci_macos_queue_probe.sh with actions: read"
 
+# Reusable-workflow callers must grant at least what callee jobs request (a callee can only downgrade the caller token; otherwise startup_failure).
+ruby -e 'require "yaml"; rank = {"none"=>0,"read"=>1,"write"=>2}; bad = []
+  y = YAML.load_file(".github/workflows/pr-gate.yml")
+  y["jobs"].each do |name, cj|
+    next unless cj["uses"]
+    eff = cj["permissions"] || y["permissions"] || {}
+    callee = YAML.load_file(cj["uses"].sub(%r{^\./}, ""))
+    callee["jobs"].each do |jn, job|
+      (job["permissions"] || {}).each do |scope, lvl|
+        bad << "#{name}->#{jn}:#{scope}" if rank[lvl.to_s] > rank[(eff[scope] || "none").to_s]
+      end
+    end
+  end
+  abort bad.join(" ") unless bad.empty?' \
+  || fail "pr-gate caller jobs grant less than their reusable-workflow callee jobs request"
+
 # Keep Actions on the Node 24 generation.  Pinned SHAs preserve supply-chain
 # review while avoiding the hosted-runner Node 20 deprecation path.
 for workflow_path in .github/workflows/*.yml; do

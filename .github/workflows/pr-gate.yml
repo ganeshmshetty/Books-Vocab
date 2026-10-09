@@ -183,6 +183,9 @@ jobs:
     needs: changed-paths
     if: ${{ needs.changed-paths.outputs.ops == 'true' }}
     uses: ./.github/workflows/ops-suite.yml
+    permissions:
+      contents: read
+      actions: read
     with:
       macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}
 
@@ -191,6 +194,9 @@ jobs:
     needs: changed-paths
     if: ${{ needs.changed-paths.outputs.ios == 'true' }}
     uses: ./.github/workflows/ios-quality.yml
+    permissions:
+      contents: read
+      actions: read
     # Empty/unknown values are resolved to the full path by ios-quality's plan job.
     with:
       ios_mode: ${{ needs.changed-paths.outputs.ios_mode }}
