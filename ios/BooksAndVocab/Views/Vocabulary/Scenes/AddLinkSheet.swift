@@ -454,23 +454,23 @@ struct AddLinkSheet: View {
             }
 
             if isExpanded {
-            VStack(alignment: .leading, spacing: AppSpacing.microGap) {
-                Text(L10n.string("來源") + ": " + projection.provenance.source)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("\(detailID).provenance.source")
-                if let chapter = projection.provenance.chapter {
-                    Text(chapter)
+                VStack(alignment: .leading, spacing: AppSpacing.microGap) {
+                    Text(L10n.string("來源") + ": " + projection.provenance.source)
                         .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("\(detailID).provenance.chapter")
+                        .accessibilityIdentifier("\(detailID).provenance.source")
+                    if let chapter = projection.provenance.chapter {
+                        Text(chapter)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("\(detailID).provenance.chapter")
+                    }
+                    Text(projection.provenance.context)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("\(detailID).provenance.context")
                 }
-                Text(projection.provenance.context)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("\(detailID).provenance.context")
-            }
-            .font(appSkin.typography.caption)
-            .foregroundStyle(appSkin.palette.tertiaryText)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier(AddLinkCoordinator.detailProvenanceIdentifier(for: entry))
+                .font(appSkin.typography.caption)
+                .foregroundStyle(appSkin.palette.tertiaryText)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(AddLinkCoordinator.detailProvenanceIdentifier(for: entry))
             }
         }
     }
