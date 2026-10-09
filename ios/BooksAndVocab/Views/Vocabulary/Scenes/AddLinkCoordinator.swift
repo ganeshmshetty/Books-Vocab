@@ -245,14 +245,22 @@ final class AddLinkCoordinator {
         recoveringProviderError: Bool = false,
         compact: Bool = false
     ) -> String {
+        let detail = compact
+            ? compactDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
+            : dictionaryDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
+        return lookupEvidence(for: entry, detail: detail)
+    }
+
+    /// Evidence for an already materialized projection, so a row body does not decode the payload twice.
+    nonisolated static func lookupEvidence(
+        for entry: VocabularyEntry,
+        detail: AddLinkDetailProjection
+    ) -> String {
         func normalized(_ value: String?) -> String {
             guard let value else { return "" }
             return value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         }
 
-        let detail = compact
-            ? compactDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
-            : dictionaryDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
         let primarySense = detail.senses.first?.definition
         let primaryExample = detail.senses.first?.examples.first
         var evidence = [
@@ -281,7 +289,10 @@ final class AddLinkCoordinator {
             }
         }
 
-        evidence.append("detail.missing-example=\(detail.hasMissingExample ? "true" : "false")")
+        // The state is the verdict over every sense; a compact projection only holds the first one.
+        var missingExample = detail.hasMissingExample
+        if case .missingExample = detail.state { missingExample = true }
+        evidence.append("detail.missing-example=\(missingExample ? "true" : "false")")
         evidence.append("detail.forms=\(detail.forms.map(normalized).joined(separator: ", "))")
         evidence.append("detail.provenance.provider=\(normalized(detail.provenance.provider))")
         evidence.append("detail.provenance.source=\(normalized(detail.provenance.source))")
@@ -308,6 +319,17 @@ final class AddLinkCoordinator {
         recoveringProviderError: Bool = false
     ) -> AddLinkDetailProjection {
         detailProjection(for: entry, recoveringProviderError: recoveringProviderError, senseLimit: 1)
+    }
+
+    /// What a candidate row materializes: the first sense while collapsed, the full projection once expanded.
+    nonisolated static func candidateProjection(
+        for entry: VocabularyEntry,
+        isExpanded: Bool,
+        recoveringProviderError: Bool = false
+    ) -> AddLinkDetailProjection {
+        isExpanded
+            ? dictionaryDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
+            : compactDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
     }
 
     private nonisolated static func detailProjection(

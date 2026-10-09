@@ -316,6 +316,36 @@ struct AddLinkCoordinatorTests {
         #expect(!AddLinkCoordinator.lookupEvidence(for: entry, compact: true).contains("Second sense."))
     }
 
+    @Test("compact evidence reports a missing example that sits beyond the first sense")
+    func compactEvidenceMissingExampleBeyondFirstSense() {
+        let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
+        entry.translation = "偶然發生而幸運的"
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance.","partOfSpeech":"adj.","examples":["First example."]},{"definition":"Second sense.","partOfSpeech":"adj.","examples":[]}]}"#
+
+        let compact = AddLinkCoordinator.compactDetailProjection(for: entry)
+        let evidence = AddLinkCoordinator.lookupEvidence(for: entry, compact: true)
+
+        #expect(compact.state == .missingExample(senseCount: 2))
+        #expect(evidence.contains("detail.state=missing-example-senses-2"))
+        #expect(evidence.contains("detail.missing-example=true"))
+        #expect(!evidence.contains("detail.missing-example=false"))
+    }
+
+    @Test("collapsed candidate row projects only the compact first sense, expanded row the full projection")
+    func candidateProjectionSelectsCompactUntilExpanded() {
+        let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
+        entry.translation = "偶然發生而幸運的"
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance.","partOfSpeech":"adj.","examples":["First example."]},{"definition":"Second sense.","partOfSpeech":"adj.","examples":["Second example."]}]}"#
+
+        let collapsed = AddLinkCoordinator.candidateProjection(for: entry, isExpanded: false)
+        let expanded = AddLinkCoordinator.candidateProjection(for: entry, isExpanded: true)
+
+        #expect(collapsed == AddLinkCoordinator.compactDetailProjection(for: entry))
+        #expect(collapsed.senses.count == 1)
+        #expect(expanded == AddLinkCoordinator.dictionaryDetailProjection(for: entry))
+        #expect(expanded.senses.count == 2)
+    }
+
     @Test("dictionary detail projection makes an absent explicit example observable")
     func dictionaryDetailProjectionMissingExample() {
         let entry = Self.entry("fortunate", cardID: "target", notebook: "nb")
