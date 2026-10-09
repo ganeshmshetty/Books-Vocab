@@ -37,6 +37,25 @@ struct AppStartupRecoveryActions {
     )
 }
 
+/// #2743 — 清除本機快取會刪除 LocalStore 檔案（可能含尚未同步的資料），按鈕只能「請求」確認，
+/// 破壞性動作須在使用者確認後才執行。
+struct AppStartupClearCacheGate: Equatable {
+    static let titleKey = "要清除本機快取嗎？"
+    static let messageKey = "尚未同步到雲端的單字與筆記會永久遺失，無法復原。已備份到雲端的資料不受影響。"
+    static let confirmKey = "清除本機資料"
+
+    private(set) var isPresented = false
+
+    mutating func request() { isPresented = true }
+    mutating func cancel() { isPresented = false }
+
+    /// 回傳 true 代表使用者已確認、呼叫端可執行清除。未經 request() 的 confirm 一律拒絕。
+    mutating func confirm() -> Bool {
+        defer { isPresented = false }
+        return isPresented
+    }
+}
+
 struct AppStartupRecoveryView: View {
     @ObserveInjection private var inject
     @Environment(\.appTheme) private var appTheme
@@ -58,6 +77,7 @@ struct AppStartupRecoveryView: View {
     }
 
     @State private var phase: Phase = .idle
+    @State private var clearCacheGate = AppStartupClearCacheGate()
 
     init(failure: AppStartupFailure, actions: AppStartupRecoveryActions) {
         self.failure = failure
@@ -134,12 +154,27 @@ struct AppStartupRecoveryView: View {
 
             // Layer 2 — Clear local cache
             Button {
-                Task { await runClearCache() }
+                clearCacheGate.request()
             } label: {
                 Label(L10n.string("清除本機快取"), systemImage: "trash.slash")
             }
             .buttonStyle(.appCompactAction(.neutral))
             .disabled(isWorking)
+            .confirmationDialog(
+                L10n.string(AppStartupClearCacheGate.titleKey),
+                isPresented: Binding(
+                    get: { clearCacheGate.isPresented },
+                    set: { if !$0 { clearCacheGate.cancel() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(L10n.string(AppStartupClearCacheGate.confirmKey), role: .destructive) {
+                    if clearCacheGate.confirm() { Task { await runClearCache() } }
+                }
+                Button(L10n.string("取消"), role: .cancel) { clearCacheGate.cancel() }
+            } message: {
+                Text(L10n.string(AppStartupClearCacheGate.messageKey))
+            }
 
             // Layer 3 — Contact support
             Button {
