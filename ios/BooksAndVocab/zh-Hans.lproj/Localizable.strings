@@ -1091,6 +1091,8 @@
 "addLink.localSection" = "这本单字本";
 "addLink.candidate.expand" = "展开";
 "addLink.candidate.collapse" = "收起";
+"addLink.candidate.expand.named" = "展开 %@ 的详细";
+"addLink.candidate.collapse.named" = "收起 %@ 的详细";
 "addLink.error.linkFailed" = "无法建立链接，已保留选择供你重试。";
 
 /* MARK: - Review card layout editor */

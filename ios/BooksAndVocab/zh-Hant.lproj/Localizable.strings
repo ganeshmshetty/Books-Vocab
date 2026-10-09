@@ -1099,6 +1099,8 @@
 "addLink.localSection" = "這本單字本";
 "addLink.candidate.expand" = "展開";
 "addLink.candidate.collapse" = "收合";
+"addLink.candidate.expand.named" = "展開 %@ 的詳細";
+"addLink.candidate.collapse.named" = "收合 %@ 的詳細";
 "addLink.error.linkFailed" = "無法建立連結，已保留選擇供你重試。";
 
 /* MARK: - Review card layout editor */
