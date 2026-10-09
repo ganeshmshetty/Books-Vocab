@@ -139,6 +139,22 @@ struct NotebookCoverCommitTests {
         #expect(!FileManager.default.fileExists(atPath: staged))
     }
 
+    /// #2428 residual：remote 建立成功但本地 save 失敗 → 本地無 owner，staged jpg 必須清掉。
+    @MainActor
+    @Test func createSaveFailureRemovesStagedCover() async throws {
+        let ctx = try makeContext()
+        let staged = try writeTempJPEG()
+        let service = NotebookServiceFake(result: .success(remote()))
+
+        await NotebookListCoordinator().createNotebook(
+            name: "N", color: nil, coverPattern: nil, coverImagePath: staged,
+            modelContext: ctx, kgService: service, toastCoordinator: AppToastCoordinator(),
+            persist: { _, _ in false }
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: staged))
+    }
+
     /// #2731：更新 API 失敗 → staged 新圖被清掉，原圖與 model 路徑不動。
     @MainActor
     @Test func updateFailureRemovesStagedAndKeepsOriginal() async throws {

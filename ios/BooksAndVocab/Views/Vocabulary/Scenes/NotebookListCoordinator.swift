@@ -230,7 +230,8 @@ final class NotebookListCoordinator: NotebookListCoordinating {
         coverImagePath: String?,
         modelContext: ModelContext,
         kgService: any NotebookServing,
-        toastCoordinator: AppToastCoordinator
+        toastCoordinator: AppToastCoordinator,
+        persist: (ModelContext, AppToastCoordinator) -> Bool = { $0.safeSaveWithToast($1) }
     ) async {
         do {
             let remote = try await kgService.createNotebook(name: name, color: color, coverPattern: coverPattern)
@@ -244,8 +245,11 @@ final class NotebookListCoordinator: NotebookListCoordinating {
                 projection.applyRemote(settings)
                 modelContext.insert(projection)
             }
-            if modelContext.safeSaveWithToast(toastCoordinator) {
+            if persist(modelContext, toastCoordinator) {
                 toastCoordinator.success("已建立".localized)
+            } else {
+                // remote 已建立但本地存檔失敗：無 owner，staged 封面立即清掉（#2428）。
+                NotebookCoverCommit.discardStagedFile(staged: coverImagePath, original: nil)
             }
         } catch {
             // API 失敗：staged 封面沒有任何 owner，立即清掉避免孤兒檔（#2428）。
