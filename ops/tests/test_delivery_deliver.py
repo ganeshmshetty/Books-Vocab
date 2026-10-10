@@ -114,6 +114,8 @@ class FakeWorld:
         self.remote_heads: dict[str, str] = state.get("remote_heads", {})
         # Hold/queue facts of the replaced PR, one dict per read (last repeats).
         self.pr_guard: list[dict[str, Any]] = list(state.get("pr_guard", []))
+        # check runs of the merge group commit (the queue head), if any
+        self.queue_runs: list[dict[str, Any]] = list(state.get("queue_runs", []))
         self.published_pr: dict[str, Any] | None = state.get(
             "published_pr", {"number": 77, "state": "OPEN", "url": "u"}
         )
@@ -281,6 +283,8 @@ class FakeWorld:
                     {"number": 5, "merged_at": None, "head": {"ref": "feat/open"}}
                 )
                 return ok(json.dumps([closed]))
+            if cmd[1] == "api" and f"/commits/{QUEUE_HEAD}/check-runs" in cmd[-1]:
+                return ok(json.dumps([{"check_runs": self.queue_runs}]))
             if cmd[1] == "api" and "/check-runs?" in cmd[-1]:
                 runs = self.review_runs
                 batch = runs.pop(0) if len(runs) > 1 else runs[0]
@@ -1246,6 +1250,11 @@ def test_a_stale_failed_run_does_not_override_a_newer_success() -> None:
     assert deliver.review_verdict(runs) == "success"
 
 
+def test_an_undated_failure_is_never_overridden_by_a_dated_success() -> None:
+    runs = [_job("failure", None), _job("success", "2026-10-10T11:00:00Z")]
+    assert deliver.review_verdict(runs) == "failure"
+
+
 def test_a_newer_failed_run_overrides_an_older_success() -> None:
     runs = [
         _job("success", "2026-10-10T10:00:00Z"),
@@ -1263,71 +1272,99 @@ _REQUIRED_OK = _check("required", "SUCCESS")
 
 def test_a_red_area_quality_job_refuses_to_queue_before_the_queue_call() -> None:
     world = FakeWorld(
-        checks=[[_REQUIRED_OK, _check("backend-quality", "FAILURE")]],
+        checks=[[_REQUIRED_OK, _check("ios-quality / ios-tests (unit)", "FAILURE")]],
         review_runs=[[_review(job=True), _review()]],
     )
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 1
-    assert "backend-quality" in result["error"]
+    assert "ios-quality / ios-tests (unit)" in result["error"]
     assert not _calls_at(world, _is_queue)
 
 
-def test_the_newest_area_quality_run_by_started_at_decides_not_the_list_order() -> None:
-    world = FakeWorld(
-        checks=[
-            [
-                _REQUIRED_OK,
-                _check("backend-quality", "SUCCESS", "2026-10-10T11:00:00Z"),
-                _check("backend-quality", "FAILURE", "2026-10-10T10:00:00Z"),
-            ]
-        ],
-    )
+def test_a_skipped_area_caller_is_a_pass_not_a_hold() -> None:
+    checks = [
+        _REQUIRED_OK,
+        _check("backend-quality", "SKIPPED"),
+        _check("ops-suite / Linux ops shard 1", "SUCCESS"),
+    ]
+    world = FakeWorld(checks=[checks])
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 0, result
     assert _calls_at(world, _is_queue)
 
 
-def test_an_area_quality_job_still_pending_at_the_timeout_holds_the_queue() -> None:
-    world = FakeWorld(
-        checks=[[_REQUIRED_OK, _check("ios-quality", "IN_PROGRESS")]],
+@pytest.mark.parametrize("newer_first", [True, False])
+def test_the_newest_area_run_by_started_at_decides_whatever_the_list_order(
+    newer_first: bool,
+) -> None:
+    old = _check("backend-quality / backend-quality", "FAILURE", "2026-10-10T10:00:00Z")
+    new = _check("backend-quality / backend-quality", "SUCCESS", "2026-10-10T11:00:00Z")
+    batch = [new, old] if newer_first else [old, new]
+    world = FakeWorld(checks=[[_REQUIRED_OK, *batch]])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 0, result
+    assert _calls_at(world, _is_queue)
+
+
+def test_an_area_shard_still_pending_at_the_timeout_holds_the_queue() -> None:
+    shard = _check(
+        "ops-suite / Linux ops shard 3", "IN_PROGRESS", "2026-10-10T10:00:00Z"
     )
+    world = FakeWorld(checks=[[_REQUIRED_OK, shard]])
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 1
     assert "timed out" in result["error"] and "area quality" in result["error"]
     assert not _calls_at(world, _is_queue)
 
 
-def _queued_world(
-    pr_states: list[str], queue_entry: Any, checks: list[Any]
-) -> FakeWorld:
-    return FakeWorld(
-        checks=checks,
-        pr_state=pr_states,
-        prs_by_branch={"other/branch": [{"number": 77, "state": "OPEN"}]},
-        pr_guard=[{"mergeQueueEntry": queue_entry}],
-    )
-
-
-def test_a_queued_pr_dequeued_without_merging_fails_fast_naming_the_failing_check() -> (
-    None
-):
-    ok = [_REQUIRED_OK, _check("ops-suite", "SUCCESS")]
-    bad = [
+def test_a_failed_area_job_refuses_at_once_even_with_a_sibling_still_running() -> None:
+    checks = [
         _REQUIRED_OK,
-        _check("ops-suite", "FAILURE", link="https://github.com/o/r/runs/42"),
+        _check("ios-quality / ios-tests (unit)", "FAILURE", "2026-10-10T10:00:00Z"),
+        _check("ops-suite / Linux ops shard 3", "IN_PROGRESS", "2026-10-10T10:00:00Z"),
     ]
-    world = _queued_world(["OPEN"], None, [ok, ok, bad])
+    world = FakeWorld(checks=[checks])
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 1
+    assert "ios-quality / ios-tests (unit)" in result["error"]
+    assert not _calls_at(world, _is_queue)
+
+
+QUEUE_HEAD = "9" * 40
+
+
+def test_a_merge_group_failure_names_the_failing_check_from_the_queue_head() -> None:
+    # The PR head is green; only the merge group (queue commit) failed and ejected it.
+    ok = [_REQUIRED_OK, _check("ops-suite / Linux ops shard 1", "SUCCESS")]
+    group_failure = {
+        "name": "ops-suite / Linux ops shard 3",
+        "conclusion": "failure",
+        "started_at": "2026-10-10T10:00:00Z",
+        "html_url": "https://github.com/o/r/actions/runs/77/job/3",
+    }
+    world = FakeWorld(
+        checks=[ok, ok],
+        pr_state=["OPEN"],
+        prs_by_branch={"other/branch": [{"number": 77, "state": "OPEN"}]},
+        pr_guard=[
+            {"mergeQueueEntry": {"id": "q", "headCommit": {"oid": QUEUE_HEAD}}},
+            {"mergeQueueEntry": None},
+        ],
+        queue_runs=[group_failure],
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1, result
     assert "dequeued" in result["error"]
-    assert "ops-suite" in result["error"]
-    assert "https://github.com/o/r/runs/42" in result["error"]
-    assert not world.sleeps  # decided on the first probe, not after the timeout
+    assert "ops-suite / Linux ops shard 3" in result["error"]
+    assert group_failure["html_url"] in result["error"]
 
 
-def test_a_queued_pr_still_in_the_queue_keeps_waiting_for_the_merge() -> None:
-    ok = [_REQUIRED_OK]
-    world = _queued_world(["OPEN", "MERGED"], {"id": "q1"}, [ok])
+def test_a_pr_merged_between_the_state_and_queue_reads_is_not_an_ejection() -> None:
+    world = FakeWorld(
+        pr_state=["OPEN", "MERGED"],  # the poll's state read, then the re-read
+        prs_by_branch={"other/branch": [{"number": 77, "state": "OPEN"}]},
+        pr_guard=[{"mergeQueueEntry": None}],
+    )
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 0, result
     assert result["result"] == "merged"
