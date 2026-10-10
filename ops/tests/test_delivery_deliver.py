@@ -63,9 +63,12 @@ class FakeWorld:
         self.rebase_ok = state.get("rebase_ok", True)
         self.record = state.get("record")
         self.prs = state.get("prs", [])
-        self.checks = list(
-            state.get("checks", [[{"name": "required", "state": "SUCCESS"}]])
-        )
+        # A healthy head reports every area quality suite as passed; a test that
+        # wants an absent or red suite passes its own `checks` explicitly.
+        healthy = [{"name": "required", "state": "SUCCESS"}] + [
+            {"name": area, "state": "SUCCESS"} for area in deliver.AREA_QUALITY_CHECKS
+        ]
+        self.checks = list(state.get("checks", [healthy]))
         self.pr_state = list(state.get("pr_state", ["MERGED"]))
         # `## Issues` body of the merged PR and the state GitHub reports per
         # linked Issue (a list is consumed one read at a time, last repeats).
@@ -1304,6 +1307,16 @@ def test_the_newest_area_run_by_started_at_decides_whatever_the_list_order(
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 0, result
     assert _calls_at(world, _is_queue)
+
+
+def test_an_entirely_absent_area_suite_holds_the_queue_instead_of_passing() -> None:
+    # Only the required check exists: no area quality job was reported at all,
+    # so nothing proves the suite ran. It must hold, never pass.
+    world = FakeWorld(checks=[[_REQUIRED_OK]])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1
+    assert "timed out" in result["error"] and "area quality" in result["error"]
+    assert not _calls_at(world, _is_queue)
 
 
 def test_an_area_shard_still_pending_at_the_timeout_holds_the_queue() -> None:

@@ -1155,7 +1155,9 @@ class Delivery:
             failed = sorted(name for name, s in states.items() if s == "failed")
             if failed:
                 return failed
-            if "pending" in states.values():
+            # No area job reported at all is not a pass: nothing proves the
+            # suite ran, so keep waiting and let the timeout hold the queue.
+            if not states or "pending" in states.values():
                 return None
             return []
 
