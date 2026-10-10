@@ -56,7 +56,7 @@ struct AuthManagerAccountSwitchTests {
     private final class RecordingCleaner: LocalDataClearing, @unchecked Sendable {
         @MainActor private(set) var clearCount = 0
         @MainActor private(set) var reasons: [String] = []
-        func clearLocalData(container: ModelContainer, reason: String) async {
+        func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
             await MainActor.run {
                 clearCount += 1
                 reasons.append(reason)

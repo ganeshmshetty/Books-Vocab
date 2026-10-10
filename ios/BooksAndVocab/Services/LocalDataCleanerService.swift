@@ -5,7 +5,7 @@ final class LocalDataCleanerService: LocalDataClearing {
     /// SettingsCoordinator 以此 reason 呼叫 logout，觸發帳號偏好整體 purge。
     static let deleteAccountReason = "delete_account"
 
-    func clearLocalData(container: ModelContainer, reason: String) async {
+    func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
         let actor = BackgroundSyncActor(modelContainer: container)
         AppLog.sync.info("clearLocalData requested. reason=\(reason)")
         do {
@@ -25,11 +25,15 @@ final class LocalDataCleanerService: LocalDataClearing {
         ActiveNotebookStore.shared.clear()
         defaults.removeObject(forKey: NotebookFilter.storageKey)
         // 帳號偏好（#2434 / #2556）：登出只丟 pre-account raw 已領養的副本；
-        // delete_account 另外清空整個帳號命名空間（本機 + iCloud KVS）。
+        // delete_account 另外清空「被刪除帳號」的命名空間（本機 + iCloud KVS）。
         let cloudPreferences = CloudPreferencesSync.shared
         ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults, cloud: cloudPreferences)
-        if reason == Self.deleteAccountReason {
-            AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloudPreferences)
+        if let deletedAccountID {
+            AccountPreferenceNamespace.purgeNamespacedPreferences(
+                accountID: deletedAccountID,
+                defaults: defaults,
+                cloud: cloudPreferences
+            )
         }
         // Today-review session snapshots are keyed per-user in a single
         // UserDefaults blob. Logout and account-switch both route through here,
