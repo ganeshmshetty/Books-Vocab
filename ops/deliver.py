@@ -103,6 +103,9 @@ QUEUE_ENTRY_QUERY = (
 # Area quality suites that merge_group re-runs; a red one on the head ejects the PR.
 # GitHub names each job ``<area> / <job>``; a bare ``<area>`` is a caller-level job.
 AREA_QUALITY_CHECKS = ("backend-quality", "ops-suite", "ios-quality")
+# pr-gate.yml job whose SUCCESS is the only evidence that a SKIPPED area job was
+# a deliberate scope decision (test_the_scope_classifier_name_matches_the_pr_gate_job).
+SCOPE_CLASSIFIER = "classify confidence scope"
 
 
 class DeliverError(Exception):
@@ -558,6 +561,11 @@ def check_state(check: dict[str, Any]) -> str:
     if state in SUCCESS_STATES:
         return "passed"
     return "pending"
+
+
+def _raw_state(check: dict[str, Any]) -> str:
+    """The GitHub state as reported (``SUCCESS``, ``SKIPPED``...), upper-cased."""
+    return str(check.get("state") or "").upper()
 
 
 def area_of(name: str) -> str | None:
@@ -1142,22 +1150,30 @@ class Delivery:
         Any failed or cancelled job refuses before `queue`, since merge_group
         re-runs the same suite and would only eject the PR later; otherwise any
         pending job is waited for.  A timeout while still pending raises from
-        wait_for: a HOLD, never a pass.  SKIPPED counts as passed.
+        wait_for: a HOLD, never a pass.  A SKIPPED area job passes only when the
+        scope classifier SUCCEEDED, i.e. it made that decision; a missing,
+        failed, cancelled or unfinished classifier leaves SKIPPED unproven.
         """
 
         def settled() -> list[str] | None:
-            newest = newest_by_name(self._pr_checks(repo, number))
-            states = {
-                name: check_state(check)
+            checks = self._pr_checks(repo, number)
+            newest = newest_by_name(checks)
+            area = {
+                name: check
                 for name, check in newest.items()
                 if area_of(name) is not None
             }
-            failed = sorted(name for name, s in states.items() if s == "failed")
+            failed = sorted(
+                name for name, c in area.items() if check_state(c) == "failed"
+            )
             if failed:
                 return failed
             # No area job reported at all is not a pass: nothing proves the
             # suite ran, so keep waiting and let the timeout hold the queue.
-            if not states or "pending" in states.values():
+            if not area or any(check_state(c) == "pending" for c in area.values()):
+                return None
+            skipped = any(_raw_state(c) == "SKIPPED" for c in area.values())
+            if skipped and _raw_state(newest.get(SCOPE_CLASSIFIER) or {}) != "SUCCESS":
                 return None
             return []
 
