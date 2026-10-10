@@ -437,7 +437,7 @@ struct TodayReviewView: View {
             toastCoordinator.error(L10n.string("找不到符合的單字"))
             return
         }
-        state.linkedCardStack.append(target)
+        state.linkedCardStack.pushLinkedCard(target)
     }
 
     private var shouldShowFirstRunHint: Bool {
