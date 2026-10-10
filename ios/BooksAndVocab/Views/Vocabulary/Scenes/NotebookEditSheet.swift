@@ -90,6 +90,10 @@ struct NotebookEditSheet: View {
 
                 Section {
                     TextField(NotebookEditCopy.namePlaceholder, text: $name)
+                        .onChange(of: name) { _, new in
+                            let clamped = NotebookEditCopy.clampedName(new)
+                            if clamped != new { name = clamped }
+                        }
                 }
 
                 Section(NotebookEditCopy.colorSectionTitle) {
@@ -122,7 +126,7 @@ struct NotebookEditSheet: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel(item.name)
+                            .accessibilityLabel(NotebookPalette.localizedName(item.name))
                             .accessibilityAddTraits(NotebookEditPickerMetrics.accessibilityTraits(isSelected: isSelected))
                         }
                     }

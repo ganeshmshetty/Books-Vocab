@@ -24,6 +24,15 @@ struct NotebookEditCopyTests {
         #expect(NotebookEditCopy.processingImageTitle == L10n.string("處理中..."))
     }
 
+    @Test func nameLimit_clampsTo100AndKeepsShortNames() {
+        let long = String(repeating: "a", count: 150)
+        #expect(NotebookEditCopy.nameMaxLength == 100)
+        #expect(NotebookEditCopy.clampedName(long).count == 100)
+        #expect(NotebookEditCopy.clampedName("Short") == "Short")
+        let cjk = String(repeating: "字", count: 150)
+        #expect(NotebookEditCopy.clampedName(cjk).unicodeScalars.count == 100)
+    }
+
     @Test func photoErrorMessages_mapEachFailure() {
         #expect(NotebookEditCopy.photoErrorMessage(.loadFailed) == L10n.string("無法載入圖片"))
         #expect(NotebookEditCopy.photoErrorMessage(.unsupportedFormat) == L10n.string("圖片格式不支援"))
