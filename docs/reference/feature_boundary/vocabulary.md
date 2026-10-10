@@ -157,6 +157,7 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 | `Components/VocabCalendarGrid.swift` | 日曆格元件 |
 | `Components/VocabActivityHeatmap.swift` | 活躍熱圖元件 |
 | `Components/VocabForecastChart.swift` | 預測圖表元件 |
+| `Components/VocabGraphEntryCard.swift` | Overview 關聯圖入口卡（#2860）：header／縮圖兩個 `NavigationLink`（`.liftable`）包住常駐狀態列；狀態由 `StatsPresentation.graphCardState` 決定，錯誤面板與 stale／rendering 列都附原因與重試，見 `docs/reference/ui/state_matrix.md`「Overview Graph Card State」 |
 | `Components/BookshelfItem.swift` | `enum BookshelfItem` / `BookshelfDestination`，書架統一條目（notebook / podcastSeries 二態 + 排序 key） |
 | `Components/ProgressCapsule.swift` | `struct ProgressCapsule: View`，通用進度 capsule（fill / track / label） |
 | `Components/SelectionToolbar.swift` | `struct SelectionToolbar: View`，多選模式底部封存／刪除工具列 |

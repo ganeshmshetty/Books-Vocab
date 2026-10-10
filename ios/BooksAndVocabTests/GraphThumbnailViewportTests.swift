@@ -169,5 +169,37 @@ struct GraphThumbnailViewportTests {
         #expect(converged["sent"] as? [String] == ["painted"])
         #expect(converged["opacity"] as? String == "1")
     }
+
+    /// #2860: retry on an unpainted thumbnail rebuilds the bridge state and
+    /// re-arms the payload, so a successful retry is not left blank.
+    /// `webView` stays nil: the test exercises state transitions only, not a page load.
+    @Test func coordinatorRecover_resetsBridgeAndPaintAndReplaysLastPayload() {
+        let coordinator = GraphThumbnailCoordinator()
+        let payload = "{\"nodes\":[]}"
+
+        coordinator.sendInitGraph(payload, webView: WKWebView(frame: .zero))
+        coordinator.receiveBridgeEvent("ready")
+        coordinator.receiveBridgeEvent("painted")
+        #expect(coordinator.graphBridgeReady)
+        #expect(coordinator.hasPainted)
+
+        coordinator.recover()
+
+        #expect(!coordinator.graphBridgeReady)
+        #expect(!coordinator.hasPainted)
+        #expect(coordinator.pendingPayload == payload)
+        #expect(coordinator.lastPayload == payload)
+    }
+
+    @Test func coordinatorRecover_beforePaintKeepsBridgeReplayable() {
+        let coordinator = GraphThumbnailCoordinator()
+
+        coordinator.recover()
+
+        #expect(!coordinator.graphBridgeReady)
+        #expect(!coordinator.hasPainted)
+        #expect(coordinator.pendingPayload == nil)
+        #expect(coordinator.lastPayload == nil)
+    }
 }
 #endif

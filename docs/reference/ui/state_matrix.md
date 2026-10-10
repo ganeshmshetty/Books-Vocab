@@ -139,6 +139,20 @@ Scope: `ios/BooksAndVocab`
 | Graph visible | nodes available | graph scene | 已覆蓋 |
 | Settings drawer open | `showsSettings == true` | overlay panel | 已覆蓋 |
 
+### Overview Graph Card State（`VocabGraphEntryCard`，#2860）
+
+由 `StatsPresentation.graphCardState` 純函式決定；卡身永不留空白。
+
+| State | 觸發條件 | 目前 UI | 狀態 |
+|------|----------|--------|------|
+| Loading | `!linksLoaded`，無失敗 | `AppLoadingStateCard` 卡身 | 已覆蓋（unit） |
+| Error panel | `!linksLoaded` + `failureReason` | 錯誤面板 `overview.graph.error`＋原因＋重試 | 部分覆蓋（unit；UI 未測） |
+| Graph painted | `linksLoaded`，nodes > 0，已 painted，無失敗 | 縮圖＋健康條，無狀態列 | 已覆蓋（unit） |
+| Empty | `linksLoaded`，nodes == 0 | 原生 empty 卡身（不走 paint watchdog） | 已覆蓋（unit） |
+| Stale | `linksLoaded` + `failureReason` | 保留快取圖＋`overview.graph.status` 警示列（原因＋重試） | 部分覆蓋（unit；UI 未測） |
+| Rendering | nodes > 0，8 秒內未 painted，無失敗 | 縮圖＋中性狀態列「關聯圖繪製中」＋重試（非 stale 警示） | 部分覆蓋（unit；UI 未測） |
+| Retry on unpainted | 任一失敗狀態且 `!hasPainted` | `recover()` 重建 web view 並重新計時 | 部分覆蓋（coordinator unit；視圖層未測） |
+
 ### Today Review State
 
 | State | 觸發條件 | 目前 UI | 狀態 |
