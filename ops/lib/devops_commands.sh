@@ -30,7 +30,6 @@ devops_handler_for_command() {
     ops-edit-batch) echo cmd_ops_edit_batch ;;
     container-script) echo cmd_container_script ;;
     ssh) echo cmd_ssh ;;
-    restore) echo cmd_restore ;;
     help|--help|-h|"") echo cmd_help ;;
     *) return 1 ;;
   esac

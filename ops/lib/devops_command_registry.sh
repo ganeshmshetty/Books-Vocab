@@ -12,7 +12,7 @@ _KG_DEVOPS_COMMAND_REGISTRY_LOADED=1
 DEVOPS_BASE_COMMANDS=(
   setup push-env deploy restart env-check env-drift migrate status logs backup
   users user-info delete-user run container-run migrate-run ops-cli ops-edit
-  ops-edit-batch container-script ssh restore
+  ops-edit-batch container-script ssh
 )
 
 DEVOPS_SAFE_COMMANDS=(
@@ -22,8 +22,7 @@ DEVOPS_SAFE_COMMANDS=(
   ops-cli ops-edit ops-edit-batch container-script
 )
 
-# restore 是唯一授權寫入 kg-data 的路徑（#2923）：safe wrapper 一律拒絕，只能由 base 的守門流程執行。
-DEVOPS_BLOCKED_COMMANDS=(setup push-env delete-user ssh restore)
+DEVOPS_BLOCKED_COMMANDS=(setup push-env delete-user ssh)
 
 # Help is generated from this list rather than duplicated in the two shells.
 DEVOPS_COMMAND_HELP=(
@@ -48,7 +47,6 @@ DEVOPS_COMMAND_HELP=(
   'ops-edit-batch <plan.json> [args]|執行 ops_edit batch plan'
   'container-script <script> [args]|上傳並執行容器腳本'
   'ssh|開啟互動式 SSH（agent 應改用 run）'
-  'restore <YYYY-MM-DD>|從 S3 還原 kg-data（唯一授權寫入路徑；需確認，現況保留為 .broken）'
 )
 
 # Safe-only aliases have no base handler, so their short descriptions live here;

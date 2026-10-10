@@ -127,43 +127,48 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 校驗失敗 → 改拉 noncurrent version(`--version-id <id>` 加在 `aws s3api get-object` 上)。（舊「退到 Lightsail Snapshot」已不可用：instance 2026-06-19 terminate。）
 
-### 2.5 還原 kg-data：唯一授權路徑 `devops.sh restore`
+### 2.5 停容器、備份「壞掉的」現場、解壓覆蓋
 
-kg-data 只能經守門指令覆寫，不得以 ssh、`devops_kg_safe.sh run`、`devops.sh run` 或任何手動 `mv`／`tar x` 寫入（#2923；`devops_run_guard` 會擋住這類指令，且 guard 是刻意的封印）。
+**執行身份：人類，經 direct ssh 手動執行**（#2923）。agent 不得執行本節任何步驟；目前沒有 restore 子命令（待 owner 決策後另立 issue），覆寫 kg-data 不經 `devops_kg_safe.sh run`／`devops.sh run`／`container-run`（守門擋下，見 §2.5a）。人類以 `ssh -t chenliangyu@100.118.39.104` 進入 standby 互動 shell 後依下列步驟操作，每一步自行確認輸出再進行下一步。
 
-**執行身份：人類，於互動終端。** agent 不得執行；`DEVOPS_YES=1` 被拒絕；stdin 非 TTY 被拒絕。人類可在主力機（或 `ssh -t chenliangyu@100.118.39.104` 進入的互動 shell）執行：
+archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
 
 ```bash
-./devops.sh restore <YYYY-MM-DD>   # DATE 同 §2.3；必須在互動終端由人類輸入 yes
+set -e
+DATE=2026-05-31  # 同 §2.3
+DATA=~/kg-data   # 現役 standby；舊 Lightsail 為 /home/ubuntu/knowledge_graph_api/data
+ARCHIVE="/tmp/${DATE}.tar.gz"
+
+# 停容器,避免 SQLite WAL race(compose 在 ~/kg-prod/backend)
+(cd ~/kg-prod/backend && docker compose stop)
+
+# 解壓前驗證 archive 第一層 == basename(DATA)
+ROOT=$(tar tzf "$ARCHIVE" | head -1 | cut -d/ -f1)
+[ "$ROOT" = "$(basename "$DATA")" ] || { echo "root mismatch: $ROOT"; exit 1; }
+
+# 把當前 data rename 成 <DATA>.broken.<ts>(別 rm,留鑑識用);目錄存在但 mv 失敗要中止
+TS=$(date +%Y%m%d-%H%M%S)
+[ ! -e "$DATA" ] || mv "$DATA" "$DATA.broken.${TS}"
+
+# 解壓到 DATA 的上層目錄,還原出 $(basename "$DATA")/
+tar xzf "$ARCHIVE" -C "$(dirname "$DATA")"
+ls -la "$DATA/users/" | head
 ```
-
-> **偏離 #2923 原設計的理由**：issue 要求「經 direct ssh 執行並說明」。`restore` 會覆寫生產資料，若確認閘門可被 `DEVOPS_YES=1` 或非互動管線跳過，agent 即可一鍵覆寫 kg-data（同 2026-10-09 事故類型）。因此確認必須是人類在 TTY 上輸入 `yes`；direct ssh 僅作為人類進入互動 shell 的管道，不作為 agent 的執行路徑。此為 owner 決策點，issue #2923 待此設計由 owner 確認後才關閉。
-
-指令逐道驗證，任一道失敗都在動到現況之前中止：
-
-1. backup log（standby `~/Library/Logs/kg_backup.log`）必須有該日 `exit=0` 紀錄，且其 `sha256` 與 S3 物件 `data/<DATE>.tar.gz` 一致（來源可信）。
-2. archive 第一層必須 == `basename(data dir)`（standby 為 `kg-data/`，`ops/kg_backup.sh:62`），且無絕對或上層路徑。
-3. 解壓到 staging，每個 `*.db` 須 `PRAGMA quick_check` 為 `ok`。archive 不含 `-wal`/`-shm`，故以整個目錄替換，不混入殘留 sidecar。
-4. 停容器（`~/kg-prod/backend`，避免 SQLite WAL race）→ 現況 rename 成 `<data>.broken.<ts>`（保留作鑑識快照，不 `rm`）→ 新資料就位 → 起容器。swap 失敗會把現況搬回。
-
-完成後以 `./devops.sh status` 與 §2.7 的健康檢查確認；保留的 `.broken.<ts>` 由人工鑑識後再處理，指令不刪除它。
-
-退出碼：`0` = 還原且容器已啟動；`2` = 資料已還原但容器未啟動（或回滾失敗），輸出會明示「需人工介入」，不會印出 `✓`。
 
 #### 2.5a 受保護名稱與守門範圍
 
 守門實作：`ops/lib/devops_run_guard.sh`（`run`／`container-run`／`migrate-run` 共用）。受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app` 本身、home／root 目錄（`~`、`$HOME`、`/home/ubuntu`、`/Users/<x>`、`/root`）、docker volumes、`knowledge_graph_api`、`knowledge-graph-api_data`。
 
-以下合法維運指令經 `run`／`container-run` 會被擋（已以 `devops_run_is_blocked` 實測）：
+以下合法維運指令經 `run`／`container-run` 會被擋（以 `devops_run_is_blocked` 實測）：
 
 | 指令 | 結果 | 原因 |
 |---|---|---|
-| `find . -name __pycache__ -exec rm -rf {} +`（cwd 為 home 或 /app） | 擋 | `find -exec rm` 落在受保護根 |
-| `rm -rf /app/.venv`、`rm -rf ./data/cache`（container-run，cwd /app） | 擋 | 受保護路徑（`/app`、`/app/data` 為 production volume） |
+| `find . -name __pycache__ -exec rm -rf {} +` | 擋 | `find -exec rm` 落在受保護根（cwd 為 home 或 /app） |
+| `rm -rf /app/.venv`、`rm -rf ./data/cache`（container-run） | 擋 | 受保護路徑（`/app`、`/app/data` 為 production volume） |
 | `rm -rf kg-data/tmp` | 擋 | 受保護名稱 |
 | `sqlite3 /app/data/x.db "VACUUM INTO '…'"` | 擋 | 含受保護路徑的 sqlite 寫入 |
 
-同樣的相對路徑在 home cwd 的 `rm -rf .venv`、`rm -rf __pycache__`、`cp .env.example .env` 則**不被擋**；守門依「目標路徑是否落在受保護名稱」判定，不依動作種類。
+同樣的相對路徑在一般工作目錄的 `rm -rf .venv`、`rm -rf __pycache__`、`cp .env.example .env` 則**不被擋**；守門依「目標路徑是否落在受保護名稱」判定，不依動作種類。
 
 被擋的維運不得改以 ssh 或手動 `mv`／`rm` 繞過。需要時：(a) 在 standby 上由人類依本 SOP 手動處理並留紀錄；或 (b) 把該操作寫成具名子命令、附測試後再經守門流程。
 
