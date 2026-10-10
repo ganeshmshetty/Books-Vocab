@@ -79,6 +79,7 @@ MUTATING_COMMANDS = frozenset(
         "recover-published-remote",
         "hand-back",
         "resolve",
+        "dispose-closed-pr",
         "retire-ghosts",
         "freeze",
     }
@@ -2120,8 +2121,8 @@ def _cleanup_pending_retire_evidence(
         # an unsupported abandoned_with_handback state.
         return None, (
             f"PR #{pulls[0].number} for {branch} is {pulls[0].state} without "
-            f"merging HEAD {args.expected_head_sha}; use the closed-PR "
-            "disposition flow"
+            f"merging HEAD {args.expected_head_sha}; a CLOSED-unmerged PR at the "
+            "claimed HEAD is retired by `dispose-closed-pr`"
         )
     remote, problem = worktree_cleanup._remote_branch_head(branch, root=ROOT, git=_git)
     if problem:
@@ -2231,6 +2232,88 @@ def cmd_resolve(args: argparse.Namespace) -> int:
         git=_git,
         exit_block=EXIT_BLOCK,
         exit_ok=EXIT_OK,
+    )
+
+
+def _closed_pr_disposition_evidence(
+    args: argparse.Namespace,
+) -> tuple[str | None, str | None]:
+    """Prove a cleanup_pending lease's whole PR history is CLOSED unmerged (#2979).
+
+    Returns ``(evidence, refusal)``.  Exactly one cleanup_pending record must
+    match the branch, and at least one PR must exist with every PR CLOSED at the
+    claimed HEAD; any OPEN, MERGED, other-HEAD, or absent PR history keeps the
+    lease.  The registry CAS still checks the generation and HEAD guards.
+    """
+
+    try:
+        state = registry.load_state(registry._state_path(args))
+    except (OSError, ValueError) as exc:
+        return None, f"registry state is unreadable: {exc}"
+    records = [
+        record
+        for record in state.get("records", [])
+        if isinstance(record, dict)
+        and record.get("status") == "cleanup_pending"
+        and registry._record_matches(record, branch=args.branch)
+    ]
+    if len(records) != 1:
+        return None, (
+            f"needs exactly one cleanup_pending record for {args.branch}, "
+            f"found {len(records)}"
+        )
+    try:
+        pulls = _branch_pull_request_snapshots(ROOT, args.branch)
+    except ReanchorRefused as exc:
+        return None, f"cannot prove PR state for {args.branch}: {exc}"
+    if not pulls:
+        return None, (
+            f"no PR history for {args.branch}; the remote-branch rules decide"
+        )
+    for pr in pulls:
+        if pr.state != "CLOSED" or pr.head_sha != args.expected_head_sha:
+            return None, (
+                f"PR #{pr.number} for {args.branch} is {pr.state} at {pr.head_sha}; "
+                f"keeping the cleanup_pending lease (needs CLOSED at HEAD "
+                f"{args.expected_head_sha})"
+            )
+    numbers = ", ".join(f"#{pr.number}" for pr in pulls)
+    return (
+        f"PR {numbers} CLOSED without merging HEAD {args.expected_head_sha}",
+        None,
+    )
+
+
+def cmd_dispose_closed_pr(args: argparse.Namespace) -> int:
+    """Retire a cleanup_pending lease whose PR is CLOSED unmerged at its HEAD.
+
+    The closed-PR terminal path ``resolve`` refuses by design.  The evidence is
+    minted here only after the exact PR proof; the registry still CASes the
+    generation and HEAD, and only the lifecycle status moves to ``abandoned``.
+    The stored handback proof and Scope fields are left intact.
+    """
+
+    evidence, refusal = _closed_pr_disposition_evidence(args)
+    if refusal:
+        print(f"✗ dispose-closed-pr blocked: {refusal}", file=sys.stderr)
+        return EXIT_BLOCK
+    argv = [
+        "resolve",
+        "--status",
+        "abandoned",
+        "--branch",
+        args.branch,
+        "--expected-generation",
+        str(args.expected_generation),
+        "--expected-head-sha",
+        args.expected_head_sha,
+    ]
+    if args.state:
+        argv += ["--state", args.state]
+    if args.json:
+        argv.append("--json")
+    return int(
+        registry.main(argv, acquire_lock=False, cleanup_pending_evidence=evidence)
     )
 
 
@@ -2411,6 +2494,16 @@ def _parser() -> argparse.ArgumentParser:
     resolved.add_argument("--expected-head-sha")
     resolved.add_argument("--remove", action="store_true")
     resolved.set_defaults(func=cmd_resolve)
+
+    dispose_closed = sub.add_parser(
+        "dispose-closed-pr",
+        help="retire a cleanup_pending lease whose PR is CLOSED unmerged at its HEAD",
+    )
+    common(dispose_closed)
+    dispose_closed.add_argument("--branch", required=True)
+    dispose_closed.add_argument("--expected-generation", type=int, required=True)
+    dispose_closed.add_argument("--expected-head-sha", required=True)
+    dispose_closed.set_defaults(func=cmd_dispose_closed_pr)
 
     freeze = sub.add_parser("freeze", help="pause local worktree birth/adoption")
     common(freeze)

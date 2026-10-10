@@ -188,6 +188,7 @@ run_one() {
         ops/tests/test_worktree_registry_lifecycle.py \
         ops/tests/test_worktree_registry_maintenance.py \
         ops/tests/test_worktree_orchestrate.py \
+        ops/tests/test_worktree_closed_pr_disposition.py \
         ops/tests/test_worktree_recovery_lifecycle.py \
         ops/tests/test_worktree_scope.py \
         ops/tests/test_worktree_shared_scope.py \
