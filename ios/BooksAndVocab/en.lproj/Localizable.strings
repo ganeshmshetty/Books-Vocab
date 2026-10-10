@@ -1406,3 +1406,4 @@
 "要清除本機快取嗎？" = "Clear local cache?";
 "所有尚未同步到雲端的本機資料（單字、筆記本、複習紀錄、書籍與播客等）會永久遺失，無法復原。已備份到雲端的資料不受影響。" = "All local data that has not synced to the cloud (words, notebooks, review records, books and podcasts) will be permanently lost and cannot be recovered. Data already backed up to the cloud is not affected.";
 "清除本機資料" = "Clear Local Data";
+"翻譯需為 1 至 1000 字，教學筆記最多 5000 字" = "Translation must be 1 to 1000 characters; study notes up to 5000.";
