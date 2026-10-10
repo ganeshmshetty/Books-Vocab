@@ -458,7 +458,7 @@ struct ToastNotificationTests {
         #expect(coordinator.current == nil)
     }
 
-    @Test func expandedWarningKeepsEightSecondFloorAndErrorUsesItsOwnDuration() {
+    @Test func expandedWarningKeepsEightSecondFloor() {
         let clock = ManualToastScheduler()
         let coordinator = AppToastCoordinator(scheduler: clock)
         coordinator.warning("warn") // 4.0s, expanded floor 8s
