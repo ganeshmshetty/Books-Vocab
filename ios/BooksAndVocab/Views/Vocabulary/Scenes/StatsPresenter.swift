@@ -34,7 +34,6 @@ struct StatsPresenter: View {
     @Environment(\.appSkin) private var appSkin
     @Environment(\.kgService) private var kgService
     @Environment(\.authManager) private var authManager
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.statsProjectionClock) private var projectionClock
 
     let filter: NotebookFilter
