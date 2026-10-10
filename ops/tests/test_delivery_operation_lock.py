@@ -194,16 +194,23 @@ def test_wait_env_timeout_yields_identical_busy_message(
         holder.wait(timeout=10)
 
 
-@pytest.mark.parametrize("value", [None, "0", "-3", "abc", "nan", ""])
-def test_wait_env_unset_zero_or_invalid_fails_fast(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None
+def test_wait_default_is_on_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from delivery_control.adapters import operation_lock as module
+
+    monkeypatch.delenv("KG_DELIVERY_LOCK_WAIT_SECONDS", raising=False)
+    monkeypatch.delenv(module.LOCK_DIR_ENV, raising=False)
+    assert module._wait_seconds() == module.DEFAULT_WAIT_SECONDS > 0
+    monkeypatch.setenv(module.LOCK_DIR_ENV, "/tmp/claude-lane-2871/isolated")
+    assert module._wait_seconds() == 0  # isolated test suite stays fail-fast
+
+
+@pytest.mark.parametrize("value", ["0", "-3", "abc", "nan", ""])
+def test_wait_env_zero_or_invalid_fails_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     from delivery_control.domain.errors import DeliverySourceError
 
-    if value is None:
-        monkeypatch.delenv("KG_DELIVERY_LOCK_WAIT_SECONDS", raising=False)
-    else:
-        monkeypatch.setenv("KG_DELIVERY_LOCK_WAIT_SECONDS", value)
+    monkeypatch.setenv("KG_DELIVERY_LOCK_WAIT_SECONDS", value)
     holder = _spawn_holder(tmp_path, 3)
     try:
         started = time.monotonic()
