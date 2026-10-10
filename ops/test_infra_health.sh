@@ -599,7 +599,7 @@ echo "$(KG_TEST_USERS=0 run_health --json 2>/dev/null)" | dm users_dir_count cri
 echo "$(KG_TEST_DATA_EXISTS=no KG_TEST_DATA_MB= KG_TEST_USERS= run_health --json 2>/dev/null)" | dm data_dir_mb crit && ok "資料目錄不存在 → data_dir_mb crit" || fail_t "資料目錄缺失 data_dir_mb 未 crit"
 echo "$(KG_TEST_DATA_EXISTS=no KG_TEST_DATA_MB= KG_TEST_USERS= run_health --json 2>/dev/null)" | dm users_dir_count crit && ok "資料目錄不存在 → users_dir_count crit" || fail_t "資料目錄缺失 users_dir_count 未 crit"
 set +e; KG_TEST_USERS=0 run_health --json >/dev/null 2>&1; rc=$?; set -e
-[[ $rc -eq 2 ]] && ok "users=0 → exit 2（cron alert 路徑）" || fail_t "users=0 exit=$rc（預期 2）"
+[[ $rc -eq 2 ]] && ok "users=0 → exit 2（cron alert 路徑）" || fail_t "users=0 exit=${rc}（預期 2）"
 echo "$(KG_HEALTH_DATA_MB_BASELINE=1000 KG_TEST_DATA_MB=100 run_health --json 2>/dev/null)" | dm data_dir_mb crit && ok "容量跌破基線 50% → crit" || fail_t "容量驟降未 crit"
 echo "$(KG_HEALTH_DATA_MB_BASELINE=1000 KG_TEST_DATA_MB=600 run_health --json 2>/dev/null)" | dm data_dir_mb ok && ok "容量僅降 40% → ok" || fail_t "容量小降誤報"
 echo "$(KG_HEALTH_USERS_BASELINE=100 KG_TEST_USERS=10 run_health --json 2>/dev/null)" | dm users_dir_count crit && ok "用戶數跌破基線 50% → crit" || fail_t "用戶數驟降未 crit"
