@@ -77,5 +77,6 @@ struct PodcastPlayerLoaderTests {
 private final class StubAuthTokenProvider: AuthTokenProviding {
     func currentAuthToken() async throws -> String { "token" }
     func authTokenWithoutInvalidation() async -> String? { "token" }
+    func handleUnauthorized(modelContainer: ModelContainer?, reason: String) async {}
 }
 #endif

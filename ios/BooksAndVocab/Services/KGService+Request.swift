@@ -111,9 +111,12 @@ extension KGService {
 
                 if httpResponse.statusCode == 401 {
                     // No client-side token refresh exists (AuthManager.token is a plain
-                    // stored credential; there is no refresh-token flow). A 401 means the
-                    // session is invalid — surface it so the upper layer can log out.
-                    AppLog.kg.info("401 received for \(path) request_id=\(responseRequestID), surfacing unauthorized")
+                    // stored credential; there is no refresh-token flow). The server's 401 is
+                    // the only authority that a session is invalid (#2806: the local clock is
+                    // not), so it logs out here — the single point every required-auth call
+                    // passes through — and then surfaces unauthorized to the caller.
+                    AppLog.kg.info("401 received for \(path) request_id=\(responseRequestID), logging out")
+                    await handleUnauthorized(modelContainer: nil, reason: "http_401")
                     throw KGError.unauthorized
                 }
 

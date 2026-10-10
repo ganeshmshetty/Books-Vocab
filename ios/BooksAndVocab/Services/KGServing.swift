@@ -86,6 +86,8 @@ protocol DeckCopying: AnyObject {
 protocol AuthTokenProviding: AnyObject {
     func currentAuthToken() async throws -> String
     func authTokenWithoutInvalidation() async -> String?
+    /// 伺服器真實 401 時呼叫（#2806：本地時鐘判斷不得觸發登出）。
+    func handleUnauthorized(modelContainer: ModelContainer?, reason: String) async
 }
 
 /// 後端健康狀態檢查能力。
