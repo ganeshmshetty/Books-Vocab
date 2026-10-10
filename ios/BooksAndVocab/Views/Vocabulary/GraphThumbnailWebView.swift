@@ -47,6 +47,11 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
     private(set) var hasPainted = false
     var onPainted: (() -> Void)?
     weak var webView: WKWebView?
+    /// Web-content terminations since the last paint. Automatic recovery stops
+    /// once this reaches `maxAutomaticRecoveries`, so a page that crashes while
+    /// loading cannot reload forever; the `.rendering` retry stays available.
+    private(set) var consecutiveTerminations = 0
+    static let maxAutomaticRecoveries = 3
 
     func sendInitGraph(_ json: String, webView: WKWebView) {
         lastPayload = json
@@ -67,6 +72,7 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
         guard ["ready", "painted"].contains(type) else { return }
         if type == "painted" {
             hasPainted = true
+            consecutiveTerminations = 0
             onPainted?()
             return
         }
@@ -90,6 +96,8 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard consecutiveTerminations < Self.maxAutomaticRecoveries else { return }
+        consecutiveTerminations += 1
         recover()
     }
 }

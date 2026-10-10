@@ -92,7 +92,6 @@ struct StatsPresenter: View {
         initialSummary: StatsPresentation.Summary? = nil,
         initialGraphLinks: [KGGraphLink],
         shouldLoadGraphData: Bool,
-        initialGraphFailureReason: String? = nil,
         reviewClock: StatsProjectionClock? = nil
     ) {
         self.filter = filter
@@ -101,7 +100,6 @@ struct StatsPresenter: View {
         _summary = State(initialValue: initialSummary)
         _contentReady = State(initialValue: initialSummary != nil)
         _graphLinks = State(initialValue: initialGraphLinks)
-        _graphFailureReason = State(initialValue: initialGraphFailureReason)
         _reviewRecords = Query(
             sort: \ReviewRecord.reviewedAt,
             order: .reverse
@@ -328,7 +326,6 @@ struct StatsPresenter: View {
             )
         }
     }
-
 
     private var graphThumbnailNodes: [KnowledgeGraphNode] {
         guard let graphLinks else { return [] }

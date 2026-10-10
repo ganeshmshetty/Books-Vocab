@@ -197,6 +197,26 @@ struct StatsPresenterTests {
         #expect(Set([server, offline, rejected]).count == 3)
     }
 
+    /// Pins the per-kind copy the error panel shows, not just that a reason exists.
+    @Test func graphCard_failureReasonCopyIsSpecificPerKind() {
+        let language = AppLanguage.english
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.httpError(statusCode: 500, detail: "boom"), language: language
+        ) == "Server temporarily unavailable")
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.offline, language: language
+        ) == "No internet connection")
+        #expect(SyncFailurePresentation.reason(
+            for: URLError(.notConnectedToInternet), language: language
+        ) == "No internet connection")
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.httpError(statusCode: 404, detail: "nope"), language: language
+        ) == "Server rejected the request (HTTP 404)")
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.decodingError(underlying: URLError(.cannotParseResponse)), language: language
+        ) == "Data format mismatch")
+    }
+
     @Test func graphCard_cachedLinksWithFailure_keepGraphAndAddStaleRow() {
         #expect(
             StatsPresentation.graphCardState(

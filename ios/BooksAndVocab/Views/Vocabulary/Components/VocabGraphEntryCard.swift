@@ -88,10 +88,10 @@ struct VocabGraphEntryCard<Destination: View>: View {
     // MARK: Content card (links present)
 
     private func contentCard(state: StatsPresentation.GraphCardState) -> some View {
-        // The status row's retry Button must stay outside any NavigationLink:
-        // a link label collapses to one accessibility element, which would
-        // hide the retry from VoiceOver and UI tests. The card is therefore
-        // two link regions (header, thumbnail) around the status row.
+        // The retry Button must stay outside any NavigationLink: a link label
+        // collapses to one accessibility element, which would hide the retry
+        // from VoiceOver and UI tests. So the status row is a link beside its
+        // retry button, and the header and thumbnail are links of their own.
         VocabCard(padding: 0) {
             VStack(spacing: 0) {
                 NavigationLink(destination: destination) {
@@ -143,31 +143,40 @@ struct VocabGraphEntryCard<Destination: View>: View {
         case .stale: isStale = true; title = StatsCopy.staleDataTitle
         case .rendering: isStale = false; title = StatsCopy.renderingTitle
         }
+        // Everything except the retry button navigates, per the card contract.
         return HStack(spacing: appSkin.spacing.inlineGap) {
-                Image(systemName: isStale ? "exclamationmark.triangle" : "hourglass")
-                    .font(appSkin.typography.iconSmall)
-                    .foregroundStyle(isStale ? appSkin.palette.warning : appSkin.palette.tertiaryText)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
-                        .font(appSkin.typography.caption)
-                        .foregroundStyle(appSkin.palette.primaryText)
-                    if let reason = notice.reason {
-                        Text(reason)
+            NavigationLink(destination: destination) {
+                HStack(spacing: appSkin.spacing.inlineGap) {
+                    Image(systemName: isStale ? "exclamationmark.triangle" : "hourglass")
+                        .font(appSkin.typography.iconSmall)
+                        .foregroundStyle(isStale ? appSkin.palette.warning : appSkin.palette.tertiaryText)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(title)
                             .font(appSkin.typography.caption)
-                            .foregroundStyle(appSkin.palette.tertiaryText)
+                            .foregroundStyle(appSkin.palette.primaryText)
+                        if let reason = notice.reason {
+                            Text(reason)
+                                .font(appSkin.typography.caption)
+                                .foregroundStyle(appSkin.palette.tertiaryText)
+                        }
                     }
+                    .accessibilityElement(children: .combine)
+                    Spacer(minLength: appSkin.spacing.inlineGap)
                 }
-                .accessibilityElement(children: .combine)
-                Spacer(minLength: appSkin.spacing.inlineGap)
-                retryButton
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, appSkin.spacing.inlineGap)
+                .contentShape(Rectangle())
             }
-            .padding(.leading, appSkin.spacing.inlineGap)
-            .background(
-                isStale ? appSkin.palette.warningBg : Color.clear,
-                in: AppRoundedRect(roundness: AppRoundness.control)
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("overview.graph.status")
+            .buttonStyle(.liftable)
+            retryButton
+        }
+        .padding(.trailing, appSkin.spacing.inlineGap)
+        .background(
+            isStale ? appSkin.palette.warningBg : Color.clear,
+            in: AppRoundedRect(roundness: AppRoundness.control)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("overview.graph.status")
     }
 
     private var retryButton: some View {
@@ -192,7 +201,8 @@ struct VocabGraphEntryCard<Destination: View>: View {
     private func retry() {
         // Paint state, not the failure reason, decides whether the web view must
         // be rebuilt: a cached-link failure can coexist with an unpainted thumbnail.
-        if !holder.coordinator.hasPainted {
+        // The error panel never built a thumbnail, so it has no web view to rebuild.
+        if bodyKind(of: state) == .graph, !holder.coordinator.hasPainted {
             holder.coordinator.recover()
             paintTimedOut = false
             paintTimerGeneration &+= 1
