@@ -180,6 +180,36 @@ struct ReaderTOCNavigationTests {
     }
 
     @Test @MainActor
+    func sameResourceFragmentTOCItemsEachReachSuccess() {
+        for fragment in ["section-1", "section-2"] {
+            let requestID = UUID()
+            var state = ReaderTOCNavigationState()
+            _ = state.beginSelection(
+                path: [0, 0],
+                title: fragment,
+                expectedHref: "OEBPS/chapter-a.xhtml#\(fragment)",
+                requestID: requestID
+            )
+
+            state.apply(
+                .goAccepted(
+                    requestID: requestID,
+                    locatorHref: "OEBPS/chapter-a.xhtml"
+                )
+            )
+            state.apply(
+                .locationDidChange(
+                    requestID: requestID,
+                    locatorHref: "OEBPS/chapter-a.xhtml"
+                )
+            )
+
+            #expect(state.phase == .success)
+            #expect(state.failureReason == nil)
+        }
+    }
+
+    @Test @MainActor
     func acceptedWrongLocatorAndMissingCallbackCannotCloseSheet() throws {
         let requestID = UUID()
         var state = ReaderTOCNavigationState()
