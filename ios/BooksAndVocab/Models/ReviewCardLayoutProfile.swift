@@ -349,9 +349,19 @@ final class ReviewCardLayoutStore {
     /// propagate to every device on the same Apple ID, including devices that
     /// have not adopted the layout yet (cross-device data loss).
     static func purgeAdoptedLegacyRawLayout(defaults: UserDefaults) {
-        guard defaults.bool(forKey: AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout"))
-        else { return }
+        guard isLegacyRawAdopted(defaults: defaults) else { return }
         defaults.removeObject(forKey: Self.storageKey)
+    }
+
+    private static func isLegacyRawAdopted(defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout"))
+    }
+
+    /// A logged-out (raw-key) store must not read the iCloud raw key back once an
+    /// account has adopted it: sign-out purged the local copy and the KVS copy is
+    /// kept on purpose, so reading it would resurrect the purged layout (#2434).
+    private var ignoresLegacyRawCloud: Bool {
+        accountID == nil && (defaults.map(Self.isLegacyRawAdopted) ?? false)
     }
 
     private var storageKey: String { Self.namespacedKey(accountID: accountID) }
@@ -361,9 +371,10 @@ final class ReviewCardLayoutStore {
     }
 
     private static func readResolved(defaults: UserDefaults, cloud: CloudKeyValueStore, key: String) -> Envelope? {
-        resolve(
+        let readsCloud = key != Self.storageKey || !isLegacyRawAdopted(defaults: defaults)
+        return resolve(
             local: decodeEnvelope(defaults.string(forKey: key)),
-            cloud: decodeEnvelope(cloud.string(forKey: key))
+            cloud: readsCloud ? decodeEnvelope(cloud.string(forKey: key)) : nil
         )
     }
 
@@ -391,6 +402,7 @@ final class ReviewCardLayoutStore {
 
     private func handleCloudChange(_ notification: Notification) {
         guard !isAccountBoundarySuspended,
+              !ignoresLegacyRawCloud,
               let keys = notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String],
               keys.contains(storageKey),
               let remote = Self.decodeEnvelope(cloud?.string(forKey: storageKey))
