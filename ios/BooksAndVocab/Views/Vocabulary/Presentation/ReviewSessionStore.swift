@@ -55,12 +55,21 @@ struct ReviewSessionStore {
         let currentFingerprint = queueFingerprint(for: availableEntries)
         guard allowPartialQueue || payload.queueFingerprint == currentFingerprint else { return nil }
 
-        let entryMap = Dictionary(uniqueKeysWithValues: availableEntries.map { (persistenceID(for: $0), $0) })
-        let ordered = payload.orderedPersistenceIDs.compactMap { entryMap[$0] }
+        // sync 競態可能讓兩筆 entry 共用 persistenceID：每個 ID 只佔一個佇列槽位。
+        let uniqueEntries = ReviewSessionPersistence.uniqueByPersistenceID(availableEntries)
+        let entryMap = Dictionary(
+            uniqueEntries.map { (persistenceID(for: $0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var seenIDs = Set<String>()
+        let ordered = payload.orderedPersistenceIDs.compactMap { id -> VocabularyEntry? in
+            guard seenIDs.insert(id).inserted else { return nil }
+            return entryMap[id]
+        }
         guard !ordered.isEmpty else { return nil }
 
         let savedIDSet = Set(payload.orderedPersistenceIDs)
-        let newEntries = availableEntries.filter { !savedIDSet.contains(persistenceID(for: $0)) }
+        let newEntries = uniqueEntries.filter { !savedIDSet.contains(persistenceID(for: $0)) }
         let result = ordered + newEntries
         guard !result.isEmpty else { return nil }
         return result

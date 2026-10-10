@@ -76,7 +76,8 @@ final class TodayReviewState {
         // decides whether killing the throwaway needs full ownership injection or just a
         // lazy `start()`. DispatchTime captures match the existing `_initStart` precedent.
         let _tLoad = DispatchTime.now()
-        let reviewEntries = entries.filter(\.shouldAppearInReview)
+        // 去重先於 loadOrder：之後的佇列、id、baseline 都保證 persistenceID 唯一。
+        let reviewEntries = ReviewSessionPersistence.uniqueByPersistenceID(entries.filter(\.shouldAppearInReview))
         let ordered = ReviewSessionStore.loadOrder(
             availableEntries: reviewEntries,
             userID: currentUserID,
