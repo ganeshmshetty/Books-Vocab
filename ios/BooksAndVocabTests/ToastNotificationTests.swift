@@ -442,6 +442,32 @@ struct ToastNotificationTests {
         #expect(coordinator.current == nil)
     }
 
+    // MARK: - Tap-to-expand affordance (#2862)
+
+    /// chevron 與可點性必須同源：沒有 handler 的呼叫點（preview／fixture）不得露出 chevron。
+    @Test func toggleAffordanceRequiresHandlerAndTruncationOrExpansion() {
+        #expect(!AppToast.offersToggle(hasHandler: false, isExpanded: false, isTruncated: true))
+        #expect(!AppToast.offersToggle(hasHandler: false, isExpanded: true, isTruncated: false))
+        #expect(!AppToast.offersToggle(hasHandler: true, isExpanded: false, isTruncated: false))
+        #expect(AppToast.offersToggle(hasHandler: true, isExpanded: false, isTruncated: true))
+        #expect(AppToast.offersToggle(hasHandler: true, isExpanded: true, isTruncated: false))
+    }
+
+    /// 截斷 = 自然寬度乘以最小縮放比仍放不下；容差 0.5pt 吸收量測取整。
+    @Test func truncationBoundaryAtMinimumScaleWithHalfPointTolerance() {
+        // 100 * 0.8 = 80：剛好放得下（80 <= 80 + 0.5）。
+        #expect(!AppToast.isTruncated(natural: 100, visible: 80))
+        // 差 1pt：80 > 79 + 0.5，截斷。
+        #expect(AppToast.isTruncated(natural: 100, visible: 79))
+        // 差 0.5pt 落在容差內：80 > 79.5 + 0.5 不成立，不截斷。
+        #expect(!AppToast.isTruncated(natural: 100, visible: 79.5))
+        // 超過容差：80 > 79.4 + 0.5，截斷。
+        #expect(AppToast.isTruncated(natural: 100, visible: 79.4))
+        // 自然寬度小於可用寬度：不截斷；未量測（0, 0）也不截斷。
+        #expect(!AppToast.isTruncated(natural: 50, visible: 200))
+        #expect(!AppToast.isTruncated(natural: 0, visible: 0))
+    }
+
     // MARK: - Coordinator: tap-to-expand (#2862)
 
     @Test func expandedToastGetsAtLeastEightSecondsBeforeDismiss() {

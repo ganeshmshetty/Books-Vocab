@@ -25,13 +25,26 @@ struct AppToast: View {
 
     private var displayText: String { item.message.localized }
 
-    private var isTruncated: Bool {
-        naturalTextWidth * Self.minimumTextScale > visibleTextWidth + 0.5
+    /// 單行文案縮到 `minimumTextScale` 仍放不下，即為截斷。
+    static func isTruncated(natural: CGFloat, visible: CGFloat) -> Bool {
+        natural * minimumTextScale > visible + 0.5
     }
 
-    /// 只有真的截斷、或已展開（可收回）時才可輕點。
+    /// 可點性與 chevron 同源：必須有 handler，且真的截斷或已展開（可收回）。
+    static func offersToggle(hasHandler: Bool, isExpanded: Bool, isTruncated: Bool) -> Bool {
+        hasHandler && (isExpanded || isTruncated)
+    }
+
+    private var textIsTruncated: Bool {
+        Self.isTruncated(natural: naturalTextWidth, visible: visibleTextWidth)
+    }
+
     private var canToggle: Bool {
-        onToggleExpanded != nil && (isExpanded || isTruncated)
+        Self.offersToggle(
+            hasHandler: onToggleExpanded != nil,
+            isExpanded: isExpanded,
+            isTruncated: textIsTruncated
+        )
     }
 
     var body: some View {
@@ -58,7 +71,12 @@ struct AppToast: View {
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("app.toast")
             .accessibilityValue(item.style.accessibilityValue)
-            .accessibilityHint(isTruncated && !isExpanded ? Text(L10n.string("toast.expand.hint")) : Text(verbatim: ""))
+            // .combine 會吞掉內層 Button 的語意，因此可點性要在合併後的元素上重新宣告。
+            .accessibilityAddTraits(canToggle ? .isButton : [])
+            .accessibilityAction(.default) {
+                if canToggle { onToggleExpanded?() }
+            }
+            .accessibilityHint(canToggle && !isExpanded ? Text(L10n.string("toast.expand.hint")) : Text(verbatim: ""))
             // 長文案在 pill 內截斷，而不是讓 pill 貼齊螢幕邊緣。
             .padding(.horizontal, AppShellMetrics.pageHorizontalPadding)
             .padding(.top, AppSpacing.s2)
@@ -109,7 +127,7 @@ struct AppToast: View {
                         }
                 }
 
-            if isExpanded || isTruncated {
+            if canToggle {
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                     .font(AppFonts.caption(weight: .semibold))
                     .foregroundStyle(tintColor)
