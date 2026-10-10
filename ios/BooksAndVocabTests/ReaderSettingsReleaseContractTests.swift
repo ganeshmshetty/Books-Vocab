@@ -185,14 +185,26 @@ struct ReaderSettingsReleaseContractTests {
         #expect(pickerSource.contains("supportsOpacity: false"))
     }
 
-    @Test func typographyAdjustmentButtonsCarryDirectionalAccessibilityLabels() throws {
-        let presenterSource = try String(
-            contentsOf: Self.sourceURL(named: "ReaderSettingsPresenter+Vocab.swift"),
-            encoding: .utf8
-        )
-        #expect(presenterSource.contains("accessibilityLabel(label)"))
-        #expect(presenterSource.contains("reader.settings.adjust.decrease"))
-        #expect(presenterSource.contains("reader.settings.adjust.increase"))
+    // Behavioral (not source-text) guard for #2752: every locale must resolve both
+    // icon-only stepper labels to real strings (not the raw key, which L10n returns on
+    // a miss), carry the row title, and differ between decrease and increase.
+    @MainActor
+    @Test func typographyAdjustmentButtonsHaveDistinctLocalizedLabelsInEveryLanguage() {
+        for language in AppLanguage.allCases {
+            let title = L10n.string("reader.settings.fontSize", language: language)
+            let decreaseKey = "reader.settings.adjust.decrease"
+            let increaseKey = "reader.settings.adjust.increase"
+            #expect(L10n.string(decreaseKey, language: language) != decreaseKey, "missing decrease string: \(language)")
+            #expect(L10n.string(increaseKey, language: language) != increaseKey, "missing increase string: \(language)")
+
+            let decrease = readerTypographyAdjustmentAccessibilityLabel(.decrease, title: title, language: language)
+            let increase = readerTypographyAdjustmentAccessibilityLabel(.increase, title: title, language: language)
+            #expect(decrease != decreaseKey, "decrease label must not be the raw key: \(language)")
+            #expect(increase != increaseKey, "increase label must not be the raw key: \(language)")
+            #expect(decrease.contains(title), "decrease label must carry the row title: \(language) → \(decrease)")
+            #expect(increase.contains(title), "increase label must carry the row title: \(language) → \(increase)")
+            #expect(decrease != increase, "decrease and increase must be distinct: \(language)")
+        }
     }
 
     private static func sourceURL(named name: String) -> URL {
