@@ -657,7 +657,7 @@
 "圖片格式不支援" = "Image format not supported";
 "圖片處理失敗" = "Image processing failed";
 "在書架閱讀時長按生字加入單字本，或重新整理以拉取雲端已有資料。" = "Long-press a word while reading from your bookshelf to add it, or refresh to pull existing cloud data.";
-"如果重試無效，可以清除本機快取（不刪除已備份到雲端的單字 / 筆記本）。" = "If retrying does not help, you can clear the local cache (words and notebooks backed up to the cloud will not be deleted).";
+"如果重試無效，可以清除本機快取；尚未同步到雲端的單字、筆記本與複習紀錄會永久刪除，無法復原。" = "If retrying does not help, you can clear the local cache. Words, notebooks and review records that have not synced to the cloud will be permanently deleted and cannot be recovered.";
 "孤立節點" = "Isolated nodes";
 "安全" = "Safe";
 "完成同步並開始複習後，這裡會顯示你的進度與預測。" = "After syncing and starting reviews, your progress and forecast will appear here.";
@@ -1385,5 +1385,5 @@
 "已登入時，複習、時鐘、自動連結與翻譯的預設值也會同步到伺服器與你的其他裝置，需要網路連線。" = "When signed in, the default review, clock, auto-link and translation settings are also pushed to the server and your other devices. This needs a connection.";
 /* Startup recovery clear-cache confirmation (#2743) */
 "要清除本機快取嗎？" = "Clear local cache?";
-"尚未同步到雲端的單字與筆記會永久遺失，無法復原。已備份到雲端的資料不受影響。" = "Words and notes that have not synced to the cloud will be permanently lost and cannot be recovered. Data already backed up to the cloud is not affected.";
+"尚未同步到雲端的單字、筆記本與複習紀錄會永久遺失，無法復原。已備份到雲端的資料不受影響。" = "Words, notebooks and review records that have not synced to the cloud will be permanently lost and cannot be recovered. Data already backed up to the cloud is not affected.";
 "清除本機資料" = "Clear Local Data";
