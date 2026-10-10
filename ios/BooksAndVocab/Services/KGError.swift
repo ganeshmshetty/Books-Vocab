@@ -65,6 +65,45 @@ enum SyncFailurePresentation {
         )
     }
 
+    /// 部分失敗的彙總訊息。同一原因的腿併成一組（操作名列在前、原因只說一次），
+    /// 組與組之間用該語系的列表分隔符（zh 為「、」、en 為 ", " 的本地化形式），
+    /// 不寫死 ASCII ", "。
+    static func partialFailureSummary(
+        _ failures: [(label: String, reason: String)],
+        language: AppLanguage
+    ) -> String {
+        var reasonOrder: [String] = []
+        var labelsByReason: [String: [String]] = [:]
+        for failure in failures {
+            if labelsByReason[failure.reason] == nil {
+                reasonOrder.append(failure.reason)
+            }
+            labelsByReason[failure.reason, default: []].append(failure.label)
+        }
+        let groups = reasonOrder.map { reason -> String in
+            let operations = (labelsByReason[reason] ?? []).map {
+                operationTitle(for: $0, language: language)
+            }
+            return L10n.format(
+                "sync.failure.message",
+                language: language,
+                localizedList(operations, language: language),
+                reason
+            )
+        }
+        return L10n.format(
+            "背景同步部分失敗：%@",
+            language: language,
+            localizedList(groups, language: language)
+        )
+    }
+
+    private static func localizedList(_ items: [String], language: AppLanguage) -> String {
+        let formatter = ListFormatter()
+        formatter.locale = language.locale
+        return formatter.string(from: items) ?? items.joined(separator: ", ")
+    }
+
     private static func operationTitle(for label: String, language: AppLanguage) -> String {
         switch label {
         case "pushReview":

@@ -210,6 +210,8 @@ struct KGServiceSyncReportingTests {
             container: Self.makeContainer()
         )
         #expect(outcome?.failures.map(\.label) == ["pull"])
+        // reason 只帶「為什麼失敗」，不帶操作名前綴；彙總時操作名由 label 另外組。
+        #expect(outcome?.failures.map(\.reason) == [SyncFailurePresentation.reason(for: Boom())])
         #expect(outcome?.cancelled == true)
     }
 
