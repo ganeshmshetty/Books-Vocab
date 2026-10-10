@@ -236,6 +236,17 @@ def _parse_include(stdout: str) -> _Response | None:
     return _Response(int(match.group(1)), headers, body)
 
 
+def _uncached_read_resources(argv: tuple[str, ...]) -> tuple[str, ...]:
+    """Quota buckets an uncached read consumes; subcommands may draw on either."""
+
+    endpoint = _gh_api_endpoint(argv)
+    if endpoint == "graphql":
+        return ("graphql",)
+    if endpoint is not None:
+        return ("core",)
+    return ("core", "graphql")
+
+
 def _is_api_read(argv: tuple[str, ...]) -> bool:
     """True for single-request, read-only ``gh api`` calls that can be conditional."""
 
@@ -291,6 +302,17 @@ class GitHubCliClient:
     def load_json(self, argv: tuple[str, ...], *, allow_nonzero: bool = False) -> Any:
         if _is_api_read(argv):
             output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
+        elif _is_read_only_json_query(argv):
+            # Subcommand and paginated reads carry no response headers, so they
+            # cannot be revalidated; they are still admitted by the quota gate
+            # and recorded in the spend log.
+            resources = _uncached_read_resources(argv)
+            for resource in resources:
+                self._admit_quota(argv, resource)
+            output = self._run_result(
+                argv, allow_nonzero=allow_nonzero, retry_read_only=True
+            ).stdout.strip()
+            self._spend(argv, "+".join(resources), "network")
         else:
             output = self._run_result(
                 argv, allow_nonzero=allow_nonzero, retry_read_only=True
@@ -300,6 +322,20 @@ class GitHubCliClient:
         except json.JSONDecodeError as error:
             raise AdapterPayloadError(f"invalid JSON from {' '.join(argv)}") from error
 
+    def _admit_quota(self, argv: tuple[str, ...], resource: str) -> None:
+        """Block until the resource is out of its wait window, or fail closed."""
+
+        decision, wait = self.governor.decide(resource)
+        if decision is not QuotaDecision.WAIT_FOR_RESET:
+            return
+        if wait > _MAX_QUOTA_WAIT_SECONDS:
+            raise DeliverySourceError(
+                f"GitHub {resource} quota exhausted; reset in {wait:.0f}s "
+                f"exceeds the {_MAX_QUOTA_WAIT_SECONDS:.0f}s wait budget"
+            )
+        self._spend(argv, resource, "quota-wait")
+        self._sleep(wait)
+
     def _load_api_read(self, argv: tuple[str, ...], *, allow_nonzero: bool) -> str:
         """Serve a ``gh api`` read through quota governance and ETag revalidation."""
 
@@ -307,18 +343,11 @@ class GitHubCliClient:
         key = hashlib.sha256(json.dumps(list(argv)).encode("utf-8")).hexdigest()
         cached = self._cache_get(key)
 
-        decision, wait = self.governor.decide(resource)
+        decision, _ = self.governor.decide(resource)
         if decision is QuotaDecision.SERVE_STALE and cached is not None:
             self._spend(argv, resource, "stale-cache")
             return cached[1]
-        if decision is QuotaDecision.WAIT_FOR_RESET:
-            if wait > _MAX_QUOTA_WAIT_SECONDS:
-                raise DeliverySourceError(
-                    f"GitHub {resource} quota exhausted; reset in {wait:.0f}s "
-                    f"exceeds the {_MAX_QUOTA_WAIT_SECONDS:.0f}s wait budget"
-                )
-            self._spend(argv, resource, "quota-wait")
-            self._sleep(wait)
+        self._admit_quota(argv, resource)
 
         extra: tuple[str, ...] = ()
         if cached is not None and cached[0] is not None:
@@ -332,7 +361,13 @@ class GitHubCliClient:
             return result.stdout.strip()
 
         self._observe(resource, response)
-        if response.status == 304 and cached is not None:
+        if response.status == 304:
+            # 304 only answers a validator we sent; without a cached body it is
+            # unusable and must not be stored as an empty entry.
+            if cached is None:
+                raise AdapterPayloadError(
+                    f"GitHub returned 304 without a cached body for {' '.join(argv)}"
+                )
             self._spend(argv, resource, "304", response)
             return cached[1]
         if response.status >= 400 or result.exit_code != 0:
@@ -370,7 +405,7 @@ class GitHubCliClient:
         record: dict[str, object] = {
             "ts": round(self._now(), 3),
             "resource": resource,
-            "endpoint": _gh_api_endpoint(argv),
+            "endpoint": _gh_api_endpoint(argv) or " ".join(argv[1:3]),
             "served": served,
         }
         if response is not None:

@@ -9,7 +9,7 @@ import pytest
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
-from delivery_control.adapters.errors import AdapterCommandError
+from delivery_control.adapters.errors import AdapterCommandError, AdapterPayloadError
 from delivery_control.adapters.github_client import GitHubCliClient
 from delivery_control.adapters.github_rate_governor import (
     QuotaDecision,
@@ -137,3 +137,64 @@ def test_error_status_raises_and_is_never_cached(tmp_path: Path) -> None:
     with pytest.raises(AdapterCommandError):
         client.load_json(_ARGV)
     assert not (tmp_path / "cache" / "etag").exists()
+
+
+_PR_LIST = ("gh", "pr", "list", "--state", "open", "--json", "number")
+
+
+def test_304_without_cached_body_is_rejected_and_never_cached(tmp_path: Path) -> None:
+    runner = StaticRunner(
+        [
+            CommandResult(("gh",), 0, _http(304, etag='"v1"', remaining=4000), ""),
+            CommandResult(("gh",), 0, _http(200, "[7]", etag='"v2"', remaining=3999), ""),
+        ]
+    )
+    client = _client(tmp_path, runner)
+
+    with pytest.raises(AdapterPayloadError, match="304"):
+        client.load_json(_ARGV)
+    assert not (tmp_path / "cache" / "etag").exists()
+    assert client.load_json(_ARGV) == [7]
+    assert "If-None-Match" not in " ".join(runner.calls[1])
+
+
+def test_subcommand_reads_wait_for_quota_reset_and_are_spend_logged(tmp_path: Path) -> None:
+    runner = StaticRunner(
+        [
+            CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""),
+            CommandResult(("gh",), 0, '[{"number": 2}]', ""),
+        ]
+    )
+    sleeps: list[float] = []
+    client = _client(tmp_path, runner, sleeps)
+
+    assert client.load_json(_ARGV) == [1]
+    assert client.load_json(_PR_LIST) == [{"number": 2}]
+    assert sleeps == [120.0]
+    assert [record["served"] for record in _spend(tmp_path)] == ["network", "quota-wait", "network"]
+
+
+def test_subcommand_reads_have_no_stale_body_so_low_quota_still_hits_network(tmp_path: Path) -> None:
+    runner = StaticRunner(
+        [
+            CommandResult(("gh",), 0, _http(200, "[1]", remaining=500), ""),
+            CommandResult(("gh",), 0, '[{"number": 2}]', ""),
+        ]
+    )
+    client = _client(tmp_path, runner)
+
+    assert client.load_json(_ARGV) == [1]
+    assert client.load_json(_PR_LIST) == [{"number": 2}]
+    assert len(runner.calls) == 2
+
+
+def test_subcommand_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> None:
+    runner = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 99_999), "")]
+    )
+    client = _client(tmp_path, runner, [])
+
+    assert client.load_json(_ARGV) == [1]
+    with pytest.raises(DeliverySourceError, match="quota exhausted"):
+        client.load_json(_PR_LIST)
+    assert len(runner.calls) == 1
