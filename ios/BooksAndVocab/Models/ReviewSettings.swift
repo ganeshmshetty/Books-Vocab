@@ -153,6 +153,15 @@ protocol CloudKeyValueStore {
     func set(_ value: Double, forKey key: String)
     func string(forKey key: String) -> String?
     func set(_ value: String, forKey key: String)
+    func removeObject(forKey key: String)
+    func allKeys() -> [String]
+}
+
+/// 未實作清除／列舉的 fake 維持 no-op；`CloudPreferencesSync` 與需要驗證清除的
+/// 測試替身必須覆寫。
+extension CloudKeyValueStore {
+    func removeObject(forKey key: String) {}
+    func allKeys() -> [String] { [] }
 }
 
 extension CloudPreferencesSync: CloudKeyValueStore {}
@@ -228,6 +237,26 @@ enum AccountPreferenceNamespace {
         return "\(prefix)\(digest).\(key)"
     }
 
+    static func legacyMigrationMarker(feature: String) -> String {
+        "\(prefix)legacy-migration.\(feature).v1"
+    }
+
+    /// delete_account 專用：移除本機與 iCloud KVS 內所有帳號命名空間偏好
+    /// （`kg.account.<digest>.*`）。cleaner 不持有帳號 ID，因此以前綴掃描；
+    /// legacy-migration marker 保留，避免之後的帳號重新領養 pre-account raw 值。
+    static func purgeAllNamespacedPreferences(defaults: UserDefaults, cloud: CloudKeyValueStore) {
+        for key in defaults.dictionaryRepresentation().keys where isPurgeableNamespacedKey(key) {
+            defaults.removeObject(forKey: key)
+        }
+        for key in cloud.allKeys() where isPurgeableNamespacedKey(key) {
+            cloud.removeObject(forKey: key)
+        }
+    }
+
+    private static func isPurgeableNamespacedKey(_ key: String) -> Bool {
+        key.hasPrefix(prefix) && !key.hasPrefix("\(prefix)legacy-migration.")
+    }
+
     /// Migrate the pre-account raw preference namespace exactly once per
     /// preference family. The marker is deliberately global to the device/
     /// Apple-ID store: legacy values describe the one existing local user and
@@ -239,7 +268,7 @@ enum AccountPreferenceNamespace {
         migration: () -> Void
     ) {
         guard normalizedAccountID(accountID) != nil else { return }
-        let marker = "kg.account.legacy-migration.\(feature).v1"
+        let marker = legacyMigrationMarker(feature: feature)
         guard !defaults.bool(forKey: marker) else { return }
         migration()
         defaults.set(true, forKey: marker)

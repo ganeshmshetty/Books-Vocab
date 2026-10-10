@@ -501,6 +501,7 @@ struct ReviewCardLayoutStoreTests {
 private final class ReviewCardLayoutCloudSpy: CloudKeyValueStore {
     var values: [String: String] = [:]
     var setCalls: [String] = []
+    var removedKeys: [String] = []
 
     func double(forKey key: String) -> Double? { nil }
     func set(_ value: Double, forKey key: String) {}
@@ -509,6 +510,11 @@ private final class ReviewCardLayoutCloudSpy: CloudKeyValueStore {
         values[key] = value
         setCalls.append(key)
     }
+    func removeObject(forKey key: String) {
+        values[key] = nil
+        removedKeys.append(key)
+    }
+    func allKeys() -> [String] { Array(values.keys) }
 }
 
 @MainActor
@@ -591,6 +597,45 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(store.profile == custom)
         store.activateAccount("account-b")
         #expect(store.profile == .default)
+    }
+
+    /// #2434: sign-out must drop the adopted pre-account raw layout from both
+    /// UserDefaults and the iCloud KVS copy, while the account's own namespaced
+    /// layout survives so re-login still restores it.
+    @Test func signOutCleanupRemovesAdoptedRawLayoutFromDefaultsAndKVS() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(defaults, cloud).update(custom)
+
+        let store = makeStore(defaults, cloud)
+        store.activateAccount("account-a")
+        #expect(store.profile == custom)
+        #expect(defaults.string(forKey: rawKey) != nil)
+        #expect(cloud.values[rawKey] != nil)
+
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults, cloud: cloud)
+
+        #expect(defaults.string(forKey: rawKey) == nil)
+        #expect(cloud.values[rawKey] == nil)
+        #expect(cloud.removedKeys.contains(rawKey))
+
+        store.activateAccount("account-a")
+        #expect(store.profile == custom)
+    }
+
+    /// Until legacy migration has adopted the raw layout, it is the only copy
+    /// of the pre-account data and must survive a cleanup.
+    @Test func signOutCleanupKeepsUnadoptedRawLayout() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        makeStore(defaults, cloud).update(ReviewCardLayoutProfile(recognition: .compact, production: .standard))
+
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults, cloud: cloud)
+
+        #expect(defaults.string(forKey: rawKey) != nil)
+        #expect(cloud.values[rawKey] != nil)
+        #expect(cloud.removedKeys.isEmpty)
     }
 
     @Test func coordinatorForwardsToSharedLayoutStore() {

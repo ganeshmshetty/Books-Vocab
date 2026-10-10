@@ -635,7 +635,7 @@
 "切換後會立即套用到 app 介面。開啟自動同步後，收錄滿 5 個單字會自動同步到雲端。" = "Changes take effect in the app immediately. With auto-sync on, every 5 collected words sync to the cloud automatically.";
 "刪除中…" = "Deleting…";
 "刪除失敗 %@ 筆，稍後將自動重試" = "Failed to delete %@ items, will retry automatically later";
-"刪除後將立即移除你的帳號、雲端生詞、閱讀進度、訂閱記錄。請仔細確認下列項目後才能繼續。" = "Deletion will immediately remove your account, cloud vocabulary, reading progress, and subscription records. Please carefully confirm the items below before continuing.";
+"刪除後將立即移除你的帳號、雲端生詞、訂閱記錄。請仔細確認下列項目後才能繼續。" = "Deletion will immediately remove your account, cloud vocabulary, and subscription records. Please carefully confirm the items below before continuing.";
 "刪除後會移除帳號與所有雲端資料，且無法復原。" = "Deletion removes your account and all cloud data, and cannot be undone.";
 "刪除連結" = "Delete link";
 "刪除連結失敗" = "Failed to delete link";
@@ -841,7 +841,6 @@
 "開始複習，共 %@ 張" = "Start review, %@ cards total";
 "間隔複習（Today Review）" = "Spaced repetition (Today Review)";
 "閱讀器（EPUB/PDF/TXT/MD）" = "Reader (EPUB/PDF/TXT/MD)";
-"閱讀進度與書架" = "Reading progress and bookshelf";
 "關聯圖載入失敗" = "Failed to load relation graph";
 "隱藏此連結" = "Hide this link";
 "隱藏連結" = "Hide link";
