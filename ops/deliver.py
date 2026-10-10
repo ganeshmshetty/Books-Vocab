@@ -98,9 +98,10 @@ PR_GUARD_QUERY = (
 QUEUE_ENTRY_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!) {"
     " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
-    " mergeQueueEntry { id } } } }"
+    " mergeQueueEntry { id headCommit { oid } } } } }"
 )
 # Area quality suites that merge_group re-runs; a red one on the head ejects the PR.
+# GitHub names each job ``<area> / <job>``; a bare ``<area>`` is a caller-level job.
 AREA_QUALITY_CHECKS = ("backend-quality", "ops-suite", "ios-quality")
 
 
@@ -403,10 +404,13 @@ def review_verdict(runs: list[dict[str, Any]]) -> str | None:
         return None
     done = [r for r in runs if r.get("status") == "completed"]
     # A failure stands unless a strictly newer success superseded it (a rerun);
-    # ties keep the failure, so an undated failure is never silently overridden.
+    # ties keep the failure, and an undated failure (no start time to compare)
+    # always stands: fail closed.
     failed_at = [started_of(r) for r in done if r.get("conclusion") in REVIEW_FAILED]
     passed_at = [started_of(r) for r in done if r.get("conclusion") == "success"]
-    if failed_at and (not passed_at or max(failed_at) >= max(passed_at)):
+    if failed_at and (
+        not passed_at or "" in failed_at or max(failed_at) >= max(passed_at)
+    ):
         return "failure"
     verdicts = {r.get("conclusion") for r in done if marker(r)} or {
         r.get("conclusion") for r in done
@@ -556,6 +560,14 @@ def check_state(check: dict[str, Any]) -> str:
     return "pending"
 
 
+def area_of(name: str) -> str | None:
+    """The AREA_QUALITY_CHECKS suite a check run belongs to, e.g. ``ios-quality``."""
+    return next(
+        (a for a in AREA_QUALITY_CHECKS if name == a or name.startswith(f"{a} / ")),
+        None,
+    )
+
+
 # --- stages -----------------------------------------------------------------
 
 
@@ -576,6 +588,7 @@ class Delivery:
         self.log: list[str] = []
         self.extra: dict[str, Any] = {}
         self.queued = False  # set once `queue` succeeded; a later dequeue is ejection
+        self.queue_head: str | None = None  # merge group commit last seen in the queue
         self.lock = LockWait(args.lock_timeout, sleep, clock, self.say)
         # redeliver's hooks: retire the replaced lane before this one claims
         # its Scope, and supersede the replaced PR once this one exists.
@@ -1125,22 +1138,26 @@ class Delivery:
     def area_quality_gate(self, repo: str, number: int) -> None:
         """Hold the queue on the exact head's area quality jobs (#2833, #2870).
 
-        The newest run per name decides.  A pending job is waited for; a failed
-        or cancelled one refuses before `queue`, since merge_group re-runs the
-        same suite and would only eject the PR later.  A timeout while still
-        pending raises from wait_for: a HOLD, never a pass.
+        The newest run per full check name decides, then runs aggregate by area.
+        Any failed or cancelled job refuses before `queue`, since merge_group
+        re-runs the same suite and would only eject the PR later; otherwise any
+        pending job is waited for.  A timeout while still pending raises from
+        wait_for: a HOLD, never a pass.  SKIPPED counts as passed.
         """
 
         def settled() -> list[str] | None:
             newest = newest_by_name(self._pr_checks(repo, number))
             states = {
-                name: check_state(newest[name])
-                for name in AREA_QUALITY_CHECKS
-                if name in newest
+                name: check_state(check)
+                for name, check in newest.items()
+                if area_of(name) is not None
             }
+            failed = sorted(name for name, s in states.items() if s == "failed")
+            if failed:
+                return failed
             if "pending" in states.values():
                 return None
-            return sorted(name for name, s in states.items() if s == "failed")
+            return []
 
         failed = self.wait_for(f"area quality checks on #{number}", settled)
         if failed:
@@ -1149,7 +1166,8 @@ class Delivery:
                 f"head: {', '.join(failed)}; fix and redeliver"
             )
 
-    def _in_queue(self, repo: str, number: int) -> bool:
+    def _queue_entry(self, repo: str, number: int) -> dict[str, Any] | None:
+        """The PR's merge queue entry, or None; remembers its merge group commit."""
         owner, _, name = repo.partition("/")
         out = must(
             self.runner,
@@ -1159,16 +1177,30 @@ class Delivery:
             self.home,
             "read the merge queue entry",
         ).stdout
-        node = json.loads(out)["data"]["repository"]["pullRequest"]
-        return node.get("mergeQueueEntry") is not None
+        entry = json.loads(out)["data"]["repository"]["pullRequest"]["mergeQueueEntry"]
+        head = ((entry or {}).get("headCommit") or {}).get("oid")
+        if head:
+            self.queue_head = head
+        return entry
 
     def _ejected(self, repo: str, number: int) -> DeliverError:
+        # merge_group runs on the queue commit, not the PR head: read the last
+        # group this PR sat in, falling back to the head when none was seen.
+        if self.queue_head:
+            runs = self.gh_pages(
+                f"repos/{repo}/commits/{self.queue_head}/check-runs?filter=latest",
+                "check_runs",
+            )
+            checks, link = list(newest_by_name(runs).values()), "html_url"
+        else:
+            checks, link = self._pr_checks(repo, number), "link"
         failing = [
-            f"{c.get('name')} ({c.get('link') or 'no link'})"
-            for c in self._pr_checks(repo, number)
-            if check_state(c) == "failed"
+            f"{c.get('name')} ({c.get(link) or 'no link'})"
+            for c in checks
+            if str(c.get("conclusion") or c.get("state") or "").upper()
+            in FAILURE_STATES
         ]
-        detail = "; ".join(failing) or "no failing check reported on the head"
+        detail = "; ".join(failing) or "no failing check reported"
         return DeliverError(
             f"#{number} was dequeued from the merge queue without merging; "
             f"failing check: {detail}"
@@ -1188,8 +1220,8 @@ class Delivery:
             raise DeliverError(f"required check is {state} on #{number}; see the PR")
         return None
 
-    def _merged(self, repo: str, number: int) -> str | None:
-        out = must(
+    def _pr_state(self, repo: str, number: int) -> str:
+        return must(
             self.runner,
             [
                 "gh",
@@ -1206,12 +1238,18 @@ class Delivery:
             self.home,
             "read PR state",
         ).stdout.strip()
+
+    def _merged(self, repo: str, number: int) -> str | None:
+        out = self._pr_state(repo, number)
         if out == "MERGED":
             return out
         if out == "CLOSED":
             raise DeliverError(f"#{number} was closed without merging")
         # Open after our own queue call with no entry left: ejected, not slow.
-        if self.queued and out == "OPEN" and not self._in_queue(repo, number):
+        if self.queued and out == "OPEN" and self._queue_entry(repo, number) is None:
+            # The merge group may have landed between the two reads: re-read.
+            if self._pr_state(repo, number) == "MERGED":
+                return "MERGED"
             raise self._ejected(repo, number)
         return None
 
