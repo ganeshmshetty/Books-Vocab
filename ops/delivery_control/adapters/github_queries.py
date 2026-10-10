@@ -323,7 +323,8 @@ class GitHubQueries:
 
         repository = self.repository_name()
         pages: list[object] = []
-        for page in range(1, _PR_FILES_MAX_PAGES + 1):
+        # One probe page past the bound: a full last page is only truncation if more follows.
+        for page in range(1, _PR_FILES_MAX_PAGES + 2):
             payload = self.client.load_json(
                 (
                     "gh",
@@ -333,13 +334,17 @@ class GitHubQueries:
             )
             if not isinstance(payload, list):
                 raise AdapterPayloadError("GitHub PR files page is malformed")
+            if page > _PR_FILES_MAX_PAGES:
+                if payload:
+                    raise AdapterPayloadError(
+                        f"GitHub PR #{number} exceeds the "
+                        f"{_PR_FILES_MAX_PAGES * _PR_FILES_PAGE_SIZE}-file pagination bound"
+                    )
+                break
             pages.append(payload)
             if len(payload) < _PR_FILES_PAGE_SIZE:
-                return parse_changed_paths(pages)
-        raise AdapterPayloadError(
-            f"GitHub PR #{number} exceeds the "
-            f"{_PR_FILES_MAX_PAGES * _PR_FILES_PAGE_SIZE}-file pagination bound"
-        )
+                break
+        return parse_changed_paths(pages)
 
     def _prime_open_pr_file_paths(self) -> None:
         self._open_file_batch_attempted = True

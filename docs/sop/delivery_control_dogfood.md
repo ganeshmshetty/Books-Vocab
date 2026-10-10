@@ -346,7 +346,7 @@ Supervisor 的 watchdog tick 只用來避免 supervisor 睡死，不代表每 30
 - 配額門檻（依 `X-RateLimit-Remaining`，按 resource 分開，邊界含端點：remaining ≥ 50 放行、49 以下等待）：所有 REST 讀取皆即時重讀（ETag 或網路），快取 body 只在 304 時回傳，因此 observation 與 gate 路徑讀到的答案一致、不會來自推送前的快取。remaining < 50 等待 reset（開始等待時寫 stderr），等待超過 600 秒即 fail closed（DeliverySourceError）。subcommand 與分頁讀取無 header 亦無快取 body，低配額時仍走網路。
 - 種子化：每個新 `GitHubCliClient` 建立時，從 `spend.jsonl` 每個 resource 取最後一筆含 `remaining` 的紀錄，僅當其 `reset` 仍在未來才套用；因此跨 tick 的低配額會被下一個 process 的第一次讀取看見。
 - required-check 的 `observed_at` 取 body 的 `fetched_at`，不取重用時間；merge gate（`domain/policies.py` `evaluate_merge_gate`）拒絕距 `evaluated_at` 超過 300 秒的 required 觀測（`required checks observation is stale`）。
-- 限制：快取不設 TTL，只以 ETag 驗證；`GitHubChecks` 的 primed batch 快照距今超過 300 秒即丟棄並改走即時讀取；低於 50 的等待受 600 秒預算約束；等待期間 stderr 會有 `quota low; waiting` 訊息，tick 卡住時以此判讀。delivery tick 的 timeout 是否大於 600 秒尚未核對，屬未決項。排查配額異常時以 `spend.jsonl` 最後一筆 `remaining`／`reset` 為準。
+- 限制：快取不設 TTL，只以 ETag 驗證；`GitHubChecks` 的 primed batch 快照只服務觀測讀取，距今超過 300 秒即丟棄；merge admission 與 required repair 恆走即時讀取（`fresh=True`），不採用 primed batch。低於 50 的等待受 600 秒預算約束；預設 `drain --timeout` 3600 秒大於此預算，由 `test_quota_wait_budget_fits_inside_the_default_drain_timeout` 鎖定。等待期間 stderr 會有 `quota low; waiting` 訊息，tick 卡住時以此判讀。排查配額異常時以 `spend.jsonl` 最後一筆 `remaining`／`reset` 為準。
 
 ## Canary 與容量升級
 

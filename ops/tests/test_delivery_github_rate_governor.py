@@ -466,3 +466,13 @@ def test_spend_log_rotates_once_it_outgrows_its_cap(
 
     assert (cache / "spend.jsonl.1").read_text(encoding="utf-8").startswith("xxx")
     assert len(_spend(tmp_path)) == 1
+
+
+def test_quota_wait_budget_fits_inside_the_default_drain_timeout() -> None:
+    # A single quota sleep must not outlast the loop that runs it (#2872 CR P3).
+    from delivery_control import cli
+    from delivery_control.adapters import github_client
+
+    default_timeout = cli._parser().parse_args(["drain"]).timeout
+
+    assert github_client._MAX_QUOTA_WAIT_SECONDS < default_timeout

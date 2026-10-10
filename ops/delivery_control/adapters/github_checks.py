@@ -195,13 +195,14 @@ class GitHubChecks:
             ),
         )
 
-    def required_snapshot(self, number: int) -> CheckSnapshot:
+    def required_snapshot(self, number: int, *, fresh: bool = False) -> CheckSnapshot:
         before = self.get_pull_request(number)
         batched = self._batched_required.pop(number, None)
         # A primed batch older than the merge gate's cap would be refused there, so
         # it is re-read live instead of being admitted or left to fail closed.
         if (
-            batched is not None
+            not fresh
+            and batched is not None
             and batched.head_sha == before.head_sha
             and self._clock() - batched.observed_at <= REQUIRED_OBSERVATION_MAX_AGE
         ):

@@ -10,6 +10,7 @@ import pytest
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
+from delivery_control.adapters.errors import AdapterPayloadError
 from delivery_control.adapters.github_cli import GitHubCliAdapter
 from delivery_control.adapters.github_client import GitHubCliClient
 from delivery_control.adapters.github_queries import GitHubQueries
@@ -412,3 +413,51 @@ def test_rest_pages_select_the_named_key(tmp_path: Path) -> None:
     )
 
     assert runs == [{"name": "agent-review"}]
+
+
+def _files_page(page: int, size: int) -> str:
+    return json.dumps(
+        [
+            {"filename": f"ops/p{page}_{index}.py", "status": "modified"}
+            for index in range(size)
+        ]
+    )
+
+
+def test_changed_paths_accepts_exactly_the_pagination_bound(tmp_path: Path) -> None:
+    # 30 full pages is 3000 files; an empty page 31 proves the PR is complete, not truncated.
+    responses = [
+        CommandResult(
+            ("gh",), 0, _http(200, _files_page(page, 100), etag=f'"p{page}"'), ""
+        )
+        for page in range(1, 31)
+    ]
+    responses.append(CommandResult(("gh",), 0, _http(200, "[]", etag='"p31"'), ""))
+    runner = StaticRunner(responses)
+    client = GitHubCliClient(repo=tmp_path, runner=runner, cache_dir=tmp_path / "c")
+    queries = GitHubQueries(client=client, repository_name=lambda: "owner/repo")
+
+    paths = queries.changed_paths(12)
+
+    assert len(paths) == 3000
+    assert len(runner.calls) == 31
+
+
+def test_changed_paths_rejects_a_pr_with_more_than_the_pagination_bound(
+    tmp_path: Path,
+) -> None:
+    responses = [
+        CommandResult(
+            ("gh",), 0, _http(200, _files_page(page, 100), etag=f'"p{page}"'), ""
+        )
+        for page in range(1, 31)
+    ]
+    responses.append(
+        CommandResult(("gh",), 0, _http(200, _files_page(31, 1), etag='"p31"'), "")
+    )
+    runner = StaticRunner(responses)
+    client = GitHubCliClient(repo=tmp_path, runner=runner, cache_dir=tmp_path / "c")
+    queries = GitHubQueries(client=client, repository_name=lambda: "owner/repo")
+
+    with pytest.raises(AdapterPayloadError, match="pagination bound"):
+        queries.changed_paths(12)

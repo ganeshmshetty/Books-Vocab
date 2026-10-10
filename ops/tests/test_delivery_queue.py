@@ -149,6 +149,7 @@ class FakeGitHub:
         self.merge_queue = merge_queue
         self.required_contexts = required_contexts
         self.enqueue_calls: list[tuple[int, str, str, str]] = []
+        self.required_fresh_flags: list[bool] = []
 
     def required_status_contexts(self, branch: str) -> tuple[str, ...]:
         assert branch == "main"
@@ -161,7 +162,10 @@ class FakeGitHub:
     def changed_paths(self, number: int) -> tuple[str, ...]:
         return self.paths
 
-    def required_check_snapshot(self, number: int) -> CheckSnapshot:
+    def required_check_snapshot(
+        self, number: int, *, fresh: bool = False
+    ) -> CheckSnapshot:
+        self.required_fresh_flags.append(fresh)
         return CheckSnapshot(
             status=self.required,
             head_sha=self.pull_request.head_sha,
@@ -213,6 +217,15 @@ def test_exact_required_green_candidate_is_enqueued_once() -> None:
 
     assert result.live_main_sha == BASE
     assert github.enqueue_calls == [(11, BASE, HEAD, render_pull_request_body(receipt))]
+
+
+def test_queue_admission_reads_required_checks_fresh_not_from_a_primed_batch() -> None:
+    receipt = _receipt()
+    service, github = _service(receipt)
+
+    service.enqueue(receipt=receipt, pull_request_number=11)
+
+    assert github.required_fresh_flags == [True]
 
 
 def test_exact_claim_isolated_from_unrelated_inventory_problems() -> None:

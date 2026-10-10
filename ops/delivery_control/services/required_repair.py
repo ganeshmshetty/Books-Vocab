@@ -104,7 +104,7 @@ class RequiredRepairService:
         return _RequiredContext(pull_request, receipt, holds)
 
     def _required(self, number: int, *, head_sha: str) -> CheckSnapshot:
-        required = self.query.required_check_snapshot(number)
+        required = self.query.required_check_snapshot(number, fresh=True)
         if required.head_sha != head_sha:
             raise PolicyViolation("required check differs from the exact PR HEAD")
         if required.status not in _REPAIRABLE:
