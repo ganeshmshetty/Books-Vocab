@@ -106,8 +106,37 @@ for p in backend/ops_cli.py backend/ops_edit.py backend/src/kg/ops_edit_app.py b
     '{"backend":true,"ops":true,"ios":false}'
 done
 
+# macOS runner scope (Issue #2641). `macos_ops` gates the macOS native ops job
+# and `ui_smoke` gates the ui-smoke leg; both fail closed (select_all and every
+# unclassified path turn them on).
+assert_macos() { # label path macos_ops ui_smoke
+  local label="$1" path="$2" actual
+  if ! actual="$(printf '%s\n' "$path" | "$ROUTER" --paths-stdin --format json)"; then
+    fail "$label: router command failed"
+    return
+  fi
+  if jq -e -n --argjson actual "$actual" --argjson m "$3" --argjson u "$4" \
+    '$actual.macos_ops == $m and $actual.ui_smoke == $u' >/dev/null; then
+    pass "$label"
+  else
+    fail "$label: expected macos_ops=$3 ui_smoke=$4, got $actual"
+  fi
+}
+for p in ops/doctor.py ops/tests/test_main_watch.py lab/podcast/pipeline.py backend/src/kg/app.py docs/reference/tech_index.md .github/workflows/main-watch.yml ios/BooksAndVocabTests/FooTests.swift; do
+  assert_macos "no macOS job for $p (#2641)" "$p" false false
+done
+for p in docs/sop/ios.md ops/backup_verify.sh ops/review_flip_probe.sh ops/ui_quality_plane.py ops/app_review/2.0.0.json ops/app_review_evidence.py ops/app_review_gate.py ops/asc.sh ops/asc_text_bundle.py ops/sentry_release.sh ops/sentry_tool.py ops/sentry_api.py ops/kg_disk_guard.sh ops/kg_reconcile.sh ops/release.sh ops/p9_review_calendar_evidence.py ops/lldb_crash_forensics.py ops/install_lldb_forensics.sh ops/tests/test_ios_ops_release_heartbeat.sh ops/tests/test_lldb_crash_forensics.sh ops/tests/test_sentry_wiring.sh ops/test_ios_ops.sh ops/test_ops.sh ops/ci_macos_queue_probe.sh ops/tests/test_ci_macos_queue_probe.sh .github/workflows/ops-suite.yml; do
+  assert_macos "macOS native ops only for $p (#2641)" "$p" true false
+done
+for p in ios/BooksAndVocab/Views/Foo.swift ops/fixtures/ui_worlds/marketing_demo.json .github/workflows/ios-quality.yml; do
+  assert_macos "ui-smoke only for $p (#2641)" "$p" false true
+done
+for p in ios/BooksAndVocab.xcodeproj/project.pbxproj ios/BooksAndVocab/Services/AppCrashReporting.swift ios/Info.plist ios/BooksAndVocab/Services/SentryReporter.swift ios/BooksAndVocab/Services/SentryConfiguration.swift ios/BooksAndVocab/Services/SentryPrivacyPolicy.swift ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved ops/ios_ops.sh ops/ios_test.sh ops/lib/ios_ops_core.sh ops/lib/signal_traps.sh ops/ui_world_manifest.py ops/ci_scope_router.sh .github/workflows/pr-gate.yml ios/BooksAndVocabUITests/FooFlowUITests.swift newdir/x; do
+  assert_macos "macOS native ops and ui-smoke for $p (#2641)" "$p" true true
+done
+
 if actual="$($ROUTER --all --format json)" \
-  && jq -e -n --argjson actual "$actual" '$actual == {backend: true, ops: true, ios: true, ios_mode: "full", ios_selectors: ""}' >/dev/null; then
+  && jq -e -n --argjson actual "$actual" '$actual == {backend: true, ops: true, ios: true, macos_ops: true, ui_smoke: true, ios_mode: "full", ios_selectors: ""}' >/dev/null; then
   pass 'manual mode selects all confidence suites'
 else
   fail 'manual mode does not select all confidence suites'
@@ -120,7 +149,7 @@ else
 fi
 
 if actual="$($ROUTER --base HEAD --head HEAD --format json)" \
-  && jq -e -n --argjson actual "$actual" '$actual == {backend: false, ops: false, ios: false, ios_mode: "full", ios_selectors: ""}' >/dev/null; then
+  && jq -e -n --argjson actual "$actual" '$actual == {backend: false, ops: false, ios: false, macos_ops: false, ui_smoke: false, ios_mode: "full", ios_selectors: ""}' >/dev/null; then
   pass 'git commit mode classifies an empty diff'
 else
   fail 'git commit mode does not classify an empty diff'
@@ -276,7 +305,7 @@ fi
 if actual="$(printf '%s\n' "$OVERVIEW" | KG_CI_IOS_SELECTOR_DISCOVERY="$STUBS/ok" "$ROUTER" --paths-stdin --format github-output)" \
   && grep -qx 'ios_mode=targeted' <<<"$actual" \
   && grep -qx 'ios_selectors=OverviewFlowUITests/testA OverviewFlowUITests/testB' <<<"$actual" \
-  && [[ "$(wc -l <<<"$actual" | tr -d ' ')" == 5 ]]; then
+  && [[ "$(wc -l <<<"$actual" | tr -d ' ')" == 7 ]]; then
   pass 'github-output exposes ios_mode and single-line ios_selectors'
 else
   fail "github-output routing keys wrong: $actual"
@@ -390,6 +419,26 @@ if [[ "$(fork_plan trunk unrelated)" == '{"backend":true,"ops":true,"ios":true}'
   pass 'commit-range without a merge base selects every suite (fail-closed)'
 else
   fail "commit-range without a merge base was narrowed: $(fork_plan trunk unrelated)"
+fi
+
+
+# Closure: every ops/<file> the macOS groups reference must route to macos_ops
+# (Issue #2641), so the allowlist cannot drift behind the scripts it guards.
+closure_srcs=()
+for f in "$ROOT"/ops/ios_*.sh "$ROOT"/ops/lib/ios_*.sh "$ROOT"/ops/test_ios_*.sh "$ROOT"/ops/tests/test_ios_*.sh "$ROOT"/ops/tests/test_lldb*.sh "$ROOT"/ops/tests/test_sentry_wiring.sh; do
+  [[ -f "$f" ]] && closure_srcs+=("$f")
+done
+closure_refs="$(grep -ohE 'ops/[A-Za-z0-9_./-]+' "${closure_srcs[@]}" | sed -E 's/[.,:;]+$//' | sort -u)"
+closure_missing=''
+while IFS= read -r ref; do
+  [[ -f "$ROOT/$ref" ]] || continue
+  routed="$(printf '%s\n' "$ref" | "$ROUTER" --paths-stdin --format json | jq -r '.macos_ops')"
+  [[ "$routed" == true ]] || closure_missing+=" $ref"
+done <<<"$closure_refs"
+if [[ -z "$closure_missing" ]]; then
+  pass 'every ops file the macOS groups reference routes to macos_ops'
+else
+  fail "macos_ops allowlist misses referenced files:$closure_missing"
 fi
 
 if (( failures > 0 )); then

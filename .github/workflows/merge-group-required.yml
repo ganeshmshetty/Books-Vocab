@@ -357,7 +357,6 @@ jobs:
               trusted_run="$(gh api "repos/$REPOSITORY/actions/runs/$run_id")"
               trusted_path="$(jq -r '.path // empty' <<<"$trusted_run")"
               trusted_event="$(jq -r '.event // empty' <<<"$trusted_run")"
-              trusted_head_branch="$(jq -r '.head_branch // empty' <<<"$trusted_run")"
               trusted_workflow="$(jq -r '.workflow_id // empty' <<<"$trusted_run")"
               trusted_pr_matches="$(jq -c \
                 --argjson number "$group_pr_number" \
@@ -369,9 +368,6 @@ jobs:
                 provenance_ok="false"
               else
                 case "$trusted_event" in
-                  issue_comment)
-                    [[ "$trusted_head_branch" == "main" ]] || provenance_ok="false"
-                    ;;
                   pull_request_target|pull_request_review|pull_request_review_comment)
                     [[ "$(jq 'length' <<<"$trusted_pr_matches")" == "1" ]] || provenance_ok="false"
                     ;;

@@ -225,6 +225,7 @@ run_one() {
         ops/tests/test_release_train.py \
         ops/tests/test_complexity.py \
         ops/tests/test_doctor_issue.py \
+        ops/tests/test_main_watch.py \
         ops/tests/test_delivery_metrics.py \
         ops/tests/test_launchd_manifests.py
       ;;
@@ -275,6 +276,7 @@ run_one() {
       ./ops/tests/test_github_workflows.sh &&
       ./ops/tests/test_ops_suite_bootstrap.sh &&
       ./ops/tests/test_ci_scope_router.sh &&
+      ./ops/tests/test_ci_macos_queue_probe.sh &&
       ./ops/tests/test_ci_confidence_verdict.sh &&
       ./ops/tests/test_ci_apt_install.sh
       ;;

@@ -13,6 +13,12 @@
       "job": null,
       "scope": "issues",
       "reason": "ops/doctor_issue.py creates the health-report label and opens, edits or closes the single self-updating health-report issue."
+    },
+    {
+      "workflow": "main-watch.yml",
+      "job": null,
+      "scope": "issues",
+      "reason": "ops/main_watch.py opens one P1 main-red issue per red area, or comments the failing run on it, after a push-triggered area suite fails on main; it runs from the default branch and never checks out PR code."
     }
   ]
 }

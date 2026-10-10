@@ -692,7 +692,8 @@ RUBY
 #!/usr/bin/env bash
 # Fake gh: PR N has head sha %040x(N) and a passing trusted agent-review run 9000+N.
 # Per-PR faults: FAKE_NO_REVIEW_FOR=N (no review check-run), FAKE_FAIL_REVIEW_FOR=N
-# (review concluded failure), FAKE_DRIFT_FOR=N (pulls API head differs from the queue).
+# (review concluded failure), FAKE_DRIFT_FOR=N (pulls API head differs from the queue),
+# FAKE_ISSUE_COMMENT_RUN_FOR=N (N's review run is an unbound issue_comment run).
 set -euo pipefail
 [[ "${1:-}" == "api" ]] || exit 2
 endpoint="${2:-}"
@@ -712,7 +713,12 @@ case "$endpoint" in
       details_url: "https://github.com/Books-Vocab/Books-Vocab/actions/runs/\($run)",
       output: {title: "Independent agent review passed", summary: "Exact head \($sha) reviewed"}}]}' ;;
   repos/*/actions/runs/*)
-    jq -n '{path: ".github/workflows/agent-review.yml", event: "issue_comment", head_branch: "main", workflow_id: 4242, pull_requests: []}' ;;
+    run_n=$(( ${endpoint##*/} - 9000 ))
+    if [[ "${FAKE_ISSUE_COMMENT_RUN_FOR:-}" == "$run_n" ]]; then
+      jq -n '{path: ".github/workflows/agent-review.yml", event: "issue_comment", head_branch: "main", workflow_id: 4242, pull_requests: []}'
+    else
+      jq -n --argjson n "$run_n" --arg sha "$(printf '%040x' "$run_n")" '{path: ".github/workflows/agent-review.yml", event: "pull_request_target", head_branch: "lane", workflow_id: 4242, pull_requests: [{number: $n, head: {sha: $sha}, base: {ref: "main"}}]}'
+    fi ;;
   repos/*/pulls/*)
     n="${endpoint##*/}"; shown="$n"; [[ "${FAKE_DRIFT_FOR:-}" != "$n" ]] || shown=$((n + 1000))
     jq -n --arg sha "$(printf '%040x' "$shown")" '{state: "open", base: {ref: "main"}, head: {sha: $sha}}' ;;
@@ -759,6 +765,8 @@ FAKE_GH
       "latest trusted exact-head agent-review observation is not completed successfully"
     FAKE_DRIFT_FOR=7 verify_expect_reject "earlier PR #7 whose head drifted from its queue entry" 8 "7,8" \
       "group PR #7 HEAD/base/state drifted"
+    FAKE_ISSUE_COMMENT_RUN_FOR=7 verify_expect_reject "comment-triggered run with no PR binding (#2765)" 8 "7,8" \
+      "group PR #7 has no trusted exact-head review provenance"
     FAKE_NO_REVIEW_FOR=8 verify_expect_reject "target PR #8 without exact-head review" 8 "7,8" \
       "group PR #8 has no trusted exact-head review provenance"
     verify_expect_reject "singleton subset of a cumulative group (review P1)" 8 "8" "at or ahead of the target"
@@ -810,8 +818,9 @@ FAKE_GH
     || fail "merge-group independent review gate does not verify PR association"
   grep -q 'head.sha' "$MERGE_GROUP_REQUIRED" \
     || fail "merge-group independent review gate does not bind PR association to exact HEAD"
-  grep -q 'issue_comment' "$MERGE_GROUP_REQUIRED" \
-    || fail "merge-group independent review gate does not handle trusted issue-comment provenance"
+  if grep -q 'issue_comment' "$MERGE_GROUP_REQUIRED"; then
+    fail "merge-group independent review gate trusts comment-triggered runs that carry no PR binding (#2765)"
+  fi
   grep -q 'Independent agent review' "$MERGE_GROUP_REQUIRED" \
     || fail "merge-group independent review gate does not validate trusted review output"
   grep -q 'startswith' "$MERGE_GROUP_REQUIRED" \
@@ -837,6 +846,55 @@ FAKE_GH
   [[ "$(jq '[.[] | select((.details_url | startswith("https://github.com/")) and (.external_id | startswith("kg.agent-review.v1:")))] | length' <<<"$malformed_review_fixture")" == "0" ]] \
     || fail "review fixture accepts malformed provenance"
 fi
+
+# main-watch (Issue #2642): a red area suite on a main push must reach a fix issue
+# without running untrusted code or interpolating event data into a shell.
+MAIN_WATCH=".github/workflows/main-watch.yml"
+ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); w = y[true]["workflow_run"]
+  exit 1 unless w["types"] == ["completed"] && w["branches"] == ["main"]
+  exit 1 unless (%w[backend-quality ios-quality ops-suite design-system ui-quality-gate llm-eval] - w["workflows"]).empty?
+  exit 1 unless y["permissions"] == {"contents" => "read", "issues" => "write"}
+  exit 1 unless y["concurrency"]["cancel-in-progress"] == false
+  exit 1 unless y["concurrency"]["group"] == "main-watch-${{ github.event.workflow_run.name }}"' "$MAIN_WATCH" \
+  || fail "main-watch must watch every area suite on main with contents:read + issues:write and never cancel a run"
+if grep -Eq '^[[:space:]]+ref:' "$MAIN_WATCH"; then
+  fail "main-watch checks out a non-default ref; it must run default-branch code only"
+fi
+if awk '/^        run:/ { grab=1 } grab' "$MAIN_WATCH" | grep -q '\${{'; then
+  fail "main-watch interpolates event data into a run script; pass it through env"
+fi
+grep -Fq 'github.event.workflow_run.event == '"'"'push'"'"'' "$MAIN_WATCH" \
+  || fail "main-watch does not restrict itself to push-triggered runs"
+grep -Fq 'ops/main_watch.py' "$MAIN_WATCH" \
+  || fail "main-watch does not run ops/main_watch.py"
+
+# macOS queue-wait probe (Issue #2641): every macos-26 job must run it with actions:read.
+ruby -e 'require "yaml"; bad = []
+  { ARGV[0] => %w[macos-native-ops], ARGV[1] => %w[ios-build ios-tests ios-targeted] }.each do |f, jobs|
+    y = YAML.load_file(f)
+    jobs.each do |j|
+      job = y["jobs"][j]
+      bad << "#{f}:#{j}" unless job["permissions"] == {"contents" => "read", "actions" => "read"} && job["steps"].any? { |s| s["run"] == "./ops/ci_macos_queue_probe.sh" }
+    end
+  end
+  abort bad.join(" ") unless bad.empty?' .github/workflows/ops-suite.yml .github/workflows/ios-quality.yml \
+  || fail "macos jobs must run ops/ci_macos_queue_probe.sh with actions: read"
+
+# Reusable-workflow callers must grant at least what callee jobs request (a callee can only downgrade the caller token; otherwise startup_failure).
+ruby -e 'require "yaml"; rank = {"none"=>0,"read"=>1,"write"=>2}; bad = []
+  y = YAML.load_file(".github/workflows/pr-gate.yml")
+  y["jobs"].each do |name, cj|
+    next unless cj["uses"]
+    eff = cj["permissions"] || y["permissions"] || {}
+    callee = YAML.load_file(cj["uses"].sub(%r{^\./}, ""))
+    callee["jobs"].each do |jn, job|
+      (job["permissions"] || {}).each do |scope, lvl|
+        bad << "#{name}->#{jn}:#{scope}" if rank[lvl.to_s] > rank[(eff[scope] || "none").to_s]
+      end
+    end
+  end
+  abort bad.join(" ") unless bad.empty?' \
+  || fail "pr-gate caller jobs grant less than their reusable-workflow callee jobs request"
 
 # Keep Actions on the Node 24 generation.  Pinned SHAs preserve supply-chain
 # review while avoiding the hosted-runner Node 20 deprecation path.
@@ -925,8 +983,42 @@ full_gate="if: \${{ always() && (needs.plan.outputs.mode != 'targeted' || needs.
   || fail "ios-build and ios-tests are not both gated as full-unless-targeted-accepted"
 grep -Fq "if: \${{ needs.plan.outputs.mode == 'targeted' }}" "$IOS" \
   || fail "targeted job is not gated on a validated targeted plan"
-grep -Fq "matrix.scope" "$IOS" && grep -Fq -- '- scope: unit' "$IOS" && grep -Fq -- '- scope: ui-smoke' "$IOS" \
-  || fail "full iOS matrix (unit, ui-smoke) was altered"
+# The matrix is planned (Issue #2641): the full set stays unit + ui-smoke, and
+# ui-smoke is dropped only when the router reports ui_smoke=false.
+grep -Fq "matrix.scope" "$IOS" && grep -Fq 'scope: ${{ fromJSON(needs.plan.outputs.scopes) }}' "$IOS" \
+  || fail "ios-tests matrix is not driven by the plan job's scopes output"
+grep -Fq -- "scopes='[\"unit\",\"ui-smoke\"]'" "$IOS" \
+  || fail "full iOS matrix (unit, ui-smoke) is not the plan default"
+grep -Fq -- "scopes='[\"unit\"]'" "$IOS" \
+  || fail "ios-quality plan cannot drop ui-smoke when the router reports ui_smoke=false"
+grep -Fq "[[ \"\$REQUESTED_UI_SMOKE\" == 'false' ]]" "$IOS" \
+  || fail "ui-smoke is dropped on something other than an explicit ui_smoke=false"
+ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call"]["inputs"]["ui_smoke"]
+  exit 1 unless i["default"] == "true" && i["type"] == "string" && i["required"] == false' "$IOS" \
+  || fail "ios-quality ui_smoke input is not an optional string defaulting to true"
+grep -Fq 'ui_smoke: ${{ steps.plan.outputs.ui_smoke }}' "$PR_GATE" \
+  || fail "pr-gate changed-paths does not export the router ui_smoke"
+grep -Fq 'ui_smoke: ${{ needs.changed-paths.outputs.ui_smoke }}' "$PR_GATE" \
+  || fail "pr-gate does not forward ui_smoke to ios-quality"
+# macOS native ops job (Issue #2641): scoped by the router, fail-open to run on
+# push/dispatch where the input is absent.
+grep -Fq 'macos_ops: ${{ steps.plan.outputs.macos_ops }}' "$PR_GATE" \
+  || fail "pr-gate changed-paths does not export the router macos_ops"
+grep -Fq 'macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}' "$PR_GATE" \
+  || fail "pr-gate does not forward macos_ops to ops-suite"
+# A macOS-only change (for example a UITests-only change, which keeps ops=false
+# for the iOS targeted path) must still schedule ops-suite, the only job that
+# consumes macos_ops. The confidence plan must carry macos_ops so the verdict
+# expects that run (CR P2-1, #2641 r2 review).
+ruby -e 'require "yaml"; c = YAML.load_file(ARGV[0])["jobs"]["ops-suite"]["if"].to_s
+  exit 1 unless c.include?("needs.changed-paths.outputs.ops == \x27true\x27") && c.include?("needs.changed-paths.outputs.macos_ops == \x27true\x27")' "$PR_GATE" \
+  || fail "pr-gate ops-suite is not scheduled for macos_ops-only changes"
+grep -Fq '"macos_ops":"${{ needs.changed-paths.outputs.macos_ops }}"' "$PR_GATE" \
+  || fail "pr-gate confidence plan does not carry macos_ops to the verdict"
+ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call"]["inputs"]["macos_ops"]
+  exit 1 unless i["default"] == "true" && i["type"] == "string" && i["required"] == false
+  exit 1 unless y["jobs"]["macos-native-ops"]["if"].to_s.include?("inputs.macos_ops != \x27false\x27")' ".github/workflows/ops-suite.yml" \
+  || fail "ops-suite macos-native-ops is not gated on an explicit macos_ops=false"
 # Targeted invocation: exactly the planned selectors, no video/visual capture.
 grep -Fq "KG_IOS_VISUAL_CAPTURE: '0'" "$IOS" \
   || fail "targeted iOS run does not pin KG_IOS_VISUAL_CAPTURE=0"
@@ -961,9 +1053,22 @@ extract_step_run ios-targeted verdict > "$wf_tmp/verdict.sh"
 plan_mode() {
   local out="$wf_tmp/plan.out"
   : > "$out"
-  REQUESTED_MODE="$1" REQUESTED_SELECTORS="$2" GITHUB_OUTPUT="$out" bash "$wf_tmp/plan.sh" >/dev/null 2>&1 || { echo ERROR; return; }
+  REQUESTED_MODE="$1" REQUESTED_SELECTORS="$2" REQUESTED_UI_SMOKE="${PLAN_UI_SMOKE:-}" GITHUB_OUTPUT="$out" bash "$wf_tmp/plan.sh" >/dev/null 2>&1 || { echo ERROR; return; }
   grep '^mode=' "$out" | head -1 | cut -d= -f2-
 }
+# Full-path test scopes (Issue #2641): only an explicit 'false' drops ui-smoke.
+plan_scopes() {
+  local out="$wf_tmp/plan.out"
+  : > "$out"
+  REQUESTED_MODE=full REQUESTED_SELECTORS='' REQUESTED_UI_SMOKE="$1" GITHUB_OUTPUT="$out" bash "$wf_tmp/plan.sh" >/dev/null 2>&1 || { echo ERROR; return; }
+  grep '^scopes=' "$out" | head -1 | cut -d= -f2-
+}
+for ui_value in '' true TRUE garbage; do
+  [[ "$(plan_scopes "$ui_value")" == '["unit","ui-smoke"]' ]] \
+    || fail "ios plan: ui_smoke='$ui_value' must keep the full (unit, ui-smoke) matrix, got $(plan_scopes "$ui_value")"
+done
+[[ "$(plan_scopes false)" == '["unit"]' ]] \
+  || fail "ios plan: ui_smoke=false must run unit only, got $(plan_scopes false)"
 expect_plan() {
   local label="$1" mode="$2" selectors="$3" expected="$4" actual
   actual="$(plan_mode "$mode" "$selectors")"

@@ -134,6 +134,8 @@ jobs:
       ios: ${{ steps.plan.outputs.ios }}
       ios_mode: ${{ steps.plan.outputs.ios_mode }}
       ios_selectors: ${{ steps.plan.outputs.ios_selectors }}
+      macos_ops: ${{ steps.plan.outputs.macos_ops }}
+      ui_smoke: ${{ steps.plan.outputs.ui_smoke }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,18 +181,30 @@ jobs:
   ops-suite:
     name: ops-suite
     needs: changed-paths
-    if: ${{ needs.changed-paths.outputs.ops == 'true' }}
+    # macos_ops is consumed only by ops-suite's macos-native-ops job, so a
+    # macOS-only change (e.g. a UITests-only change, which keeps ops=false for
+    # the iOS targeted path) must schedule ops-suite too (CR P2-1, #2641).
+    if: ${{ needs.changed-paths.outputs.ops == 'true' || needs.changed-paths.outputs.macos_ops == 'true' }}
     uses: ./.github/workflows/ops-suite.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}
 
   ios-quality:
     name: ios-quality
     needs: changed-paths
     if: ${{ needs.changed-paths.outputs.ios == 'true' }}
     uses: ./.github/workflows/ios-quality.yml
+    permissions:
+      contents: read
+      actions: read
     # Empty/unknown values are resolved to the full path by ios-quality's plan job.
     with:
       ios_mode: ${{ needs.changed-paths.outputs.ios_mode }}
       ios_selectors: ${{ needs.changed-paths.outputs.ios_selectors }}
+      ui_smoke: ${{ needs.changed-paths.outputs.ui_smoke }}
 
   required:
     name: required
@@ -237,7 +251,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           PLAN_JSON: >-
-            {"backend":"${{ needs.changed-paths.outputs.backend }}","ops":"${{ needs.changed-paths.outputs.ops }}","ios":"${{ needs.changed-paths.outputs.ios }}"}
+            {"backend":"${{ needs.changed-paths.outputs.backend }}","ops":"${{ needs.changed-paths.outputs.ops }}","ios":"${{ needs.changed-paths.outputs.ios }}","macos_ops":"${{ needs.changed-paths.outputs.macos_ops }}"}
         run: |
           set -euo pipefail
           ./ops/ci_confidence_verdict.sh --plan "$PLAN_JSON" --needs "$NEEDS_JSON"
