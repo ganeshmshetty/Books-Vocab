@@ -172,14 +172,19 @@ struct GraphThumbnailViewportTests {
 
     /// #2860: retry on an unpainted thumbnail rebuilds the bridge state and
     /// re-arms the payload, so a successful retry is not left blank.
-    /// `webView` stays nil: the test exercises state transitions only, not a page load.
+    /// A real WKWebView is attached so `ready` actually drains the pending payload.
     @Test func coordinatorRecover_resetsBridgeAndPaintAndReplaysLastPayload() {
         let coordinator = GraphThumbnailCoordinator()
+        let webView = WKWebView(frame: .zero)
+        coordinator.webView = webView
         let payload = "{\"nodes\":[]}"
 
-        coordinator.sendInitGraph(payload, webView: WKWebView(frame: .zero))
+        coordinator.sendInitGraph(payload, webView: webView)
+        #expect(coordinator.pendingPayload == payload)
+
         coordinator.receiveBridgeEvent("ready")
         coordinator.receiveBridgeEvent("painted")
+        #expect(coordinator.pendingPayload == nil)
         #expect(coordinator.graphBridgeReady)
         #expect(coordinator.hasPainted)
 
@@ -189,6 +194,33 @@ struct GraphThumbnailViewportTests {
         #expect(!coordinator.hasPainted)
         #expect(coordinator.pendingPayload == payload)
         #expect(coordinator.lastPayload == payload)
+    }
+
+    /// Automatic recovery after web-content termination is capped at three
+    /// consecutive terminations without a paint; the fourth is left to the
+    /// visible `.rendering` retry instead of reloading in a loop.
+    @Test func webContentTermination_autoRecoversAtMostThreeTimesUntilPaint() {
+        let coordinator = GraphThumbnailCoordinator()
+        let webView = WKWebView(frame: .zero)
+        coordinator.webView = webView
+        let payload = "{\"nodes\":[]}"
+        coordinator.sendInitGraph(payload, webView: webView)
+        coordinator.receiveBridgeEvent("ready")
+
+        for _ in 0..<3 {
+            coordinator.webViewWebContentProcessDidTerminate(webView)
+            #expect(!coordinator.graphBridgeReady)
+            coordinator.receiveBridgeEvent("ready")
+            #expect(coordinator.graphBridgeReady)
+        }
+
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+        #expect(coordinator.graphBridgeReady, "fourth termination must not auto-recover")
+        #expect(coordinator.pendingPayload == nil)
+
+        coordinator.receiveBridgeEvent("painted")
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+        #expect(!coordinator.graphBridgeReady, "a paint resets the termination budget")
     }
 
     @Test func coordinatorRecover_beforePaintKeepsBridgeReplayable() {
