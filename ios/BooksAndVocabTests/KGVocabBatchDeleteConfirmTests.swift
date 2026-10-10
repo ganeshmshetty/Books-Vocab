@@ -19,7 +19,7 @@ struct KGVocabBatchDeleteConfirmTests {
         #expect(!confirmation.isPending)
     }
 
-    @Test func cancelClearsPendingAndNeverReachesDelete() {
+    @Test func cancelClearsPending() {
         var confirmation = BatchDeleteConfirmation()
         confirmation.request(selectionCount: 2)
 
@@ -33,14 +33,32 @@ struct KGVocabBatchDeleteConfirmTests {
         var confirmation = BatchDeleteConfirmation()
         confirmation.request(selectionCount: 2)
 
-        confirmation.confirm { deletes += 1 }
+        confirmation.confirm(selectionCount: 2) { deletes += 1 }
 
         #expect(deletes == 1)
         #expect(!confirmation.isPending)
     }
 
-    @Test func copyNamesTheCountAndTheLoss() {
-        #expect(KGVocabCopy.batchDeleteTitle(count: 7).contains("7"))
-        #expect(!KGVocabCopy.batchDeleteMessage.isEmpty)
+    @Test func confirmWithEmptySelectionNeverDeletes() {
+        var deletes = 0
+        var confirmation = BatchDeleteConfirmation()
+        confirmation.request(selectionCount: 2)
+
+        confirmation.confirm(selectionCount: 0) { deletes += 1 }
+
+        #expect(deletes == 0)
+        #expect(!confirmation.isPending)
+    }
+
+    @Test func titleUsesSingularWordingForOneSelection() {
+        #expect(KGVocabCopy.batchDeleteTitle(count: 1, language: .english) == "Delete this word?")
+        #expect(KGVocabCopy.batchDeleteTitle(count: 7, language: .english) == "Delete 7 words?")
+    }
+
+    @Test func messageNamesTheLossInEnglish() {
+        #expect(
+            KGVocabCopy.batchDeleteMessage(language: .english)
+                == "Their review history and knowledge links will be removed too. This cannot be undone."
+        )
     }
 }

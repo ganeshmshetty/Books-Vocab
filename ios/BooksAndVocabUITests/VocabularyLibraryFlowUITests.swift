@@ -928,6 +928,75 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         app.buttons["取消"].tapWhenReady()
         captureStep("word-detail-delete-warning", app: app)
     }
+
+    /// #2427: the selection-toolbar trash only asks. Cancel keeps the word and
+    /// selection; only the destructive dialog action removes it.
+    @MainActor
+    func testBatchDeleteRequiresConfirmationBeforeRemovingWord() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.vocabulary("vocabLinkedCards")],
+            extraEnvironment: [
+                "KG_UI_TEST_SERVER_URL": "http://127.0.0.1:9"
+            ],
+            perfLog: "vocabulary-batch-delete-confirm"
+        )
+        captureStep("batch-delete-launch", app: app)
+
+        let notebooks = AppPage(app: app).goToNotebooks()
+        guard notebooks.waitForNotebookCard(id: Self.addLinkNotebookID, timeout: 10) else {
+            XCTFail("batch delete fixture 必須種出 notebook " + Self.addLinkNotebookID)
+            return
+        }
+        notebooks.notebookCard(id: Self.addLinkNotebookID).tapWhenReady()
+        XCTAssertTrue(app.waitForNavigationToSettle())
+
+        let page = VocabularySearchPage(app: app)
+        guard page.searchField.waitUntilExists(timeout: 10) else {
+            XCTFail("batch delete flow 必須渲染 vocabulary search field")
+            return
+        }
+        page.search("serendipity")
+        guard page.waitForRowMaterialized(word: "serendipity", timeout: 10) else {
+            XCTFail("batch delete fixture 必須 materialize source row serendipity")
+            return
+        }
+
+        page.row(word: "serendipity").press(forDuration: 1.0)
+        let trash = app.buttons["刪除"]
+        XCTAssertTrue(trash.waitUntilExists(timeout: 5), "長按後必須進入選取模式並顯示刪除按鈕")
+        XCTAssertTrue(trash.isEnabled, "選取一筆後刪除按鈕必須可用")
+        captureStep("batch-delete-selected", app: app)
+
+        func destructiveDialog() -> XCUIElement {
+            app.descendants(matching: .any).matching(NSPredicate(
+                format: "elementType == %d OR elementType == %d",
+                XCUIElement.ElementType.sheet.rawValue,
+                XCUIElement.ElementType.alert.rawValue
+            )).firstMatch
+        }
+
+        trash.tapWhenReady()
+        let dialog = destructiveDialog()
+        XCTAssertTrue(dialog.waitUntilExists(timeout: 5), "刪除按鈕必須先顯示破壞性確認視窗")
+        XCTAssertTrue(page.row(word: "serendipity").exists, "確認前單字不可被刪除")
+        captureStep("batch-delete-dialog", app: app)
+
+        dialog.buttons["取消"].tapWhenReady()
+        XCTAssertTrue(dialog.waitUntilGone(timeout: 5), "取消後確認視窗必須關閉")
+        XCTAssertTrue(page.row(word: "serendipity").exists, "取消後單字必須保留")
+        XCTAssertTrue(trash.isEnabled, "取消後選取狀態必須保留")
+        captureStep("batch-delete-cancelled", app: app)
+
+        trash.tapWhenReady()
+        let confirmDialog = destructiveDialog()
+        XCTAssertTrue(confirmDialog.waitUntilExists(timeout: 5), "再次刪除必須重新顯示確認視窗")
+        confirmDialog.buttons["刪除"].tapWhenReady()
+        XCTAssertTrue(
+            page.row(word: "serendipity").waitUntilGone(timeout: 10),
+            "確認刪除後單字必須移除"
+        )
+        captureStep("batch-delete-confirmed", app: app)
+    }
 }
 
 private enum AddLinkWarningSourceContract {

@@ -221,11 +221,11 @@ struct KGVocabView: View {
             titleVisibility: .visible
         ) {
             Button(WordDetailCopy.delete, role: .destructive) {
-                batchDeleteConfirmation.confirm { handleBatchDelete() }
+                batchDeleteConfirmation.confirm(selectionCount: selectionState.selectionCount) { handleBatchDelete() }
             }
             Button(WordDetailCopy.cancel, role: .cancel) { batchDeleteConfirmation.cancel() }
         } message: {
-            Text(KGVocabCopy.batchDeleteMessage)
+            Text(KGVocabCopy.batchDeleteMessage())
         }
         .onChange(of: query) { _, _ in
             selectionState.exit()
