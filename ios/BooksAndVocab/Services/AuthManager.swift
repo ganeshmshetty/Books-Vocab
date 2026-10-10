@@ -180,7 +180,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
            let container = self.modelContainer {
             AppLog.auth.info("Manual login account switch — clearing previous user's local data")
             accountPreferenceLifecycle.suspend()
-            await localDataCleaner.clearLocalData(container: container, reason: "manual_login_account_switch")
+            await localDataCleaner.clearLocalData(container: container, reason: "manual_login_account_switch", deletedAccountID: nil)
         }
         login(userId: customToken, token: customToken)
     }
@@ -219,6 +219,9 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     func logout(modelContainer: ModelContainer? = nil, reason: String = "user_logout") {
         AppAnalytics.track(.logoutPerformed(reason: reason))
         let container = modelContainer ?? self.modelContainer
+        // Capture before the up-front teardown nils `userId`: a delete_account logout must scope the
+        // account-preference purge to exactly this account (#2434), never to other accounts on the device.
+        let deletedAccountID = reason == LocalDataCleanerService.deleteAccountReason ? userId : nil
         accountPreferenceLifecycle.suspend()
         localDataCleanupGeneration += 1
         pendingLocalDataCleanup = Task { [previousCleanup = pendingLocalDataCleanup] in
@@ -245,7 +248,11 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             await previousCleanup?.value
 
             if let container {
-                await localDataCleaner.clearLocalData(container: container, reason: reason)
+                await localDataCleaner.clearLocalData(
+                    container: container,
+                    reason: reason,
+                    deletedAccountID: deletedAccountID
+                )
             }
 
             // Stale-guard (mirrors SubscriptionManager+Refresh requestUserId check), second line
@@ -284,7 +291,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         if isAccountSwitch, let container = modelContainer {
             AppLog.auth.info("Account switch — clearing previous user's local data")
             accountPreferenceLifecycle.suspend()
-            await localDataCleaner.clearLocalData(container: container, reason: accountSwitchReason)
+            await localDataCleaner.clearLocalData(container: container, reason: accountSwitchReason, deletedAccountID: nil)
         }
         login(userId: userId, token: jwtToken)
     }

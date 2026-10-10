@@ -76,7 +76,7 @@ struct KGServiceLastSyncDateTests {
         #expect(KGService.loadPersistedLastSyncDate() != nil)
 
         await LocalDataCleanerService().clearLocalData(
-            container: try makeEmptyContainer(), reason: "user_logout"
+            container: try makeEmptyContainer(), reason: "user_logout", deletedAccountID: nil
         )
 
         #expect(KGService.loadPersistedLastSyncDate() == nil)
