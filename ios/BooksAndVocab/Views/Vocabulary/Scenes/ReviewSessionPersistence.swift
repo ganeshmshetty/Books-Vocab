@@ -14,6 +14,12 @@ enum ReviewSessionPersistence {
         return "local:\(entry.id.uuidString)"
     }
 
+    /// 同一 persistenceID 只保留第一筆（保持原順序）。
+    static func uniqueByPersistenceID(_ entries: [VocabularyEntry]) -> [VocabularyEntry] {
+        var seen = Set<String>()
+        return entries.filter { seen.insert(persistenceID(for: $0)).inserted }
+    }
+
     static func makeBaseline(
         from entry: VocabularyEntry
     ) -> TodayReviewSessionSnapshotStore.ReviewBaseline {
@@ -95,27 +101,56 @@ enum ReviewSessionPersistence {
             return nil
         }
 
-        let entryMap = Dictionary(uniqueKeysWithValues: orderedEntries.map { (persistenceID(for: $0), $0) })
-        let restoredQueue = snapshot.queue.compactMap { entryMap[$0.persistenceID] }
-        guard restoredQueue.count == snapshot.queue.count else {
-            TodayReviewSessionSnapshotStore.clear(for: userId)
-            return nil
+        // sync 競態可能讓兩筆 VocabularyEntry 共用同一 kgCardId：只保留第一筆，避免 trap 與重複入列。
+        let uniqueEntries = uniqueByPersistenceID(orderedEntries)
+        let entryMap = Dictionary(
+            uniqueEntries.map { (persistenceID(for: $0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        // 逐一比對快照佇列。缺席的卡、以及快照內重複出現的 persistenceID（第二次起）都視為遺失。
+        // kept 保留 (舊 index, entry)；oldToNew 把舊 index 重映射到新佇列位置。
+        var seenIDs = Set<String>()
+        var kept: [(oldIndex: Int, entry: VocabularyEntry)] = []
+        var oldToNew: [Int: Int] = [:]
+        for (oldIndex, item) in snapshot.queue.enumerated() {
+            guard let entry = entryMap[item.persistenceID],
+                  seenIDs.insert(item.persistenceID).inserted else { continue }
+            oldToNew[oldIndex] = kept.count
+            kept.append((oldIndex, entry))
         }
 
-        let restoredIDs = snapshot.queue.map(\.persistenceID)
+        // 只有在有卡遺失、且遺失的卡之外仍有「未 flush」答案時才 partial restore；
+        // 否則維持舊行為：任何不一致即清除快照。
+        if kept.count != snapshot.queue.count {
+            let atRisk = snapshot.submissions.contains { oldToNew[$0.key] != nil && !$0.value.flushed }
+            guard atRisk else {
+                TodayReviewSessionSnapshotStore.clear(for: userId)
+                return nil
+            }
+        }
+
+        let droppedAnswers = snapshot.submissions.keys.filter { oldToNew[$0] == nil }
+        if !droppedAnswers.isEmpty {
+            let droppedUnflushed = droppedAnswers.filter { !(snapshot.submissions[$0]?.flushed ?? true) }.count
+            AppLog.data.error("restoreSnapshot: dropped \(droppedAnswers.count) answers (\(droppedUnflushed) unflushed) for cards no longer reviewable")
+        }
+
+        let restoredIDs = kept.map { snapshot.queue[$0.oldIndex].persistenceID }
+        let restoredQueue = kept.map(\.entry)
         let restoredIDSet = Set(restoredIDs)
-        let appendedEntries = orderedEntries.filter { !restoredIDSet.contains(persistenceID(for: $0)) }
+        let appendedEntries = uniqueEntries.filter { !restoredIDSet.contains(persistenceID(for: $0)) }
         let queue = restoredQueue + appendedEntries
         let persistenceIDs = restoredIDs + appendedEntries.map(persistenceID(for:))
-        let baselines = snapshot.queue.map(\.baseline) + appendedEntries.map(makeBaseline(from:))
+        let baselines = kept.map { snapshot.queue[$0.oldIndex].baseline } + appendedEntries.map(makeBaseline(from:))
 
         var submittedAnswers: [Int: TodayReviewState.SubmittedAnswer] = [:]
         var rememberedCount = 0
         var forgotCount = 0
-        for (index, answer) in snapshot.submissions {
-            guard index < queue.count,
+        for (oldIndex, answer) in snapshot.submissions {
+            guard let newIndex = oldToNew[oldIndex],
                   let feedback = ReviewFeedback(rawValue: answer.feedbackRaw) else { continue }
-            submittedAnswers[index] = TodayReviewState.SubmittedAnswer(
+            submittedAnswers[newIndex] = TodayReviewState.SubmittedAnswer(
                 feedback: feedback,
                 answeredAt: answer.answeredAt,
                 reviewRecordID: answer.reviewRecordID,
@@ -124,11 +159,14 @@ enum ReviewSessionPersistence {
             if feedback == .remembered { rememberedCount += 1 } else { forgotCount += 1 }
         }
 
+        // 目前 index 指向原本的卡：計算其前方仍存活的卡數。
+        let currentIndex = min(kept.filter { $0.oldIndex < snapshot.currentIndex }.count, queue.count)
+
         return RestoredSession(
             queue: queue,
             persistenceIDs: persistenceIDs,
             baselines: baselines,
-            currentIndex: min(snapshot.currentIndex, queue.count),
+            currentIndex: currentIndex,
             submittedAnswers: submittedAnswers,
             rememberedCount: rememberedCount,
             forgotCount: forgotCount,
