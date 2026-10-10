@@ -85,3 +85,54 @@ struct AccountPreferenceLifecycleIsolationTests {
         return results
     }
 }
+
+/// #2556: delete_account purges every account-namespaced preference from
+/// UserDefaults and the iCloud KVS, but keeps the legacy-migration markers so a
+/// later account cannot re-adopt the pre-account raw values.
+struct AccountPreferenceNamespacePurgeTests {
+    private final class PurgeCloudSpy: CloudKeyValueStore {
+        var values: [String: String] = [:]
+
+        func double(forKey key: String) -> Double? { nil }
+        func set(_ value: Double, forKey key: String) {}
+        func string(forKey key: String) -> String? { values[key] }
+        func set(_ value: String, forKey key: String) { values[key] = value }
+        func removeObject(forKey key: String) { values[key] = nil }
+        func allKeys() -> [String] { Array(values.keys) }
+    }
+
+    private func makeDefaults() -> UserDefaults {
+        let suite = "test.account-namespace-purge.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    @Test func deleteAccountPurgesNamespacedKeysInBothLayersAndKeepsMarkersAndLegacyKeys() {
+        let defaults = makeDefaults()
+        let cloud = PurgeCloudSpy()
+        let namespaced = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout")
+        defaults.set("compact", forKey: namespaced)
+        defaults.set(true, forKey: marker)
+        defaults.set("legacy", forKey: "review_settings_mode")
+        cloud.set("cloud-a", forKey: namespaced)
+        cloud.set("cloud-legacy", forKey: "review_settings_mode")
+
+        AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloud)
+
+        #expect(defaults.object(forKey: namespaced) == nil)
+        #expect(cloud.string(forKey: namespaced) == nil)
+        #expect(defaults.bool(forKey: marker))
+        #expect(defaults.string(forKey: "review_settings_mode") == "legacy")
+        #expect(cloud.string(forKey: "review_settings_mode") == "cloud-legacy")
+    }
+
+    @Test func purgeIsIdempotentOnAnEmptyDevice() {
+        let defaults = makeDefaults()
+        let cloud = PurgeCloudSpy()
+        AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloud)
+        AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloud)
+        #expect(cloud.values.isEmpty)
+    }
+}
