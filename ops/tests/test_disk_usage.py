@@ -9,6 +9,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -1933,7 +1934,7 @@ def test_xctest_devices_stat_permission_error_still_blocks(
         def __init__(self, path: str | Path) -> None:
             self._scanner = real_scandir(path)
 
-        def __enter__(self) -> _DeniedStatScan:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *exc_info: object) -> None:
