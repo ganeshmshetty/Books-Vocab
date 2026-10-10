@@ -215,10 +215,12 @@ struct KGVocabView: View {
             }
         }
         .animateSpring(selectionState.isSelecting)
-        .confirmationDialog(
+        // Alert, not confirmationDialog: on iPhone the dialog rendered as a popover that
+        // showed only the destructive action, leaving Cancel unreachable. The word-detail
+        // delete already uses an alert, so the cancel path stays visible and consistent.
+        .alert(
             KGVocabCopy.batchDeleteTitle(count: batchDeleteConfirmation.requestedCount),
-            isPresented: $batchDeleteConfirmation.isPending,
-            titleVisibility: .visible
+            isPresented: $batchDeleteConfirmation.isPending
         ) {
             Button(WordDetailCopy.delete, role: .destructive) {
                 batchDeleteConfirmation.confirm(selectionCount: selectionState.selectionCount) { handleBatchDelete() }

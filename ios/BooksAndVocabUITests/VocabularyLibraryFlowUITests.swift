@@ -961,23 +961,30 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             return
         }
 
+        // Put the search keyboard away first: it must not cover the selection toolbar
+        // or the confirmation sheet presented by the trash button.
+        app.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitUntilGone(timeout: 5), "搜尋後鍵盤必須收起，才不遮住選取工具列與確認視窗")
         page.row(word: "serendipity").press(forDuration: 1.0)
         let trash = app.buttons["刪除"]
         XCTAssertTrue(trash.waitUntilExists(timeout: 5), "長按後必須進入選取模式並顯示刪除按鈕")
         XCTAssertTrue(trash.isEnabled, "選取一筆後刪除按鈕必須可用")
         captureStep("batch-delete-selected", app: app)
 
-        func destructiveDialog() -> XCUIElement {
-            app.descendants(matching: .any).matching(NSPredicate(
-                format: "elementType == %d OR elementType == %d",
-                XCUIElement.ElementType.sheet.rawValue,
-                XCUIElement.ElementType.alert.rawValue
-            )).firstMatch
+        // The confirmation is presented as a sheet on iPhone and an alert elsewhere;
+        // resolve whichever appears and scope every button lookup to it, because
+        // "取消" also exists in the selection toolbar.
+        func confirmationDialog() -> XCUIElement {
+            let sheet = app.sheets.firstMatch
+            return sheet.exists ? sheet : app.alerts.firstMatch
         }
 
         trash.tapWhenReady()
-        let dialog = destructiveDialog()
-        XCTAssertTrue(dialog.waitUntilExists(timeout: 5), "刪除按鈕必須先顯示破壞性確認視窗")
+        XCTAssertTrue(
+            app.sheets.firstMatch.waitUntilExists(timeout: 5) || app.alerts.firstMatch.waitUntilExists(timeout: 5),
+            "刪除按鈕必須先顯示破壞性確認視窗"
+        )
+        let dialog = confirmationDialog()
         XCTAssertTrue(page.row(word: "serendipity").exists, "確認前單字不可被刪除")
         captureStep("batch-delete-dialog", app: app)
 
@@ -988,8 +995,11 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         captureStep("batch-delete-cancelled", app: app)
 
         trash.tapWhenReady()
-        let confirmDialog = destructiveDialog()
-        XCTAssertTrue(confirmDialog.waitUntilExists(timeout: 5), "再次刪除必須重新顯示確認視窗")
+        XCTAssertTrue(
+            app.sheets.firstMatch.waitUntilExists(timeout: 5) || app.alerts.firstMatch.waitUntilExists(timeout: 5),
+            "再次刪除必須重新顯示確認視窗"
+        )
+        let confirmDialog = confirmationDialog()
         confirmDialog.buttons["刪除"].tapWhenReady()
         XCTAssertTrue(
             page.row(word: "serendipity").waitUntilGone(timeout: 10),
