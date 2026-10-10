@@ -276,7 +276,9 @@ extension VocabularyEntry {
     /// 在 context 純文字中為 word 加上 **markdown** 標記（模擬 server 的 _build_example 邏輯）
     private func markWordInContext(_ text: String) -> String {
         let escaped = NSRegularExpression.escapedPattern(for: word)
-        if let regex = Self.cachedRegex(pattern: escaped),
+        // Whole-word boundaries, mirroring backend `_boundary_pattern` (#2725).
+        let boundaryPat = "(?<!\\w)\(escaped)(?!\\w)"
+        if let regex = Self.cachedRegex(pattern: boundaryPat),
            let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
             let ns = text as NSString
             let matched = ns.substring(with: match.range)
