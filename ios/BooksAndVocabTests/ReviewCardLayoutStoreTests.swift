@@ -640,6 +640,66 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(cloud.removedKeys.isEmpty)
     }
 
+    /// #2434 (review P2): sign-out purges the adopted local raw copy, but the KVS raw key is
+    /// kept on purpose. A logged-out store must not re-adopt it from KVS, or the purged
+    /// account's layout comes back after logout.
+    @Test func loggedOutStoreDoesNotReadAdoptedKVSRawLayoutAfterSignOutCleanup() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(defaults, cloud).update(custom)
+        let adopting = makeStore(defaults, cloud)
+        adopting.activateAccount("account-a")
+        #expect(adopting.profile == custom)
+
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+        #expect(cloud.values[rawKey] != nil)
+
+        let loggedOut = makeStore(defaults, cloud)
+        #expect(loggedOut.profile == .default)
+        adopting.activateAccount(nil)
+        #expect(adopting.profile == .default)
+    }
+
+    /// Same boundary on the live path: a raw-key KVS change after adoption must not
+    /// apply to a logged-out store.
+    @Test func loggedOutStoreIgnoresExternalRawKVSChangeAfterAdoption() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let center = NotificationCenter()
+        makeStore(defaults, cloud).update(ReviewCardLayoutProfile(recognition: .standard, production: .compact))
+        let adopting = makeStore(defaults, cloud)
+        adopting.activateAccount("account-a")
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+
+        let loggedOut = ReviewCardLayoutStore(
+            defaults: defaults,
+            cloud: cloud,
+            notificationCenter: center,
+            cloudNotificationObject: nil
+        )
+        // A writer on another device updates the shared raw KVS key.
+        makeStore(makeDefaults(), cloud).update(ReviewCardLayoutProfile(recognition: .compact, production: .compact))
+        center.post(
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: nil,
+            userInfo: [NSUbiquitousKeyValueStoreChangedKeysKey: [rawKey]]
+        )
+        #expect(loggedOut.profile == .default)
+    }
+
+    /// Positive control: a device that has never adopted the raw layout still reads it
+    /// from KVS while logged out (the pre-account data is the only copy there).
+    @Test func unadoptedDeviceLoggedOutStillReadsKVSRawLayout() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .compact, production: .standard)
+        makeStore(makeDefaults(), cloud).update(custom)
+
+        let store = makeStore(defaults, cloud)
+        #expect(store.profile == custom)
+    }
+
     @Test func coordinatorForwardsToSharedLayoutStore() {
         let store = makeStore(makeDefaults(), ReviewCardLayoutCloudSpy())
         let coordinator = AccountPreferenceLifecycleCoordinator(layoutStore: store)
