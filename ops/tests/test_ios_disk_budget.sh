@@ -121,9 +121,11 @@ cat > "$lane_state" <<'EOF'
 {
   "policy": {
     "blocking_reasons": [
-      "unregistered-physical-worktree"
+      "dirty-physical-worktree"
     ],
-    "blocking_dirty_physical_worktrees": [],
+    "blocking_dirty_physical_worktrees": [
+      "/x/dirty-terminal"
+    ],
     "unknown_physical_worktrees": [],
     "unregistered_physical_worktrees": [
       "/x/orphan-one",
@@ -147,7 +149,7 @@ lane_output="$(KG_IOS_DISK_GUARD_STATE="$lane_block_state" KG_IOS_DISK_LANE_USAG
   KG_IOS_DISK_GUARD_AUTO_REFRESH=0 \
   /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state test" 2>&1)" || lane_rc=$?
 [[ "$lane_rc" -eq 77 ]] && ok "lane block exits 77 (structural)" || bad "lane block exit=$lane_rc"
-grep -q 'blockingReasons=unregistered-physical-worktree' <<<"$lane_output" \
+grep -q 'blockingReasons=dirty-physical-worktree' <<<"$lane_output" \
   && ok "diagnostic names blocking reason" || bad "diagnostic reason missing: $lane_output"
 grep -q 'unregisteredWorktrees=/x/orphan-one;/x/orphan-two' <<<"$lane_output" \
   && ok "diagnostic names unregistered worktree paths" || bad "diagnostic paths missing: $lane_output"
@@ -261,7 +263,7 @@ struct_rc=0
 struct_output="$(KG_IOS_DISK_GUARD_STATE="$lane_block_state" KG_IOS_DISK_LANE_USAGE_STATE="$lane_state" \
   KG_IOS_DISK_GUARD_AUTO_REFRESH=0 \
   /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state test" 2>&1)" || struct_rc=$?
-[[ "$struct_rc" -eq 77 ]] && ok "unregistered-worktree block exits 77" || bad "structural block exit=$struct_rc"
+[[ "$struct_rc" -eq 77 ]] && ok "a dirty-worktree attribution block exits 77" || bad "structural block exit=$struct_rc"
 grep -q 'retryable=no' <<<"$struct_output" \
   && ok "structural block says retryable=no" || bad "retryable=no missing: $struct_output"
 grep -q 'guardAction=manual-review-lane-attribution' <<<"$struct_output" \
@@ -287,6 +289,21 @@ xctest_slow_out="$(KG_IOS_DISK_GUARD_STATE="$xctest_slow_state" KG_IOS_DISK_GUAR
 grep -q 'reason=xctest-devices-measurement-incomplete' <<<"$xctest_slow_out" && grep -q 'retryable=yes' <<<"$xctest_slow_out" \
   && ok "a time-limited walk is named as such and retryable" || bad "slow-walk message: $xctest_slow_out"
 grep -q 'budget-exceeded' <<<"$xctest_slow_out" && bad "a time-limited walk is reported as a budget overrun" || ok "a time-limited walk is not reported as a budget overrun"
+
+echo "── issue #2905: a time-limited walk inside a 75-exit lane report keeps its reason ──"
+# The lane report exits 75 for any block, so the guard reason reads
+# lane-usage-report-blocked.  The in-lock preflight must still name the walk.
+xctest_timed_state="$TMP/guard-xctest-timed.json"
+cat > "$xctest_timed_state" <<'EOF2'
+{"schema":"kg.disk.guard.v1","verdict":"block","reason":"lane-usage-report-blocked","action":"manual-review-lane-attribution","lane_usage_verdict":"block","lane_usage_rc":75,"xctest_devices_verdict":"block","xctest_devices_manual_review":0,"xctest_devices_time_limited":1,"at":"2099-01-01T00:00:00Z"}
+EOF2
+xctest_timed_rc=0
+xctest_timed_out="$(KG_IOS_DISK_GUARD_STATE="$xctest_timed_state" KG_IOS_DISK_GUARD_ENFORCE_XCTEST=1 \
+  /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state build 1" 2>&1)" || xctest_timed_rc=$?
+[[ "$xctest_timed_rc" -eq 75 ]] && ok "a time-limited walk in a 75-exit report stays temporary (75)" || bad "timed walk exit=$xctest_timed_rc: $xctest_timed_out"
+grep -q 'reason=xctest-devices-measurement-incomplete' <<<"$xctest_timed_out" && grep -q 'retryable=yes' <<<"$xctest_timed_out" \
+  && ok "the in-lock preflight names the measurement-incomplete reason and says retryable=yes" || bad "in-lock preflight reason: $xctest_timed_out"
+grep -q 'budget-exceeded' <<<"$xctest_timed_out" && bad "the in-lock preflight reports a time-limited walk as a budget overrun" || ok "the in-lock preflight does not report a budget overrun"
 
 echo "── ios_ops.sh test reads the guard before the lease and the build lock ──"
 early_lock="$TMP/early-build.lock"
@@ -413,9 +430,10 @@ classify "lane-total-budget-exceeded alone" 75 "" lane-total-budget-exceeded
 classify "lane-budget-exceeded:<path> alone" 75 "" "lane-budget-exceeded:/x/lane"
 classify "measurement-incomplete reasons" 75 "" workspace-measurement-incomplete lane-measurement-incomplete
 classify "empty blocking_reasons" 75 ""
-classify "tick crash (lane_usage_rc=124) even with stale structural reasons" 75 124 unregistered-physical-worktree
+classify "tick crash (lane_usage_rc=124) even with stale structural reasons" 75 124 dirty-physical-worktree
 classify "structural reason mixed with a quota reason" 77 75 lane-total-budget-exceeded dirty-physical-worktree
-classify "unregistered-physical-worktree (fresh report rc=75)" 77 75 unregistered-physical-worktree
+# Issue #2905: an unregistered worktree is a warning under budget, never a blocking reason.
+classify "unregistered-physical-worktree is not structural (fresh report rc=75)" 75 75 unregistered-physical-worktree
 classify "unknown-physical-worktree" 77 "" unknown-physical-worktree
 classify "duplicate-physical-worktree" 77 "" duplicate-physical-worktree
 classify "physical-identity-mismatch" 77 "" physical-identity-mismatch
@@ -457,8 +475,8 @@ grep -q 'laneUsageFresh=no' <<<"$STALE_OUT" && ok "stale report without rc is na
 stale_case "report a few seconds older than the tick (normal write order)" 77 75 20 @named
 grep -q 'retryable=no' <<<"$STALE_OUT" && ok "a report from the same tick stays structural" || bad "fresh report lost retryable=no: $STALE_OUT"
 grep -q 'unregisteredWorktrees=/x/orphan-one;/x/orphan-two' <<<"$STALE_OUT" && ok "positive control: a fresh report names its worktrees" || bad "fresh report lost its worktree names: $STALE_OUT"
-stale_case "report just inside the slack window" 77 75 100 unregistered-physical-worktree
-stale_case "report just outside the slack window" 75 75 160 unregistered-physical-worktree
+stale_case "report just inside the slack window" 77 75 100 dirty-physical-worktree
+stale_case "report just outside the slack window" 75 75 160 dirty-physical-worktree
 lane_guard_with_rc 75 > "$TMP/stale-guard.json"
 missing_out="$(KG_IOS_DISK_GUARD_STATE="$TMP/stale-guard.json" KG_IOS_DISK_LANE_USAGE_STATE="$TMP/no-such-lane-report.json" \
   KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state test" 2>&1)" && missing_rc=0 || missing_rc=$?
