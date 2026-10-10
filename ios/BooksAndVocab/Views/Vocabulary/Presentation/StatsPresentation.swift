@@ -138,6 +138,50 @@ enum StatsPresentation {
         return nodeCount == 0 ? .empty : .graph
     }
 
+    /// Status row shown inside the graph card's content area (#2860). `reason`
+    /// is nil when there is no server failure to explain (thumbnail never
+    /// painted); the row still carries the stale title and a retry.
+    enum GraphCardNotice: Equatable {
+        case stale(reason: String?)
+
+        var reason: String? {
+            if case .stale(let reason) = self { return reason }
+            return nil
+        }
+    }
+
+    enum GraphCardState: Equatable {
+        case loading
+        /// No cached links and the load failed: error panel with reason + retry.
+        case failed(reason: String)
+        /// Links present. `notice` is the visible stale/status row, if any.
+        case content(body: GraphThumbnailBodyKind, notice: GraphCardNotice?)
+    }
+
+    /// Pure state matrix for the Overview graph card. `failureReason` is the
+    /// `SyncFailurePresentation.reason(for:)` text of the latest failed load
+    /// (nil once a load succeeds). `paintTimedOut` means the web thumbnail did
+    /// not report its first paint within the bounded window.
+    static func graphCardState(
+        linksLoaded: Bool,
+        nodeCount: Int,
+        failureReason: String?,
+        paintTimedOut: Bool
+    ) -> GraphCardState {
+        guard linksLoaded else {
+            if let failureReason { return .failed(reason: failureReason) }
+            return .loading
+        }
+        let body = graphThumbnailBodyKind(linksLoaded: true, nodeCount: nodeCount)
+        if let failureReason {
+            return .content(body: body, notice: .stale(reason: failureReason))
+        }
+        if body == .graph && paintTimedOut {
+            return .content(body: body, notice: .stale(reason: nil))
+        }
+        return .content(body: body, notice: nil)
+    }
+
     private static func compactDayLabel(for date: Date) -> String {
         LocaleAwareFormatter.shared.string(from: date, template: "Md")
     }

@@ -149,6 +149,76 @@ struct StatsPresenterTests {
         #expect(StatsPresentation.graphThumbnailBodyKind(linksLoaded: true, nodeCount: 1) == .graph)
     }
 
+    // MARK: - Graph card state matrix (#2860)
+
+    @Test func graphCard_noCacheWithFailure_isErrorPanelWithReasonForEachFailureKind() {
+        let cases: [Error] = [
+            KGError.httpError(statusCode: 500, detail: "boom"),
+            KGError.offline,
+            URLError(.notConnectedToInternet),
+            KGError.httpError(statusCode: 404, detail: "nope"),
+            KGError.decodingError(underlying: URLError(.cannotParseResponse)),
+        ]
+        for error in cases {
+            let reason = SyncFailurePresentation.reason(for: error)
+            #expect(
+                StatsPresentation.graphCardState(
+                    linksLoaded: false, nodeCount: 0, failureReason: reason, paintTimedOut: false
+                ) == .failed(reason: reason),
+                "no cached links + \(error) must surface the error panel with its reason, never an endless spinner"
+            )
+            #expect(!reason.isEmpty)
+        }
+    }
+
+    @Test func graphCard_failureReasonsAreDistinguishable() {
+        let server = SyncFailurePresentation.reason(for: KGError.httpError(statusCode: 500, detail: ""))
+        let offline = SyncFailurePresentation.reason(for: URLError(.notConnectedToInternet))
+        let rejected = SyncFailurePresentation.reason(for: KGError.httpError(statusCode: 404, detail: ""))
+        #expect(Set([server, offline, rejected]).count == 3)
+    }
+
+    @Test func graphCard_cachedLinksWithFailure_keepGraphAndAddStaleRow() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: "r", paintTimedOut: false
+            ) == .content(body: .graph, notice: .stale(reason: "r"))
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 0, failureReason: "r", paintTimedOut: false
+            ) == .content(body: .empty, notice: .stale(reason: "r"))
+        )
+    }
+
+    @Test func graphCard_successClearsNoticeAndPendingIsLoading() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: false
+            ) == .content(body: .graph, notice: nil)
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: false, nodeCount: 0, failureReason: nil, paintTimedOut: false
+            ) == .loading
+        )
+    }
+
+    @Test func graphCard_paintTimeoutNeverLeavesBlankBody() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: true
+            ) == .content(body: .graph, notice: .stale(reason: nil)),
+            "a thumbnail that never reported first paint must expose the status row with retry"
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 0, failureReason: nil, paintTimedOut: true
+            ) == .content(body: .empty, notice: nil),
+            "the empty body paints natively, so a paint timeout is irrelevant"
+        )
+    }
+
     @Test func metricValueLayout_keepsNumericValueAndUnitOnOneLine() {
         #expect(StatsMetricValueLayout.maximumLines == 1)
         #expect(StatsMetricValueLayout.minimumScaleFactor == 0.72)
