@@ -257,6 +257,6 @@ struct WordDetailSheet: View {
             detailRouter.showWordDetail(target, allEntries: allEntries)
             return
         }
-        linkedCardStack.wrappedValue.append(target)
+        linkedCardStack.wrappedValue.pushLinkedCard(target)
     }
 }
