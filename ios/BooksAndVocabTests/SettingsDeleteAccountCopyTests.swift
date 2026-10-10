@@ -37,14 +37,15 @@ struct SettingsDeleteAccountCopyTests {
         #expect(SettingsDeleteAccountCopy.cancelTitle == L10n.string("取消"))
     }
 
-    /// Delete wipes the server-side `users/<uid>/library.db` (bookshelf + reading progress), so the
-    /// copy must keep promising that deletion. Dropping the row would understate the blast radius.
-    @Test func consequenceRowsStillListCloudReadingProgressAndBookshelf() {
+    /// Delete wipes only the server-side `users/<uid>/library.db`; the local Book rows and files
+    /// are kept (BackgroundSyncActor), so the copy must scope the bookshelf and progress to cloud.
+    @Test func consequenceRowsScopeReadingProgressAndBookshelfToCloud() {
         let rows = SettingsDeleteAccountCopy.consequenceRows.map(\.text)
-        #expect(rows.contains(L10n.string("閱讀進度與書架")))
+        #expect(rows.contains(L10n.string("雲端閱讀進度與書架")))
+        #expect(!rows.contains(L10n.string("閱讀進度與書架")))
         #expect(
             SettingsDeleteAccountCopy.heroDescription
-                == L10n.string("刪除後將立即移除你的帳號、雲端生詞、閱讀進度、訂閱記錄。請仔細確認下列項目後才能繼續。")
+                == L10n.string("刪除後將立即移除你的帳號、雲端生詞、雲端閱讀進度與書架、訂閱記錄。請仔細確認下列項目後才能繼續。")
         )
     }
 
