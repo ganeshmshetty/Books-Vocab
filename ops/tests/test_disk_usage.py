@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -1789,6 +1790,90 @@ def test_xctest_devices_propagates_non_timeout_tree_failure(
     assert observed["measurement_complete"] is False
     assert observed["status"] == "measurement-incomplete"
     assert f"{udid}:permission-denied" in observed["measurement_errors"]
+
+
+def test_xctest_devices_device_removed_mid_scan_is_skipped_not_incomplete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import shutil
+
+    xctest_root = tmp_path / "XCTestDevices"
+    vanished = "11111111-1111-4111-8111-111111111111"
+    kept = "22222222-2222-4222-8222-222222222222"
+    _write_xctest_device(xctest_root, vanished)
+    _write_xctest_device(xctest_root, kept)
+    real_measure_tree = disk_usage.measure_tree
+
+    def vanish_after_scandir(path: Path, **kwargs: object) -> dict[str, object]:
+        if path.name == vanished:
+            shutil.rmtree(path)
+        return real_measure_tree(path, **kwargs)
+
+    monkeypatch.setattr(disk_usage, "measure_tree", vanish_after_scandir)
+
+    observed = disk_usage.inspect_xctest_devices(xctest_root)
+
+    assert observed["measurement_complete"] is True
+    assert observed["status"] == "measured"
+    assert observed["measurement_errors"] == []
+    assert [device["udid"] for device in observed["devices"]] == [kept]
+
+
+def test_xctest_devices_removed_mid_walk_is_skipped_and_rolls_back_extents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    xctest_root = tmp_path / "XCTestDevices"
+    vanished = "11111111-1111-4111-8111-111111111111"
+    kept = "22222222-2222-4222-8222-222222222222"
+    _write_xctest_device(xctest_root, vanished)
+    _write_xctest_device(xctest_root, kept)
+    real_scandir = os.scandir
+
+    def vanish_before_child_walk(path: object = ".", *args: object, **kwargs: object):
+        if Path(str(path)) == xctest_root / vanished / "data":
+            shutil.rmtree(xctest_root / vanished)
+        return real_scandir(path, *args, **kwargs)
+
+    def extents(path: Path, *args: object, **kwargs: object):
+        found = [(7, 0, 8192)] if vanished in str(path) else [(9, 4096, 8192)]
+        return found, None
+
+    monkeypatch.setattr(os, "scandir", vanish_before_child_walk)
+    monkeypatch.setattr(disk_usage, "_supports_physical_extents", lambda: True)
+    monkeypatch.setattr(disk_usage, "_physical_file_extents", extents)
+
+    observed = disk_usage.inspect_xctest_devices(xctest_root, budget_bytes=1024 * 1024)
+
+    assert observed["status"] == "measured"
+    assert observed["measurement_errors"] == []
+    assert [device["udid"] for device in observed["devices"]] == [kept]
+    assert observed["device_count"] == 1
+    assert observed["budget_allocated_bytes"] == 4096
+
+
+def test_xctest_devices_removed_before_plist_read_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    xctest_root = tmp_path / "XCTestDevices"
+    vanished = "33333333-3333-4333-8333-333333333333"
+    kept = "44444444-4444-4444-8444-444444444444"
+    _write_xctest_device(xctest_root, vanished)
+    _write_xctest_device(xctest_root, kept)
+    real_read = disk_usage._read_xctest_device_plist
+
+    def vanish_before_read(plist_path: Path, name: str) -> object:
+        if name == vanished:
+            shutil.rmtree(xctest_root / vanished)
+        return real_read(plist_path, name)
+
+    monkeypatch.setattr(disk_usage, "_read_xctest_device_plist", vanish_before_read)
+
+    observed = disk_usage.inspect_xctest_devices(xctest_root)
+
+    assert observed["status"] == "measured"
+    assert observed["metadata_complete"] is True
+    assert observed["measurement_errors"] == []
+    assert [device["udid"] for device in observed["devices"]] == [kept]
 
 
 def test_xctest_devices_budget_uses_unique_physical_extents(
