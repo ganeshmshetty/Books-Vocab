@@ -215,9 +215,11 @@ struct KGVocabView: View {
             }
         }
         .animateSpring(selectionState.isSelecting)
-        // Alert, not confirmationDialog: on iPhone the dialog rendered as a popover that
-        // showed only the destructive action, leaving Cancel unreachable. The word-detail
-        // delete already uses an alert, so the cancel path stays visible and consistent.
+        // Alert, not confirmationDialog: in the UI test the confirmationDialog rendered as a
+        // popover that showed only the destructive action, so its Cancel button was not
+        // hittable and the cancel path was unreachable. Batch delete therefore uses .alert.
+        // Follow-up: the single-word delete in WordDetailSheet.swift still uses
+        // .confirmationDialog, so the two destructive confirmations differ in presentation.
         .alert(
             KGVocabCopy.batchDeleteTitle(count: batchDeleteConfirmation.requestedCount),
             isPresented: $batchDeleteConfirmation.isPending
