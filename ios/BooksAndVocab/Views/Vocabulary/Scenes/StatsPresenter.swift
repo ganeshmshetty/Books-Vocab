@@ -56,7 +56,8 @@ struct StatsPresenter: View {
     @State private var contentReady = false
     @State private var graphLinks: [KGGraphLink]?
     @State private var graphHolder = GraphThumbnailHolder()
-    @State private var graphLoadError: Bool = false
+    /// `SyncFailurePresentation.reason` of the latest failed graph pull; nil when the last pull succeeded.
+    @State private var graphFailureReason: String?
     @State private var retryToken: Int = 0
 
     /// Whether the graph `.task` may fetch links (demo/remote). Always true in
@@ -92,6 +93,7 @@ struct StatsPresenter: View {
         initialSummary: StatsPresentation.Summary? = nil,
         initialGraphLinks: [KGGraphLink],
         shouldLoadGraphData: Bool,
+        initialGraphFailureReason: String? = nil,
         reviewClock: StatsProjectionClock? = nil
     ) {
         self.filter = filter
@@ -100,6 +102,7 @@ struct StatsPresenter: View {
         _summary = State(initialValue: initialSummary)
         _contentReady = State(initialValue: initialSummary != nil)
         _graphLinks = State(initialValue: initialGraphLinks)
+        _graphFailureReason = State(initialValue: initialGraphFailureReason)
         _reviewRecords = Query(
             sort: \ReviewRecord.reviewedAt,
             order: .reverse
@@ -192,26 +195,28 @@ struct StatsPresenter: View {
     private func loadGraphLinks() async {
         if authManager.isDemoMode {
             graphLinks = DemoDataProvider.demoGraphLinks
-            graphLoadError = false
+            graphFailureReason = nil
             return
         }
         guard authManager.isLoggedIn else {
             graphLinks = []
-            graphLoadError = false
+            graphFailureReason = nil
             return
         }
         do {
             graphLinks = try await kgService.pullGraphLinks(
                 notebookIDs: KnowledgeGraphNotebookScope.notebookIDs(for: filter, entries: filteredEntries)
             )
-            graphLoadError = false
+            graphFailureReason = nil
         } catch {
+            // A superseded task (graphKey changed) is not a failure.
+            if Task.isCancelled || error is CancellationError { return }
             // Failure is scoped to the graph card only — summary is built from
             // local syncedEntries and never fails. If we have cached links,
-            // keep showing them but flag staleness via a dot in the header.
+            // keep showing them with the card's visible status row (reason + retry).
             // If we have nothing yet, surface error inside the graph body
             // (not page-level).
-            graphLoadError = true
+            graphFailureReason = SyncFailurePresentation.reason(for: error)
         }
     }
 
@@ -221,7 +226,7 @@ struct StatsPresenter: View {
         // Note: no page-level .error phase. `summary` is computed from local
         // `syncedEntries` (a SwiftData @Query) and cannot fail — so the only
         // failure mode is `pullGraphLinks`, which is scoped to the graph card
-        // (handled inline via graphLoadError + retry button in graphEntryBody).
+        // (handled inline via graphFailureReason + VocabGraphEntryCard).
         guard let summary else {
             return .loading(
                 title: StatsCopy.loadingTitle,
@@ -258,7 +263,7 @@ struct StatsPresenter: View {
     }
 
     private func retryGraphLoad() {
-        graphLoadError = false
+        graphFailureReason = nil
         retryToken &+= 1
     }
 
@@ -303,151 +308,28 @@ struct StatsPresenter: View {
     }
 
     // MARK: - Graph Entry
-
-    @ViewBuilder
     private var graphEntrySection: some View {
         let nodes = graphThumbnailNodes
         let nodeIDs = Set(nodes.map(\.id))
         let edges = graphLinks.map {
             KnowledgeGraphPresentation.edges(from: $0, validNodeIDs: nodeIDs)
         } ?? []
-
-        if graphLoadError && graphLinks == nil {
-            // No cached data — show a non-navigating card with retry. Avoids
-            // pushing the user into KnowledgeGraphView with empty state.
-            VocabCard(padding: 0) {
-                VStack(spacing: 0) {
-                    graphEntryHeader(nodeCount: 0, showsChevron: false)
-                        .padding(appSkin.metrics.cardBlockPadding)
-                    graphErrorBody
-                        // An error state is an inline recovery affordance, not
-                        // a square graph canvas. Keeping the old aspect-ratio
-                        // reservation made an empty Overview spend a full
-                        // viewport on blank space and pushed the zero forecast
-                        // below the materialized accessibility region.
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 164)
-                }
-            }
-        } else {
-            NavigationLink {
-                KnowledgeGraphView(
-                    allEntries: filteredEntries,
-                    notebookId: selectedNotebookId
-                )
-            } label: {
-                VocabCard(padding: 0) {
-                    VStack(spacing: 0) {
-                        graphEntryHeader(nodeCount: nodes.count, showsChevron: true)
-                            .padding(appSkin.metrics.cardBlockPadding)
-
-                        graphEntryBody(nodes: nodes, edges: edges)
-                            .aspectRatio(1, contentMode: .fit)
-
-                        if let avgRatio = averageRatio(of: nodes) {
-                            healthBar(ratio: avgRatio)
-                                .padding(.horizontal, appSkin.metrics.cardBlockPadding)
-                                .padding(.bottom, AppSpacing.s2)
-                        }
-                    }
-                }
-            }
-            .buttonStyle(.liftable)
-        }
-    }
-
-    private var graphErrorBody: some View {
-        VStack(spacing: appSkin.spacing.inlineGap) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(appSkin.typography.iconMedium)
-                .foregroundStyle(appSkin.palette.warning)
-            Text(StatsCopy.graphErrorTitle)
-                .font(appSkin.typography.caption)
-                .foregroundStyle(appSkin.palette.primaryText)
-            Button {
-                retryGraphLoad()
-            } label: {
-                HStack(spacing: appSkin.spacing.rowMicroGap) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(appSkin.typography.iconSmall)
-                    Text(StatsCopy.retryTitle)
-                        .font(appSkin.typography.caption)
-                }
-                .padding(.horizontal, appSkin.spacing.inlineGap)
-                .padding(.vertical, appSkin.spacing.rowMicroGap)
-                .background(appSkin.palette.warningBg, in: AppRoundedRect(roundness: AppRoundness.pill))
-                .foregroundStyle(appSkin.palette.warning)
-            }
-            .buttonStyle(.plain)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(appSkin.metrics.cardBlockPadding)
-    }
-
-    private func graphEntryHeader(nodeCount: Int, showsChevron: Bool) -> some View {
-        HStack(spacing: appSkin.spacing.inlineGap) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(appSkin.typography.iconMedium)
-                .foregroundStyle(AppColors.chartHighlight)
-            Text(StatsCopy.graphTitle)
-                .font(appSkin.typography.caption)
-                .foregroundStyle(appSkin.palette.primaryText)
-            if graphLoadError && graphLinks != nil {
-                // Stale dot — we have cached links but the latest pull failed.
-                Circle()
-                    .fill(appSkin.palette.warning)
-                    .frame(width: 6, height: 6)
-                    .accessibilityLabel(Text(StatsCopy.staleDataTitle))
-            }
-            Spacer()
-            if let graphLinks, !graphLinks.isEmpty {
-                Text(L10n.format(
-                    "%@ · %@",
-                    L10n.format("vocab_graph_node_count_plural", Int64(nodeCount)),
-                    L10n.format("vocab_graph_link_count_plural", Int64(graphLinks.count))
-                ))
-                    .font(appSkin.typography.monoLabel)
-                    .foregroundStyle(appSkin.palette.quaternaryText)
-            }
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(appSkin.typography.iconSmall)
-                    .foregroundStyle(appSkin.palette.quaternaryText)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func graphEntryBody(nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge]) -> some View {
-        switch StatsPresentation.graphThumbnailBodyKind(
+        return VocabGraphEntryCard(
             linksLoaded: graphLinks != nil,
-            nodeCount: nodes.count
+            linkCount: graphLinks?.count ?? 0,
+            nodes: nodes,
+            edges: edges,
+            failureReason: graphFailureReason,
+            holder: graphHolder,
+            onRetry: retryGraphLoad
         ) {
-        case .loading:
-            AppLoadingStateCard(
-                title: StatsCopy.loadingTitle,
-                systemImage: "chart.bar",
-                visualStyle: .vocab
-            )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .empty:
-            AppStateMessageContent(
-                title: StatsCopy.graphEmptyTitle,
-                systemImage: "point.3.connected.trianglepath.dotted",
-                style: .vocab(appSkin)
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .padding(appSkin.metrics.cardBlockPadding)
-        case .graph:
-            GraphThumbnailWebView(
-                holder: graphHolder,
-                nodes: nodes,
-                edges: edges,
-                theme: KnowledgeGraphPresentation.theme(for: appSkin),
-                colorScheme: colorScheme
+            KnowledgeGraphView(
+                allEntries: filteredEntries,
+                notebookId: selectedNotebookId
             )
         }
     }
+
 
     private var graphThumbnailNodes: [KnowledgeGraphNode] {
         guard let graphLinks else { return [] }
@@ -457,47 +339,6 @@ struct StatsPresenter: View {
             showIsolatedNodes: false,
             now: activeProjectionClock.dueNow
         )
-    }
-
-    private func averageRatio(of nodes: [KnowledgeGraphNode]) -> Double? {
-        let ratios = nodes.compactMap(\.ratio)
-        guard !ratios.isEmpty else { return nil }
-        return ratios.reduce(0, +) / Double(ratios.count)
-    }
-
-    private func healthBar(ratio: Double) -> some View {
-        let stops: [Gradient.Stop] = [
-            0, 0.15, 0.30, 0.45, 0.60, 0.72, 0.85, 1.0, 1.3, 2.0, 3.0
-        ].map { r in
-            Gradient.Stop(
-                color: ReviewGradient.color(for: r),
-                location: CGFloat(min(r / 3.0, 1.0))
-            )
-        }
-        let position = CGFloat(min(max(ratio, 0), 3.0) / 3.0)
-
-        return VStack(spacing: 0) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    AppRoundedRect(roundness: AppRoundness.pill)
-                        .fill(LinearGradient(
-                            stops: stops,
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ))
-                        .frame(height: 2)
-
-                    Triangle()
-                        .fill(appSkin.palette.primaryText)
-                        .frame(width: 6, height: 5)
-                        .offset(
-                            x: geo.size.width * position - 3,
-                            y: -4
-                        )
-                }
-            }
-            .frame(height: 7)
-        }
     }
 
     // MARK: - Sections
@@ -734,16 +575,5 @@ struct StatsPresenter: View {
                 .font(appSkin.typography.caption)
         }
         .foregroundStyle(appSkin.palette.tertiaryText)
-    }
-}
-
-private struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.midX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: 0))
-        p.addLine(to: CGPoint(x: rect.minX, y: 0))
-        p.closeSubpath()
-        return p
     }
 }
