@@ -76,7 +76,9 @@ struct RepoFixtureDatasetsContractTests {
                         #expect(previewSec > 0 && previewSec <= durationSec,
                                 "\(url.lastPathComponent) \(remoteID): previewDurationSec \(previewSec) must be within durationSec \(durationSec)")
                     }
-                    if let clip = clipSeconds[fixtureID], episode["audioAvailable"] as? Bool == true {
+                    if episode["audioAvailable"] as? Bool == true {
+                        // Fail closed on a renamed runtime key: a missing clip pin must not skip the check.
+                        let clip = try #require(clipSeconds[fixtureID], "\(url.lastPathComponent) \(fixtureID): no pinned clip length")
                         #expect(abs(durationSec - clip) < 0.05,
                                 "\(url.lastPathComponent) \(remoteID): durationSec \(durationSec) must match clip length \(clip)")
                     }
