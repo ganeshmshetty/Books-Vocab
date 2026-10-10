@@ -125,6 +125,14 @@ final class BookshelfCoordinator: BookshelfCoordinating {
         }
     }
 
+    /// 匯入草稿的檔案清理（書列從未存在或已回滾）。草稿可能已寫入 iCloud 目錄，
+    /// iCloud 不可用時仍須記 tombstone，reconciler 才會在 iCloud 回來時補刪（#2750）。
+    private func discardDraftFile(named fileName: String) {
+        let files = LocalBookFileManager()
+        guard (try? files.deleteBookFile(named: fileName)) != nil else { return }
+        files.recordPendingICloudDeletion(named: fileName)
+    }
+
     func deleteBook(
         _ book: Book,
         modelContext: ModelContext,
@@ -168,10 +176,13 @@ final class BookshelfCoordinator: BookshelfCoordinating {
         // save 失敗（罕見）：檔案已刪但 row 回滾保留、manifest 不動 → metadata 不遺失，
         // 再刪一次即可完成（缺檔不算刪除失敗）。持久層無損；已載入單字實例的 bookId 可能
         // 仍是暫存的 nil（見上），重啟後以持久層為準，此罕見路徑不另行補還原。
+        // 失敗時不記 tombstone（書仍在庫，見下），否則 iCloud 回來的 reconcile 會刪掉在庫書的 iCloud 副本。
         guard modelContext.safeSaveWithToast(toastCoordinator) else {
             modelContext.rollback()
             return
         }
+        // tombstone 只在書列確實刪除後才記（#2750）：先記、save 失敗時書仍在庫，之後的補刪會連它的 iCloud 副本與 manifest 一起刪掉。
+        fileManager.recordPendingICloudDeletion(named: fileName)
         BookManifestStore().delete(bookId: bookId)
         toastCoordinator.success("已刪除".localized)
     }
@@ -282,7 +293,7 @@ final class BookshelfCoordinator: BookshelfCoordinating {
                     // This is the only await-adjacent guard: everything below runs
                     // synchronously on MainActor until the save, so generation can't change.
                     guard self.isCurrentImport(generation) else {
-                        try? LocalBookFileManager(recordsTombstone: false).deleteBookFile(named: draft.fileName)
+                        self.discardDraftFile(named: draft.fileName)
                         return
                     }
                     AppLog.book.info("Import succeeded: \(draft.fileName)")
@@ -304,7 +315,7 @@ final class BookshelfCoordinator: BookshelfCoordinating {
                         // Save failed: unstage the Book and drop the imported file so a
                         // later successful save can't resurrect a "failed" import.
                         modelContext.delete(book)
-                        try? LocalBookFileManager(recordsTombstone: false).deleteBookFile(named: draft.fileName)
+                        self.discardDraftFile(named: draft.fileName)
                         failures.append((url.lastPathComponent, .unknown(underlying: "儲存失敗".localized)))
                     }
                 } catch is CancellationError {

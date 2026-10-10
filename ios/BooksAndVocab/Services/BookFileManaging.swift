@@ -17,6 +17,11 @@ protocol BookFileManaging: AnyObject {
     /// 刪除書籍檔案；任一位置刪除失敗會在**嘗試完所有位置後**拋出 `BookFileDeletionError`。
     /// 呼叫端必須處理失敗——吞掉會讓 row 已消失、檔案還在，下次 reconcile 書又復活。
     func deleteBookFile(named fileName: String) throws
+
+    /// 書列刪除 **save 成功後** 才呼叫：iCloud 不可用時記下待補刪的 tombstone（#2750）。
+    /// 不可在 `deleteBookFile` 內記錄：tombstone 先於 DB 刪除落地、save 失敗（書列回滾保留）時，
+    /// 之後的 reconcile 會刪掉仍在庫書的 iCloud 副本與 manifest，書永久遺失。
+    func recordPendingICloudDeletion(named fileName: String)
 }
 
 final class LocalBookFileManager: BookFileManaging {
@@ -27,20 +32,15 @@ final class LocalBookFileManager: BookFileManaging {
     private let pendingDeletions: PendingBookDeletionStore?
     private let iCloudAvailable: () -> Bool
 
-    private let recordsTombstone: Bool
-
     /// `pendingDeletions` 預設：用預設位置（正式路徑）時為 `.standard`，注入固定位置（測試）時為 nil。
-    /// `recordsTombstone: false` 給「檔案不可能到過 iCloud」的呼叫端（匯入草稿清理），不留不必要的 tombstone。
     init(
         locations: [URL]? = nil,
         pendingDeletions: PendingBookDeletionStore? = nil,
-        iCloudAvailable: @escaping () -> Bool = { Book.iCloudBooksDirectory != nil },
-        recordsTombstone: Bool = true
+        iCloudAvailable: @escaping () -> Bool = { Book.iCloudBooksDirectory != nil }
     ) {
         self.fixedLocations = locations
         self.pendingDeletions = pendingDeletions ?? (locations == nil ? .standard : nil)
         self.iCloudAvailable = iCloudAvailable
-        self.recordsTombstone = recordsTombstone
     }
 
     static func defaultLocations() -> [URL] {
@@ -72,13 +72,15 @@ final class LocalBookFileManager: BookFileManaging {
         if !failures.isEmpty {
             throw BookFileDeletionError(fileName: fileName, failures: failures)
         }
+    }
 
-        // iCloud 不可用時解析不到 iCloud 目錄，刪不到它的副本：記 tombstone，iCloud 回來時由 reconciler 補刪（#2750）。
-        // 只在本機刪除全部成功（失敗時書列仍在，不可留下之後會刪掉在庫書的 tombstone）時記錄。
+    func recordPendingICloudDeletion(named fileName: String) {
+        // 空檔名不記錄（補刪會以空名比對）。iCloud 不可用時解析不到 iCloud 目錄，刪不到它的副本，
+        // iCloud 回來時由 reconciler 補刪（#2750）。
         // 不以 `ubiquityIdentityToken` 把關：iCloud Drive / App 開關關閉時該值是否為 nil 未經實機驗證，
         // 誤判會讓 #2750 失效；改由 `PendingBookDeletionStore.maxEntries` 限制未被消耗的 tombstone 數量。
         // 殘餘：iCloud 剛回來但檔案尚未同步時，補刪可能落空。
-        guard recordsTombstone, let pendingDeletions, !iCloudAvailable() else { return }
+        guard !fileName.isEmpty, let pendingDeletions, !iCloudAvailable() else { return }
         pendingDeletions.insert(fileName)
     }
 

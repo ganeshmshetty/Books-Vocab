@@ -222,8 +222,10 @@ struct PendingBookDeletionStore {
 
     static var standard: PendingBookDeletionStore { PendingBookDeletionStore() }
 
-    /// 上限：不以 iCloud 登入狀態把關（見 `LocalBookFileManager.deleteBookFile`），沒用 iCloud 的人永遠不會消耗 tombstone，
+    /// 上限：不以 iCloud 登入狀態把關（見 `LocalBookFileManager.recordPendingICloudDeletion`），沒用 iCloud 的人永遠不會消耗 tombstone，
     /// 以此封頂（保留最新的，檔名是 UUID 不會誤刪在庫書）。
+    /// 殘餘風險：iCloud 長期不可用且累積超過上限時，最舊的 tombstone 被丟棄，該書的 iCloud 副本可能在 iCloud 回來後復活。
+    /// 截斷時寫入 warning log 以便事後追查。
     static let maxEntries = 200
 
     private var ordered: [String] { defaults.stringArray(forKey: Self.key) ?? [] }
@@ -231,8 +233,12 @@ struct PendingBookDeletionStore {
     var fileNames: Set<String> { Set(ordered) }
 
     func insert(_ fileName: String) {
-        let kept = ordered.filter { $0 != fileName } + [fileName]
-        defaults.set(Array(kept.suffix(Self.maxEntries)), forKey: Self.key)
+        var kept = ordered.filter { $0 != fileName } + [fileName]
+        if kept.count > Self.maxEntries {
+            AppLog.book.warning("pending book deletion tombstones truncated: dropping \(kept.count - Self.maxEntries, privacy: .public) oldest (cap \(Self.maxEntries, privacy: .public))")
+            kept = Array(kept.suffix(Self.maxEntries))
+        }
+        defaults.set(kept, forKey: Self.key)
     }
 
     func remove(_ fileName: String) {
