@@ -149,8 +149,15 @@ extension PodcastSyncService {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (_, response) = try await sharedURLSession.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw URLError(.badServerResponse)
+        if let http = response as? HTTPURLResponse {
+            // #2806: 真實 401 才登出（與 authedResponseData 同一唯一真相），不以本地時鐘判斷。
+            if http.statusCode == 401 {
+                await kgService.handleUnauthorized(modelContainer: nil, reason: "http_401")
+                throw KGError.unauthorized
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw URLError(.badServerResponse)
+            }
         }
     }
 

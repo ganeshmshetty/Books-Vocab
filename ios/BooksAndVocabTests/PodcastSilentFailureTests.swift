@@ -127,8 +127,9 @@ struct PodcastSilentFailureTests {
         )
 
         let token = try await PodcastEpisodeRow.downloadAuthToken(kgService: service)
+        let expectedToken = try #require(authSession.token)
 
-        #expect(token == (try #require(authSession.token)))
+        #expect(token == expectedToken)
         #expect(invalidator.events.isEmpty)
         #expect(service.sessionExpiredReason == nil)
     }
@@ -163,7 +164,9 @@ struct PodcastSilentFailureTests {
             for: makeRemoteLoadPlan(), kgService: service
         )
 
-        #expect(headers["Authorization"] == "Bearer \(try #require(authSession.token))")
+        let expectedToken = try #require(authSession.token)
+
+        #expect(headers["Authorization"] == "Bearer \(expectedToken)")
         #expect(invalidator.events.isEmpty)
         #expect(service.sessionExpiredReason == nil)
     }
@@ -207,7 +210,8 @@ struct PodcastSilentFailureTests {
         )
 
         let sent = try #require(PodcastBrowseProbeURLProtocol.captured(marker: "subtitle-expired"))
-        #expect(sent.value(forHTTPHeaderField: "Authorization") == "Bearer \(try #require(authSession.token))")
+        let expectedToken = try #require(authSession.token)
+        #expect(sent.value(forHTTPHeaderField: "Authorization") == "Bearer \(expectedToken)")
         #expect(subtitle != .failed)
         #expect(invalidator.events.isEmpty)
         #expect(service.sessionExpiredReason == nil)

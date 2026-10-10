@@ -76,9 +76,25 @@ struct KGAppStoreSubscriptionSyncRequest: Codable {
 
 extension KGService {
 
-    func fetchUserConfig() async throws -> KGUserConfig {
+    /// user-config 請求的 401 登出接線（#2806）。`KGUserConfigClient` 不持有 KGService，
+    /// 故真實 401 在此接住並走與 `authenticatedRequest` 相同的 `handleUnauthorized`；
+    /// 過期與否不由本地時鐘判斷，一律交給伺服器 401。
+    private func performUserConfigRequest(
+        _ send: (String) async throws -> KGUserConfig
+    ) async throws -> KGUserConfig {
         let token = try await currentAuthToken()
-        let config = try await userConfigClient.fetchUserConfig(baseURL: baseURL, token: token)
+        do {
+            return try await send(token)
+        } catch KGError.unauthorized {
+            await handleUnauthorized(modelContainer: nil, reason: "http_401")
+            throw KGError.unauthorized
+        }
+    }
+
+    func fetchUserConfig() async throws -> KGUserConfig {
+        let config = try await performUserConfigRequest { token in
+            try await userConfigClient.fetchUserConfig(baseURL: baseURL, token: token)
+        }
         AppLog.kg.info("Fetched config successfully")
         return config
     }
@@ -101,56 +117,61 @@ extension KGService {
     }
 
     func updateTranslationConfig(_ translationConfig: KGTranslationConfig) async throws -> KGUserConfig {
-        let token = try await currentAuthToken()
-        let config = try await userConfigClient.updateTranslationConfig(
-            baseURL: baseURL,
-            token: token,
-            translation: translationConfig
-        )
+        let config = try await performUserConfigRequest { token in
+            try await userConfigClient.updateTranslationConfig(
+                baseURL: baseURL,
+                token: token,
+                translation: translationConfig
+            )
+        }
         AppLog.kg.info("Updated translation config successfully")
         return config
     }
 
     func updateReviewClockConfig(_ reviewClock: KGReviewClockConfig) async throws -> KGUserConfig {
-        let token = try await currentAuthToken()
-        let config = try await userConfigClient.updateReviewClockConfig(
-            baseURL: baseURL,
-            token: token,
-            reviewClock: reviewClock
-        )
+        let config = try await performUserConfigRequest { token in
+            try await userConfigClient.updateReviewClockConfig(
+                baseURL: baseURL,
+                token: token,
+                reviewClock: reviewClock
+            )
+        }
         AppLog.kg.info("Updated review clock config successfully")
         return config
     }
 
     func updateReviewModeConfig(_ reviewMode: KGReviewModeConfig) async throws -> KGUserConfig {
-        let token = try await currentAuthToken()
-        let config = try await userConfigClient.updateReviewModeConfig(
-            baseURL: baseURL,
-            token: token,
-            reviewMode: reviewMode
-        )
+        let config = try await performUserConfigRequest { token in
+            try await userConfigClient.updateReviewModeConfig(
+                baseURL: baseURL,
+                token: token,
+                reviewMode: reviewMode
+            )
+        }
         AppLog.kg.info("Updated review mode config successfully")
         return config
     }
 
     func updateVocabUIConfig(_ vocabUI: KGVocabUIConfig) async throws -> KGUserConfig {
-        let token = try await currentAuthToken()
-        let config = try await userConfigClient.updateVocabUIConfig(
-            baseURL: baseURL,
-            token: token,
-            vocabUI: vocabUI
-        )
+        let config = try await performUserConfigRequest { token in
+            try await userConfigClient.updateVocabUIConfig(
+                baseURL: baseURL,
+                token: token,
+                vocabUI: vocabUI
+            )
+        }
         AppLog.kg.info("Updated vocab_ui (active notebook) config successfully")
         return config
     }
 
     func updateAutoLinkConfig(_ autoLink: KGAutoLinkConfig) async throws -> KGUserConfig {
-        let token = try await currentAuthToken()
-        let config = try await userConfigClient.updateAutoLinkConfig(
-            baseURL: baseURL,
-            token: token,
-            autoLink: autoLink
-        )
+        let config = try await performUserConfigRequest { token in
+            try await userConfigClient.updateAutoLinkConfig(
+                baseURL: baseURL,
+                token: token,
+                autoLink: autoLink
+            )
+        }
         AppLog.kg.info("Updated auto_link config successfully")
         return config
     }
