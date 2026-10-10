@@ -330,6 +330,8 @@ struct ReaderTOCNavigationState: Equatable {
         case .missingDestination: phaseValue = "missingDestination"
         }
         let selected = selectedTitle ?? ""
+        // `expected` is the resource href (fragment stripped), not the requested
+        // TOC href; UI automation must compare against the resource part.
         let expected = expectedLocatorHref ?? ""
         let destination = destinationHref ?? ""
         return "phase=\(phaseValue);selected=\(selected);expected=\(expected);destination=\(destination)"
