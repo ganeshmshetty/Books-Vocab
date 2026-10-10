@@ -19,12 +19,14 @@ if [[ -z "$repo" || -z "$run_id" || -z "$runner" ]]; then
   exit 0
 fi
 
-jobs_json="$(gh api "repos/$repo/actions/runs/$run_id/attempts/$attempt/jobs" 2>/dev/null)" || {
+# --paginate: the jobs endpoint returns 30 jobs per page, and gh emits one JSON
+# object per page; jq -s slurps them so the runner is found on any page (#2641).
+jobs_json="$(gh api --paginate "repos/$repo/actions/runs/$run_id/attempts/$attempt/jobs?per_page=100" 2>/dev/null)" || {
   warn "jobs API unavailable; not measured"
   exit 0
 }
-wait_s="$(printf '%s' "$jobs_json" | jq -r --arg r "$runner" \
-  '[.jobs[] | select(.runner_name == $r) | ((.started_at | fromdateiso8601) - (.created_at | fromdateiso8601))] | first // empty' 2>/dev/null)" || wait_s=''
+wait_s="$(printf '%s' "$jobs_json" | jq -rs --arg r "$runner" \
+  '[.[].jobs[] | select(.runner_name == $r) | ((.started_at | fromdateiso8601) - (.created_at | fromdateiso8601))] | first // empty' 2>/dev/null)" || wait_s=''
 if [[ ! "$wait_s" =~ ^[0-9]+$ ]]; then
   warn "no queue time found for runner '$runner'; not measured"
   exit 0

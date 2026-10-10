@@ -52,7 +52,7 @@ GitHub Issue 的 label 分類、狀態機、優先級、公開認領協議、工
 | 類型（一個） | `bug` `enhancement` `tech-debt` `epic` | 安全問題另加 `security` |
 | 旗標（可選） | `claim-stale` `claim-conflict` `delivery:candidate` `delivery-hold:p0`／`delivery-hold:p1`／`delivery-hold:security` | `delivery:candidate` 與 `delivery-hold:*` 沿用現有語義，不在此改動 |
 | 系統 | `work-board` `health-report` | 自動維護的 Issue 專用；一般排序與盤點排除 |
-| 旗標（系統） | `main-red` | `main_watch` 於 main push 失敗時自動建立的 Issue；同時帶 `P1`、`needs-triage`、`area/ops-ci`、`bug`，同區後續紅燈以留言連結 |
+| 旗標（系統） | `main-red` | `main_watch` 於 main push 失敗時自動建立的 Issue；同時帶 `P1`、`needs-triage`、依 workflow 對應的領域 label（`backend-quality`→`area/backend`、`ios-quality`／`design-system`／`ui-quality-gate`→`area/ios`、`ops-suite`→`area/ops-ci`、`llm-eval`→`area/lab-podcast`；未對應者不帶領域 label 交 triage）、`bug`，同區後續紅燈以留言連結 |
 
 每個 label 都必須有非空的 description（`gh label list` 可讀回）；新增 label 時同步補說明。
 

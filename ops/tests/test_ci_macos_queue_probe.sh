@@ -37,4 +37,23 @@ run_probe >/dev/null && pass "API failure only warns" || fail "API failure must 
 stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:45:00Z
 run_probe other >/dev/null && pass "unknown runner is not measured, not failed" || fail "unknown runner must not fail"
 
+# The jobs endpoint returns 30 jobs per page by default. Runner r1 is job 31 of
+# 35, so a single unpaged call cannot see it; the probe must page (#2641).
+stub_paged_gh() {
+  mkdir -p "$tmp/bin"
+  jobs_page() { # $1..$2 = inclusive job range; only job 31 carries runner r1
+    jq -cn --argjson a "$1" --argjson b "$2" '{jobs: [range($a; $b + 1) as $i | {runner_name: (if $i == 31 then "r1" else "other" end), created_at: "2026-01-01T00:00:00Z", started_at: "2026-01-01T00:45:00Z"}]}'
+  }
+  jobs_page 1 30 >"$tmp/p1.json"
+  jobs_page 31 35 >"$tmp/p2.json"
+  jobs_page 1 35 >"$tmp/all.json"
+  printf '#!/bin/sh\ncase "$*" in\n  *per_page=100*) cat "%s" ;;\n  *--paginate*) cat "%s" "%s" ;;\n  *) cat "%s" ;;\nesac\n' \
+    "$tmp/all.json" "$tmp/p1.json" "$tmp/p2.json" "$tmp/p1.json" >"$tmp/bin/gh"
+  chmod +x "$tmp/bin/gh"
+}
+stub_paged_gh
+if out="$(run_probe)"; then fail "runner on job 31 must be found and its starvation must fail"; \
+elif grep -q 'macos-capacity starved' <<<"$out"; then pass "runner on job 31+ is found through pagination"; \
+else fail "runner on job 31+ was not measured (pagination missing): $out"; fi
+
 (( failures == 0 )) || exit 1

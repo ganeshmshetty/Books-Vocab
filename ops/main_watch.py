@@ -24,8 +24,6 @@ from typing import Any
 
 LABEL = "main-red"
 PRIORITY = "P1"
-# Taxonomy labels (issue_management.md): one status, one area, one type.
-TAXONOMY = ["needs-triage", "area/ops-ci", "bug"]
 RED = frozenset({"failure", "timed_out", "startup_failure"})
 # Workflows that run on every push to main, named by the area a failure breaks.
 AREAS = {
@@ -35,6 +33,16 @@ AREAS = {
     "design-system": "design-system",
     "ui-quality-gate": "ui-quality",
     "llm-eval": "llm-eval",
+}
+# Area -> taxonomy area label (issue_management.md: one area per issue). An
+# unmapped area gets no area label, so triage assigns one instead of a guess.
+AREA_LABELS = {
+    "backend": "area/backend",
+    "ios": "area/ios",
+    "design-system": "area/ios",
+    "ui-quality": "area/ios",
+    "ops": "area/ops-ci",
+    "llm-eval": "area/lab-podcast",
 }
 FIELDS = ("workflow", "conclusion", "event", "branch", "sha", "url")
 
@@ -58,6 +66,7 @@ def plan(run: Mapping[str, str], open_issues: list[dict[str, Any]]) -> dict[str,
     if run["conclusion"] not in RED:
         return {"action": "noop", "reason": f"{run['conclusion']} is not red"}
     area, name = area_of(run["workflow"]), _plain(run["workflow"])
+    area_label = [AREA_LABELS[area]] if area in AREA_LABELS else []
     for issue in open_issues:
         if marker(area) in issue["body"]:
             linked = re.compile(re.escape(run["url"]) + r"(?![0-9])")
@@ -72,7 +81,7 @@ def plan(run: Mapping[str, str], open_issues: list[dict[str, Any]]) -> dict[str,
     return {
         "action": "create",
         "title": f"main is red: {area} ({name}) at {run['sha'][:9]}",
-        "labels": [PRIORITY, *TAXONOMY, LABEL],
+        "labels": [PRIORITY, "needs-triage", *area_label, "bug", LABEL],
         "body": f"{marker(area)}\n`main` went red in the **{area}** area; the next "
         f"PR should not be the one that finds out.\n\n- Workflow: `{name}` "
         f"({run['conclusion']})\n- Commit: {run['sha']}\n- Run: {run['url']}\n\n"

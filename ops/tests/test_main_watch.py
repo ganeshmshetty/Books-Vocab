@@ -41,13 +41,36 @@ def test_a_red_main_push_run_opens_a_p1_fix_issue(conclusion: str) -> None:
     assert decision["labels"] == [
         "P1",
         "needs-triage",
-        "area/ops-ci",
+        "area/backend",
         "bug",
         main_watch.LABEL,
     ]
     assert "backend" in decision["title"] and SHA[:9] in decision["title"]
     assert URL in decision["body"] and SHA in decision["body"]
     assert main_watch.marker("backend") in decision["body"]
+
+
+@pytest.mark.parametrize(
+    ("workflow", "label"),
+    [
+        ("backend-quality", "area/backend"),
+        ("ios-quality", "area/ios"),
+        ("design-system", "area/ios"),
+        ("ui-quality-gate", "area/ios"),
+        ("ops-suite", "area/ops-ci"),
+        ("llm-eval", "area/lab-podcast"),
+    ],
+)
+def test_each_watched_workflow_opens_with_its_own_area_label(
+    workflow: str, label: str
+) -> None:
+    decision = main_watch.plan(run(workflow=workflow), [])
+    assert decision["labels"] == ["P1", "needs-triage", label, "bug", main_watch.LABEL]
+
+
+def test_an_unmapped_workflow_gets_no_guessed_area_label() -> None:
+    decision = main_watch.plan(run(workflow="Some New Check!"), [])
+    assert decision["labels"] == ["P1", "needs-triage", "bug", main_watch.LABEL]
 
 
 @pytest.mark.parametrize(
