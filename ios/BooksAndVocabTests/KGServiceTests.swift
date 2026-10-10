@@ -700,3 +700,45 @@ struct BackgroundSyncPendingTokenTests {
         #expect(invalidator.logoutReasons.isEmpty)
     }
 }
+
+// MARK: - #2806 a locally expired JWT must not log out / wipe local data (only a real 401 may)
+
+@MainActor
+private final class LocallyExpiredAuthSession: AuthSessionProviding {
+    let isLoggedIn = true
+    // exp = 1000 (1970): expired by any device clock, so only the client precheck can judge it.
+    let token: String? = "header.eyJleHAiOjEwMDB9.signature"
+}
+
+@MainActor
+private final class RecordingLogoutInvalidator: SessionInvalidating {
+    private(set) var logoutReasons: [String] = []
+    func logout(modelContainer: ModelContainer?, reason: String) { logoutReasons.append(reason) }
+    func waitForPendingLocalDataCleanup() async {}
+}
+
+@MainActor
+struct LocalClockExpiryDoesNotWipeTests {
+    private static func makeService() -> (KGService, RecordingLogoutInvalidator) {
+        let invalidator = RecordingLogoutInvalidator()
+        let service = KGService(
+            authSession: LocallyExpiredAuthSession(),
+            sessionInvalidator: invalidator,
+            connectivityGate: FixedConnectivityGate(isConnected: true)
+        )
+        return (service, invalidator)
+    }
+
+    @Test func locallyExpiredTokenDoesNotInvokeLogout() async {
+        let (service, invalidator) = Self.makeService()
+        let token = try? await service.currentAuthToken()
+        #expect(token == "header.eyJleHAiOjEwMDB9.signature", "precheck must not block the request; the server decides")
+        #expect(invalidator.logoutReasons.isEmpty, "local clock alone must never trigger logout/wipe")
+    }
+
+    @Test func realUnauthorizedStillLogsOut() async {
+        let (service, invalidator) = Self.makeService()
+        await service.handleUnauthorized(modelContainer: nil, reason: "http_401")
+        #expect(invalidator.logoutReasons == ["http_401"])
+    }
+}
