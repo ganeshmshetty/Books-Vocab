@@ -57,14 +57,19 @@ struct RepoFixtureDatasetsContractTests {
             Self.datasetsDirectory.appendingPathComponent("marketing_demo.json"),
             fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"),
         ]
-        let clipSeconds: [String: Double] = [
-            "playablePreview": 120.0,
-            "tieredCatalog": 12.0,
+        // Keyed by the audio file the episode actually plays (asset sourcePath basename), not by runtime key.
+        let clipSecondsByFile: [String: Double] = [
+            "podcast_demo.mp3": 12.0,
+            "podcast_demo_long.mp3": 120.0,
         ]
 
         for url in urls {
             let top = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
             let runtime = try #require(top["runtimePodcast"] as? [String: Any], "\(url.lastPathComponent): runtimePodcast")
+            let audioAssets = try #require(
+                (top["assets"] as? [String: Any])?["audio"] as? [String: Any],
+                "\(url.lastPathComponent): assets.audio"
+            )
             for (fixtureID, value) in runtime {
                 let series = try #require(value as? [String: Any])
                 let episodes = try #require(series["episodes"] as? [[String: Any]])
@@ -77,8 +82,20 @@ struct RepoFixtureDatasetsContractTests {
                                 "\(url.lastPathComponent) \(remoteID): previewDurationSec \(previewSec) must be within durationSec \(durationSec)")
                     }
                     if episode["audioAvailable"] as? Bool == true {
-                        // Fail closed on a renamed runtime key: a missing clip pin must not skip the check.
-                        let clip = try #require(clipSeconds[fixtureID], "\(url.lastPathComponent) \(fixtureID): no pinned clip length")
+                        // Fail closed: a re-pointed or unpinned audio file must not skip the check.
+                        let audioRef = try #require(
+                            (episode["download"] as? [String: Any])?["audioAssetRef"] as? String,
+                            "\(remoteID) audioAssetRef"
+                        )
+                        // Refs are `audio.<key>` (see FixtureDatasetDocument asset-ref prefix).
+                        let assetKey = try #require(
+                            audioRef.hasPrefix("audio.") ? String(audioRef.dropFirst("audio.".count)) : nil,
+                            "\(audioRef): expected audio. prefix"
+                        )
+                        let asset = try #require(audioAssets[assetKey] as? [String: Any], "\(url.lastPathComponent) \(audioRef): asset")
+                        let sourcePath = try #require(asset["sourcePath"] as? String, "\(audioRef) sourcePath")
+                        let file = URL(fileURLWithPath: sourcePath).lastPathComponent
+                        let clip = try #require(clipSecondsByFile[file], "\(url.lastPathComponent) \(fixtureID) \(file): no pinned clip length")
                         #expect(abs(durationSec - clip) < 0.05,
                                 "\(url.lastPathComponent) \(remoteID): durationSec \(durationSec) must match clip length \(clip)")
                     }
