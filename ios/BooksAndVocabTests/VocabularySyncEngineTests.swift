@@ -99,6 +99,40 @@ struct VocabularySyncEngineTests {
         #expect(!entry.shouldUploadOnNextSync)
     }
 
+    @Test("a delete issued while its add is in flight is queued, not dropped, and removed on the next sync")
+    func deleteDuringInFlightAddIsQueued() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "ephemeral")
+        entry.restorePendingEntry()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.addResponse = KGAddResponse(
+            created: 1, skipped: 0, duplicates: [], cardIds: [entry.word: "card-9"]
+        )
+        service.onAddInFlight = { entry.deleteLocally(in: context) }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        // Row survives the in-flight window so the server copy cannot be re-pulled.
+        #expect(!entry.isDeleted)
+        #expect(entry.isPendingDelete)
+        #expect(entry.kgCardId == "card-9")
+        #expect(!entry.isUploadInFlight)
+
+        service.onAddInFlight = nil
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(service.calls.contains("batchDelete"))
+        #expect(entry.isDeleted)
+    }
+
     @Test("a failed edit stays retryable and makes sync partial")
     func failedEditCanRetry() async throws {
         let container = try makeContainer()
@@ -410,6 +444,8 @@ private final class FakeVocabularySyncService: VocabularySyncEngineServing {
     var pullError: Error?
     var blockAdd = false
     var blockEdit = false
+    /// 在 batchAdd 送出後、回傳前執行，模擬 in-flight 期間的使用者操作（#2733）。
+    var onAddInFlight: (() -> Void)?
     private(set) var calls: [String] = []
     private(set) var editRequests: [EditRequest] = []
     private var addStarted = false
@@ -421,6 +457,7 @@ private final class FakeVocabularySyncService: VocabularySyncEngineServing {
         if blockAdd {
             try await Task.sleep(for: .seconds(60))
         }
+        onAddInFlight?()
         return addResponse
     }
 
