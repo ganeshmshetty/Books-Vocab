@@ -80,6 +80,16 @@ final class CloudPreferencesSync {
         scheduleFlush()
     }
 
+    func removeObject(forKey key: String) {
+        kvs.removeObject(forKey: key)
+        scheduleFlush()
+    }
+
+    /// 列出 KVS 內所有 key（帳號偏好 purge 用）。
+    func allKeys() -> [String] {
+        Array(kvs.dictionaryRepresentation.keys)
+    }
+
     // MARK: - Sync
 
     /// 立即 `synchronize()` 並取消任何 pending debounced flush。
