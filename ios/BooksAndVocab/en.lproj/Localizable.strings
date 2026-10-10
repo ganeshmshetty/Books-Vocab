@@ -1405,3 +1405,6 @@
 "要清除本機快取嗎？" = "Clear local cache?";
 "所有尚未同步到雲端的本機資料（單字、筆記本、複習紀錄、書籍與播客等）會永久遺失，無法復原。已備份到雲端的資料不受影響。" = "All local data that has not synced to the cloud (words, notebooks, review records, books and podcasts) will be permanently lost and cannot be recovered. Data already backed up to the cloud is not affected.";
 "清除本機資料" = "Clear Local Data";
+
+/* #2862: tap-to-expand hint for a truncated toast pill */
+"toast.expand.hint" = "Tap to show the full message";

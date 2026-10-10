@@ -268,7 +268,8 @@ Books & Vocab 的 motion system 不接受各頁自由書寫 `.spring(...)` / `.e
   - 不同 key → 排隊；同時最多 `AppToastQueue.capacity` = 2 則（顯示中 1＋等待 1）。
   - 滿了 → 等待中較不嚴重的那則讓位（error > warning > success／info，同級留最新）；新來的比等待中的都不重要就丟棄。顯示中那則不會被擠掉。
   - 下一則在前一則退場後再等 `AppToastCoordinator.handoffDelay`（0.35 秒，對齊 `panelState` 退場）才進場：兩則 pill 不交疊、不原地換字。
-- **文案**：單行。`lineLimit(1)` → 先縮小到 0.8 → 尾端截斷，**不換行**。上限 `AppToastItem.copyBudgetColumns` = 40 欄（中日韓全形字 2 欄、其餘 1 欄 ⇒ 約 20 個全形字或 40 個英文字元；DEBUG 超限記 log）。失敗清單、原因、下一步這類較長說明放面板。文案一律走 `L10n.string`／`L10n.format` 並過 `ops/i18n_lint.sh`。
+- **文案**：預設單行。`lineLimit(1)` → 先縮小到 0.8 → 尾端截斷，**不換行**。上限 `AppToastItem.copyBudgetColumns` = 40 欄（中日韓全形字 2 欄、其餘 1 欄 ⇒ 約 20 個全形字或 40 個英文字元；DEBUG 超限記 log）。失敗清單、原因、下一步這類較長說明放面板。文案一律走 `L10n.string`／`L10n.format` 並過 `ops/i18n_lint.sh`。
+- **展開（#2862，唯一的多行狀態，由使用者觸發）**：縮小後仍放不下（自然寬 × 0.8 > 可見寬）的 pill 顯示 `chevron.down` 並可輕點；點擊就地展開成完整多行（`lineLimit(nil)`、icon 頂對齊、圓角由 pill 過渡到 card、寬度上限 560pt），再點收合。未截斷的 pill 不可點、外觀不變。上滑關閉在兩種狀態都有效。`isExpanded` 在 `AppToastCoordinator`，root 與 sheet overlay 共用同一份，只會展開一則。展開時自動收起計時重排為 `max(時長, 8 秒)`，收合回到正常時長；展開狀態在該則退場時重設，同 key 取代時保留。佇列中的下一則等展開的那則收起後才進場，不會餓死。VoiceOver 仍朗讀完整文案，只在截斷時附 `accessibilityHint`（`toast.expand.hint`）。點擊區以負 inset 外擴到 44pt，不改變視覺尺寸。
 - **事件 vs 狀態**：pill 是事件。狀態值不變但又發生一次（例如連續兩次下拉都「已是最新」）也要再通知，呼叫端以事件序號（例：`KGVocabCoordinator.noticeRevision`）觸發，不要拿狀態值的變化當觸發。
 - **選取器**：`app.toast`，label 為文案，`accessibilityValue` = `success`／`info`／`warning`／`error`。
 
