@@ -151,7 +151,8 @@ Scope: `ios/BooksAndVocab`
 | Empty | `linksLoaded`，nodes == 0 | 原生 empty 卡身（不走 paint watchdog） | 已覆蓋（unit） |
 | Stale | `linksLoaded` + `failureReason` | 保留快取圖＋`overview.graph.status` 警示列（原因＋重試） | 部分覆蓋（unit；UI 未測） |
 | Rendering | nodes > 0，8 秒內未 painted，無失敗 | 縮圖＋中性狀態列「關聯圖繪製中」＋重試（非 stale 警示） | 部分覆蓋（unit；UI 未測） |
-| Retry on unpainted | 任一失敗狀態且 `!hasPainted` | `recover()` 重建 web view 並重新計時 | 部分覆蓋（coordinator unit；視圖層未測） |
+| Retry on unpainted | 縮圖已建立（`.graph`）且 `!hasPainted` 的重試 | `recover()` 重建 web view 並重新計時；錯誤面板（無縮圖）重試只回呼 `onRetry` | 部分覆蓋（coordinator unit；視圖層未測） |
+| Web content terminated | 縮圖 web content process 終止 | 自動 `recover()` 最多 3 次（連續、未 painted 前）；之後停止，交由 `.rendering` 列重試 | 已覆蓋（coordinator unit） |
 
 ### Today Review State
 
