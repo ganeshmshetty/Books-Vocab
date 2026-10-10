@@ -810,6 +810,7 @@
 "請確認你已知悉" = "Please confirm you understand";
 "請確認網路或 iCloud 同步狀態後再試一次。\n\n" = "Please check your network or iCloud sync status and try again.\n\n";
 "資料可能不是最新" = "Data may not be up to date";
+"關聯圖繪製中" = "Relation graph is still drawing";
 "資料管理" = "Data management";
 "跟隨全域設定" = "Follow system setting";
 "載入中" = "Loading";

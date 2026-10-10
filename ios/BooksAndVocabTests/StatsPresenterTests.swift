@@ -227,8 +227,8 @@ struct StatsPresenterTests {
         #expect(
             StatsPresentation.graphCardState(
                 linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: true
-            ) == .content(body: .graph, notice: .stale(reason: nil)),
-            "a thumbnail that never reported first paint must expose the status row with retry"
+            ) == .content(body: .graph, notice: .rendering),
+            "a thumbnail that never reported first paint must expose a neutral status row with retry"
         )
         #expect(
             StatsPresentation.graphCardState(
