@@ -217,9 +217,6 @@ _MAX_QUOTA_WAIT_SECONDS = 600.0
 # Seeding reads only the newest bytes of spend.jsonl; the log rotates once it grows past the cap.
 _SPEND_TAIL_BYTES = 64 * 1024
 _SPEND_ROTATE_BYTES = 1024 * 1024
-# An ``allow_stale`` caller may be served a body under low quota only while it is this
-# young; older bodies fall through to a live (revalidated) read.
-_STALE_MAX_AGE_SECONDS = 300.0
 _MAX_CACHE_ENTRIES = 2000
 
 
@@ -375,19 +372,16 @@ class GitHubCliClient:
         argv: tuple[str, ...],
         *,
         allow_nonzero: bool = False,
-        allow_stale: bool = False,
     ) -> Any:
-        """Read JSON; a cached body is served under low quota only when ``allow_stale``.
+        """Read JSON; every REST read revalidates live (ETag) or hits the network.
 
-        Gate-path reads keep the default and always revalidate live (ETag or network),
-        so a head-dependent answer can never come from a body fetched before a push.
+        A cached body is only ever sent back on a 304, so a head-dependent answer can
+        never come from a body fetched before a push.
         """
 
         self.last_fetched_at = None
         if _is_api_read(argv):
-            output = self._load_api_read(
-                argv, allow_nonzero=allow_nonzero, allow_stale=allow_stale
-            )
+            output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
         elif _is_read_only_json_query(argv):
             # Subcommand and paginated reads carry no response headers, so they
             # cannot be revalidated; they are still admitted by the quota gate
@@ -426,25 +420,12 @@ class GitHubCliClient:
         )
         self._sleep(wait)
 
-    def _load_api_read(
-        self, argv: tuple[str, ...], *, allow_nonzero: bool, allow_stale: bool
-    ) -> str:
+    def _load_api_read(self, argv: tuple[str, ...], *, allow_nonzero: bool) -> str:
         """Serve a ``gh api`` read through quota governance and ETag revalidation."""
 
         resource = "graphql" if _gh_api_endpoint(argv) == "graphql" else "core"
         key = hashlib.sha256(json.dumps(list(argv)).encode("utf-8")).hexdigest()
         cached = self._cache_get(key)
-
-        decision, _ = self.governor.decide(resource)
-        if (
-            allow_stale
-            and decision is QuotaDecision.SERVE_STALE
-            and cached is not None
-            and self._now() - cached.fetched_at <= _STALE_MAX_AGE_SECONDS
-        ):
-            self._spend(argv, resource, "stale-cache")
-            self.last_fetched_at = cached.fetched_at
-            return cached.body
         self._admit_quota(argv, resource)
 
         extra: tuple[str, ...] = ()
@@ -469,9 +450,7 @@ class GitHubCliClient:
                     f"GitHub returned 304 without a cached body for {' '.join(argv)}"
                 )
             # GitHub just confirmed the body is current, so its age restarts here.
-            self._cache_put(
-                key, cached.etag, cached.body, fetched_at=fetched_at, keep_untagged=True
-            )
+            self._cache_put(key, cached.etag, cached.body, fetched_at=fetched_at)
             self._spend(argv, resource, "304", response)
             return cached.body
         if response.status >= 400 or result.exit_code != 0:
@@ -481,10 +460,8 @@ class GitHubCliClient:
 
         body = response.body.strip()
         etag = response.headers.get("etag")
-        # GraphQL carries no ETag, so its body is kept for stale service only.
-        self._cache_put(
-            key, etag, body, fetched_at=fetched_at, keep_untagged=resource == "graphql"
-        )
+        # Without an ETag there is nothing to revalidate against, so nothing is kept.
+        self._cache_put(key, etag, body, fetched_at=fetched_at)
         self._spend(argv, resource, "network", response)
         return body
 
@@ -550,13 +527,12 @@ class GitHubCliClient:
         body: str,
         *,
         fetched_at: float,
-        keep_untagged: bool = False,
     ) -> None:
-        """Store a validated body; drop an untagged REST entry unless it is kept for stale use."""
+        """Store a body that can be revalidated by ETag; drop an untagged entry."""
 
         path = self._cache_path(key)
         try:
-            if etag is None and not keep_untagged:
+            if etag is None:
                 path.unlink(missing_ok=True)
                 return
             path.parent.mkdir(parents=True, exist_ok=True)

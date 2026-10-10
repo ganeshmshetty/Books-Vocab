@@ -20,7 +20,7 @@ REANCHOR_CONFLICT_REASON = "reanchor_required: PR conflicts with live main"
 # The short blocking status context that main's rules require; the merge queue
 # only validates the merged result when this exact context gates the group.
 REQUIRED_CONTEXT = "required"
-# Same bound as the client's stale-body cap: an older required-check observation is not admissible.
+# An older required-check observation is not admissible; primed batches past this age are re-read live.
 REQUIRED_OBSERVATION_MAX_AGE = timedelta(seconds=300)
 
 

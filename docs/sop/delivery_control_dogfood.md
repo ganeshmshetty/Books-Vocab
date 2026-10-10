@@ -340,13 +340,13 @@ Supervisor 的 watchdog tick 只用來避免 supervisor 睡死，不代表每 30
 
 本機 `gh api` 讀取經 `ops/delivery_control/adapters/github_client.py` 與 `github_rate_governor.py`，產物如下（快取根目錄為 `<git common dir>/kg-delivery-control/github/<token-identity>/`，同一 repo 的所有 worktree 共用；無 git 時退回 `.cache/delivery-control/github/`；token-identity 為 `GH_TOKEN`／`GITHUB_TOKEN` 的雜湊前 16 碼，無環境變數時為 `keyring`）：
 
-- `etag/<sha256>.json`：以 argv 雜湊為 key 的 body 快取，含 `fetched_at`。REST 讀取依 ETag 送 `If-None-Match`，304 回傳快取 body 並把 `fetched_at` 更新為本次時間，200 without ETag 即刪除條目；GraphQL 無 ETag，其 body 保留，僅在 SERVE_STALE 使用。寫入採 tmp + rename；條目上限 2000，超出依 mtime 淘汰最舊者。
+- `etag/<sha256>.json`：以 argv 雜湊為 key 的 body 快取，含 `fetched_at`。REST 讀取依 ETag 送 `If-None-Match`，304 回傳快取 body 並把 `fetched_at` 更新為本次時間，200 without ETag 即刪除條目（GraphQL 無 ETag，因此不快取，每次都走網路）。寫入採 tmp + rename；條目上限 2000，超出依 mtime 淘汰最舊者。
 - `rest/<sha256>.json`：舊版 `deliver.py` 的 REST 讀取（PR comments／reviews、check-runs、agent-review workflow run 歸屬、closed PR 清單）由 `ops/delivery_control/adapters/rest_conditional_cache.py` 以同一 ETag 規則讀取，key 為 endpoint 字串雜湊、同樣 tmp + rename 與 2000 條上限。分頁逐頁各自 revalidate（`per_page=100&page=N`，回傳不足 100 筆即末頁），每頁各有 ETag；304 回傳該頁快取、不耗配額，無 ETag 的 200 即刪除條目。已知缺口：此路徑不經 quota governor、不寫 `spend.jsonl`，配額門檻只約束 `github_client` 路徑；與 `GitHubCliClient` 共用 governor 留待後續 lane。
 - `spend.jsonl`：每次 observed 或 served 讀取一行 JSON（超過 1 MiB 時輪替為 `spend.jsonl.1`，種子化只讀末 64 KiB），欄位 `ts`、`resource`（`core`／`graphql`，subcommand 讀取可為 `core+graphql`）、`endpoint`、`served`（`network`／`304`／`stale-cache`／`quota-wait`）；網路回應另含 `status`、`remaining`、`reset`。
-- 配額門檻（依 `X-RateLimit-Remaining`，按 resource 分開，邊界含端點：800 放行、50 進 SERVE_STALE、49 以下等待）：remaining ≥ 800 直接放行；50 ≤ remaining < 800 時，僅 `allow_stale=True` 的呼叫者且快取 `fetched_at` 距今 ≤ 300 秒才回傳快取、不打網路；gate 路徑（PR files、required-check GraphQL、repo identity、queue 準入）預設 `allow_stale=False`，一律即時重讀（ETag 或網路）。remaining < 50 等待 reset（開始等待時寫 stderr），等待超過 600 秒即 fail closed（DeliverySourceError）。subcommand 與分頁讀取無 header 亦無快取 body，低配額時仍走網路。
+- 配額門檻（依 `X-RateLimit-Remaining`，按 resource 分開，邊界含端點：remaining ≥ 50 放行、49 以下等待）：所有 REST 讀取皆即時重讀（ETag 或網路），快取 body 只在 304 時回傳，因此 observation 與 gate 路徑讀到的答案一致、不會來自推送前的快取。remaining < 50 等待 reset（開始等待時寫 stderr），等待超過 600 秒即 fail closed（DeliverySourceError）。subcommand 與分頁讀取無 header 亦無快取 body，低配額時仍走網路。
 - 種子化：每個新 `GitHubCliClient` 建立時，從 `spend.jsonl` 每個 resource 取最後一筆含 `remaining` 的紀錄，僅當其 `reset` 仍在未來才套用；因此跨 tick 的低配額會被下一個 process 的第一次讀取看見。
 - required-check 的 `observed_at` 取 body 的 `fetched_at`，不取重用時間；merge gate（`domain/policies.py` `evaluate_merge_gate`）拒絕距 `evaluated_at` 超過 300 秒的 required 觀測（`required checks observation is stale`）。
-- 限制：快取 TTL 以 300 秒為上限，僅 observation 呼叫者可因 SERVE_STALE 讀到最多 5 分鐘舊的 body；低於 50 的等待受 600 秒預算約束；等待期間 stderr 會有 `quota low; waiting` 訊息，tick 卡住時以此判讀。delivery tick 的 timeout 是否大於 600 秒尚未核對，屬未決項。排查配額異常時以 `spend.jsonl` 最後一筆 `remaining`／`reset` 為準。
+- 限制：快取不設 TTL，只以 ETag 驗證；`GitHubChecks` 的 primed batch 快照距今超過 300 秒即丟棄並改走即時讀取；低於 50 的等待受 600 秒預算約束；等待期間 stderr 會有 `quota low; waiting` 訊息，tick 卡住時以此判讀。delivery tick 的 timeout 是否大於 600 秒尚未核對，屬未決項。排查配額異常時以 `spend.jsonl` 最後一筆 `remaining`／`reset` 為準。
 
 ## Canary 與容量升級
 

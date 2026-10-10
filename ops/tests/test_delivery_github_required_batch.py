@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -765,3 +766,53 @@ def test_deliver_and_control_plane_share_terminal_check_states() -> None:
     assert (
         github_required_batch._status_from_states({"STARTUP_FAILURE"}).name == "FAILURE"
     )
+
+
+def test_primed_required_snapshot_older_than_cap_is_reread_live() -> None:
+    now = [1_000.0]
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh", "repo", "view"),
+                0,
+                json.dumps({"nameWithOwner": "owner/repo"}),
+                "",
+            ),
+            CommandResult(
+                ("gh", "api", "graphql"),
+                0,
+                json.dumps(_context_payload(number=12)),
+                "",
+            ),
+            CommandResult(
+                ("gh", "pr", "checks"),
+                0,
+                json.dumps(
+                    [
+                        {
+                            "name": "required",
+                            "state": "SUCCESS",
+                            "startedAt": None,
+                            "completedAt": None,
+                        }
+                    ]
+                ),
+                "",
+            ),
+        ]
+    )
+    client = GitHubCliClient(repo=Path("/repo"), runner=runner, now=lambda: now[0])
+    checks = GitHubChecks(
+        client=client,
+        get_pull_request=lambda _: _pr(12),
+        clock=lambda: datetime.fromtimestamp(now[0], tz=UTC),
+    )
+    checks.prime_required_snapshots((12,))
+
+    now[0] += 400
+
+    snapshot = checks.required_snapshot(12)
+
+    assert runner.calls[-1][:3] == ("gh", "pr", "checks")
+    assert snapshot.observed_at == datetime.fromtimestamp(1_400.0, tz=UTC)
+    assert snapshot.status is CheckStatus.SUCCESS

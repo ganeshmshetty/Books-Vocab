@@ -84,29 +84,16 @@ def test_governor_maps_remaining_to_decisions_per_resource() -> None:
     governor = QuotaGovernor(now=lambda: NOW)
     assert governor.decide("core") == (QuotaDecision.PROCEED, 0.0)
     governor.observe("core", QuotaSnapshot(remaining=799, reset_epoch=NOW + 60))
-    assert governor.decide("core") == (QuotaDecision.SERVE_STALE, 0.0)
+    assert governor.decide("core") == (QuotaDecision.PROCEED, 0.0)
     governor.observe("core", QuotaSnapshot(remaining=49, reset_epoch=NOW + 300))
     assert governor.decide("core") == (QuotaDecision.WAIT_FOR_RESET, 300.0)
     assert governor.decide("graphql") == (QuotaDecision.PROCEED, 0.0)
 
 
-def test_low_quota_serves_cached_body_only_when_caller_opts_in(tmp_path: Path) -> None:
-    body = '[{"filename": "ops/a.py"}]'
-    runner = StaticRunner(
-        [CommandResult(("gh",), 0, _http(200, body, etag='"v1"', remaining=500), "")]
-    )
-    client = _client(tmp_path, runner)
-
-    assert client.load_json(_ARGV) == json.loads(body)
-    assert client.load_json(_ARGV, allow_stale=True) == json.loads(body)
-    assert len(runner.calls) == 1
-    assert _spend(tmp_path)[-1]["served"] == "stale-cache"
-
-
-def test_gate_read_under_low_quota_revalidates_instead_of_serving_cache(
+def test_cached_body_is_revalidated_by_etag_even_under_moderate_quota(
     tmp_path: Path,
 ) -> None:
-    # Quota 700 is inside the stale band. A PR's files cached at T0 must not
+    # Quota 700 is above the wait floor. A PR's files cached at T0 must not
     # decide admission at T0+120 after a new commit changed them.
     runner = StaticRunner(
         [
@@ -204,38 +191,11 @@ def test_quota_thresholds_are_inclusive_at_800_and_50() -> None:
     governor.observe("core", QuotaSnapshot(remaining=800, reset_epoch=NOW + 60))
     assert governor.decide("core") == (QuotaDecision.PROCEED, 0.0)
     governor.observe("core", QuotaSnapshot(remaining=799, reset_epoch=NOW + 60))
-    assert governor.decide("core") == (QuotaDecision.SERVE_STALE, 0.0)
+    assert governor.decide("core") == (QuotaDecision.PROCEED, 0.0)
     governor.observe("core", QuotaSnapshot(remaining=50, reset_epoch=NOW + 60))
-    assert governor.decide("core") == (QuotaDecision.SERVE_STALE, 0.0)
+    assert governor.decide("core") == (QuotaDecision.PROCEED, 0.0)
     governor.observe("core", QuotaSnapshot(remaining=49, reset_epoch=NOW + 60))
     assert governor.decide("core") == (QuotaDecision.WAIT_FOR_RESET, 60.0)
-
-
-def test_stale_entry_older_than_cap_is_not_served(tmp_path: Path) -> None:
-    first = StaticRunner(
-        [CommandResult(("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=500), "")]
-    )
-    _client(tmp_path, first, now=NOW - 1000).load_json(_ARGV)
-    second = StaticRunner(
-        [CommandResult(("gh",), 0, _http(200, "[2]", etag='"v2"', remaining=500), "")]
-    )
-
-    # Low quota would serve the cached body, but it was fetched 1000s ago.
-    assert _client(tmp_path, second, now=NOW).load_json(_ARGV) == [2]
-    assert len(second.calls) == 1
-
-
-def test_stale_entry_within_cap_keeps_its_original_fetch_time(tmp_path: Path) -> None:
-    first = StaticRunner(
-        [CommandResult(("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=500), "")]
-    )
-    _client(tmp_path, first, now=NOW - 60).load_json(_ARGV)
-    second = StaticRunner([])
-    client = _client(tmp_path, second, now=NOW)
-
-    assert client.load_json(_ARGV, allow_stale=True) == [1]
-    assert second.calls == []
-    assert client.last_fetched_at == NOW - 60
 
 
 def test_fresh_client_seeds_low_quota_from_spend_log_and_waits(tmp_path: Path) -> None:
@@ -403,7 +363,7 @@ def test_subcommand_reads_wait_for_quota_reset_and_are_spend_logged(
     ]
 
 
-def test_subcommand_reads_have_no_stale_body_so_low_quota_still_hits_network(
+def test_subcommand_reads_have_no_cached_body_so_low_quota_still_hits_network(
     tmp_path: Path,
 ) -> None:
     runner = StaticRunner(
@@ -438,7 +398,7 @@ def test_subcommand_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> Non
 _GRAPHQL_ARGV = ("gh", "api", "graphql", "-f", "query=query { viewer { login } }")
 
 
-def test_graphql_body_without_etag_is_served_stale_only_on_opt_in(
+def test_graphql_body_has_no_etag_so_every_read_hits_the_network(
     tmp_path: Path,
 ) -> None:
     body = '{"data": {"viewer": {"login": "bot"}}}'
@@ -446,15 +406,19 @@ def test_graphql_body_without_etag_is_served_stale_only_on_opt_in(
         [
             CommandResult(
                 ("gh",), 0, _http(200, body, remaining=500, resource="graphql"), ""
-            )
+            ),
+            CommandResult(
+                ("gh",), 0, _http(200, body, remaining=499, resource="graphql"), ""
+            ),
         ]
     )
     client = _client(tmp_path, runner)
 
-    assert client.load_json(_GRAPHQL_ARGV, allow_stale=True) == json.loads(body)
-    assert client.load_json(_GRAPHQL_ARGV, allow_stale=True) == json.loads(body)
-    assert len(runner.calls) == 1
-    assert _spend(tmp_path)[-1]["served"] == "stale-cache"
+    assert client.load_json(_GRAPHQL_ARGV) == json.loads(body)
+    assert client.load_json(_GRAPHQL_ARGV) == json.loads(body)
+    assert len(runner.calls) == 2
+    assert all("If-None-Match" not in call for call in runner.calls)
+    assert [row["served"] for row in _spend(tmp_path)[-2:]] == ["network", "network"]
 
 
 def test_seeding_reads_only_the_bounded_tail_of_a_large_spend_log(
