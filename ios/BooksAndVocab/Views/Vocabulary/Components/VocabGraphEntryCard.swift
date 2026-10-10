@@ -1,8 +1,10 @@
 import SwiftUI
 
 /// Overview 關聯圖入口卡。狀態矩陣由 `StatsPresentation.graphCardState` 決定（#2860）：
-/// 載入中、無快取失敗（錯誤面板＋原因＋重試）、有快取失敗或縮圖未繪出
-/// （卡內常駐狀態列＋原因＋重試）。任何失敗都不會留下空白卡身。
+/// 載入中、無快取失敗（錯誤面板＋原因＋重試）、有快取失敗（卡內狀態列＋原因＋重試，
+/// 快取圖保留）、縮圖逾時未繪出（卡身改為說明文字，狀態列＋重試）。卡身只會是
+/// 載入佔位、錯誤面板、empty 卡身、快取圖或逾時說明；縮圖在首次繪製時限內可能暫時
+/// 留白，逾時後一律改為說明文字，不會永久留下空白方塊。
 struct VocabGraphEntryCard<Destination: View>: View {
     @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
@@ -202,8 +204,11 @@ struct VocabGraphEntryCard<Destination: View>: View {
         // Paint state, not the failure reason, decides whether the web view must
         // be rebuilt: a cached-link failure can coexist with an unpainted thumbnail.
         // The error panel never built a thumbnail, so it has no web view to rebuild.
-        if bodyKind(of: state) == .graph, !holder.coordinator.hasPainted {
+        let body = bodyKind(of: state)
+        if body == .graph || body == .unpainted, holder.coordinator.needsRebuildOnRetry {
             holder.coordinator.recover()
+        }
+        if body == .graph || body == .unpainted, !holder.coordinator.hasPainted {
             paintTimedOut = false
             paintTimerGeneration &+= 1
         }
@@ -264,6 +269,17 @@ struct VocabGraphEntryCard<Destination: View>: View {
                 theme: KnowledgeGraphPresentation.theme(for: appSkin),
                 colorScheme: colorScheme
             )
+        case .unpainted:
+            // Replaces the web view while the paint watchdog has fired; the
+            // status row below carries the retry. If the page paints later,
+            // `onPainted` clears the timeout and the graph returns.
+            AppStateMessageContent(
+                title: StatsCopy.graphUnpaintedTitle,
+                systemImage: "hourglass",
+                style: .vocab(appSkin)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(appSkin.metrics.cardBlockPadding)
         }
     }
 

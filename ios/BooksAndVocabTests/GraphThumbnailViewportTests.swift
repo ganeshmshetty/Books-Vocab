@@ -223,6 +223,24 @@ struct GraphThumbnailViewportTests {
         #expect(!coordinator.graphBridgeReady, "a paint resets the termination budget")
     }
 
+    /// Retry rebuilds only a page whose `ready` handshake never completed. A
+    /// ready but still-drawing graph is slow, so retry must not restart it; a
+    /// painted graph never needs a rebuild.
+    @Test func retryRebuild_onlyWhenPageNeverReportedReady() {
+        let coordinator = GraphThumbnailCoordinator()
+        let webView = WKWebView(frame: .zero)
+        coordinator.webView = webView
+        coordinator.sendInitGraph("{\"nodes\":[]}", webView: webView)
+
+        #expect(coordinator.needsRebuildOnRetry, "a page that never reported ready is stuck and must be rebuilt")
+
+        coordinator.receiveBridgeEvent("ready")
+        #expect(!coordinator.needsRebuildOnRetry, "a ready but unpainted page is slow; retry must not restart its render")
+
+        coordinator.receiveBridgeEvent("painted")
+        #expect(!coordinator.needsRebuildOnRetry)
+    }
+
     @Test func coordinatorRecover_beforePaintKeepsBridgeReplayable() {
         let coordinator = GraphThumbnailCoordinator()
 

@@ -243,18 +243,37 @@ struct StatsPresenterTests {
         )
     }
 
-    @Test func graphCard_paintTimeoutNeverLeavesBlankBody() {
+    /// A thumbnail that misses its first paint must not keep the blank web view
+    /// as the body: the body becomes the neutral `.unpainted` text and the
+    /// `.rendering` row carries the retry.
+    @Test func graphCard_paintTimeoutReplacesUnpaintedThumbnailBody() {
         #expect(
             StatsPresentation.graphCardState(
                 linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: true
-            ) == .content(body: .graph, notice: .rendering),
-            "a thumbnail that never reported first paint must expose a neutral status row with retry"
+            ) == .content(body: .unpainted, notice: .rendering),
+            "a thumbnail that never reported first paint must not remain as a blank square"
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: false
+            ) == .content(body: .graph, notice: nil),
+            "before the watchdog fires the thumbnail keeps its normal body"
         )
         #expect(
             StatsPresentation.graphCardState(
                 linksLoaded: true, nodeCount: 0, failureReason: nil, paintTimedOut: true
             ) == .content(body: .empty, notice: nil),
             "the empty body paints natively, so a paint timeout is irrelevant"
+        )
+    }
+
+    /// A failed pull over an unpainted cached graph keeps the stale reason and
+    /// also replaces the blank thumbnail; the stale row stays the only notice.
+    @Test func graphCard_paintTimeoutWithCachedFailureReplacesBodyAndKeepsStaleReason() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: "r", paintTimedOut: true
+            ) == .content(body: .unpainted, notice: .stale(reason: "r"))
         )
     }
 

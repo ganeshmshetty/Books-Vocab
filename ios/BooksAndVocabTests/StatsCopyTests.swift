@@ -16,6 +16,7 @@ struct StatsCopyTests {
         #expect(StatsCopy.graphTitle == L10n.string("關聯圖"))
         #expect(StatsCopy.staleDataTitle == L10n.string("資料可能不是最新"))
         #expect(StatsCopy.renderingTitle == L10n.string("關聯圖繪製中"))
+        #expect(StatsCopy.graphUnpaintedTitle == L10n.string("關聯圖尚未顯示"))
         #expect(StatsCopy.graphEmptyTitle == L10n.string("探索單字建立連結"))
     }
 
