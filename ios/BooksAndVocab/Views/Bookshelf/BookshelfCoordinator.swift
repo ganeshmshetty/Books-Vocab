@@ -282,7 +282,7 @@ final class BookshelfCoordinator: BookshelfCoordinating {
                     // This is the only await-adjacent guard: everything below runs
                     // synchronously on MainActor until the save, so generation can't change.
                     guard self.isCurrentImport(generation) else {
-                        try? LocalBookFileManager().deleteBookFile(named: draft.fileName)
+                        try? LocalBookFileManager(recordsTombstone: false).deleteBookFile(named: draft.fileName)
                         return
                     }
                     AppLog.book.info("Import succeeded: \(draft.fileName)")
@@ -304,7 +304,7 @@ final class BookshelfCoordinator: BookshelfCoordinating {
                         // Save failed: unstage the Book and drop the imported file so a
                         // later successful save can't resurrect a "failed" import.
                         modelContext.delete(book)
-                        try? LocalBookFileManager().deleteBookFile(named: draft.fileName)
+                        try? LocalBookFileManager(recordsTombstone: false).deleteBookFile(named: draft.fileName)
                         failures.append((url.lastPathComponent, .unknown(underlying: "儲存失敗".localized)))
                     }
                 } catch is CancellationError {

@@ -15,6 +15,8 @@ struct BookLibraryReconciler {
     /// 殘留匯入 temp 的回收範圍。預設只含 `rootDirectory`，避免測試或非正式呼叫端
     /// 掃描／刪除真實 app 容器；正式路徑須明確傳入 `productionTempSweepDirectories`。
     let tempSweepDirectories: [URL]
+    let pendingDeletions: PendingBookDeletionStore
+    let isICloudAvailable: () -> Bool
 
     /// 匯入可能落在 iCloud 或本機書籍目錄，正式 reconcile 需回收兩處的殘留 temp（#2724）。
     static var productionTempSweepDirectories: [URL] {
@@ -27,8 +29,16 @@ struct BookLibraryReconciler {
         rootDirectory: URL = Book.booksDirectory,
         legacyDirectories: [URL]? = nil,
         manifestStore: BookManifestStore? = nil,
-        tempSweepDirectories: [URL]? = nil
+        tempSweepDirectories: [URL]? = nil,
+        pendingDeletions: PendingBookDeletionStore = .standard,
+        isICloudAvailable: (() -> Bool)? = nil
     ) {
+        self.pendingDeletions = pendingDeletions
+        // 預設以「此 reconciler 實際使用的 root 就是 iCloud 目錄」判定：root 在 init 固定為本機目錄時，
+        // iCloud 之後才可用也不算可用（否則只刪本機副本卻清掉 tombstone，iCloud 副本殘留），下次啟動 root 解析到 iCloud 才補刪。
+        self.isICloudAvailable = isICloudAvailable ?? {
+            Book.iCloudBooksDirectory?.standardizedFileURL == rootDirectory.standardizedFileURL
+        }
         self.rootDirectory = rootDirectory
         self.legacyDirectories = legacyDirectories ?? Self.defaultLegacyDirectories()
         self.manifestStore = manifestStore ?? BookManifestStore(rootDirectory: rootDirectory)
@@ -43,6 +53,7 @@ struct BookLibraryReconciler {
         for directory in tempSweepDirectories {
             Self.sweepStaleImportTemps(in: directory)
         }
+        completePendingDeletions()
         let filesByName = scanBookFiles()
         let manifests = manifestStore.readAll()
         let manifestsByFileName = Self.manifestsByFileName(manifests)
@@ -108,6 +119,28 @@ struct BookLibraryReconciler {
         #endif
 
         return result
+    }
+
+    /// 完成「iCloud 不可用時刪除」遺留的 tombstone（#2750）：iCloud 可用後才刪得到它的檔案與 manifest，
+    /// 必須在掃描前做，否則下面的恢復流程會把書救回來。iCloud 仍不可用時原樣保留。
+    /// 任一位置刪除失敗則保留 tombstone，下次 reconcile 重試。
+    private func completePendingDeletions() {
+        let pending = pendingDeletions.fileNames
+        guard !pending.isEmpty, isICloudAvailable() else { return }
+        let remover = LocalBookFileManager(locations: [rootDirectory] + legacyDirectories)
+        let manifests = manifestStore.readAll()
+        for fileName in pending {
+            do {
+                try remover.deleteBookFile(named: fileName)
+            } catch {
+                AppLog.book.warning("pending book deletion failed, will retry (\(fileName, privacy: .public)): \(error.localizedDescription)")
+                continue
+            }
+            for manifest in manifests where manifest.fileName == fileName {
+                manifestStore.delete(bookId: manifest.bookId)
+            }
+            pendingDeletions.remove(fileName)
+        }
     }
 
     @MainActor
