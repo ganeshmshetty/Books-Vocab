@@ -599,10 +599,12 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(store.profile == .default)
     }
 
-    /// #2434: sign-out must drop the adopted pre-account raw layout from both
-    /// UserDefaults and the iCloud KVS copy, while the account's own namespaced
+    /// #2434: sign-out drops the adopted pre-account raw layout from local
+    /// UserDefaults only. The iCloud KVS raw key is shared by every device on the
+    /// same Apple ID, and a device that has not adopted it yet still needs it, so
+    /// the cleanup must not propagate a removal. The account's own namespaced
     /// layout survives so re-login still restores it.
-    @Test func signOutCleanupRemovesAdoptedRawLayoutFromDefaultsAndKVS() {
+    @Test func signOutCleanupRemovesAdoptedRawLayoutLocallyAndKeepsKVS() {
         let defaults = makeDefaults()
         let cloud = ReviewCardLayoutCloudSpy()
         let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
@@ -614,11 +616,11 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(defaults.string(forKey: rawKey) != nil)
         #expect(cloud.values[rawKey] != nil)
 
-        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults, cloud: cloud)
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
 
         #expect(defaults.string(forKey: rawKey) == nil)
-        #expect(cloud.values[rawKey] == nil)
-        #expect(cloud.removedKeys.contains(rawKey))
+        #expect(cloud.values[rawKey] != nil)
+        #expect(cloud.removedKeys.isEmpty)
 
         store.activateAccount("account-a")
         #expect(store.profile == custom)
@@ -631,7 +633,7 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         let cloud = ReviewCardLayoutCloudSpy()
         makeStore(defaults, cloud).update(ReviewCardLayoutProfile(recognition: .compact, production: .standard))
 
-        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults, cloud: cloud)
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
 
         #expect(defaults.string(forKey: rawKey) != nil)
         #expect(cloud.values[rawKey] != nil)

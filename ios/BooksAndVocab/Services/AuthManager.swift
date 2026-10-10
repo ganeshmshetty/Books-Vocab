@@ -222,6 +222,9 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         // Capture before the up-front teardown nils `userId`: a delete_account logout must scope the
         // account-preference purge to exactly this account (#2434), never to other accounts on the device.
         let deletedAccountID = reason == LocalDataCleanerService.deleteAccountReason ? userId : nil
+        if reason == LocalDataCleanerService.deleteAccountReason, deletedAccountID == nil {
+            AppLog.auth.warning("logout(delete_account): userId nil; account-preference purge skipped (#2434)")
+        }
         accountPreferenceLifecycle.suspend()
         localDataCleanupGeneration += 1
         pendingLocalDataCleanup = Task { [previousCleanup = pendingLocalDataCleanup] in
