@@ -349,9 +349,16 @@ struct ReaderTOCNavigationState: Equatable {
         observedLocatorHref = nil
         failureReason = nil
         activeRequestID = requestID
-        expectedLocatorHref = expectedHref
+        expectedLocatorHref = Self.resourceHref(expectedHref)
         phase = .loading
         return requestID
+    }
+
+    /// TOC hrefs may carry a `#fragment` section anchor, but Readium locators
+    /// report only the resource href, so compare against the resource part.
+    static func resourceHref(_ href: String) -> String {
+        guard let hash = href.firstIndex(of: "#") else { return href }
+        return String(href[..<hash])
     }
 
     @discardableResult
