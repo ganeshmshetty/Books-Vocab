@@ -442,6 +442,99 @@ struct ToastNotificationTests {
         #expect(coordinator.current == nil)
     }
 
+    // MARK: - Coordinator: tap-to-expand (#2862)
+
+    @Test func expandedToastGetsAtLeastEightSecondsBeforeDismiss() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("long message") // 2.5s normally
+        clock.advance(by: .seconds(1))
+        coordinator.toggleExpanded()
+        #expect(coordinator.isExpanded)
+        // Deadline is now t=1s + 8s = t=9s.
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current?.message == "long message")
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func expandedWarningKeepsEightSecondFloorAndErrorUsesItsOwnDuration() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.warning("warn") // 4.0s, expanded floor 8s
+        coordinator.toggleExpanded()
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current != nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func collapseRestoresNormalDurationFromCollapseTime() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("msg") // 2.5s
+        coordinator.toggleExpanded() // t=0, deadline 8s
+        clock.advance(by: .seconds(1))
+        coordinator.toggleExpanded() // t=1s, collapsed: deadline t=3.5s
+        #expect(!coordinator.isExpanded)
+        clock.advance(by: .milliseconds(2_499))
+        #expect(coordinator.current?.message == "msg")
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func toggleWithoutVisibleToastIsNoOp() {
+        let coordinator = AppToastCoordinator(scheduler: ManualToastScheduler())
+        coordinator.toggleExpanded()
+        #expect(!coordinator.isExpanded)
+        coordinator.info("next")
+        #expect(!coordinator.isExpanded)
+    }
+
+    @Test func retireResetsExpansion() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("first")
+        coordinator.toggleExpanded()
+        coordinator.dismiss()
+        #expect(!coordinator.isExpanded)
+        coordinator.info("second")
+        #expect(!coordinator.isExpanded)
+        clock.advance(by: .milliseconds(2_500))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func sameEventReplacementPreservesExpansionWithFreshFloor() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("saved", key: "k")
+        coordinator.toggleExpanded() // t=0, deadline 8s
+        clock.advance(by: .seconds(2))
+        coordinator.info("saved updated", key: "k") // t=2s, deadline t=10s
+        #expect(coordinator.isExpanded)
+        #expect(coordinator.current?.message == "saved updated")
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current != nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func queuedNoticeWaitsBehindExpandedToastWithoutStarving() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("first")
+        coordinator.info("second")
+        coordinator.toggleExpanded()
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current?.message == "first")
+        #expect(coordinator.pending.map(\.message) == ["second"])
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+        clock.advance(by: AppToastCoordinator.handoffDelay)
+        #expect(coordinator.current?.message == "second")
+        #expect(!coordinator.isExpanded)
+    }
+
     // MARK: - Production scheduler contract
     //
     // The fake-time tests above assume `AppToastTaskScheduler` runs an action

@@ -55,6 +55,18 @@ private struct GlassControlsScene: View {
                     item: .init(message: L10n.string("刪除失敗"), style: .error),
                     onDismiss: {}
                 )
+                // #2862 truncated pill: tap-to-expand fixtures (collapsed shows chevron.down).
+                AppToast(
+                    item: .init(message: L10n.string("背景同步部分失敗：複習進度上傳失敗：伺服器暫時不可用, 複習紀錄上傳失敗：伺服器暫時不可用"), style: .warning), // i18n-allow: debug-only visual review fixture
+                    onToggleExpanded: {},
+                    onDismiss: {}
+                )
+                AppToast(
+                    item: .init(message: "Background sync partly failed: review progress upload failed, review log upload failed: server temporarily unavailable"), // i18n-allow: debug-only visual review fixture
+                    isExpanded: true,
+                    onToggleExpanded: {},
+                    onDismiss: {}
+                )
             }
             .padding(AppSpacing.s5)
         }

@@ -81,7 +81,7 @@ Scope: `ios/BooksAndVocab`
 - `ios/BooksAndVocab/Services/ModelContext+SafeSave.swift`
 
 核心元件（行為契約見 `docs/sop/ui-design.md`「暫時性提示」）：
-- `AppToast` — 頂端 glass pill，單行（縮小後尾端截斷、不換行），支援上滑關閉，**無動作按鈕**；選取器 `app.toast`
+- `AppToast` — 頂端 glass pill，預設單行（縮小後尾端截斷、不換行）；截斷時可輕點展開成多行（#2862，`isExpanded`／`onToggleExpanded` 由 coordinator 提供），支援上滑關閉，**無動作按鈕**；選取器 `app.toast`
 - `AppToastCoordinator` — toast 計時／動畫／VoiceOver 外殼；`AppToastQueue` 是純狀態機（同 key 就地取代、不同 key 排隊、最多 2 則、滿了留較嚴重者、退場後才換下一則）；`AppToastItem`（style: success/info/warning/error，`key` 為事件身分）
 - `toastSheet` — 自動在 sheet 內注入 `toastOverlay()` 的 view modifier
 - `toastFullScreenCover` — 同上，用於 fullScreenCover

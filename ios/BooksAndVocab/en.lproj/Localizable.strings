@@ -1395,3 +1395,6 @@
 "無法將預設設定同步到伺服器，請確認網路連線；本機資料未變動，請重試。" = "Could not sync the default settings to the server. Check your connection; local data is unchanged, please try again.";
 "%@ 筆複習紀錄" = "%@ review records";
 "已登入時，複習、時鐘、自動連結與翻譯的預設值也會同步到伺服器與你的其他裝置，需要網路連線。" = "When signed in, the default review, clock, auto-link and translation settings are also pushed to the server and your other devices. This needs a connection.";
+
+/* #2862: tap-to-expand hint for a truncated toast pill */
+"toast.expand.hint" = "Tap to show the full message";

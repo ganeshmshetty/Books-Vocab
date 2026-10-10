@@ -218,6 +218,12 @@ final class AppToastCoordinator {
     /// 前一則退場動畫（`AppMotion.panelState`，response 0.3）的讓位時間：
     /// 下一則在它離場後才進場，避免兩則 pill 交疊或原地跳字。
     static let handoffDelay: Duration = .milliseconds(350)
+    /// 展開後的自動收起下限（#2862）：展開的目的就是讀完整文案，不得在讀完前消失。
+    static let expandedDismissFloor: Duration = .seconds(8)
+
+    /// 顯示中那則是否展開成完整多行文案。狀態在 coordinator 上，root 與 sheet 內的
+    /// 兩個 overlay 共用同一份，才不會各自展開。
+    private(set) var isExpanded = false
 
     private var queue = AppToastQueue()
     private let scheduler: any AppToastScheduler
@@ -253,6 +259,16 @@ final class AppToastCoordinator {
         retire(id: nil)
     }
 
+    /// 點擊截斷的 pill 切換展開。沒有顯示中的通知時為 no-op；展開時重排自動收起計時
+    /// （至少 `expandedDismissFloor`），收起時回到該則的正常時長。
+    func toggleExpanded(animation: Animation = AppMotion.panelState) {
+        guard let visible = queue.current else { return }
+        withAnimation(animation) {
+            isExpanded.toggle()
+        }
+        scheduleDismiss(for: visible)
+    }
+
     func success(_ message: String, key: String? = nil) {
         show(AppToastItem(message: message, style: .success, key: key))
     }
@@ -276,9 +292,15 @@ final class AppToastCoordinator {
         // be scheduled regardless — otherwise the toast never clears when
         // VoiceOver is on, leaving `current` stuck forever.
         _ = PlatformAccessibility.announceIfVoiceOver(item.message)
+        scheduleDismiss(for: item)
+    }
+
+    private func scheduleDismiss(for item: AppToastItem) {
         dismissTimer?.cancel()
+        let normal = Duration.seconds(item.duration)
+        let delay = isExpanded ? max(normal, Self.expandedDismissFloor) : normal
         let id = item.id
-        dismissTimer = scheduler.schedule(after: .seconds(item.duration)) { [weak self] in
+        dismissTimer = scheduler.schedule(after: delay) { [weak self] in
             self?.retire(id: id)
         }
     }
@@ -290,7 +312,8 @@ final class AppToastCoordinator {
         dismissTimer?.cancel()
         dismissTimer = nil
         let needsHandoff = withAnimation(AppMotion.panelState) {
-            queue.retireCurrent()
+            isExpanded = false
+            return queue.retireCurrent()
         }
         guard needsHandoff else { return }
         handoffTimer?.cancel()
