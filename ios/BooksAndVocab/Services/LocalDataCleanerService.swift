@@ -24,15 +24,12 @@ final class LocalDataCleanerService: LocalDataClearing {
         KGService.persistLastSyncDate(nil, defaults: defaults)
         ActiveNotebookStore.shared.clear()
         defaults.removeObject(forKey: NotebookFilter.storageKey)
-        // 帳號偏好（#2434 / #2556）：登出只丟 pre-account raw 已領養的副本；
-        // delete_account 另外清空「被刪除帳號」的命名空間（本機 + iCloud KVS）。
-        let cloudPreferences = CloudPreferencesSync.shared
-        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
-        if let deletedAccountID {
-            AccountPreferenceNamespace.purgeNamespacedPreferences(
-                accountID: deletedAccountID,
-                defaults: defaults,
-                cloud: cloudPreferences
+        // iCloud KVS 的 CloudPreferencesSync 只能在 main thread 存取（見該類別宣告）。
+        await MainActor.run {
+            Self.purgeAccountPreferences(
+                deletedAccountID: deletedAccountID,
+                defaults: UserDefaults.standard,
+                cloud: CloudPreferencesSync.shared
             )
         }
         // Today-review session snapshots are keyed per-user in a single
@@ -73,6 +70,24 @@ final class LocalDataCleanerService: LocalDataClearing {
         // 通知讓 ICloudDownloadManager 重設 fileStates + 重啟 NSMetadataQuery。
         Book.clearICloudDirectoryCache()
         NotificationCenter.default.post(name: .localUserDataDidClear, object: nil)
+    }
+
+    /// 帳號偏好 purge（#2434 / #2556）。登出只丟 pre-account raw 已領養的本機副本（KVS raw
+    /// 刻意保留，見 `ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout`）；delete_account 另外
+    /// 清空「被刪除帳號」的命名空間。注入 defaults／cloud，讓測試不碰共享單例。
+    static func purgeAccountPreferences(
+        deletedAccountID: String?,
+        defaults: UserDefaults,
+        cloud: CloudKeyValueStore
+    ) {
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+        if let deletedAccountID {
+            AccountPreferenceNamespace.purgeNamespacedPreferences(
+                accountID: deletedAccountID,
+                defaults: defaults,
+                cloud: cloud
+            )
+        }
     }
 
     #if os(iOS)
