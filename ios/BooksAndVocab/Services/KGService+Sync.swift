@@ -758,10 +758,7 @@ extension KGService {
             AppCrashReporting.addBreadcrumb(category: "sync", message: "sync.end.success")
             return .completed
         } else {
-            lastBackgroundSyncError = SyncFailurePresentation.partialFailureSummary(
-                failures.map { (label: $0.label, reason: $0.reason) },
-                language: AppLanguageStore.shared.selection
-            )
+            recordPartialFailure(failures)
             AppCrashReporting.addBreadcrumb(
                 category: "sync",
                 message: "sync.end.partial",
@@ -770,6 +767,18 @@ extension KGService {
             )
             return .failed
         }
+    }
+
+    /// 部分失敗時的使用者文案組裝點。獨立成方法，讓測試直接釘住 production 的
+    /// 組裝路徑（回退成寫死的 ", " 會在這裡被抓到），不必打網路跑完整一輪。
+    func recordPartialFailure(
+        _ failures: [SyncPhaseFailure],
+        language: AppLanguage = AppLanguageStore.shared.selection
+    ) {
+        lastBackgroundSyncError = SyncFailurePresentation.partialFailureSummary(
+            failures.map { (label: $0.label, reason: $0.reason) },
+            language: language
+        )
     }
 
     /// 併行的 podcast 目錄腿：開場事件 → 同步 → 收尾事件，整包給一個 `async let`。

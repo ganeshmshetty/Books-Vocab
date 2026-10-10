@@ -215,6 +215,31 @@ struct KGServiceSyncReportingTests {
         #expect(outcome?.cancelled == true)
     }
 
+    @Test("部分失敗的 production 組裝點：兩腿同原因只說一次，且不寫死 ASCII \", \"")
+    func partialFailureComposesSameReasonOnceAtProductionSite() {
+        let (service, _) = Self.makeService()
+        let language = AppLanguage.traditionalChinese
+        let reason = SyncFailurePresentation.reason(
+            for: KGError.httpError(statusCode: 503, detail: ""),
+            language: language
+        )
+        let failures = [
+            KGService.SyncPhaseFailure(label: "pushReview", reason: reason),
+            KGService.SyncPhaseFailure(label: "pushReviewEvents", reason: reason),
+        ]
+        service.recordPartialFailure(failures, language: language)
+
+        let expected = SyncFailurePresentation.partialFailureSummary(
+            failures.map { (label: $0.label, reason: $0.reason) },
+            language: language
+        )
+        #expect(service.lastBackgroundSyncError == expected)
+        #expect(service.lastBackgroundSyncError?.components(separatedBy: reason).count == 2,
+                "同一原因重複列出：\(service.lastBackgroundSyncError ?? "nil")")
+        #expect(service.lastBackgroundSyncError?.contains(", ") == false,
+                "仍用 ASCII 逗號分隔：\(service.lastBackgroundSyncError ?? "nil")")
+    }
+
     @Test("401 壓過同一批裡的其他失敗——先看到的失敗不得讓 401 被吞掉")
     func unauthorizedWinsOverOtherFailures() async {
         let (service, _) = Self.makeService()

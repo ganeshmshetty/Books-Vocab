@@ -50,10 +50,6 @@ enum KGError: LocalizedError {
 }
 
 enum SyncFailurePresentation {
-    static func message(label: String, error: Error) -> String {
-        message(label: label, error: error, language: AppLanguageStore.shared.selection)
-    }
-
     /// Explicit language keeps presentation contracts deterministic without
     /// changing the application's selected language.
     static func message(label: String, error: Error, language: AppLanguage) -> String {
@@ -101,7 +97,9 @@ enum SyncFailurePresentation {
     private static func localizedList(_ items: [String], language: AppLanguage) -> String {
         let formatter = ListFormatter()
         formatter.locale = language.locale
-        return formatter.string(from: items) ?? items.joined(separator: ", ")
+        // ListFormatter.string(from:) 對非空陣列不會回 nil；callers 保證 items 非空。
+        // 這裡不寫回寫死的 ASCII 分隔符，unreachable fallback 只保留不會把標點硬編在內的形式。
+        return formatter.string(from: items) ?? items.joined()
     }
 
     private static func operationTitle(for label: String, language: AppLanguage) -> String {
