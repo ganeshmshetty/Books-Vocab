@@ -305,17 +305,28 @@ struct VocabularySyncEngineTests {
             cardIds: [:],
             rejected: [KGRejectedItem(index: 0, word: "rejected-word", reason: "word: bad")]
         )
+        var events: [VocabularySyncEvent] = []
 
         let result = await VocabularySyncEngine().execute(
             pendingEntries: [entry],
             modelContext: context,
             service: service,
-            emit: { _ in }
+            emit: { events.append($0) }
         )
 
         #expect(result.terminalOutcome == .partial)
         #expect(entry.isFailed)
+        #expect(entry.isRejectedAdd)
         #expect(!entry.isPending)
+        #expect(!entry.shouldUploadOnNextSync)
+        let failedDetail = L10n.format("部分上傳失敗（%@ 筆）", "1")
+        let reportedFailedCount = events.contains {
+            if case .stepFinished("upload_add", status: .error, let detail) = $0 {
+                return detail == failedDetail
+            }
+            return false
+        }
+        #expect(reportedFailedCount)
     }
 
     @Test("rejected add is terminal: the next sync neither re-uploads it nor re-reports the failure")
