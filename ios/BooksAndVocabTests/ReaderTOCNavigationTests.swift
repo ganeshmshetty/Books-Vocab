@@ -129,6 +129,57 @@ struct ReaderTOCNavigationTests {
     }
 
     @Test @MainActor
+    func fragmentBearingTOCHrefMatchesFragmentFreeNavigatorLocation() {
+        let requestID = UUID()
+        var state = ReaderTOCNavigationState()
+        _ = state.beginSelection(
+            path: [0, 0],
+            title: "Section 1",
+            expectedHref: "OEBPS/chapter-a.xhtml#section-1",
+            requestID: requestID
+        )
+
+        state.apply(
+            .goAccepted(
+                requestID: requestID,
+                locatorHref: "OEBPS/chapter-a.xhtml"
+            )
+        )
+        state.apply(
+            .locationDidChange(
+                requestID: requestID,
+                locatorHref: "OEBPS/chapter-a.xhtml"
+            )
+        )
+
+        #expect(state.phase == .success)
+        #expect(state.failureReason == nil)
+        #expect(state.destinationHref == "OEBPS/chapter-a.xhtml")
+    }
+
+    @Test @MainActor
+    func fragmentBearingTOCHrefStillRejectsDifferentResourceLocation() {
+        let requestID = UUID()
+        var state = ReaderTOCNavigationState()
+        _ = state.beginSelection(
+            path: [0, 0],
+            title: "Section 1",
+            expectedHref: "OEBPS/chapter-a.xhtml#section-1",
+            requestID: requestID
+        )
+
+        state.apply(
+            .locationDidChange(
+                requestID: requestID,
+                locatorHref: "OEBPS/chapter-b.xhtml"
+            )
+        )
+
+        #expect(state.phase == .failure)
+        #expect(state.failureReason == .locatorMismatch)
+    }
+
+    @Test @MainActor
     func acceptedWrongLocatorAndMissingCallbackCannotCloseSheet() throws {
         let requestID = UUID()
         var state = ReaderTOCNavigationState()
