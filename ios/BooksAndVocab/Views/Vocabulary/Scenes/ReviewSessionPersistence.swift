@@ -133,11 +133,15 @@ enum ReviewSessionPersistence {
         let droppedAnswers = snapshot.submissions.keys.filter { oldToNew[$0] == nil }
         if !droppedAnswers.isEmpty {
             let droppedUnflushed = droppedAnswers.filter { !(snapshot.submissions[$0]?.flushed ?? true) }.count
-            AppLog.data.error("restoreSnapshot: dropped \(droppedAnswers.count) answers (\(droppedUnflushed) unflushed) for cards no longer reviewable")
+            if droppedUnflushed > 0 {
+                AppLog.data.error("restoreSnapshot: dropped \(droppedAnswers.count) answers (\(droppedUnflushed) unflushed) for cards no longer reviewable")
+            } else {
+                AppLog.data.info("restoreSnapshot: dropped \(droppedAnswers.count) already-flushed answers for cards no longer reviewable")
+            }
         }
 
         let restoredIDs = kept.map { snapshot.queue[$0.oldIndex].persistenceID }
-        let restoredQueue = kept.map(\.entry)
+        let restoredQueue = kept.map { $0.entry }
         let restoredIDSet = Set(restoredIDs)
         let appendedEntries = uniqueEntries.filter { !restoredIDSet.contains(persistenceID(for: $0)) }
         let queue = restoredQueue + appendedEntries

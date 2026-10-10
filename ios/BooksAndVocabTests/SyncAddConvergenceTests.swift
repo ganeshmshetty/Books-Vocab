@@ -156,6 +156,28 @@ struct SyncAddConvergenceTests {
         #expect(entry.isDeleted)
     }
 
+    @Test("已同步卡片被編輯（syncState 落在 pending+edit、kgCardId 保留）後本地刪除 → 不硬刪，排 server delete")
+    func edited_synced_entry_delete_is_queued_not_hard_deleted() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let entry = makePendingAdd("edited")
+        context.insert(entry)
+        entry.markSynced()
+        entry.kgCardId = "card-edited"
+        // WordEditSheet 的編輯路徑：synced → pending+edit，但 server 卡片仍存在。
+        entry.syncAction = .edit
+        entry.syncState = .pending
+        #expect(!entry.isSynced)
+        #expect(entry.requiresServerDelete)
+
+        entry.deleteLocally(in: context)
+
+        #expect(!entry.isDeleted)
+        #expect(entry.isPendingDelete)
+    }
+
     // MARK: - retry 路徑：failed+add 也能被收斂
 
     /// prepareForRetryAttempt 把 failed 轉回 pending 後才上傳，但防禦性釘住：
