@@ -6,13 +6,16 @@ struct AppStartupFailure: Equatable {
     let recoverySteps: [String]
     let technicalDetails: String
 
+    /// #2743 — 恢復步驟必須先點名永久遺失風險，不能等使用者點了按鈕才發現。
+    static let clearCacheRecoveryStepKey = "如果重試無效，可以清除本機快取；尚未同步到雲端的單字、筆記本與複習紀錄會永久刪除，無法復原。"
+
     static func storageInitialization(error: Error) -> AppStartupFailure {
         AppStartupFailure(
             title: L10n.string("無法安全啟動資料庫"),
             message: L10n.string("App 已停止載入主要功能，避免在資料庫異常時覆寫或刪除既有資料。"),
             recoverySteps: [
                 L10n.string("先重新嘗試啟動，確認是不是一次性的 migration 或 iCloud 初始化失敗。"),
-                L10n.string("如果重試無效，可以清除本機快取（不刪除已備份到雲端的單字 / 筆記本）。"),
+                L10n.string(clearCacheRecoveryStepKey),
                 L10n.string("仍無法恢復時，請聯絡支援團隊，附上下方技術細節。")
             ],
             technicalDetails: error.localizedDescription
@@ -37,23 +40,19 @@ struct AppStartupRecoveryActions {
     )
 }
 
-/// #2743 — 清除本機快取會刪除 LocalStore 檔案（可能含尚未同步的資料），按鈕只能「請求」確認，
-/// 破壞性動作須在使用者確認後才執行。
+/// #2743 — 清除本機快取會刪除 LocalStore 檔案（可能含尚未同步的資料）。按鈕只呈現確認對話框；
+/// 破壞性動作只由對話框的 destructive 按鈕觸發，gate 本身不執行也不判斷確認。
 struct AppStartupClearCacheGate: Equatable {
     static let titleKey = "要清除本機快取嗎？"
-    static let messageKey = "尚未同步到雲端的單字與筆記會永久遺失，無法復原。已備份到雲端的資料不受影響。"
+    static let messageKey = "尚未同步到雲端的單字、筆記本與複習紀錄會永久遺失，無法復原。已備份到雲端的資料不受影響。"
     static let confirmKey = "清除本機資料"
 
     private(set) var isPresented = false
 
+    /// 「清除本機快取」按鈕的唯一效果：呈現確認對話框。
     mutating func request() { isPresented = true }
-    mutating func cancel() { isPresented = false }
-
-    /// 回傳 true 代表使用者已確認、呼叫端可執行清除。未經 request() 的 confirm 一律拒絕。
-    mutating func confirm() -> Bool {
-        defer { isPresented = false }
-        return isPresented
-    }
+    /// 對話框關閉（取消或確認後）。
+    mutating func dismiss() { isPresented = false }
 }
 
 struct AppStartupRecoveryView: View {
@@ -164,14 +163,15 @@ struct AppStartupRecoveryView: View {
                 L10n.string(AppStartupClearCacheGate.titleKey),
                 isPresented: Binding(
                     get: { clearCacheGate.isPresented },
-                    set: { if !$0 { clearCacheGate.cancel() } }
+                    set: { if !$0 { clearCacheGate.dismiss() } }
                 ),
                 titleVisibility: .visible
             ) {
                 Button(L10n.string(AppStartupClearCacheGate.confirmKey), role: .destructive) {
-                    if clearCacheGate.confirm() { Task { await runClearCache() } }
+                    clearCacheGate.dismiss()
+                    Task { await runClearCache() }
                 }
-                Button(L10n.string("取消"), role: .cancel) { clearCacheGate.cancel() }
+                Button(L10n.string("取消"), role: .cancel) { clearCacheGate.dismiss() }
             } message: {
                 Text(L10n.string(AppStartupClearCacheGate.messageKey))
             }

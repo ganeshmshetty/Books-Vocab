@@ -2,40 +2,43 @@ import Testing
 @testable import BooksAndVocab
 
 /// #2743 — clearing the local cache in startup recovery deletes LocalStore files that may hold
-/// unsynced rows, so the button must only request confirmation; the destructive action runs after confirm.
+/// unsynced rows, so the button must only present confirmation; the destructive action runs only
+/// from the confirmed dialog path.
 @MainActor
 struct AppStartupRecoveryViewTests {
-    @Test func requestDoesNotRunUntilConfirmed() {
+    @Test func clearCacheButtonOnlyPresentsConfirmation() {
         var gate = AppStartupClearCacheGate()
         #expect(!gate.isPresented)
         gate.request()
         #expect(gate.isPresented)
-        let confirmed = gate.confirm()
-        #expect(confirmed)
-        #expect(!gate.isPresented)
     }
 
-    @Test func confirmWithoutRequestIsRejected() {
-        var gate = AppStartupClearCacheGate()
-        let confirmed = gate.confirm()
-        #expect(!confirmed)
-    }
-
-    @Test func cancelDismissesWithoutRunning() {
+    @Test func dismissHidesConfirmationWithoutRunning() {
         var gate = AppStartupClearCacheGate()
         gate.request()
-        gate.cancel()
+        gate.dismiss()
         #expect(!gate.isPresented)
-        let confirmed = gate.confirm()
-        #expect(!confirmed)
     }
 
     @Test func confirmationCopyIsLocalizedAndWarnsAboutUnsyncedData() {
+        let keys = [
+            AppStartupClearCacheGate.titleKey,
+            AppStartupClearCacheGate.messageKey,
+            AppStartupClearCacheGate.confirmKey,
+            AppStartupFailure.clearCacheRecoveryStepKey
+        ]
         for language in AppLanguage.allCases where language != .system && language != .traditionalChinese {
-            for key in [AppStartupClearCacheGate.titleKey, AppStartupClearCacheGate.messageKey, AppStartupClearCacheGate.confirmKey] {
+            for key in keys {
                 #expect(L10n.string(key, language: language) != key, "untranslated \(key) for \(language.rawValue)")
             }
         }
-        #expect(L10n.string(AppStartupClearCacheGate.messageKey, language: .traditionalChinese).contains("尚未同步"))
+        #expect(L10n.string(AppStartupClearCacheGate.messageKey, language: .traditionalChinese).contains("單字、筆記本與複習紀錄"))
+        #expect(L10n.string(AppStartupFailure.clearCacheRecoveryStepKey, language: .traditionalChinese).contains("永久刪除"))
+    }
+
+    @Test func recoveryStepWarnsBeforeTapAboutPermanentLoss() {
+        let failure = AppStartupFailure.storageInitialization(error: NSError(domain: "test", code: 1))
+        #expect(failure.recoverySteps.contains(L10n.string(AppStartupFailure.clearCacheRecoveryStepKey)))
+        #expect(L10n.string(AppStartupFailure.clearCacheRecoveryStepKey, language: .traditionalChinese).contains("永久刪除"))
     }
 }
