@@ -9,14 +9,27 @@ struct AppStartupRecoveryViewTests {
     @Test func clearCacheButtonOnlyPresentsConfirmation() {
         var gate = AppStartupClearCacheGate()
         #expect(!gate.isPresented)
-        gate.request()
+        #expect(gate.tap() == .presentConfirmation)
         #expect(gate.isPresented)
     }
 
-    @Test func dismissHidesConfirmationWithoutRunning() {
+    @Test func clearCacheButtonNeverReturnsClearEffect() {
         var gate = AppStartupClearCacheGate()
-        gate.request()
-        gate.dismiss()
+        #expect(gate.tap() != .clearLocalCache)
+        #expect(gate.tap() != .clearLocalCache)
+    }
+
+    @Test func confirmIsTheOnlyPathToClearEffect() {
+        var gate = AppStartupClearCacheGate()
+        _ = gate.tap()
+        #expect(gate.confirm() == .clearLocalCache)
+        #expect(!gate.isPresented)
+    }
+
+    @Test func cancelHidesConfirmationWithoutClearing() {
+        var gate = AppStartupClearCacheGate()
+        _ = gate.tap()
+        #expect(gate.cancel() == AppStartupClearCacheGate.Effect.none)
         #expect(!gate.isPresented)
     }
 
