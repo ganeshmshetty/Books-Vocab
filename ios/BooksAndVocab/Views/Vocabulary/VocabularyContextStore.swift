@@ -56,13 +56,10 @@ extension VocabularyContextStore {
         let entry = existingEntry(matching: word) ?? fetchEntryFromContext(matching: word)
         guard let entry else { return }
 
-        if entry.isSynced {
-            entry.queueDelete()
-            AppLog.reader.info("\(queuedDeleteLogPrefix): \(word)")
-        } else {
-            modelContext.delete(entry)
-            AppLog.reader.info("\(localDeleteLogPrefix): \(word)")
-        }
+        // Decide the log branch before deleteLocally mutates the sync state (#2733).
+        let queuesServerDelete = entry.requiresServerDelete
+        entry.deleteLocally(in: modelContext)
+        AppLog.reader.info("\(queuesServerDelete ? queuedDeleteLogPrefix : localDeleteLogPrefix): \(word)")
         modelContext.safeSaveWithToast(toastCoordinator)
     }
 
