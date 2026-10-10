@@ -6,6 +6,12 @@ import XCTest
 // Keep this wire contract byte-for-byte compatible with the app-side
 // ReaderTOCEvidence* types in Views/Reader/ReaderViewState.swift.
 enum ReaderTOCEvidenceHref {
+    /// Readium locators report only the resource href; TOC hrefs may add `#fragment`.
+    static func resourceHref(_ href: String) -> String {
+        guard let hash = href.firstIndex(of: "#") else { return href }
+        return String(href[..<hash])
+    }
+
     static func isSafeRelative(_ href: String) -> Bool {
         guard !href.isEmpty,
               href == href.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -163,7 +169,7 @@ struct ReaderTOCEvidenceEntry: Codable, Equatable {
             }
             switch entry.partition {
             case "required":
-                if entry.observation.observedLocatorHref != entry.observation.requestedHref {
+                if entry.observation.observedLocatorHref != ReaderTOCEvidenceHref.resourceHref(entry.observation.requestedHref) {
                     errors.append("\(prefix).observation.locatorMismatch")
                 }
                 if entry.observation.contentSelector?.isEmpty != false
@@ -172,7 +178,7 @@ struct ReaderTOCEvidenceEntry: Codable, Equatable {
                 }
             case "counterexample":
                 if entry.observation.observedLocatorHref == nil
-                    || entry.observation.observedLocatorHref == entry.observation.requestedHref {
+                    || entry.observation.observedLocatorHref == ReaderTOCEvidenceHref.resourceHref(entry.observation.requestedHref) {
                     errors.append("\(prefix).observation.counterexampleLocator")
                 }
                 if entry.observation.contentSelector != nil || entry.observation.observedContent != nil {
