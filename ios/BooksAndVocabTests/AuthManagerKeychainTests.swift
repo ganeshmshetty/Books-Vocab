@@ -74,7 +74,17 @@ struct AuthManagerKeychainTests {
         }
     }
     private final class NoopCleaner: LocalDataClearing {
-        func clearLocalData(container: ModelContainer, reason: String) async {}
+        func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {}
+    }
+
+    /// Records the account ID that `logout` hands to the cleaner, so the
+    /// delete-account wiring (#2434) can be asserted without touching SwiftData.
+    private final class RecordingCleaner: LocalDataClearing, @unchecked Sendable {
+        @MainActor private(set) var deletedAccountIDs: [String?] = []
+
+        func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
+            await MainActor.run { deletedAccountIDs.append(deletedAccountID) }
+        }
     }
 
     /// A cleaner that relinquishes the MainActor mid-clear (mirroring the real service's hop to
@@ -92,7 +102,7 @@ struct AuthManagerKeychainTests {
             self.onSuspend = onSuspend
         }
 
-        func clearLocalData(container: ModelContainer, reason: String) async {
+        func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
             // Real suspension that yields the MainActor — same window production opens when it
             // awaits the background actor.
             await Task.yield()
@@ -150,6 +160,39 @@ struct AuthManagerKeychainTests {
         #expect(racing.isLoggedIn == true)
         #expect(racing.userId == "new-user")
         #expect(racing.token == "new.jwt")
+    }
+
+    // MARK: - (e) delete_account hands the deleted account to the cleaner (#2434)
+
+    /// Production wiring: SettingsCoordinator logs out with `deleteAccountReason`, and only that
+    /// reason may scope the cleaner's account-preference purge to the account being deleted.
+    /// Any other logout must pass nil so other accounts' preferences are never touched.
+    @Test func deleteAccountLogoutHandsDeletedAccountIDToCleaner() async {
+        #expect(LocalDataCleanerService.deleteAccountReason == "delete_account")
+        let cleaner = RecordingCleaner()
+        let store = FakeSessionStore([session(userId: "account-a", token: "a.jwt", keychainReadFailed: false)])
+        let manager = AuthManager(
+            verifier: NoopVerifier(),
+            localDataCleaner: cleaner,
+            sessionStore: store,
+            accountPreferenceLifecycle: NoopAccountPreferenceLifecycle()
+        )
+        manager.modelContainer = Self.makeContainer()
+        manager.logout(reason: LocalDataCleanerService.deleteAccountReason)
+        await manager.waitForPendingLocalDataCleanup()
+        #expect(cleaner.deletedAccountIDs == ["account-a"])
+
+        let logoutCleaner = RecordingCleaner()
+        let logoutManager = AuthManager(
+            verifier: NoopVerifier(),
+            localDataCleaner: logoutCleaner,
+            sessionStore: FakeSessionStore([session(userId: "account-a", token: "a.jwt", keychainReadFailed: false)]),
+            accountPreferenceLifecycle: NoopAccountPreferenceLifecycle()
+        )
+        logoutManager.modelContainer = Self.makeContainer()
+        logoutManager.logout(reason: "user_logout")
+        await logoutManager.waitForPendingLocalDataCleanup()
+        #expect(logoutCleaner.deletedAccountIDs == [nil])
     }
 
     // MARK: - (a) transient read failure must NOT log the user out
