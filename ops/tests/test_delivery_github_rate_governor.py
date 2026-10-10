@@ -34,16 +34,30 @@ class StaticRunner:
         return self.responses.pop(0)
 
 
-def _http(status: int, body: str = "", *, etag: str | None = None, remaining: int | None = None, reset: float = NOW + 3600) -> str:
+def _http(
+    status: int,
+    body: str = "",
+    *,
+    etag: str | None = None,
+    remaining: int | None = None,
+    reset: float = NOW + 3600,
+    resource: str = "core",
+) -> str:
     lines = [f"HTTP/2.0 {status} {'OK' if status == 200 else 'Not Modified'}"]
     if etag is not None:
         lines.append(f"Etag: {etag}")
     if remaining is not None:
-        lines += [f"X-Ratelimit-Remaining: {remaining}", f"X-Ratelimit-Reset: {int(reset)}", "X-Ratelimit-Resource: core"]
+        lines += [
+            f"X-Ratelimit-Remaining: {remaining}",
+            f"X-Ratelimit-Reset: {int(reset)}",
+            f"X-Ratelimit-Resource: {resource}",
+        ]
     return "\r\n".join(lines) + "\r\n\r\n" + body
 
 
-def _client(tmp_path: Path, runner: StaticRunner, sleeps: list[float] | None = None) -> GitHubCliClient:
+def _client(
+    tmp_path: Path, runner: StaticRunner, sleeps: list[float] | None = None
+) -> GitHubCliClient:
     return GitHubCliClient(
         repo=tmp_path,
         runner=runner,
@@ -54,7 +68,9 @@ def _client(tmp_path: Path, runner: StaticRunner, sleeps: list[float] | None = N
 
 
 def _spend(tmp_path: Path) -> list[dict[str, object]]:
-    lines = (tmp_path / "cache" / "spend.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = (
+        (tmp_path / "cache" / "spend.jsonl").read_text(encoding="utf-8").splitlines()
+    )
     return [json.loads(line) for line in lines]
 
 
@@ -70,7 +86,9 @@ def test_governor_maps_remaining_to_decisions_per_resource() -> None:
 
 def test_low_quota_serves_cached_body_without_network(tmp_path: Path) -> None:
     body = '[{"filename": "ops/a.py"}]'
-    runner = StaticRunner([CommandResult(("gh",), 0, _http(200, body, etag='"v1"', remaining=500), "")])
+    runner = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, body, etag='"v1"', remaining=500), "")]
+    )
     client = _client(tmp_path, runner)
 
     assert client.load_json(_ARGV) == json.loads(body)
@@ -79,10 +97,14 @@ def test_low_quota_serves_cached_body_without_network(tmp_path: Path) -> None:
     assert _spend(tmp_path)[-1]["served"] == "stale-cache"
 
 
-def test_exhausted_quota_waits_for_reset_before_next_network_call(tmp_path: Path) -> None:
+def test_exhausted_quota_waits_for_reset_before_next_network_call(
+    tmp_path: Path,
+) -> None:
     runner = StaticRunner(
         [
-            CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""),
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""
+            ),
             CommandResult(("gh",), 0, _http(200, "[2]", remaining=4000), ""),
         ]
     )
@@ -95,7 +117,13 @@ def test_exhausted_quota_waits_for_reset_before_next_network_call(tmp_path: Path
 
 
 def test_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> None:
-    runner = StaticRunner([CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 99_999), "")])
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 99_999), ""
+            )
+        ]
+    )
     client = _client(tmp_path, runner, [])
 
     assert client.load_json(_ARGV) == [1]
@@ -107,7 +135,9 @@ def test_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> None:
 def test_spend_log_records_network_and_304_with_quota_fields(tmp_path: Path) -> None:
     runner = StaticRunner(
         [
-            CommandResult(("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=4000), ""),
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=4000), ""
+            ),
             CommandResult(("gh",), 0, _http(304, etag='"v1"', remaining=3999), ""),
         ]
     )
@@ -123,15 +153,25 @@ def test_spend_log_records_network_and_304_with_quota_fields(tmp_path: Path) -> 
     assert {"ts", "endpoint", "resource"} <= set(records[0])
 
 
-def test_responses_without_rate_limit_headers_write_no_spend_log(tmp_path: Path) -> None:
-    client = _client(tmp_path, StaticRunner([CommandResult(("gh",), 0, '["plain"]', "")]))
+def test_responses_without_rate_limit_headers_write_no_spend_log(
+    tmp_path: Path,
+) -> None:
+    client = _client(
+        tmp_path, StaticRunner([CommandResult(("gh",), 0, '["plain"]', "")])
+    )
 
     assert client.load_json(_ARGV) == ["plain"]
     assert not (tmp_path / "cache" / "spend.jsonl").exists()
 
 
 def test_error_status_raises_and_is_never_cached(tmp_path: Path) -> None:
-    runner = StaticRunner([CommandResult(("gh",), 1, _http(404, '{"message":"Not Found"}', remaining=4000), "")])
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 1, _http(404, '{"message":"Not Found"}', remaining=4000), ""
+            )
+        ]
+    )
     client = _client(tmp_path, runner)
 
     with pytest.raises(AdapterCommandError):
@@ -146,7 +186,9 @@ def test_304_without_cached_body_is_rejected_and_never_cached(tmp_path: Path) ->
     runner = StaticRunner(
         [
             CommandResult(("gh",), 0, _http(304, etag='"v1"', remaining=4000), ""),
-            CommandResult(("gh",), 0, _http(200, "[7]", etag='"v2"', remaining=3999), ""),
+            CommandResult(
+                ("gh",), 0, _http(200, "[7]", etag='"v2"', remaining=3999), ""
+            ),
         ]
     )
     client = _client(tmp_path, runner)
@@ -158,10 +200,14 @@ def test_304_without_cached_body_is_rejected_and_never_cached(tmp_path: Path) ->
     assert "If-None-Match" not in " ".join(runner.calls[1])
 
 
-def test_subcommand_reads_wait_for_quota_reset_and_are_spend_logged(tmp_path: Path) -> None:
+def test_subcommand_reads_wait_for_quota_reset_and_are_spend_logged(
+    tmp_path: Path,
+) -> None:
     runner = StaticRunner(
         [
-            CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""),
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""
+            ),
             CommandResult(("gh",), 0, '[{"number": 2}]', ""),
         ]
     )
@@ -171,10 +217,16 @@ def test_subcommand_reads_wait_for_quota_reset_and_are_spend_logged(tmp_path: Pa
     assert client.load_json(_ARGV) == [1]
     assert client.load_json(_PR_LIST) == [{"number": 2}]
     assert sleeps == [120.0]
-    assert [record["served"] for record in _spend(tmp_path)] == ["network", "quota-wait", "network"]
+    assert [record["served"] for record in _spend(tmp_path)] == [
+        "network",
+        "quota-wait",
+        "network",
+    ]
 
 
-def test_subcommand_reads_have_no_stale_body_so_low_quota_still_hits_network(tmp_path: Path) -> None:
+def test_subcommand_reads_have_no_stale_body_so_low_quota_still_hits_network(
+    tmp_path: Path,
+) -> None:
     runner = StaticRunner(
         [
             CommandResult(("gh",), 0, _http(200, "[1]", remaining=500), ""),
@@ -190,7 +242,11 @@ def test_subcommand_reads_have_no_stale_body_so_low_quota_still_hits_network(tmp
 
 def test_subcommand_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> None:
     runner = StaticRunner(
-        [CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 99_999), "")]
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 99_999), ""
+            )
+        ]
     )
     client = _client(tmp_path, runner, [])
 
@@ -198,3 +254,25 @@ def test_subcommand_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> Non
     with pytest.raises(DeliverySourceError, match="quota exhausted"):
         client.load_json(_PR_LIST)
     assert len(runner.calls) == 1
+
+
+_GRAPHQL_ARGV = ("gh", "api", "graphql", "-f", "query=query { viewer { login } }")
+
+
+def test_graphql_body_without_etag_is_served_stale_under_low_quota(
+    tmp_path: Path,
+) -> None:
+    body = '{"data": {"viewer": {"login": "bot"}}}'
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, body, remaining=500, resource="graphql"), ""
+            )
+        ]
+    )
+    client = _client(tmp_path, runner)
+
+    assert client.load_json(_GRAPHQL_ARGV) == json.loads(body)
+    assert client.load_json(_GRAPHQL_ARGV) == json.loads(body)
+    assert len(runner.calls) == 1
+    assert _spend(tmp_path)[-1]["served"] == "stale-cache"

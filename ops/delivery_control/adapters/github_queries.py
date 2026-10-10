@@ -328,8 +328,7 @@ class GitHubQueries:
                 (
                     "gh",
                     "api",
-                    f"repos/{repository}/pulls/{number}/files"
-                    f"?per_page={_PR_FILES_PAGE_SIZE}&page={page}",
+                    f"repos/{repository}/pulls/{number}/files?per_page={_PR_FILES_PAGE_SIZE}&page={page}",
                 )
             )
             if not isinstance(payload, list):
@@ -338,8 +337,10 @@ class GitHubQueries:
             if len(payload) < _PR_FILES_PAGE_SIZE:
                 return parse_changed_paths(pages)
         raise AdapterPayloadError(
-            f"GitHub PR #{number} exceeds the {_PR_FILES_MAX_PAGES * _PR_FILES_PAGE_SIZE}"
-            "-file pagination bound"
+            (
+                f"GitHub PR #{number} exceeds the "
+                f"{_PR_FILES_MAX_PAGES * _PR_FILES_PAGE_SIZE}-file pagination bound"
+            )
         )
 
     def _prime_open_pr_file_paths(self) -> None:

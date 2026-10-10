@@ -336,6 +336,15 @@ Supervisor 的 watchdog tick 只用來避免 supervisor 睡死，不代表每 30
 3. **fingerprint 連續三次相同＝no-progress**：同一 `fingerprint` 在三次獨立觀測（相隔 ≥20 分鐘）都不變，第三次改輸出 `escalate` 並**終止**該 agent loop，不再排程下一輪；`consecutive_observations` 必須如實遞增，不得因文字微調重置。fingerprint 任何一個 subject 改變（新 claim、新 Issue、不同 PR）才視為有進展並歸零。
 4. blocked report、escalate 與終止都只是觀測輸出：不授權任何 mutation，也不得拿來降低 hard gate；處置仍須由 IM 以 dry-run → `--apply` 明確執行。
 
+## GitHub 讀取配額（ETag 快取與 quota governor）
+
+本機 `gh api` 讀取經 `ops/delivery_control/adapters/github_client.py` 與 `github_rate_governor.py`，產物如下（皆在 `.cache/delivery-control/github/`，不入版控）：
+
+- `etag/<sha256>.json`：以 argv 雜湊為 key 的 body 快取。REST 讀取依 ETag 送 `If-None-Match`，304 回傳快取 body，200 without ETag 即刪除條目；GraphQL 無 ETag，其 body 保留，僅在 SERVE_STALE 使用，WAIT／PROCEED 仍打網路並覆寫。
+- `spend.jsonl`：每次 observed 或 served 讀取一行 JSON，欄位 `ts`、`resource`（`core`／`graphql`，subcommand 讀取可為 `core+graphql`）、`endpoint`、`served`（`network`／`304`／`stale-cache`／`quota-wait`）；網路回應另含 `status`、`remaining`、`reset`。
+- 配額門檻（依 `X-RateLimit-Remaining`，按 resource 分開）：remaining ≥ 800 直接放行；50 ≤ remaining < 800 有快取即回傳快取、不打網路；remaining < 50 等待 reset，等待超過 3900 秒即 fail closed（DeliverySourceError）。subcommand 與分頁讀取無 header 亦無快取 body，低配額時仍走網路。
+- 限制：governor 狀態只存在單一 `GitHubCliClient` 實例；同一 process 內多個 adapter 各自從 PROCEED 起算，不會讀取前一實例或 `spend.jsonl` 的耗盡狀態。跨實例共享或以 `spend.jsonl` 種子化屬後續工作；排查配額異常時以 `spend.jsonl` 最後一筆 `remaining`／`reset` 為準。
+
 ## Canary 與容量升級
 
 1. **Canary 1 lane**：只允許一個 Solver，走完整 handback → PR → required → native queue → merge → sync → terminal cleanup。

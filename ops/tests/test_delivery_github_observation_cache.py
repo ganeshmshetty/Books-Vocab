@@ -284,6 +284,11 @@ def test_changed_paths_pages_are_revalidated_per_page(tmp_path: Path) -> None:
 
     assert len(first) == 101
     assert paths == first
-    assert [call[-1].split("&page=")[1] for call in runner.calls] == ["1", "2", "1", "2"]
+    assert [call[-1].split("&page=")[1] for call in runner.calls] == [
+        "1",
+        "2",
+        "1",
+        "2",
+    ]
     assert 'If-None-Match: "p1"' in runner.calls[2]
     assert 'If-None-Match: "p2"' in runner.calls[3]

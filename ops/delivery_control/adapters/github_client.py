@@ -377,7 +377,8 @@ class GitHubCliClient:
 
         body = response.body.strip()
         etag = response.headers.get("etag")
-        self._cache_put(key, etag, body)
+        # GraphQL carries no ETag, so its body is kept for stale service only.
+        self._cache_put(key, etag, body, keep_untagged=resource == "graphql")
         self._spend(argv, resource, "network", response)
         return body
 
@@ -431,12 +432,14 @@ class GitHubCliClient:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def _cache_put(self, key: str, etag: str | None, body: str) -> None:
-        """Store a validated body, or drop the entry when the response had no ETag."""
+    def _cache_put(
+        self, key: str, etag: str | None, body: str, *, keep_untagged: bool = False
+    ) -> None:
+        """Store a validated body; drop an untagged REST entry unless it is kept for stale use."""
 
         path = self._cache_path(key)
         try:
-            if etag is None:
+            if etag is None and not keep_untagged:
                 path.unlink(missing_ok=True)
                 return
             path.parent.mkdir(parents=True, exist_ok=True)

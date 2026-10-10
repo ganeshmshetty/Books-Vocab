@@ -610,7 +610,9 @@ def test_github_changed_paths_preserve_rename_source_and_destination() -> None:
 
     assert paths == ("ops/added.py", "ops/new.py", "ops/old.py")
     assert runner.calls[1][:3] == ("gh", "api", "--include")
-    assert runner.calls[1][-1].endswith("repos/owner/repo/pulls/12/files?per_page=100&page=1")
+    assert runner.calls[1][-1].endswith(
+        "repos/owner/repo/pulls/12/files?per_page=100&page=1"
+    )
 
 
 def test_github_changed_paths_reject_rename_without_previous_filename() -> None:
