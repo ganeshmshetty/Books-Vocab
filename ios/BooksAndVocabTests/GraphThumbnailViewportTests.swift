@@ -131,5 +131,43 @@ struct GraphThumbnailViewportTests {
         #expect(duplicateNode == firstNode)
         #expect(finalNode == [90, 60])
     }
+
+    /// #2860: the Overview card needs a first-paint signal so a thumbnail that
+    /// never becomes visible can fall back to a status row instead of a blank body.
+    @Test func thumbnailReportsPaintedExactlyWhenCanvasBecomesVisible() async throws {
+        let webView = try makeGraphWebView()
+        try await waitForGraphRuntime(in: webView)
+
+        guard let result = try await evaluate(
+            """
+            (() => {
+              const sent = [];
+              postBridge = (obj) => sent.push(obj.type);
+              nodes = [];
+              links = [];
+              isThumbnail = true;
+              canvas.style.opacity = '0';
+              sim = { alpha: () => 0.9 };
+              draw();
+              const whileHot = { sent: sent.slice(), opacity: canvas.style.opacity };
+              sim = { alpha: () => 0.05 };
+              draw();
+              return JSON.stringify({ whileHot, converged: { sent: sent.slice(), opacity: canvas.style.opacity } });
+            })()
+            """,
+            in: webView
+        ) as? String,
+        let data = try JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any],
+        let hot = data["whileHot"] as? [String: Any],
+        let converged = data["converged"] as? [String: Any]
+        else {
+            throw JSError(description: "painted-signal result was unreadable")
+        }
+
+        #expect(hot["sent"] as? [String] == [])
+        #expect(hot["opacity"] as? String == "0")
+        #expect(converged["sent"] as? [String] == ["painted"])
+        #expect(converged["opacity"] as? String == "1")
+    }
 }
 #endif

@@ -20,6 +20,7 @@ final class GraphThumbnailHolder {
         webView.scrollView.bounces = false
         webView.scrollView.backgroundColor = .clear
         coordinator.webView = webView
+        webView.navigationDelegate = coordinator
 
         self.webView = webView
         self.coordinator = coordinator
@@ -36,12 +37,19 @@ final class GraphThumbnailHolder {
 
 // MARK: - Coordinator (message handler + signature dedup)
 
-final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler {
+final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var graphBridgeReady = false
     var pendingPayload: String?
     var lastSignature: String?
+    /// Last payload handed to the page, replayed after the web content process dies or `recover()`.
+    private(set) var lastPayload: String?
+    /// True once graph.html reported that the thumbnail canvas is visible (#2860).
+    private(set) var hasPainted = false
+    var onPainted: (() -> Void)?
     weak var webView: WKWebView?
+
     func sendInitGraph(_ json: String, webView: WKWebView) {
+        lastPayload = json
         guard graphBridgeReady else { pendingPayload = json; return }
         webView.evaluateJavaScript("initGraph('\(json.jsSingleQuoteEscaped)')", completionHandler: nil)
     }
@@ -50,12 +58,33 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler {
         guard message.name == "graphBridge",
               let body = message.body as? [String: Any],
               let type = body["type"] as? String,
-              type == "ready" else { return }
+              ["ready", "painted"].contains(type) else { return }
+        if type == "painted" {
+            hasPainted = true
+            onPainted?()
+            return
+        }
         graphBridgeReady = true
         if let pending = pendingPayload, let wv = webView {
             pendingPayload = nil
             sendInitGraph(pending, webView: wv)
         }
+    }
+
+    /// Rebuilds the page and replays the last payload. Used when the web content
+    /// process was terminated or the thumbnail never painted; without it
+    /// `graphBridgeReady`/`lastSignature` would block any re-send forever.
+    func recover() {
+        graphBridgeReady = false
+        hasPainted = false
+        pendingPayload = lastPayload
+        if let webView, let htmlURL = Bundle.main.url(forResource: "graph", withExtension: "html") {
+            webView.loadFileURL(htmlURL, allowingReadAccessTo: htmlURL.deletingLastPathComponent())
+        }
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        recover()
     }
 }
 
