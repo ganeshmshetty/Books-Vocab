@@ -27,7 +27,7 @@ final class LocalDataCleanerService: LocalDataClearing {
         // 帳號偏好（#2434 / #2556）：登出只丟 pre-account raw 已領養的副本；
         // delete_account 另外清空「被刪除帳號」的命名空間（本機 + iCloud KVS）。
         let cloudPreferences = CloudPreferencesSync.shared
-        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults, cloud: cloudPreferences)
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
         if let deletedAccountID {
             AccountPreferenceNamespace.purgeNamespacedPreferences(
                 accountID: deletedAccountID,
