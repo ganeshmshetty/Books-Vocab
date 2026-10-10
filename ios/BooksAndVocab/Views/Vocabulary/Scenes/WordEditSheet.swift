@@ -47,6 +47,7 @@ struct WordEditSheet: View {
                         Button("儲存".localized) { save() }
                             .accessibilityIdentifier("wordDetail.edit.save")
                             .fontWeight(.semibold)
+                            .disabled(!isDraftValid)
                     }
                 }
             }
@@ -86,7 +87,12 @@ struct WordEditSheet: View {
         }
     }
 
+    private var isDraftValid: Bool {
+        (try? Self.validate(translation: draftTranslation, explanation: draftExplanation)) != nil
+    }
+
     private func save() {
+        guard isDraftValid else { return }
         isSaving = true
 
         do {
@@ -106,24 +112,52 @@ struct WordEditSheet: View {
         }
     }
 
+    /// 與後端 `VocabContentUpdateRequest` 的欄位上限一致（meaning 1..1000、note ≤ 5000，
+    /// 以 Unicode scalar 計，對齊 Pydantic `max_length`）。超出會被伺服器以 422 拒絕，
+    /// 且同步引擎視為可重試，導致條目永久卡在 failed（#2548）。
+    static let translationMaxLength = 1000
+    static let noteMaxLength = 5000
+
+    enum EditValidationError: Error, Equatable {
+        case translationLength
+        case noteLength
+    }
+
+    /// 以 trim 後的值驗證；與 `commitEdit` 送進 entry 的值完全相同。
+    static func validate(translation: String, explanation: String) throws -> (translation: String, explanation: String?) {
+        let trimmedTranslation = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedExplanation = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let translationLength = trimmedTranslation.unicodeScalars.count
+        guard (1...translationMaxLength).contains(translationLength) else {
+            throw EditValidationError.translationLength
+        }
+        guard trimmedExplanation.unicodeScalars.count <= noteMaxLength else {
+            throw EditValidationError.noteLength
+        }
+        return (trimmedTranslation, trimmedExplanation.isEmpty ? nil : trimmedExplanation)
+    }
+
     /// 套用編輯並呼叫 `save`；失敗時把 entry 還原成編輯前的值再 rethrow，
     /// 否則記憶體裡的未存檔變更會被後續任何 save 悄悄寫入（#2732）。
+    /// 驗證失敗時在任何變更前就 throw，entry 與 `save` 都不會被碰。
     static func commitEdit(
         entry: VocabularyEntry,
         translation: String,
         explanation: String,
         save: () throws -> Void
     ) throws {
+        let validated = try validate(translation: translation, explanation: explanation)
+
         let original = (
             translation: entry.translation,
             explanation: entry.explanation,
             syncAction: entry.syncAction,
             syncState: entry.syncState
         )
-        let trimmedExplanation = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        entry.translation = translation.trimmingCharacters(in: .whitespacesAndNewlines)
-        entry.explanation = trimmedExplanation.isEmpty ? nil : trimmedExplanation
+        entry.translation = validated.translation
+        entry.explanation = validated.explanation
 
         if entry.isSynced {
             entry.syncAction = .edit
