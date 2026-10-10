@@ -81,3 +81,15 @@ struct LinkedCardOverlayStack: View {
         stack.removeSubrange(index...)
     }
 }
+
+extension Array where Element == VocabularyEntry {
+    /// Pushes a linked card without ever holding the same entry twice (#2734).
+    /// An entry already on the stack closes the layers above it instead, so `ForEach` ids stay unique.
+    mutating func pushLinkedCard(_ entry: VocabularyEntry) {
+        if let index = firstIndex(where: { $0.id == entry.id }) {
+            removeSubrange((index + 1)...)
+        } else {
+            append(entry)
+        }
+    }
+}

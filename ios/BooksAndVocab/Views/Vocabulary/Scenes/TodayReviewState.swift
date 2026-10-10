@@ -216,7 +216,7 @@ final class TodayReviewState {
     func navigateToLinkedCard(link: KGCardLinkSummary) {
         guard let target = linkedEntryLookup[link.cardId] else { return }
         tappedLink = nil
-        linkedCardStack.append(target)
+        linkedCardStack.pushLinkedCard(target)
     }
 
     /// `peer` is the link's other end resolved live by the caller (it also
@@ -279,7 +279,7 @@ final class TodayReviewState {
 
     func handleDetailTap() {
         guard let current = currentEntry else { return }
-        linkedCardStack.append(current)
+        linkedCardStack.pushLinkedCard(current)
     }
 
     /// #2041: the compact card's "show detailed for now" button (same button
