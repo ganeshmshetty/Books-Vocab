@@ -122,7 +122,7 @@ struct SyncView: View {
         defer { pendingDeleteID = nil }
         guard let id = pendingDeleteID,
               let entry = pendingEntries.first(where: { $0.id == id }) else { return }
-        entry.deleteLocally(in: modelContext)
+        modelContext.delete(entry)
         modelContext.safeSaveWithToast(toastCoordinator)
     }
 
