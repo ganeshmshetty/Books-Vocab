@@ -69,6 +69,13 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 5. 無 cardId 回傳（異常）的 entry 保持 `pending + add`，下次重試
 6. **不變式（contract）**：`cardIds` 的 key 必須是 client submitted word 的 **byte-exact echo**，後端**不得**對 key 做任何 normalization（NFC/大小寫/trim）——iOS 以 `entry.word` 逐字節查找，任何後端側轉換都會讓配對 silent miss。清洗只作用於**儲存的 content**，不作用於 response key
 
+### 上傳中的新增被刪除
+
+1. 單字是 `pending + add` 且 `isUploadInFlight`（`batchAdd` 尚在途中）時，使用者刪除**不得硬刪**：`deleteLocally(in:)` 改呼叫 `queueDelete()`（`requiresServerDelete = isSynced || isUploadInFlight`）
+2. row 保留為 `pending + delete`，待上傳回填 `kgCardId` 後，下一輪 sync 送出 batch delete（#2733）
+3. 理由：硬刪會讓 server 已建立的卡片在下次 pull 被重新插入（resurrection）
+4. 唯一入口：所有使用者刪除（閱讀器 `VocabularyContextStore.deleteEntry`、`SyncView` 待同步確認刪除、`WordDetailSheet`）都經 `VocabularyEntry.deleteLocally(in:)`，不得直接 `modelContext.delete(entry)`
+
 ### 已同步單字被刪除
 
 1. 既有單字先是 `synced + add`
@@ -78,7 +85,7 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 ### 雲端資料拉回本地
 
-1. 若本地是 `pending + delete`，保留本地刪除意圖，不被遠端覆寫
+1. 若本地是 `pending + delete`（含上節「上傳中的新增被刪除」排入的 delete），保留本地刪除意圖，不被遠端覆寫；convergence 不得把 delete-queued row 重設回 `add`
 2. 若遠端卡片存在且未刪除，合併內容後呼叫 `markSynced()`
 3. 若遠端回傳 soft delete，本地直接刪除
 
