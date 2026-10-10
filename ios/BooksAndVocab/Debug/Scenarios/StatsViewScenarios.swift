@@ -27,6 +27,20 @@ enum StatsViewScenarios {
             Scenario("Large counts", layout: .fill) {
                 StatsViewScene(fixture: .largeCounts)
             }
+            // 關聯圖 card matrix (#2860). Rendering (paint watchdog) and retry are
+            // unit-only: a catalog snapshot cannot hold a thumbnail unpainted.
+            Scenario("Graph loading", layout: .fill) {
+                StatsViewScene(fixture: .populated, graph: .loading)
+            }
+            Scenario("Graph error 5xx", layout: .fill) {
+                StatsViewScene(fixture: .populated, graph: .failedNoCache(KGError.httpError(statusCode: 500, detail: "catalog")))
+            }
+            Scenario("Graph error offline", layout: .fill) {
+                StatsViewScene(fixture: .populated, graph: .failedNoCache(KGError.offline))
+            }
+            Scenario("Graph stale 5xx", layout: .fill) {
+                StatsViewScene(fixture: .populated, graph: .failedCached(KGError.httpError(statusCode: 500, detail: "catalog")))
+            }
         }
     }
 }
@@ -129,6 +143,37 @@ enum StatsViewTime {
     }
 }
 
+/// Injected 關聯圖 card state for catalog rows of the #2860 matrix. Each case
+/// maps to what `StatsPresenter` holds after a load (links / latest failure).
+private enum StatsGraphState {
+    /// Links loaded; the thumbnail paints (Populated / Empty rows).
+    case painted
+    /// Links not loaded yet and no failure: loading body.
+    case loading
+    /// Pull failed with no cached links: error panel with reason and retry.
+    case failedNoCache(Error)
+    /// Pull failed with cached links: cached graph plus stale status row.
+    case failedCached(Error)
+
+    var failure: Error? {
+        switch self {
+        case .painted, .loading:
+            return nil
+        case .failedNoCache(let error), .failedCached(let error):
+            return error
+        }
+    }
+
+    var keepsCachedLinks: Bool {
+        switch self {
+        case .painted, .failedCached:
+            return true
+        case .loading, .failedNoCache:
+            return false
+        }
+    }
+}
+
 // MARK: - Scene harness
 
 /// `@MainActor` body so the in-memory container is seeded and env-default
@@ -139,11 +184,13 @@ private struct StatsViewScene: View {
     private let projectionClock: StatsProjectionClock
     /// 關聯圖 card links, derived from the same UI World seed as the entries
     /// (manifest is the single link source; empty when the dataset carries no
-    /// links, which legitimately renders the card's empty state).
-    let graphLinks: [KGGraphLink]
+    /// links, which legitimately renders the card's empty state). nil while
+    /// loading or after a failure with no cache.
+    let graphLinks: [KGGraphLink]?
+    let injectedGraphFailure: Error?
     private let frozenStore: ReviewSettingsStore
 
-    init(fixture: StatsViewFixture) {
+    init(fixture: StatsViewFixture, graph: StatsGraphState = .painted) {
         let seed = FixtureDatasetStore.requireVocabularySeed(for: fixture.vocabularyID)
         do {
             let container = try ModelContainer(
@@ -180,10 +227,12 @@ private struct StatsViewScene: View {
                 calendar: StatsViewTime.calendar
             )
             self.container = container
-            self.graphLinks = UIWorldGraphLinks.makeGraphLinks(
+            let seededLinks = UIWorldGraphLinks.makeGraphLinks(
                 from: visibleEntries,
                 fixtureID: fixture.vocabularyID
             )
+            self.graphLinks = graph.keepsCachedLinks ? seededLinks : nil
+            self.injectedGraphFailure = graph.failure
             self.initialSummary = StatsPresentation.project(.init(
                 entries: visibleEntries,
                 reviewRecords: records,
@@ -203,7 +252,8 @@ private struct StatsViewScene: View {
                 filter: NotebookFilter(),
                 initialSummary: initialSummary,
                 initialGraphLinks: graphLinks,
-                shouldLoadGraphData: false
+                shouldLoadGraphData: false,
+                injectedGraphFailure: injectedGraphFailure
             )
                 .modelContainer(container)
         }
