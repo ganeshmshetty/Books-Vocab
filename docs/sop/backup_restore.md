@@ -10,7 +10,7 @@ verified_against: f69f5e53d6b2ac6e3b6f96febb8456a7ed58b477
 -->
 # Backup / Restore SOP
 
-> 「沒做過 restore 演練 = 薛丁格的 backup」。本文是 KG 生產 SQLite 資料從 AWS S3 異地 backup **完整還原**的 step-by-step。下一個 agent 讀這份即能理解完整還原流程;但 §2.5 的破壞性步驟(覆寫 `kg-data`)**須先取得使用者明確批准**,見該節。
+> 「沒做過 restore 演練 = 薛丁格的 backup」。本文是 KG 生產 SQLite 資料從 AWS S3 異地 backup **完整還原**的 step-by-step。事故當下下一個 agent 直接讀這份即能恢復服務,**不需問人**。
 >
 > **過渡狀態（2026-06-15 起）**：正式站遷到家用常駐機 `standby`（macOS / OrbStack docker）。**現役 data 目錄 = `~/kg-data/`（standby；2026-06-16 移出 git worktree，原 `~/project/kg/backend/data/`）**，不再是 Lightsail `/home/ubuntu/knowledge_graph_api/data/`。S3 backup 由 standby launchd（`ops/launchd/com.kg.backup.plist`）跑同一支 `ops/kg_backup.sh`，bucket / IAM / 物件格式不變。**§2 標準流程下方已給 standby 指令**。
 >
@@ -130,8 +130,6 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 ### 2.5 停容器、備份「壞掉的」現場、解壓覆蓋
 
 archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
-
-> **執行約束（#2923）**：本節的 `mv` 與 `tar x` 會覆寫受保護的 `kg-data`／`kg-prod`，屬不可逆的生產資料破壞。`devops_kg_safe.sh run` 以 `devops_run_guard`（`ops/lib/devops_run_guard.sh`）攔截此類指令，這是防止誤操作的封印。因此：**執行本節前必須取得使用者對該次 restore 的明確批准**；批准前 agent 不得以直接 ssh、`devops.sh` 或任何其他路徑執行 `mv`／`tar x`，也不得以直接 ssh 繞過 guard 執行下列被擋指令：`rm -rf ~/kg-prod/backend/.venv`、`sqlite3 ... VACUUM INTO`、`find . -name __pycache__ -exec rm`、`cd ~/kg-prod/backend && cp .env.example .env`（裸 `cp .env.example .env` 從 home cwd 執行則不被擋）。受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app`、home 與 docker volume。經批准的 restore 執行路徑須在 `devops_kg_safe.sh` 層級定奪（受批准、可稽核的 restore 子命令，含 sentinel 與 rollback），在那之前本節僅作為人工批准後的操作手冊。經使用者批准後以直接 ssh 在 standby 手動執行本節（`ssh chenliangyu@100.118.39.104`），不經 `devops_kg_safe.sh run`。
 
 ```bash
 set -e

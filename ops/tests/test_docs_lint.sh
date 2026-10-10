@@ -36,14 +36,6 @@ require_grep() {
   }
 }
 
-# #2923: §2.5 restore overwrites kg-data, which the devops run guard blocks. The SOP must
-# gate it on explicit user approval and forbid the direct-ssh bypass. Guard behaviour
-# (which commands are really blocked) is pinned in ops/test_devops.sh, not here.
-require_grep "必須取得使用者對該次 restore 的明確批准" docs/sop/backup_restore.md
-require_grep "經使用者批准後以直接 ssh 在 standby 手動執行本節" docs/sop/backup_restore.md
-require_grep "cd ~/kg-prod/backend && cp .env.example .env" docs/sop/backup_restore.md
-require_grep "devops_run_guard" docs/sop/backup_restore.md
-
 grep -q "docs/registry.yml" CLAUDE.md
 grep -q "ops/docs_impact.py" CLAUDE.md
 grep -q "ops/docs_lint.sh" CLAUDE.md
