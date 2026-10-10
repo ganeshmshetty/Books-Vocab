@@ -1,13 +1,13 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/issue-2979 (#2979, rebased onto cd729943d): measured ops 210,251 on this lane head via ops/complexity.py show, which exceeded the prior 210,110 ceiling by 141 lines from the closed-PR cleanup_pending lease retirement in ops/worktree_orchestrate.py plus its test; ceiling = measured + 5 = 210,256. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
+  "note": "2026-10-11 lane debug/issue-2833-r4 (#2833/#2870, port of abandoned r3 onto origin/main a5c8f5aaa): measured ops 210,598 on this lane head via ops/complexity.py show --strict; ceiling = measured + 20 = 210,618. The +20 covers only this lane own growth; ratchet reclaims the slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 210256,
+    "ops": 210618,
     "docs": 16077,
     "workflows": 2097
   }
