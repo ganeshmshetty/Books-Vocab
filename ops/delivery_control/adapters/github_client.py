@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -14,6 +17,7 @@ from typing import Any
 from ..domain.errors import DeliverySourceError
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterCommandError, AdapterPayloadError
+from .github_cache_root import github_cache_dir
 from .github_rate_governor import (
     QuotaDecision,
     QuotaGovernor,
@@ -210,6 +214,17 @@ def _is_transient_failure(result: CommandResult) -> bool:
 
 _HTTP_STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})")
 _MAX_QUOTA_WAIT_SECONDS = 3900.0
+# A body may be served under low quota only while it is this young; older bodies
+# fall through to a live (revalidated) read so required checks cannot go stale.
+_STALE_MAX_AGE_SECONDS = 300.0
+_MAX_CACHE_ENTRIES = 2000
+
+
+@dataclass(frozen=True)
+class _CacheEntry:
+    etag: str | None
+    body: str
+    fetched_at: float
 
 
 @dataclass(frozen=True)
@@ -270,10 +285,47 @@ class GitHubCliClient:
         self.repo = repo
         self.runner = runner
         self.last_command_attempts: tuple[CommandAttempt, ...] = ()
-        self.cache_dir = cache_dir or repo / ".cache" / "delivery-control" / "github"
+        # Fetch time of the body the last load_json returned; None for non-API reads.
+        self.last_fetched_at: float | None = None
+        self.cache_dir = cache_dir or github_cache_dir(repo)
         self.governor = QuotaGovernor(now=now)
         self._now = now
         self._sleep = sleep
+        self._seed_governor()
+
+    def _seed_governor(self) -> None:
+        """Carry the newest quota reading per resource from spend.jsonl into this process.
+
+        A reading whose reset epoch has passed says nothing about the current quota,
+        so it is dropped rather than applied.
+        """
+
+        try:
+            lines = (
+                (self.cache_dir / "spend.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            )
+        except OSError:
+            return
+        latest: dict[str, dict[str, object]] = {}
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("remaining") is not None:
+                latest[str(record.get("resource"))] = record
+        for resource, record in latest.items():
+            try:
+                snapshot = QuotaSnapshot(
+                    remaining=int(str(record["remaining"])),
+                    reset_epoch=float(str(record["reset"])),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if snapshot.reset_epoch > self._now():
+                self.governor.observe(resource, snapshot)
 
     def _run_result(
         self,
@@ -300,6 +352,7 @@ class GitHubCliClient:
         return self._run_result(argv, allow_nonzero=allow_nonzero).stdout.strip()
 
     def load_json(self, argv: tuple[str, ...], *, allow_nonzero: bool = False) -> Any:
+        self.last_fetched_at = None
         if _is_api_read(argv):
             output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
         elif _is_read_only_json_query(argv):
@@ -334,6 +387,10 @@ class GitHubCliClient:
                 f"exceeds the {_MAX_QUOTA_WAIT_SECONDS:.0f}s wait budget"
             )
         self._spend(argv, resource, "quota-wait")
+        # A silent multi-minute sleep looks like a hung tick; say why it is waiting.
+        sys.stderr.write(
+            f"GitHub {resource} quota low; waiting {wait:.0f}s for reset\n"
+        )
         self._sleep(wait)
 
     def _load_api_read(self, argv: tuple[str, ...], *, allow_nonzero: bool) -> str:
@@ -344,16 +401,23 @@ class GitHubCliClient:
         cached = self._cache_get(key)
 
         decision, _ = self.governor.decide(resource)
-        if decision is QuotaDecision.SERVE_STALE and cached is not None:
+        if (
+            decision is QuotaDecision.SERVE_STALE
+            and cached is not None
+            and self._now() - cached.fetched_at <= _STALE_MAX_AGE_SECONDS
+        ):
             self._spend(argv, resource, "stale-cache")
-            return cached[1]
+            self.last_fetched_at = cached.fetched_at
+            return cached.body
         self._admit_quota(argv, resource)
 
         extra: tuple[str, ...] = ()
-        if cached is not None and cached[0] is not None:
-            extra = ("-H", f"If-None-Match: {cached[0]}")
+        if cached is not None and cached.etag is not None:
+            extra = ("-H", f"If-None-Match: {cached.etag}")
         include = (argv[0], argv[1], "--include", *extra, *argv[2:])
         result = self._run_result(include, allow_nonzero=True, retry_read_only=True)
+        fetched_at = self._now()
+        self.last_fetched_at = fetched_at
         response = _parse_include(result.stdout)
         if response is None:
             if result.exit_code != 0 and not allow_nonzero:
@@ -368,8 +432,12 @@ class GitHubCliClient:
                 raise AdapterPayloadError(
                     f"GitHub returned 304 without a cached body for {' '.join(argv)}"
                 )
+            # GitHub just confirmed the body is current, so its age restarts here.
+            self._cache_put(
+                key, cached.etag, cached.body, fetched_at=fetched_at, keep_untagged=True
+            )
             self._spend(argv, resource, "304", response)
-            return cached[1]
+            return cached.body
         if response.status >= 400 or result.exit_code != 0:
             if not allow_nonzero:
                 raise AdapterCommandError(result)
@@ -378,7 +446,9 @@ class GitHubCliClient:
         body = response.body.strip()
         etag = response.headers.get("etag")
         # GraphQL carries no ETag, so its body is kept for stale service only.
-        self._cache_put(key, etag, body, keep_untagged=resource == "graphql")
+        self._cache_put(
+            key, etag, body, fetched_at=fetched_at, keep_untagged=resource == "graphql"
+        )
         self._spend(argv, resource, "network", response)
         return body
 
@@ -425,15 +495,23 @@ class GitHubCliClient:
     def _cache_path(self, key: str) -> Path:
         return self.cache_dir / "etag" / f"{key}.json"
 
-    def _cache_get(self, key: str) -> tuple[str | None, str] | None:
+    def _cache_get(self, key: str) -> _CacheEntry | None:
         try:
             raw = json.loads(self._cache_path(key).read_text(encoding="utf-8"))
-            return raw["etag"], raw["body"]
+            return _CacheEntry(
+                etag=raw["etag"], body=raw["body"], fetched_at=float(raw["fetched_at"])
+            )
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
     def _cache_put(
-        self, key: str, etag: str | None, body: str, *, keep_untagged: bool = False
+        self,
+        key: str,
+        etag: str | None,
+        body: str,
+        *,
+        fetched_at: float,
+        keep_untagged: bool = False,
     ) -> None:
         """Store a validated body; drop an untagged REST entry unless it is kept for stale use."""
 
@@ -443,6 +521,27 @@ class GitHubCliClient:
                 path.unlink(missing_ok=True)
                 return
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"etag": etag, "body": body}), encoding="utf-8")
+            payload = json.dumps({"etag": etag, "body": body, "fetched_at": fetched_at})
+            # Write-then-rename: a concurrent reader sees the old or the new entry, never a torn one.
+            descriptor, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(tmp_name, path)
+        except OSError:
+            return
+        self._prune_cache(path.parent)
+
+    def _prune_cache(self, directory: Path) -> None:
+        """Bound etag/ growth by evicting the least recently written entries."""
+
+        try:
+            entries = list(directory.glob("*.json"))
+            excess = len(entries) - _MAX_CACHE_ENTRIES
+            if excess <= 0:
+                return
+            for stale in sorted(entries, key=lambda item: item.stat().st_mtime)[
+                :excess
+            ]:
+                stale.unlink(missing_ok=True)
         except OSError:
             return

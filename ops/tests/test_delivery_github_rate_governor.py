@@ -9,7 +9,9 @@ import pytest
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
+from delivery_control.adapters import github_client
 from delivery_control.adapters.errors import AdapterCommandError, AdapterPayloadError
+from delivery_control.adapters.github_cache_root import github_cache_dir
 from delivery_control.adapters.github_client import GitHubCliClient
 from delivery_control.adapters.github_rate_governor import (
     QuotaDecision,
@@ -56,13 +58,17 @@ def _http(
 
 
 def _client(
-    tmp_path: Path, runner: StaticRunner, sleeps: list[float] | None = None
+    tmp_path: Path,
+    runner: StaticRunner,
+    sleeps: list[float] | None = None,
+    *,
+    now: float = NOW,
 ) -> GitHubCliClient:
     return GitHubCliClient(
         repo=tmp_path,
         runner=runner,
         cache_dir=tmp_path / "cache",
-        now=lambda: NOW,
+        now=lambda: now,
         sleep=(sleeps.append if sleeps is not None else (lambda _seconds: None)),
     )
 
@@ -153,15 +159,161 @@ def test_spend_log_records_network_and_304_with_quota_fields(tmp_path: Path) -> 
     assert {"ts", "endpoint", "resource"} <= set(records[0])
 
 
-def test_responses_without_rate_limit_headers_write_no_spend_log(
+def test_http_response_without_rate_limit_headers_is_spend_logged_unquota(
     tmp_path: Path,
 ) -> None:
-    client = _client(
-        tmp_path, StaticRunner([CommandResult(("gh",), 0, '["plain"]', "")])
+    runner = StaticRunner([CommandResult(("gh",), 0, _http(200, "[1]"), "")])
+    client = _client(tmp_path, runner)
+
+    assert client.load_json(_ARGV) == [1]
+    record = _spend(tmp_path)[-1]
+    assert record["served"] == "network"
+    assert record["status"] == 200
+    assert record["remaining"] is None
+
+
+def test_quota_thresholds_are_inclusive_at_800_and_50() -> None:
+    governor = QuotaGovernor(now=lambda: NOW)
+    governor.observe("core", QuotaSnapshot(remaining=800, reset_epoch=NOW + 60))
+    assert governor.decide("core") == (QuotaDecision.PROCEED, 0.0)
+    governor.observe("core", QuotaSnapshot(remaining=799, reset_epoch=NOW + 60))
+    assert governor.decide("core") == (QuotaDecision.SERVE_STALE, 0.0)
+    governor.observe("core", QuotaSnapshot(remaining=50, reset_epoch=NOW + 60))
+    assert governor.decide("core") == (QuotaDecision.SERVE_STALE, 0.0)
+    governor.observe("core", QuotaSnapshot(remaining=49, reset_epoch=NOW + 60))
+    assert governor.decide("core") == (QuotaDecision.WAIT_FOR_RESET, 60.0)
+
+
+def test_stale_entry_older_than_cap_is_not_served(tmp_path: Path) -> None:
+    first = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=500), "")]
+    )
+    _client(tmp_path, first, now=NOW - 1000).load_json(_ARGV)
+    second = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[2]", etag='"v2"', remaining=500), "")]
     )
 
-    assert client.load_json(_ARGV) == ["plain"]
-    assert not (tmp_path / "cache" / "spend.jsonl").exists()
+    # Low quota would serve the cached body, but it was fetched 1000s ago.
+    assert _client(tmp_path, second, now=NOW).load_json(_ARGV) == [2]
+    assert len(second.calls) == 1
+
+
+def test_stale_entry_within_cap_keeps_its_original_fetch_time(tmp_path: Path) -> None:
+    first = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=500), "")]
+    )
+    _client(tmp_path, first, now=NOW - 60).load_json(_ARGV)
+    second = StaticRunner([])
+    client = _client(tmp_path, second, now=NOW)
+
+    assert client.load_json(_ARGV) == [1]
+    assert second.calls == []
+    assert client.last_fetched_at == NOW - 60
+
+
+def test_fresh_client_seeds_low_quota_from_spend_log_and_waits(tmp_path: Path) -> None:
+    first = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""
+            )
+        ]
+    )
+    _client(tmp_path, first).load_json(_ARGV)
+    sleeps: list[float] = []
+    second = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[2]", remaining=4000), "")]
+    )
+
+    assert _client(tmp_path, second, sleeps).load_json(_OTHER) == [2]
+    assert sleeps == [120.0]
+
+
+def test_seeded_quota_with_passed_reset_is_not_waited_on(tmp_path: Path) -> None:
+    first = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW - 10), "")]
+    )
+    _client(tmp_path, first).load_json(_ARGV)
+    sleeps: list[float] = []
+    second = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[2]", remaining=4000), "")]
+    )
+
+    assert _client(tmp_path, second, sleeps).load_json(_OTHER) == [2]
+    assert sleeps == []
+
+
+def test_cache_is_pruned_to_entry_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(github_client, "_MAX_CACHE_ENTRIES", 2)
+    argvs = (_ARGV, _OTHER, ("gh", "api", "repos/owner/repo/third"))
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", etag=f'"v{i}"', remaining=4000), ""
+            )
+            for i in range(3)
+        ]
+    )
+    client = _client(tmp_path, runner)
+    for argv in argvs:
+        client.load_json(argv)
+
+    entries = list((tmp_path / "cache" / "etag").glob("*.json"))
+    assert len(entries) == 2
+    assert not list((tmp_path / "cache" / "etag").glob("*.tmp"))
+
+
+def test_quota_wait_announces_itself_on_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, "[1]", remaining=40, reset=NOW + 120), ""
+            ),
+            CommandResult(("gh",), 0, '[{"number": 2}]', ""),
+        ]
+    )
+    client = _client(tmp_path, runner)
+    client.load_json(_ARGV)
+    capsys.readouterr()
+
+    client.load_json(_OTHER)
+    assert "waiting 120s" in capsys.readouterr().err
+
+
+def test_worktrees_of_one_git_common_dir_share_the_default_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    common = tmp_path / "main" / ".git"
+    for name in ("wt1", "wt2"):
+        gitdir = common / "worktrees" / name
+        gitdir.mkdir(parents=True)
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+        worktree = tmp_path / name
+        worktree.mkdir()
+        (worktree / ".git").write_text(f"gitdir: {gitdir}\n", encoding="utf-8")
+
+    assert github_cache_dir(tmp_path / "wt1") == github_cache_dir(tmp_path / "wt2")
+    assert github_cache_dir(tmp_path / "wt1").is_relative_to(common)
+
+    first = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[1]", etag='"v1"', remaining=4000), "")]
+    )
+    GitHubCliClient(repo=tmp_path / "wt1", runner=first, now=lambda: NOW).load_json(
+        _ARGV
+    )
+    second = StaticRunner(
+        [CommandResult(("gh",), 0, _http(304, etag='"v1"', remaining=3999), "")]
+    )
+    client = GitHubCliClient(repo=tmp_path / "wt2", runner=second, now=lambda: NOW)
+
+    assert client.load_json(_ARGV) == [1]
+    assert 'If-None-Match: "v1"' in second.calls[0]
 
 
 def test_error_status_raises_and_is_never_cached(tmp_path: Path) -> None:
