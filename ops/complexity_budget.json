@@ -1,13 +1,13 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/ops-baseline-reds-r2 (#2956 baseline reds + 150-line batch headroom for sibling ops lanes): measured ops 209,960 on this lane head via ops/complexity.py show; ceiling = measured + 150 = 210,110. The +150 is deliberate batch headroom so in-flight ops CI-fix lanes can land without each fighting over this JSON line; it is not feature growth. ratchet reclaims any unused slack later.",
+  "note": "2026-10-11 lane debug/issue-2979 (#2979, rebased onto cd729943d): measured ops 210,251 on this lane head via ops/complexity.py show, which exceeded the prior 210,110 ceiling by 141 lines from the closed-PR cleanup_pending lease retirement in ops/worktree_orchestrate.py plus its test; ceiling = measured + 5 = 210,256. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 210110,
+    "ops": 210256,
     "docs": 16077,
     "workflows": 2097
   }
