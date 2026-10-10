@@ -52,10 +52,34 @@ struct HealthSnapshotTests {
 
 // MARK: - #2714 healthCheck must not log out while the keychain token is still loading
 
-@MainActor
-private final class PendingTokenAuthSession: AuthSessionProviding {
-    let isLoggedIn = true
-    let token: String? = nil
+/// 只會回報「keychain 讀取待定」的 session store，並記錄所有會寫入／清除 keychain 的呼叫。
+private final class RecordingSessionStore: AuthSessionStoring {
+    private(set) var clearCount = 0
+    private(set) var persistedTokens: [String?] = []
+
+    func loadSession() -> PersistedAuthSession {
+        PersistedAuthSession(
+            userId: "u-1",
+            displayName: nil,
+            userEmail: nil,
+            avatarURL: nil,
+            token: nil,
+            keychainReadFailed: true
+        )
+    }
+    func persistProfile(userId: String?, displayName: String?, userEmail: String?, avatarURL: URL?) {}
+    func persistToken(_ token: String?) { persistedTokens.append(token) }
+    func clearSession() { clearCount += 1 }
+}
+
+private final class NoopLocalDataCleaner: LocalDataClearing {
+    func clearLocalData(container: ModelContainer, reason: String) async {}
+}
+
+private final class NoopAuthVerifier: AuthVerifying {
+    func verify(provider: String, token: String, email: String?) async throws -> AuthVerificationResult {
+        throw CancellationError()
+    }
 }
 
 @MainActor
@@ -74,17 +98,28 @@ private final class UnreachableTransport: KGHTTPTransport, @unchecked Sendable {
 @MainActor
 struct HealthCheckPendingTokenTests {
     /// applyPersistedSession 先設 isLoggedIn=true、keychain token 稍後才到；
-    /// 這個空窗內的探活不可被當成 401 而登出使用者。
+    /// 這個空窗內的探活不可被當成 401 而登出使用者，也不可清掉 session store／keychain token。
+    /// 使用真實 AuthManager（而非 stub）：登出路徑最終會走到 `sessionStore.clearSession()`，
+    /// 因此以 store 的呼叫紀錄作為「未清除」的可觀測證據。
     @Test func healthCheckWithPendingTokenDoesNotLogOut() async {
-        let invalidator = RecordingInvalidator()
+        let store = RecordingSessionStore()
+        let auth = AuthManager(
+            verifier: NoopAuthVerifier(),
+            localDataCleaner: NoopLocalDataCleaner(),
+            sessionStore: store,
+            accountPreferenceLifecycle: NoopAccountPreferenceLifecycle()
+        )
         let service = KGService(
-            authSession: PendingTokenAuthSession(),
-            sessionInvalidator: invalidator,
+            authSession: auth,
+            sessionInvalidator: auth,
             transport: UnreachableTransport(),
             connectivityGate: FixedConnectivityGate(isConnected: true)
         )
         await service.healthCheck()
-        #expect(invalidator.logoutReasons.isEmpty)
+        #expect(auth.isLoggedIn == true, "pending keychain read must keep the session logged in")
+        #expect(auth.keychainReadPending == true, "the session must still be in the pending state")
+        #expect(store.clearCount == 0, "session store must not be cleared during the pending window")
+        #expect(store.persistedTokens.isEmpty, "keychain-backed token must not be written or cleared")
         #expect(service.isConnected == false)
     }
 }
