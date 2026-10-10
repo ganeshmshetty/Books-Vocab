@@ -95,6 +95,17 @@ PR_GUARD_QUERY = (
     " number state body labels(first: 100) { nodes { name } }"
     " autoMergeRequest { enabledAt } mergeQueueEntry { id } } } }"
 )
+QUEUE_ENTRY_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!) {"
+    " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
+    " mergeQueueEntry { id headCommit { oid } } } } }"
+)
+# Area quality suites that merge_group re-runs; a red one on the head ejects the PR.
+# GitHub names each job ``<area> / <job>``; a bare ``<area>`` is a caller-level job.
+AREA_QUALITY_CHECKS = ("backend-quality", "ops-suite", "ios-quality")
+# pr-gate.yml job whose SUCCESS is the only evidence that a SKIPPED area job was
+# a deliberate scope decision (test_the_scope_classifier_name_matches_the_pr_gate_job).
+SCOPE_CLASSIFIER = "classify confidence scope"
 
 
 class DeliverError(Exception):
@@ -395,7 +406,14 @@ def review_verdict(runs: list[dict[str, Any]]) -> str | None:
     if any(r.get("status") != "completed" and not marker(r) for r in runs):
         return None
     done = [r for r in runs if r.get("status") == "completed"]
-    if any(r.get("conclusion") in REVIEW_FAILED for r in done):
+    # A failure stands unless a strictly newer success superseded it (a rerun);
+    # ties keep the failure, and an undated failure (no start time to compare)
+    # always stands: fail closed.
+    failed_at = [started_of(r) for r in done if r.get("conclusion") in REVIEW_FAILED]
+    passed_at = [started_of(r) for r in done if r.get("conclusion") == "success"]
+    if failed_at and (
+        not passed_at or "" in failed_at or max(failed_at) >= max(passed_at)
+    ):
         return "failure"
     verdicts = {r.get("conclusion") for r in done if marker(r)} or {
         r.get("conclusion") for r in done
@@ -518,6 +536,46 @@ def required_state(checks: list[dict[str, Any]]) -> str:
     return str(states[0])
 
 
+def started_of(run: dict[str, Any]) -> str:
+    """ISO start time of a check run; ``""`` when GitHub gave none (sorts oldest)."""
+    return str(run.get("started_at") or run.get("startedAt") or "")
+
+
+def newest_by_name(checks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """The newest run per check name, by start time (the list order breaks ties)."""
+    newest: dict[str, dict[str, Any]] = {}
+    for check in checks:
+        name = check.get("name")
+        if name is None:
+            continue
+        if name not in newest or started_of(check) >= started_of(newest[name]):
+            newest[name] = check
+    return newest
+
+
+def check_state(check: dict[str, Any]) -> str:
+    """``failed`` / ``passed`` for a terminal state, ``pending`` for anything else."""
+    state = str(check.get("state") or "")
+    if state in FAILURE_STATES:
+        return "failed"
+    if state in SUCCESS_STATES:
+        return "passed"
+    return "pending"
+
+
+def _raw_state(check: dict[str, Any]) -> str:
+    """The GitHub state as reported (``SUCCESS``, ``SKIPPED``...), upper-cased."""
+    return str(check.get("state") or "").upper()
+
+
+def area_of(name: str) -> str | None:
+    """The AREA_QUALITY_CHECKS suite a check run belongs to, e.g. ``ios-quality``."""
+    return next(
+        (a for a in AREA_QUALITY_CHECKS if name == a or name.startswith(f"{a} / ")),
+        None,
+    )
+
+
 # --- stages -----------------------------------------------------------------
 
 
@@ -537,6 +595,8 @@ class Delivery:
         self.canon: Path | None = None
         self.log: list[str] = []
         self.extra: dict[str, Any] = {}
+        self.queued = False  # set once `queue` succeeded; a later dequeue is ejection
+        self.queue_head: str | None = None  # merge group commit last seen in the queue
         self.lock = LockWait(args.lock_timeout, sleep, clock, self.say)
         # redeliver's hooks: retire the replaced lane before this one claims
         # its Scope, and supersede the replaced PR once this one exists.
@@ -997,11 +1057,13 @@ class Delivery:
             if not self.args.merge:
                 return self.summary(branch, lane, number, "ready-to-merge")
             self.extra["review"] = self.review_gate(repo, number)
+            self.area_quality_gate(repo, number)
             self.mutate(
                 [*delivery, "queue", "--pr", str(number)],
                 self.home,
                 "queue",
             )
+            self.queued = True
             self.say(f"queued #{number}")
             self.wait_for("merge", lambda: self._merged(repo, number))
             stage = "cleanup"
@@ -1071,6 +1133,97 @@ class Delivery:
                     "(owner preference: close each issue when its fix merges)"
                 )
 
+    def _pr_checks(self, repo: str, number: int) -> list[dict[str, Any]]:
+        out = must(
+            self.runner,
+            ["gh", "pr", "checks", str(number), "--repo", repo]
+            + ["--json", "name,state,startedAt,link"],
+            self.home,
+            "read checks",
+        ).stdout
+        return json.loads(out or "[]")
+
+    def area_quality_gate(self, repo: str, number: int) -> None:
+        """Hold the queue on the exact head's area quality jobs (#2833, #2870).
+
+        The newest run per full check name decides, then runs aggregate by area.
+        Any failed or cancelled job refuses before `queue`, since merge_group
+        re-runs the same suite and would only eject the PR later; otherwise any
+        pending job is waited for.  A timeout while still pending raises from
+        wait_for: a HOLD, never a pass.  A SKIPPED area job passes only when the
+        scope classifier SUCCEEDED, i.e. it made that decision; a missing,
+        failed, cancelled or unfinished classifier leaves SKIPPED unproven.
+        """
+
+        def settled() -> list[str] | None:
+            checks = self._pr_checks(repo, number)
+            newest = newest_by_name(checks)
+            area = {
+                name: check
+                for name, check in newest.items()
+                if area_of(name) is not None
+            }
+            failed = sorted(
+                name for name, c in area.items() if check_state(c) == "failed"
+            )
+            if failed:
+                return failed
+            # No area job reported at all is not a pass: nothing proves the
+            # suite ran, so keep waiting and let the timeout hold the queue.
+            if not area or any(check_state(c) == "pending" for c in area.values()):
+                return None
+            skipped = any(_raw_state(c) == "SKIPPED" for c in area.values())
+            if skipped and _raw_state(newest.get(SCOPE_CLASSIFIER) or {}) != "SUCCESS":
+                return None
+            return []
+
+        failed = self.wait_for(f"area quality checks on #{number}", settled)
+        if failed:
+            raise DeliverError(
+                f"refusing to queue #{number}: area quality check(s) failed on its "
+                f"head: {', '.join(failed)}; fix and redeliver"
+            )
+
+    def _queue_entry(self, repo: str, number: int) -> dict[str, Any] | None:
+        """The PR's merge queue entry, or None; remembers its merge group commit."""
+        owner, _, name = repo.partition("/")
+        out = must(
+            self.runner,
+            ["gh", "api", "graphql", "-f", f"query={QUEUE_ENTRY_QUERY}"]
+            + ["-f", f"owner={owner}", "-f", f"name={name}"]
+            + ["-F", f"number={number}"],
+            self.home,
+            "read the merge queue entry",
+        ).stdout
+        entry = json.loads(out)["data"]["repository"]["pullRequest"]["mergeQueueEntry"]
+        head = ((entry or {}).get("headCommit") or {}).get("oid")
+        if head:
+            self.queue_head = head
+        return entry
+
+    def _ejected(self, repo: str, number: int) -> DeliverError:
+        # merge_group runs on the queue commit, not the PR head: read the last
+        # group this PR sat in, falling back to the head when none was seen.
+        if self.queue_head:
+            runs = self.gh_pages(
+                f"repos/{repo}/commits/{self.queue_head}/check-runs?filter=latest",
+                "check_runs",
+            )
+            checks, link = list(newest_by_name(runs).values()), "html_url"
+        else:
+            checks, link = self._pr_checks(repo, number), "link"
+        failing = [
+            f"{c.get('name')} ({c.get(link) or 'no link'})"
+            for c in checks
+            if str(c.get("conclusion") or c.get("state") or "").upper()
+            in FAILURE_STATES
+        ]
+        detail = "; ".join(failing) or "no failing check reported"
+        return DeliverError(
+            f"#{number} was dequeued from the merge queue without merging; "
+            f"failing check: {detail}"
+        )
+
     def _required(self, repo: str, number: int) -> str | None:
         out = must(
             self.runner,
@@ -1085,8 +1238,8 @@ class Delivery:
             raise DeliverError(f"required check is {state} on #{number}; see the PR")
         return None
 
-    def _merged(self, repo: str, number: int) -> str | None:
-        out = must(
+    def _pr_state(self, repo: str, number: int) -> str:
+        return must(
             self.runner,
             [
                 "gh",
@@ -1103,10 +1256,19 @@ class Delivery:
             self.home,
             "read PR state",
         ).stdout.strip()
+
+    def _merged(self, repo: str, number: int) -> str | None:
+        out = self._pr_state(repo, number)
         if out == "MERGED":
             return out
         if out == "CLOSED":
             raise DeliverError(f"#{number} was closed without merging")
+        # Open after our own queue call with no entry left: ejected, not slow.
+        if self.queued and out == "OPEN" and self._queue_entry(repo, number) is None:
+            # The merge group may have landed between the two reads: re-read.
+            if self._pr_state(repo, number) == "MERGED":
+                return "MERGED"
+            raise self._ejected(repo, number)
         return None
 
     def gh_pages(self, endpoint: str, key: str | None = None) -> list[dict[str, Any]]:
