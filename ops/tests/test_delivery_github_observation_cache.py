@@ -8,6 +8,8 @@ OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
 from delivery_control.adapters.github_cli import GitHubCliAdapter
+from delivery_control.adapters.github_client import GitHubCliClient
+from delivery_control.adapters.github_queries import GitHubQueries
 from delivery_control.adapters.github_queue import (
     GitHubQueueGraphQLAdapter,
 )
@@ -195,3 +197,93 @@ def test_malformed_queue_batch_falls_back_to_exact_live_snapshot() -> None:
 
     assert queue.observed_snapshot("PR_kwDOexample").entry_id == "MQE_1"
     assert "DeliveryQueueState" in " ".join(runner.calls[1])
+
+
+def _http(
+    status: int,
+    body: str = "",
+    *,
+    etag: str | None = None,
+    remaining: int | None = None,
+    reset: int | None = None,
+) -> str:
+    """Render ``gh api --include`` stdout: status line, headers, blank line, body."""
+
+    lines = [f"HTTP/2.0 {status} {'OK' if status == 200 else 'Not Modified'}"]
+    if etag is not None:
+        lines.append(f"Etag: {etag}")
+    if remaining is not None:
+        lines.append(f"X-Ratelimit-Remaining: {remaining}")
+        lines.append(f"X-Ratelimit-Reset: {reset if reset is not None else 4102444800}")
+        lines.append("X-Ratelimit-Resource: core")
+    return "\r\n".join(lines) + "\r\n\r\n" + body
+
+
+_FILES_URL = "repos/owner/repo/pulls/12/files?per_page=100&page=1"
+_FILES_ARGV = ("gh", "api", _FILES_URL)
+
+
+def test_api_read_stores_etag_and_revalidates_with_304(tmp_path: Path) -> None:
+    body = json.dumps([{"filename": "ops/a.py", "status": "added"}])
+    runner = StaticRunner(
+        [
+            CommandResult(("gh",), 0, _http(200, body, etag='"v1"'), ""),
+            CommandResult(("gh",), 0, _http(304, etag='"v1"'), ""),
+        ]
+    )
+    client = GitHubCliClient(repo=tmp_path, runner=runner, cache_dir=tmp_path / "c")
+
+    assert client.load_json(_FILES_ARGV) == json.loads(body)
+    assert client.load_json(_FILES_ARGV) == json.loads(body)
+
+    assert 'If-None-Match: "v1"' not in runner.calls[0]
+    assert 'If-None-Match: "v1"' in runner.calls[1]
+    assert len(runner.calls) == 2
+
+
+def test_api_read_invalidates_cache_on_change_and_on_untagged_response(
+    tmp_path: Path,
+) -> None:
+    runner = StaticRunner(
+        [
+            CommandResult(("gh",), 0, _http(200, '["A"]', etag='"v1"'), ""),
+            CommandResult(("gh",), 0, _http(200, '["B"]', etag='"v2"'), ""),
+            CommandResult(("gh",), 0, _http(200, '["C"]'), ""),
+            CommandResult(("gh",), 0, _http(200, '["D"]', etag='"v4"'), ""),
+        ]
+    )
+    client = GitHubCliClient(repo=tmp_path, runner=runner, cache_dir=tmp_path / "c")
+
+    assert client.load_json(_FILES_ARGV) == ["A"]
+    assert client.load_json(_FILES_ARGV) == ["B"]
+    assert client.load_json(_FILES_ARGV) == ["C"]
+    assert 'If-None-Match: "v2"' in runner.calls[2]
+    assert client.load_json(_FILES_ARGV) == ["D"]
+    assert not any("If-None-Match" in part for part in runner.calls[3])
+
+
+def test_changed_paths_pages_are_revalidated_per_page(tmp_path: Path) -> None:
+    page_one = json.dumps(
+        [{"filename": f"ops/f{index}.py", "status": "modified"} for index in range(100)]
+    )
+    page_two = json.dumps([{"filename": "ops/last.py", "status": "added"}])
+    runner = StaticRunner(
+        [
+            CommandResult(("gh",), 0, _http(200, page_one, etag='"p1"'), ""),
+            CommandResult(("gh",), 0, _http(200, page_two, etag='"p2"'), ""),
+            CommandResult(("gh",), 0, _http(304, etag='"p1"'), ""),
+            CommandResult(("gh",), 0, _http(304, etag='"p2"'), ""),
+        ]
+    )
+    client = GitHubCliClient(repo=tmp_path, runner=runner, cache_dir=tmp_path / "c")
+    queries = GitHubQueries(client=client, repository_name=lambda: "owner/repo")
+
+    first = queries.changed_paths(12)
+    second = GitHubQueries(client=client, repository_name=lambda: "owner/repo")
+    paths = second.changed_paths(12)
+
+    assert len(first) == 101
+    assert paths == first
+    assert [call[-1].split("&page=")[1] for call in runner.calls] == ["1", "2", "1", "2"]
+    assert 'If-None-Match: "p1"' in runner.calls[2]
+    assert 'If-None-Match: "p2"' in runner.calls[3]

@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..domain.errors import DeliverySourceError
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterCommandError, AdapterPayloadError
+from .github_rate_governor import (
+    QuotaDecision,
+    QuotaGovernor,
+    QuotaSnapshot,
+)
 
 _GRAPHQL_NON_QUERY_OPERATION = re.compile(r"\b(?:mutation|subscription)\b")
 _READ_ONLY_JSON_COMMANDS = frozenset(
@@ -199,11 +208,61 @@ def _is_transient_failure(result: CommandResult) -> bool:
     return any(marker in detail for marker in _TRANSIENT_ERROR_MARKERS)
 
 
+_HTTP_STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})")
+_MAX_QUOTA_WAIT_SECONDS = 3900.0
+
+
+@dataclass(frozen=True)
+class _Response:
+    """A response parsed from ``gh api --include`` stdout."""
+
+    status: int
+    headers: Mapping[str, str]
+    body: str
+
+
+def _parse_include(stdout: str) -> _Response | None:
+    if not stdout.startswith("HTTP/"):
+        return None
+    head, _, body = stdout.replace("\r\n", "\n").partition("\n\n")
+    lines = head.split("\n")
+    match = _HTTP_STATUS.match(lines[0])
+    if match is None:
+        return None
+    headers = {
+        name.strip().lower(): value.strip()
+        for name, _, value in (line.partition(":") for line in lines[1:])
+    }
+    return _Response(int(match.group(1)), headers, body)
+
+
+def _is_api_read(argv: tuple[str, ...]) -> bool:
+    """True for single-request, read-only ``gh api`` calls that can be conditional."""
+
+    if len(argv) < 2 or argv[0] != "gh" or argv[1] != "api":
+        return False
+    if "--paginate" in argv or "--slurp" in argv:
+        return False
+    return _is_read_only_json_query(argv)
+
+
 class GitHubCliClient:
-    def __init__(self, *, repo: Path, runner: CommandRunnerPort) -> None:
+    def __init__(
+        self,
+        *,
+        repo: Path,
+        runner: CommandRunnerPort,
+        cache_dir: Path | None = None,
+        now: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.repo = repo
         self.runner = runner
         self.last_command_attempts: tuple[CommandAttempt, ...] = ()
+        self.cache_dir = cache_dir or repo / ".cache" / "delivery-control" / "github"
+        self.governor = QuotaGovernor(now=now)
+        self._now = now
+        self._sleep = sleep
 
     def _run_result(
         self,
@@ -230,12 +289,122 @@ class GitHubCliClient:
         return self._run_result(argv, allow_nonzero=allow_nonzero).stdout.strip()
 
     def load_json(self, argv: tuple[str, ...], *, allow_nonzero: bool = False) -> Any:
-        output = self._run_result(
-            argv,
-            allow_nonzero=allow_nonzero,
-            retry_read_only=True,
-        ).stdout.strip()
+        if _is_api_read(argv):
+            output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
+        else:
+            output = self._run_result(
+                argv, allow_nonzero=allow_nonzero, retry_read_only=True
+            ).stdout.strip()
         try:
             return json.loads(output)
         except json.JSONDecodeError as error:
             raise AdapterPayloadError(f"invalid JSON from {' '.join(argv)}") from error
+
+    def _load_api_read(self, argv: tuple[str, ...], *, allow_nonzero: bool) -> str:
+        """Serve a ``gh api`` read through quota governance and ETag revalidation."""
+
+        resource = "graphql" if _gh_api_endpoint(argv) == "graphql" else "core"
+        key = hashlib.sha256(json.dumps(list(argv)).encode("utf-8")).hexdigest()
+        cached = self._cache_get(key)
+
+        decision, wait = self.governor.decide(resource)
+        if decision is QuotaDecision.SERVE_STALE and cached is not None:
+            self._spend(argv, resource, "stale-cache")
+            return cached[1]
+        if decision is QuotaDecision.WAIT_FOR_RESET:
+            if wait > _MAX_QUOTA_WAIT_SECONDS:
+                raise DeliverySourceError(
+                    f"GitHub {resource} quota exhausted; reset in {wait:.0f}s "
+                    f"exceeds the {_MAX_QUOTA_WAIT_SECONDS:.0f}s wait budget"
+                )
+            self._spend(argv, resource, "quota-wait")
+            self._sleep(wait)
+
+        extra: tuple[str, ...] = ()
+        if cached is not None and cached[0] is not None:
+            extra = ("-H", f"If-None-Match: {cached[0]}")
+        include = (argv[0], argv[1], "--include", *extra, *argv[2:])
+        result = self._run_result(include, allow_nonzero=True, retry_read_only=True)
+        response = _parse_include(result.stdout)
+        if response is None:
+            if result.exit_code != 0 and not allow_nonzero:
+                raise AdapterCommandError(result)
+            return result.stdout.strip()
+
+        self._observe(resource, response)
+        if response.status == 304 and cached is not None:
+            self._spend(argv, resource, "304", response)
+            return cached[1]
+        if response.status >= 400 or result.exit_code != 0:
+            if not allow_nonzero:
+                raise AdapterCommandError(result)
+            return response.body.strip()
+
+        body = response.body.strip()
+        etag = response.headers.get("etag")
+        self._cache_put(key, etag, body)
+        self._spend(argv, resource, "network", response)
+        return body
+
+    def _observe(self, resource: str, response: _Response) -> None:
+        try:
+            snapshot = QuotaSnapshot(
+                remaining=int(response.headers["x-ratelimit-remaining"]),
+                reset_epoch=float(response.headers["x-ratelimit-reset"]),
+            )
+        except (KeyError, ValueError):
+            return
+        self.governor.observe(
+            response.headers.get("x-ratelimit-resource", resource), snapshot
+        )
+
+    def _spend(
+        self,
+        argv: tuple[str, ...],
+        resource: str,
+        served: str,
+        response: _Response | None = None,
+    ) -> None:
+        """Append one best-effort JSONL record; observability must not fail delivery."""
+
+        record: dict[str, object] = {
+            "ts": round(self._now(), 3),
+            "resource": resource,
+            "endpoint": _gh_api_endpoint(argv),
+            "served": served,
+        }
+        if response is not None:
+            record.update(
+                status=response.status,
+                remaining=response.headers.get("x-ratelimit-remaining"),
+                reset=response.headers.get("x-ratelimit-reset"),
+            )
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            with (self.cache_dir / "spend.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError:
+            return
+
+    def _cache_path(self, key: str) -> Path:
+        return self.cache_dir / "etag" / f"{key}.json"
+
+    def _cache_get(self, key: str) -> tuple[str | None, str] | None:
+        try:
+            raw = json.loads(self._cache_path(key).read_text(encoding="utf-8"))
+            return raw["etag"], raw["body"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _cache_put(self, key: str, etag: str | None, body: str) -> None:
+        """Store a validated body, or drop the entry when the response had no ETag."""
+
+        path = self._cache_path(key)
+        try:
+            if etag is None:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"etag": etag, "body": body}), encoding="utf-8")
+        except OSError:
+            return

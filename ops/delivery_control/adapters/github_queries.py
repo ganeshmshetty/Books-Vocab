@@ -25,6 +25,9 @@ PR_FIELDS = (
     "autoMergeRequest,labels,createdAt,mergedAt,reviewDecision"
 )
 
+_PR_FILES_PAGE_SIZE = 100
+_PR_FILES_MAX_PAGES = 30
+
 OPEN_PR_FILES_QUERY = """
 query DeliveryOpenPullRequestFiles($owner: String!, $name: String!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
@@ -313,16 +316,31 @@ class GitHubQueries:
         cached = self._changed_paths_cache.get(number)
         if cached is not None:
             return cached
-        payload = self.client.load_json(
-            (
-                "gh",
-                "api",
-                "--paginate",
-                "--slurp",
-                f"repos/{self.repository_name()}/pulls/{number}/files",
+        return self._list_pull_request_files(number)
+
+    def _list_pull_request_files(self, number: int) -> tuple[str, ...]:
+        """Walk REST PR files page by page so each page is ETag-revalidated."""
+
+        repository = self.repository_name()
+        pages: list[object] = []
+        for page in range(1, _PR_FILES_MAX_PAGES + 1):
+            payload = self.client.load_json(
+                (
+                    "gh",
+                    "api",
+                    f"repos/{repository}/pulls/{number}/files"
+                    f"?per_page={_PR_FILES_PAGE_SIZE}&page={page}",
+                )
             )
+            if not isinstance(payload, list):
+                raise AdapterPayloadError("GitHub PR files page is malformed")
+            pages.append(payload)
+            if len(payload) < _PR_FILES_PAGE_SIZE:
+                return parse_changed_paths(pages)
+        raise AdapterPayloadError(
+            f"GitHub PR #{number} exceeds the {_PR_FILES_MAX_PAGES * _PR_FILES_PAGE_SIZE}"
+            "-file pagination bound"
         )
-        return parse_changed_paths(payload)
 
     def _prime_open_pr_file_paths(self) -> None:
         self._open_file_batch_attempted = True
