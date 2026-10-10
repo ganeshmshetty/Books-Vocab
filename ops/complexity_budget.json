@@ -1,13 +1,13 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/issue-2641-r4 (#2641, rebased onto origin/main; conflicts in ops/complexity_budget.json resolved by taking main's ceilings, then re-raised here): measured ops 211,390 and workflows 2,135 on this lane head via ops/complexity.py check; ops ceiling = measured + 5 = 211,395, workflows ceiling = measured + 5 = 2,140. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
+  "note": "2026-10-11 lane debug/issue-2871-r3 (#2871, rebased onto origin/main 3d33094ff after #2998 merged at ops ceiling 211,395): measured ops 211,449 on this lane head via ops/complexity.py check, exceeding the merged ceiling by 54 lines from the delivery busy-probe scoped commands and default lock wait in ops/delivery_control/ and ops/tests/test_delivery_*; ops ceiling raised 211,395 -> 211,454 (measured + 5). The +5 is the minimal margin; ratchet reclaims any unused slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 211395,
+    "ops": 211454,
     "docs": 16077,
     "workflows": 2140
   }
