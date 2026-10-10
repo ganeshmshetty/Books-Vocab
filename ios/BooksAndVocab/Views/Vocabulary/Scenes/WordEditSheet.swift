@@ -27,6 +27,12 @@ struct WordEditSheet: View {
                         text: $draftExplanation,
                         accessibilityIdentifier: "wordDetail.edit.explanation"
                     )
+                    if !isDraftValid {
+                        Text(L10n.string("翻譯需為 1 至 1000 字，教學筆記最多 5000 字"))
+                            .font(appSkin.typography.caption)
+                            .foregroundStyle(appSkin.palette.secondaryText)
+                            .accessibilityIdentifier("wordDetail.edit.validation")
+                    }
                 }
                 .padding(appSkin.spacing.cardPadding)
             }
