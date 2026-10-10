@@ -131,6 +131,9 @@ enum StatsPresentation {
         case loading
         case empty
         case graph
+        /// The thumbnail missed its first-paint window. The web view is replaced
+        /// by this neutral body so the card never shows a blank square (#2860).
+        case unpainted
     }
 
     static func graphThumbnailBodyKind(linksLoaded: Bool, nodeCount: Int) -> GraphThumbnailBodyKind {
@@ -163,7 +166,8 @@ enum StatsPresentation {
     /// Pure state matrix for the Overview graph card. `failureReason` is the
     /// `SyncFailurePresentation.reason(for:)` text of the latest failed load
     /// (nil once a load succeeds). `paintTimedOut` means the web thumbnail did
-    /// not report its first paint within the bounded window.
+    /// not report its first paint within the bounded window; that replaces the
+    /// thumbnail body with `.unpainted` whether or not a load also failed.
     static func graphCardState(
         linksLoaded: Bool,
         nodeCount: Int,
@@ -174,12 +178,14 @@ enum StatsPresentation {
             if let failureReason { return .failed(reason: failureReason) }
             return .loading
         }
-        let body = graphThumbnailBodyKind(linksLoaded: true, nodeCount: nodeCount)
+        let graphBody = graphThumbnailBodyKind(linksLoaded: true, nodeCount: nodeCount)
+        let unpainted = graphBody == .graph && paintTimedOut
+        let body: GraphThumbnailBodyKind = unpainted ? .unpainted : graphBody
         if let failureReason {
             return .content(body: body, notice: .stale(reason: failureReason))
         }
-        if body == .graph && paintTimedOut {
-            return .content(body: body, notice: .rendering)
+        if unpainted {
+            return .content(body: .unpainted, notice: .rendering)
         }
         return .content(body: body, notice: nil)
     }

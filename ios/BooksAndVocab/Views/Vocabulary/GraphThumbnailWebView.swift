@@ -83,6 +83,11 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
         }
     }
 
+    /// Retry rebuilds only a page that never completed its `ready` handshake.
+    /// A page that is ready but still drawing is slow, not stuck; rebuilding it
+    /// would restart the layout and can keep a large graph from ever painting.
+    var needsRebuildOnRetry: Bool { !hasPainted && !graphBridgeReady }
+
     /// Rebuilds the page and replays the last payload. Used when the web content
     /// process was terminated or the thumbnail never painted; without it
     /// `graphBridgeReady`/`lastSignature` would block any re-send forever.
