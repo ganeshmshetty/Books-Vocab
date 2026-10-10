@@ -87,12 +87,16 @@ struct StatsPresenter: View {
     /// Catalog/preview-only entry: injects the 關聯圖 card's links directly
     /// (UI World manifest-derived) and disables the remote graph `.task`, so
     /// snapshots never depend on network, demo mode, or auth session state.
+    /// `injectedGraphFailure` seeds the latest failed pull (5xx／offline) so the
+    /// card's failure states render without a live request; nil links with no
+    /// failure render the loading state.
     init(
         filter: NotebookFilter = NotebookFilter(),
         initialSummary: StatsPresentation.Summary? = nil,
-        initialGraphLinks: [KGGraphLink],
+        initialGraphLinks: [KGGraphLink]?,
         shouldLoadGraphData: Bool,
-        reviewClock: StatsProjectionClock? = nil
+        reviewClock: StatsProjectionClock? = nil,
+        injectedGraphFailure: Error? = nil
     ) {
         self.filter = filter
         self.shouldLoadGraphData = shouldLoadGraphData
@@ -100,6 +104,9 @@ struct StatsPresenter: View {
         _summary = State(initialValue: initialSummary)
         _contentReady = State(initialValue: initialSummary != nil)
         _graphLinks = State(initialValue: initialGraphLinks)
+        _graphFailureReason = State(initialValue: injectedGraphFailure.map {
+            SyncFailurePresentation.reason(for: $0)
+        })
         _reviewRecords = Query(
             sort: \ReviewRecord.reviewedAt,
             order: .reverse

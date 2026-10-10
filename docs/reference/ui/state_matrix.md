@@ -141,17 +141,19 @@ Scope: `ios/BooksAndVocab`
 
 ### Overview Graph Card State（`VocabGraphEntryCard`，#2860）
 
-由 `StatsPresentation.graphCardState` 純函式決定；卡身永不留空白。
+由 `StatsPresentation.graphCardState` 純函式決定；卡身只會是載入佔位、錯誤面板、empty 卡身、快取圖或逾時說明（`.unpainted`），不留空白方塊。
 
 | State | 觸發條件 | 目前 UI | 狀態 |
 |------|----------|--------|------|
-| Loading | `!linksLoaded`，無失敗 | `AppLoadingStateCard` 卡身 | 已覆蓋（unit） |
-| Error panel | `!linksLoaded` + `failureReason` | 錯誤面板 `overview.graph.error`＋原因＋重試 | 部分覆蓋（unit；UI 未測） |
-| Graph painted | `linksLoaded`，nodes > 0，已 painted，無失敗 | 縮圖＋健康條，無狀態列 | 已覆蓋（unit） |
-| Empty | `linksLoaded`，nodes == 0 | 原生 empty 卡身（不走 paint watchdog） | 已覆蓋（unit） |
-| Stale | `linksLoaded` + `failureReason` | 保留快取圖＋`overview.graph.status` 警示列（原因＋重試） | 部分覆蓋（unit；UI 未測） |
-| Rendering | nodes > 0，8 秒內未 painted，無失敗 | 縮圖＋中性狀態列「關聯圖繪製中」＋重試（非 stale 警示） | 部分覆蓋（unit；UI 未測） |
-| Retry on unpainted | 縮圖已建立（`.graph`）且 `!hasPainted` 的重試 | `recover()` 重建 web view 並重新計時；錯誤面板（無縮圖）重試只回呼 `onRetry` | 部分覆蓋（coordinator unit；視圖層未測） |
+| Loading | `!linksLoaded`，無失敗 | `AppLoadingStateCard` 卡身（catalog「Graph loading」） | 已覆蓋（unit＋catalog） |
+| Error panel 5xx | `!linksLoaded` + `failureReason`（HTTP 5xx） | 錯誤面板 `overview.graph.error`＋原因＋重試（catalog「Graph error 5xx」） | 已覆蓋（unit＋catalog；UI 未測） |
+| Error panel offline | `!linksLoaded` + `failureReason`（離線） | 同上（catalog「Graph error offline」） | 已覆蓋（unit＋catalog；UI 未測） |
+| Graph painted | `linksLoaded`，nodes > 0，已 painted，無失敗 | 縮圖＋健康條，無狀態列（catalog「Populated」） | 已覆蓋（unit＋catalog） |
+| Empty | `linksLoaded`，nodes == 0 | 原生 empty 卡身（不走 paint watchdog）（catalog「Empty」） | 已覆蓋（unit＋catalog） |
+| Stale | `linksLoaded` + `failureReason` | 保留快取圖＋`overview.graph.status` 警示列（原因＋重試）（catalog「Graph stale 5xx」） | 已覆蓋（unit＋catalog；UI 未測） |
+| Rendering | nodes > 0，8 秒內未 painted，無失敗 | 逾時後縮圖 web view 改為卡身「關聯圖尚未顯示」（`.unpainted`，不留空白），狀態列「關聯圖繪製中」＋重試（非 stale 警示）；之後 painted 即回到縮圖 | 部分覆蓋（unit；UI 與 catalog 未測，無法穩定造出未繪製縮圖） |
+| Rendering + stale | nodes > 0，逾時，且有 `failureReason` | 卡身同為「關聯圖尚未顯示」，狀態列為 stale 警示（原因＋重試） | 已覆蓋（unit） |
+| Retry on unpainted | 縮圖（`.graph`／`.unpainted`）且 `!hasPainted` 的重試 | 頁面未回報 `ready`（`needsRebuildOnRetry`）才 `recover()` 重建 web view；已 ready 但仍繪製中的慢圖只重新計時，不重啟渲染；錯誤面板（無縮圖）重試只回呼 `onRetry` | 部分覆蓋（coordinator unit；視圖層未測） |
 | Web content terminated | 縮圖 web content process 終止 | 自動 `recover()` 最多 3 次（連續、未 painted 前）；之後停止，交由 `.rendering` 列重試 | 已覆蓋（coordinator unit） |
 
 ### Today Review State
