@@ -29,7 +29,7 @@ struct AuthManagerLogoutCleanupRaceTests {
         @MainActor private var startedRuns: Set<Int> = []
         @MainActor private var finishedRuns: Set<Int> = []
 
-        func clearLocalData(container: ModelContainer, reason: String) async {
+        func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
             let run: Int = await MainActor.run {
                 nextRun += 1
                 let run = nextRun
