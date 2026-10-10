@@ -181,7 +181,10 @@ jobs:
   ops-suite:
     name: ops-suite
     needs: changed-paths
-    if: ${{ needs.changed-paths.outputs.ops == 'true' }}
+    # macos_ops is consumed only by ops-suite's macos-native-ops job, so a
+    # macOS-only change (e.g. a UITests-only change, which keeps ops=false for
+    # the iOS targeted path) must schedule ops-suite too (CR P2-1, #2641).
+    if: ${{ needs.changed-paths.outputs.ops == 'true' || needs.changed-paths.outputs.macos_ops == 'true' }}
     uses: ./.github/workflows/ops-suite.yml
     permissions:
       contents: read
@@ -248,7 +251,7 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           PLAN_JSON: >-
-            {"backend":"${{ needs.changed-paths.outputs.backend }}","ops":"${{ needs.changed-paths.outputs.ops }}","ios":"${{ needs.changed-paths.outputs.ios }}"}
+            {"backend":"${{ needs.changed-paths.outputs.backend }}","ops":"${{ needs.changed-paths.outputs.ops }}","ios":"${{ needs.changed-paths.outputs.ios }}","macos_ops":"${{ needs.changed-paths.outputs.macos_ops }}"}
         run: |
           set -euo pipefail
           ./ops/ci_confidence_verdict.sh --plan "$PLAN_JSON" --needs "$NEEDS_JSON"

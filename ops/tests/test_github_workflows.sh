@@ -1006,6 +1006,15 @@ grep -Fq 'macos_ops: ${{ steps.plan.outputs.macos_ops }}' "$PR_GATE" \
   || fail "pr-gate changed-paths does not export the router macos_ops"
 grep -Fq 'macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}' "$PR_GATE" \
   || fail "pr-gate does not forward macos_ops to ops-suite"
+# A macOS-only change (for example a UITests-only change, which keeps ops=false
+# for the iOS targeted path) must still schedule ops-suite, the only job that
+# consumes macos_ops. The confidence plan must carry macos_ops so the verdict
+# expects that run (CR P2-1, #2641 r2 review).
+ruby -e 'require "yaml"; c = YAML.load_file(ARGV[0])["jobs"]["ops-suite"]["if"].to_s
+  exit 1 unless c.include?("needs.changed-paths.outputs.ops == \x27true\x27") && c.include?("needs.changed-paths.outputs.macos_ops == \x27true\x27")' "$PR_GATE" \
+  || fail "pr-gate ops-suite is not scheduled for macos_ops-only changes"
+grep -Fq '"macos_ops":"${{ needs.changed-paths.outputs.macos_ops }}"' "$PR_GATE" \
+  || fail "pr-gate confidence plan does not carry macos_ops to the verdict"
 ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call"]["inputs"]["macos_ops"]
   exit 1 unless i["default"] == "true" && i["type"] == "string" && i["required"] == false
   exit 1 unless y["jobs"]["macos-native-ops"]["if"].to_s.include?("inputs.macos_ops != \x27false\x27")' ".github/workflows/ops-suite.yml" \

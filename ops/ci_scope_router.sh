@@ -119,11 +119,14 @@ classify_path() {
   path_count=$((path_count + 1))
   single_path="$path"
 
-  # macOS-only extras (ops-suite only runs when ops=true, so ios-only changes
-  # never reach the macOS ops job; the ios-sentry-wiring inputs under ios/ are
-  # listed so a mixed ops+ios change still runs it). Flag-only: no return, so the normal tree selection below
-  # still applies. macos_ops covers the groups ops-suite runs natively
-  # (ios-ops, ios-sentry-wiring, lldb-forensics) and what they read.
+  # macOS-only extras. pr-gate.yml schedules ops-suite (its macos-native-ops
+  # job is the only consumer of macos_ops) when ops=true or macos_ops=true, so
+  # macOS-only paths reach the macOS job while ops stays false for them. Paths
+  # not listed here stay ios-only and never reach it; the ios-sentry-wiring
+  # inputs under ios/ are listed so a mixed ops+ios change still runs it.
+  # Flag-only: no return, so the normal tree selection below still applies.
+  # macos_ops covers the groups ops-suite runs natively (ios-ops,
+  # ios-sentry-wiring, lldb-forensics) and what they read.
   case "$path" in
     ops/ios_*|ops/test_ios_*|ops/lib/*|ops/lldb_*|ops/install_lldb_forensics.sh|ops/tests/test_ios_*|ops/tests/test_lldb_*|ops/tests/lldb_*|ops/tests/test_sentry_wiring.sh|ops/test_ops.sh|ops/ci_macos_queue_probe.sh|ops/tests/test_ci_macos_queue_probe.sh|ios/BooksAndVocabUITests/*.swift|.github/workflows/ops-suite.yml|ops/review_flip_probe.sh|ops/ui_quality_plane.py|ops/ui_world_manifest.py|ops/app_review/*|ops/app_review_evidence.py|ops/app_review_gate.py|ops/asc.sh|ops/asc_text_bundle.py|ops/sentry_release.sh|ops/sentry_tool.py|ops/sentry_api.py|ops/kg_disk_guard.sh|ops/kg_reconcile.sh|ops/backup_verify.sh|ops/release.sh|ops/p9_review_calendar_evidence.py|ops/tests/test_lib_sourcing.sh|ops/tests/test_ops_ci_coverage.sh|docs/sop/ios.md|ios/BooksAndVocab.xcodeproj/project.pbxproj|ios/BooksAndVocab/Services/AppCrashReporting.swift|ios/Info.plist|ios/BooksAndVocab/Services/SentryReporter.swift|ios/BooksAndVocab/Services/SentryConfiguration.swift|ios/BooksAndVocab/Services/SentryPrivacyPolicy.swift|ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved)
       macos_ops=true

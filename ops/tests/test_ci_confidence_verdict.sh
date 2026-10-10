@@ -38,7 +38,7 @@ assert_rejects() {
   fi
 }
 
-plan='{"backend":"false","ops":"true","ios":"false"}'
+plan='{"backend":"false","ops":"true","ios":"false","macos_ops":"false"}'
 needs="$(jq -cn '{
   "changed-paths": {result: "success"},
   "repo-gate": {result: "success"},
@@ -71,6 +71,30 @@ assert_rejects 'failed path classification is never confidence green' \
 assert_rejects 'incomplete selector output is never confidence green' \
   '{"backend":"false","ops":"true"}' \
   "$needs"
+assert_rejects 'plan without macos_ops is incomplete (fail closed)' \
+  '{"backend":"false","ops":"true","ios":"false"}' \
+  "$needs"
+
+# macOS-only changes (for example a UITests-only change) schedule ops-suite for
+# its macos-native-ops job while ops stays false (CR P2-1, #2641 r2 review).
+macos_plan='{"backend":"false","ops":"false","ios":"true","macos_ops":"true"}'
+macos_needs="$(jq -cn '{
+  "changed-paths": {result: "success"},
+  "repo-gate": {result: "success"},
+  "backend-quality": {result: "skipped"},
+  "llm-eval": {result: "success"},
+  "design-system": {result: "success"},
+  "ui-quality-gate": {result: "success"},
+  "ops-suite": {result: "success"},
+  "ios-quality": {result: "success"}
+}')"
+assert_accepts 'macOS-only plan expects ops-suite to run' "$macos_plan" "$macos_needs"
+assert_rejects 'macOS-only plan cannot skip ops-suite' \
+  "$macos_plan" \
+  "$(jq -c '."ops-suite".result = "skipped"' <<<"$macos_needs")"
+assert_rejects 'ops-suite must be skipped when neither ops nor macos_ops is selected' \
+  '{"backend":"false","ops":"false","ios":"true","macos_ops":"false"}' \
+  "$macos_needs"
 
 if (( failures > 0 )); then
   printf 'ci confidence verdict: %d failure(s)\n' "$failures" >&2

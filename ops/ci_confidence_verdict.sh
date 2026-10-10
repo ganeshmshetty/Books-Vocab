@@ -7,10 +7,11 @@ usage() {
   cat <<'EOF'
 Usage: ops/ci_confidence_verdict.sh --plan <json> --needs <json>
 
-The plan contains string booleans for backend, ops, and ios. The needs object
-is GitHub Actions' toJSON(needs) value. Selected suites must succeed; explicitly
-unselected suites must be skipped. Every other confidence dependency, including
-unknown dependencies, must succeed.
+The plan contains string booleans for backend, ops, ios, and macos_ops. The
+needs object is GitHub Actions' toJSON(needs) value. ops-suite is selected by
+ops or macos_ops (its macos-native-ops job consumes macos_ops). Selected suites
+must succeed; explicitly unselected suites must be skipped. Every other
+confidence dependency, including unknown dependencies, must succeed.
 EOF
 }
 
@@ -46,9 +47,9 @@ done
 if ! jq -e '
   . as $plan
   | type == "object"
-    and all(["backend", "ops", "ios"][]; . as $key | ($plan[$key] == "true" or $plan[$key] == "false"))
+    and all(["backend", "ops", "ios", "macos_ops"][]; . as $key | ($plan[$key] == "true" or $plan[$key] == "false"))
 ' <<<"$plan" >/dev/null; then
-  printf 'confidence plan must define backend, ops, and ios as string booleans\n' >&2
+  printf 'confidence plan must define backend, ops, ios, and macos_ops as string booleans\n' >&2
   exit 2
 fi
 
@@ -79,7 +80,7 @@ if ! jq -e --argjson plan "$plan" '
     end
   )
   and (
-    if $plan.ops == "true"
+    if $plan.ops == "true" or $plan.macos_ops == "true"
     then result("ops-suite") == "success"
     else result("ops-suite") == "skipped"
     end
