@@ -68,19 +68,6 @@ struct VocabularyReviewSnapshot {
 
 enum VocabularyReviewPolicy {
     static let initialIntervalHours: Double = 12
-    static let rememberedMultiplier: Double = 1.9
-    static let forgotMultiplier: Double = 0.45
-    static let minimumIntervalHours: Double = 6
-    static let maximumIntervalHours: Double = 24 * 60
-
-    static func nextIntervalHours(
-        currentIntervalHours: Double,
-        feedback: ReviewFeedback
-    ) -> Double {
-        let base = max(currentIntervalHours, minimumIntervalHours)
-        let multiplier = feedback == .remembered ? rememberedMultiplier : forgotMultiplier
-        return min(maximumIntervalHours, max(minimumIntervalHours, base * multiplier))
-    }
 
     static func nextIntervalHours(
         currentIntervalHours: Double,
@@ -124,29 +111,6 @@ extension VocabularyEntry {
         return nextReviewAt <= now ? .due : .reviewed
     }
 
-    func applyReviewFeedback(_ feedback: ReviewFeedback, settings: ReviewSettings = .default, now: Date = Date()) {
-        let baseInterval = reviewCount == 0 ? settings.effectiveInitialIntervalHours : reviewIntervalHours
-        let updatedInterval = VocabularyReviewPolicy.nextIntervalHours(
-            currentIntervalHours: baseInterval,
-            feedback: feedback,
-            settings: settings
-        )
-
-        reviewIntervalHours = updatedInterval
-        nextReviewAt = now.addingTimeInterval(updatedInterval * 3600)
-        lastReviewedAt = now
-        reviewCount += 1
-        lastReviewFeedbackRaw = feedback.rawValue
-
-        switch feedback {
-        case .remembered:
-            reviewStreak += 1
-        case .forgot:
-            lapseCount += 1
-            reviewStreak = 0
-        }
-
-    }
 }
 
 extension Date {

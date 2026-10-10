@@ -330,7 +330,7 @@ enum ReviewSessionPersistence {
         return try context.fetch(descriptor).first
     }
 
-    private static func applySubmittedAnswer(
+    static func applySubmittedAnswer(
         _ answer: TodayReviewState.SubmittedAnswer,
         baseline: TodayReviewSessionSnapshotStore.ReviewBaseline,
         to entry: VocabularyEntry,
