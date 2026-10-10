@@ -23,4 +23,33 @@ struct VocabularyEntryReviewExampleTests {
         // is skipped because the word is shorter than 4 characters; the context is returned unchanged.
         #expect(Self.fallbackExample(word: "I", context: "It is here.") == "It is here.")
     }
+
+    private static func fallbackExample(word: String, inflections: [String], context: String) -> String? {
+        let entry = VocabularyEntry(word: word, translation: "t", context: context, bookTitle: "b")
+        entry.inflections = inflections
+        return entry.allReviewExamples.first
+    }
+
+    /// Mirrors backend `_build_example`: `[word, *alternatives]` are tried in order with boundaries,
+    /// so an inflected form in the context is bolded when the base form does not occur.
+    @Test func inflectedFormBoldsWhenBaseWordAbsent() {
+        #expect(
+            Self.fallbackExample(word: "run", inflections: ["runs", "ran", "running"], context: "He runs fast.")
+                == "He **runs** fast."
+        )
+    }
+
+    @Test func baseWordWinsOverInflectionWhenBothPresent() {
+        #expect(
+            Self.fallbackExample(word: "run", inflections: ["runs"], context: "They run and he runs.")
+                == "They **run** and he runs."
+        )
+    }
+
+    @Test func inflectionDoesNotBoldInsideLongerWord() {
+        #expect(
+            Self.fallbackExample(word: "run", inflections: ["runs"], context: "The rerunning began.")
+                == "The rerunning began."
+        )
+    }
 }

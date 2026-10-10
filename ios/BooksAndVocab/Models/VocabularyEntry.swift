@@ -219,7 +219,9 @@ extension VocabularyEntry {
 
     /// A row whose server copy exists or is being created must not be hard-deleted locally:
     /// the server card would be re-pulled and resurrected (#2733).
-    var requiresServerDelete: Bool { isSynced || isUploadInFlight }
+    /// `kgCardId` 非空即代表 server 已有卡片；編輯 synced 卡會把 syncState 改為 pending+edit，
+    /// 但 kgCardId 保留，因此不能只靠 `isSynced` 判斷。
+    var requiresServerDelete: Bool { isSynced || isUploadInFlight || !(kgCardId ?? "").isEmpty }
 
     /// Single local delete entry point for user-initiated deletes.
     func deleteLocally(in modelContext: ModelContext) {
@@ -290,14 +292,17 @@ extension VocabularyEntry {
 
     /// 在 context 純文字中為 word 加上 **markdown** 標記（模擬 server 的 _build_example 邏輯）
     private func markWordInContext(_ text: String) -> String {
-        let escaped = NSRegularExpression.escapedPattern(for: word)
-        // Whole-word boundaries, mirroring backend `_boundary_pattern` (#2725).
-        let boundaryPat = "(?<!\\w)\(escaped)(?!\\w)"
-        if let regex = Self.cachedRegex(pattern: boundaryPat),
-           let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
-            let ns = text as NSString
-            let matched = ns.substring(with: match.range)
-            return ns.replacingCharacters(in: match.range, with: "**\(matched)**")
+        // Whole-word boundaries, mirroring backend `_build_example` (#2725): try `[word, *inflections]`
+        // in order so that e.g. "run" still bolds "runs" when the base form is absent.
+        for term in [word] + inflections where !term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let escaped = NSRegularExpression.escapedPattern(for: term)
+            let boundaryPat = "(?<!\\w)\(escaped)(?!\\w)"
+            if let regex = Self.cachedRegex(pattern: boundaryPat),
+               let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
+                let ns = text as NSString
+                let matched = ns.substring(with: match.range)
+                return ns.replacingCharacters(in: match.range, with: "**\(matched)**")
+            }
         }
         // stem fallback: 前 4-6 字元
         let firstWord = word.components(separatedBy: " ").first ?? word
