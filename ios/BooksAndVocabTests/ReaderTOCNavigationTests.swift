@@ -257,6 +257,24 @@ struct ReaderTOCNavigationTests {
         #expect(ReaderTOCEvidenceEntry.validationErrors(for: [required, counterexample]).isEmpty)
     }
 
+    /// Pins the app-side half of the resource-href contract. The UI-test helper
+    /// keeps a byte-identical copy (ReaderTOCEvidenceHref) that this target cannot
+    /// import, so drift there is only caught by the UI evidence run.
+    @Test
+    func resourceHrefStripsOnlyTheFragmentSection() {
+        let cases: [(input: String, expected: String)] = [
+            ("OEBPS/chapter-a.xhtml", "OEBPS/chapter-a.xhtml"),
+            ("OEBPS/chapter-a.xhtml#section-1", "OEBPS/chapter-a.xhtml"),
+            ("OEBPS/chapter-a.xhtml#", "OEBPS/chapter-a.xhtml"),
+            ("OEBPS/chapter-a.xhtml#a#b", "OEBPS/chapter-a.xhtml"),
+            ("#section-1", ""),
+            ("", ""),
+        ]
+        for testCase in cases {
+            #expect(ReaderTOCNavigationState.resourceHref(testCase.input) == testCase.expected)
+        }
+    }
+
     @Test @MainActor
     func acceptedWrongLocatorAndMissingCallbackCannotCloseSheet() throws {
         let requestID = UUID()
