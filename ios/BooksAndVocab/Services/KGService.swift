@@ -292,12 +292,7 @@ final class KGService: KGServing {
         guard let token = await authSession.token else {
             throw KGSessionPendingError()
         }
-        if JWTExpiry.isExpired(token) {
-            AppLog.kg.warning("Token expired (pre-check), triggering session invalidation")
-            sessionExpiredReason = L10n.string("您的登入已過期，請重新登入")
-            await sessionInvalidator.logout(modelContainer: nil, reason: "token_expired_precheck")
-            throw KGError.unauthorized
-        }
+        // #2806: 本地時鐘判斷 JWT 過期不得觸發 logout／wipe；由伺服器真實 401 經 handleUnauthorized 決定。
         return token
     }
 
