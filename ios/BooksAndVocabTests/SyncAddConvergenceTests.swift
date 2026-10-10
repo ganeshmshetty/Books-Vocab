@@ -125,6 +125,37 @@ struct SyncAddConvergenceTests {
         #expect(unresolved.isEmpty)
     }
 
+    // MARK: - in-flight 期間被刪除（#2733）
+
+    @Test("in-flight 期間被使用者刪除 → 命中後保留 pending delete，不被改回 synced")
+    func delete_queued_during_flight_survives_convergence() {
+        let entry = makePendingAdd("doomed")
+        entry.isUploadInFlight = true
+        #expect(entry.requiresServerDelete)
+        entry.queueDelete()
+        let response = makeResponse(cardIds: ["doomed": "card-d"])
+
+        let unresolved = SyncCoordinator.convergeAddedEntries(response: response, entries: [entry])
+
+        #expect(entry.kgCardId == "card-d")
+        #expect(entry.isPendingDelete)
+        #expect(unresolved.isEmpty)
+    }
+
+    @Test("非 in-flight 的 pending add 本地刪除 → 直接移除，不排 server delete")
+    func idle_pending_add_delete_is_local_only() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let entry = makePendingAdd("idle")
+        context.insert(entry)
+
+        #expect(!entry.requiresServerDelete)
+        entry.deleteLocally(in: context)
+        #expect(entry.isDeleted)
+    }
+
     // MARK: - retry 路徑：failed+add 也能被收斂
 
     /// prepareForRetryAttempt 把 failed 轉回 pending 後才上傳，但防禦性釘住：
