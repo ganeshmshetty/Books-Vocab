@@ -102,6 +102,38 @@ struct WordEditSheetSaveTests {
         #expect(other.translation == "短暫的")
     }
 
+    /// 伺服器以 Unicode scalar 計長度（#2548）。combining mark 會讓 Character 數與 scalar 數不同：
+    /// 500 組 "e\u{301}" = 1000 scalars／500 Characters 應接受；501 組 = 1002 scalars 應拒絕。
+    /// 若改回 `.count`（Character），501 組會被誤收，此測試必紅。
+    @Test func translationLengthCountsUnicodeScalarsNotCharacters() throws {
+        let combining = "e\u{301}"
+        let atLimit = String(repeating: combining, count: 500)
+        #expect(atLimit.unicodeScalars.count == 1000)
+        #expect(atLimit.count == 500)
+
+        let entry = makeSyncedEntry()
+        try WordEditSheet.commitEdit(
+            entry: entry,
+            translation: atLimit,
+            explanation: "",
+            save: {}
+        )
+        #expect(entry.translation == atLimit)
+
+        let overLimit = String(repeating: combining, count: 501)
+        #expect(overLimit.unicodeScalars.count == 1002)
+        let other = makeSyncedEntry()
+        #expect(throws: WordEditSheet.EditValidationError.translationLength) {
+            try WordEditSheet.commitEdit(
+                entry: other,
+                translation: overLimit,
+                explanation: "",
+                save: {}
+            )
+        }
+        #expect(other.translation == "短暫的")
+    }
+
     @Test func oversizedNoteIsRejectedBeforeMutation() {
         let entry = makeSyncedEntry()
         var saveCalled = false
