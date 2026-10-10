@@ -150,4 +150,12 @@ if [ -n "$(ls -A "$TMP/scratch")" ]; then
   exit 1
 fi
 
+# #2923: the restore SOP must route the destructive kg-data write through the guarded
+# `devops.sh restore`, and must never document a direct-ssh path around devops_run_guard.
+require_grep 'devops.sh restore <YYYY-MM-DD>' docs/sop/backup_restore.md
+if grep -n '直接 ssh' docs/sop/backup_restore.md; then
+  echo "backup_restore.md still documents a direct-ssh restore path (#2923)" >&2
+  exit 1
+fi
+
 echo "docs-lint tests: PASS"
