@@ -47,6 +47,44 @@ struct RepoFixtureDatasetsContractTests {
         return try JSONSerialization.data(withJSONObject: topLevel)
     }
 
+    /// Podcast fixture invariants (#2906): a preview can never be longer than its
+    /// episode, and the runtime podcast clips pin the real length of the audio
+    /// asset they point to (ffprobe: `podcast_demo_long.mp3` = 120.000 s,
+    /// `podcast_demo.mp3` = 12.000 s).
+    @Test func runtimePodcastEpisodeDurationsMatchClipsAndPreviewBounds() throws {
+        let fixturesRoot = Self.datasetsDirectory.deletingLastPathComponent().deletingLastPathComponent()
+        let urls = [
+            Self.datasetsDirectory.appendingPathComponent("marketing_demo.json"),
+            fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"),
+        ]
+        let clipSeconds: [String: Double] = [
+            "playablePreview": 120.0,
+            "tieredCatalog": 12.0,
+        ]
+
+        for url in urls {
+            let top = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            let runtime = try #require(top["runtimePodcast"] as? [String: Any], "\(url.lastPathComponent): runtimePodcast")
+            for (fixtureID, value) in runtime {
+                let series = try #require(value as? [String: Any])
+                let episodes = try #require(series["episodes"] as? [[String: Any]])
+                for episode in episodes {
+                    let remoteID = episode["remoteId"] as? String ?? "?"
+                    let durationSec = try #require(episode["durationSec"] as? Double, "\(remoteID) durationSec")
+                    if episode["previewAvailable"] as? Bool == true {
+                        let previewSec = try #require(episode["previewDurationSec"] as? Double, "\(remoteID) previewDurationSec")
+                        #expect(previewSec > 0 && previewSec <= durationSec,
+                                "\(url.lastPathComponent) \(remoteID): previewDurationSec \(previewSec) must be within durationSec \(durationSec)")
+                    }
+                    if let clip = clipSeconds[fixtureID], episode["audioAvailable"] as? Bool == true {
+                        #expect(abs(durationSec - clip) < 0.05,
+                                "\(url.lastPathComponent) \(remoteID): durationSec \(durationSec) must match clip length \(clip)")
+                    }
+                }
+            }
+        }
+    }
+
     @Test func repoContainsAtLeastOneDataset() throws {
         #expect(try !Self.datasetURLs().isEmpty)
     }
