@@ -127,31 +127,22 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 校驗失敗 → 改拉 noncurrent version(`--version-id <id>` 加在 `aws s3api get-object` 上)。（舊「退到 Lightsail Snapshot」已不可用：instance 2026-06-19 terminate。）
 
-### 2.5 停容器、備份「壞掉的」現場、解壓覆蓋
+### 2.5 還原 kg-data：唯一授權路徑 `devops.sh restore`
 
-archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
+kg-data 只能經守門指令覆寫，不得以手動 ssh 連線、`devops_kg_safe.sh run` 或任何手動 `mv`／`tar x` 執行（#2923；`devops_run_guard` 會擋住這類指令，且 guard 是刻意的封印）。
 
 ```bash
-set -e
-DATE=2026-05-31  # 同 §2.3
-DATA=~/kg-data   # 現役 standby；舊 Lightsail 為 /home/ubuntu/knowledge_graph_api/data
-ARCHIVE="/tmp/${DATE}.tar.gz"
-
-# 停容器,避免 SQLite WAL race(compose 在 ~/kg-prod/backend)
-(cd ~/kg-prod/backend && docker compose stop)
-
-# 解壓前驗證 archive 第一層 == basename(DATA)
-ROOT=$(tar tzf "$ARCHIVE" | head -1 | cut -d/ -f1)
-[ "$ROOT" = "$(basename "$DATA")" ] || { echo "root mismatch: $ROOT"; exit 1; }
-
-# 把當前 data rename 成 <DATA>.broken.<ts>(別 rm,留鑑識用);目錄存在但 mv 失敗要中止
-TS=$(date +%Y%m%d-%H%M%S)
-[ ! -e "$DATA" ] || mv "$DATA" "$DATA.broken.${TS}"
-
-# 解壓到 DATA 的上層目錄,還原出 $(basename "$DATA")/
-tar xzf "$ARCHIVE" -C "$(dirname "$DATA")"
-ls -la "$DATA/users/" | head
+./devops.sh restore <YYYY-MM-DD>   # DATE 同 §2.3；執行前會要求輸入 yes
 ```
+
+指令逐道驗證，任一道失敗都在動到現況之前中止：
+
+1. backup log（standby `~/Library/Logs/kg_backup.log`）必須有該日 `exit=0` 紀錄，且其 `sha256` 與 S3 物件 `data/<DATE>.tar.gz` 一致（來源可信）。
+2. archive 第一層必須 == `basename(data dir)`（standby 為 `kg-data/`，`ops/kg_backup.sh:62`），且無絕對或上層路徑。
+3. 解壓到 staging，每個 `*.db` 須 `PRAGMA quick_check` 為 `ok`。archive 不含 `-wal`/`-shm`，故以整個目錄替換，不混入殘留 sidecar。
+4. 停容器（`~/kg-prod/backend`，避免 SQLite WAL race）→ 現況 rename 成 `<data>.broken.<ts>`（保留作鑑識快照，不 `rm`）→ 新資料就位 → 起容器。swap 失敗會把現況搬回。
+
+完成後以 `./devops.sh status` 與 §2.7 的健康檢查確認；保留的 `.broken.<ts>` 由人工鑑識後再處理，指令不刪除它。
 
 ### 2.6 修正 owner
 
