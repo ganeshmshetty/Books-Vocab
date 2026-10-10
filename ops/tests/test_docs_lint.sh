@@ -150,15 +150,19 @@ if [ -n "$(ls -A "$TMP/scratch")" ]; then
   exit 1
 fi
 
-# #2923: the restore SOP must route the destructive kg-data write through the guarded
-# `devops.sh restore`, must enumerate the protected names, must explain which legitimate
-# maintenance commands the guard blocks, and must never show a remote shell that runs
-# restore or an extraction/move into kg-data (no direct-ssh path around the guard).
-require_grep 'devops.sh restore <YYYY-MM-DD>' docs/sop/backup_restore.md
+# #2923: the restore SOP must state that the kg-data overwrite is executed by a human over
+# direct ssh, must enumerate the protected names, must explain which legitimate maintenance
+# commands the guard blocks, and must not advertise a `devops.sh restore` command (no
+# such command exists; restore is an owner decision tracked in a separate issue).
+require_grep '經 direct ssh' docs/sop/backup_restore.md
 require_grep '受保護名稱' docs/sop/backup_restore.md
 require_grep 'rm -rf .venv' docs/sop/backup_restore.md
-if grep -nE 'ssh [^#]*(devops\.sh restore|tar +-?x|mv +[^ ]*kg-data)' docs/sop/backup_restore.md; then
-  echo "backup_restore.md documents a direct-ssh restore/overwrite path (#2923)" >&2
+if grep -n 'devops.sh restore' docs/sop/backup_restore.md; then
+  echo "backup_restore.md advertises a devops.sh restore command (#2923 scope: docs only)" >&2
+  exit 1
+fi
+if grep -nE 'ssh [^#]*(tar +-?x|mv +[^ ]*kg-data)' docs/sop/backup_restore.md; then
+  echo "backup_restore.md documents a one-line ssh restore/overwrite (#2923)" >&2
   exit 1
 fi
 

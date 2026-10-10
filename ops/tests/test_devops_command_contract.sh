@@ -65,14 +65,6 @@ grep -Fq 'ops-edit-batch' <<<"$help_output" \
   || fail "base help omitted a registered command"
 pass "base help renders the registry without transport"
 
-# restore is the only sanctioned writer of kg-data (#2923): it must be a registered
-# base command and must be blocked on the safe wrapper (never reachable unguarded).
-ROOT="$ROOT" bash -c 'source "$ROOT/ops/lib/devops_command_registry.sh"; devops_command_registered restore && devops_command_blocked restore' \
-  || fail "restore is not a registered, blocked-on-safe-wrapper base command"
-grep -Fq 'restore <YYYY-MM-DD>' <<<"$help_output" \
-  || fail "base help does not render the restore command"
-pass "restore is a registered base command, blocked on the safe wrapper"
-
 # Registry API must expose the commands that are actually supported by the two
 # surfaces.  This is intentionally offline and does not require SSH or Docker.
 registry_probe="$(ROOT="$ROOT" bash -c 'source "$ROOT/ops/lib/devops_command_registry.sh"; devops_command_registry_validate; for c in env-drift ops-cli container-script; do devops_command_registered "$c"; done; for c in preflight env-drift docker-logs; do devops_safe_command_registered "$c"; done; devops_command_blocked setup; devops_command_help_lines' 2>/dev/null)" \
