@@ -8,9 +8,9 @@ worktree/ref mutation while leaving observation commands concurrent.  Most
 mutating commands hold it for their whole run; ``queue``, ``cleanup-merged``
 and ``release-published`` take it only around those local sections, so their
 GitHub API calls, ``ls-remote`` and ``push`` run outside it (#2236).  The
-lease is non-blocking by default; ``KG_DELIVERY_LOCK_WAIT_SECONDS=N`` (>0) opts
-into polling every ~0.1s for up to N seconds before the same busy refusal
-(#2423).  The kernel
+lease polls every ~0.1s for up to ``DEFAULT_WAIT_SECONDS`` before the busy
+refusal (#2423, #2871); ``KG_DELIVERY_LOCK_WAIT_SECONDS=0`` (or a negative or
+unparsable value) restores the single fail-fast try.  The kernel
 releases the lock when the owning process exits, so a stale lock file is
 harmless.
 """
@@ -42,8 +42,9 @@ _HELD_LOCKS: dict[Path, tuple[IO[str], int]] = {}
 # set it in an operator, launchd, or CI delivery environment.
 LOCK_DIR_ENV = "KG_DELIVERY_LOCK_DIR"
 
-# Opt-in bounded wait: unset, invalid, or <= 0 keeps the single fail-fast try.
+# Bounded wait: unset means DEFAULT_WAIT_SECONDS; invalid or <= 0 is fail-fast.
 WAIT_SECONDS_ENV = "KG_DELIVERY_LOCK_WAIT_SECONDS"
+DEFAULT_WAIT_SECONDS = 30.0
 _POLL_INTERVAL = 0.1
 # Absurd values (inf, 1e400) must not park a process forever (#2463).
 MAX_WAIT_SECONDS = 3600.0
@@ -61,8 +62,13 @@ def _wait_seconds(override: float | None = None) -> float:
 
     if override is not None:
         return clamp_wait_seconds(override)
+    raw = os.environ.get(WAIT_SECONDS_ENV)
+    if raw is None:
+        # The test-only lock-dir hook marks an isolated suite; keep its busy
+        # refusals immediate instead of stalling every contended test 30s.
+        return 0.0 if os.environ.get(LOCK_DIR_ENV) else DEFAULT_WAIT_SECONDS
     try:
-        seconds = float(os.environ.get(WAIT_SECONDS_ENV, ""))
+        seconds = float(raw)
     except ValueError:
         return 0.0
     return clamp_wait_seconds(seconds)

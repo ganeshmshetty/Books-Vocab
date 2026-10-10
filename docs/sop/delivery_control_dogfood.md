@@ -71,11 +71,15 @@ ops pytest 另由 `ops/tests/conftest.py` 的 autouse fixture 設定 `KG_DELIVER
 不要平行直接啟動 registry mutation 測試；使用 `./ops/test_ops.sh worktree`，讓 wrapper
 在不同 linked worktree 之間共用同一把鎖。程序中止時由作業系統釋放鎖，不建立第二套 registry 狀態。
 
-`KG_DELIVERY_LOCK_WAIT_SECONDS=N`（#2423）讓 `OperationLock` opt-in 有界等待：N 為大於 0 的數字時，取鎖失敗後每約 0.1 秒
-重試，最久 N 秒，逾時才拋出與原本完全相同的 `delivery mutation already in progress` 訊息；未設定、`0`、負值、無法解析或 NaN
-一律維持單次 fail-fast（預設行為不變）。同一程序內的 re-entrant 取鎖不受影響。輪詢不保證 FIFO，只降低、不消除競爭者被餓死的機率。
-它與 `deliver.py --lock-timeout` 疊加而非取代：設了之後每次嘗試最多先阻塞 N 秒，仍失敗才進入 `deliver.py` 每 5 秒一次的重試迴圈。
-此變數是 operator 的明確選擇，不是預設；publish 的 scoped-lease 切分與 `cleanup-merged` 預設等待仍屬 #2423 後續工作。
+`OperationLock` 取鎖失敗後每約 0.1 秒重試，預設最久 `DEFAULT_WAIT_SECONDS`（30 秒，#2423／#2871），逾時才拋出與原本完全相同的
+`delivery mutation already in progress` 訊息。`KG_DELIVERY_LOCK_WAIT_SECONDS=N` 覆寫此預設：N 為大於 0 的數字時等待 N 秒（上限 3600）；
+`0`、負值、無法解析或 NaN 一律單次 fail-fast。未設定時走預設（#2871 前為 fail-fast）。同一程序內的 re-entrant 取鎖不受影響。
+輪詢不保證 FIFO，只降低、不消除競爭者被餓死的機率。`deliver.py --lock-timeout` 優先於此環境變數。
+`cleanup-merged` 預設等待 120 秒（`DEFAULT_LOCK_WAIT_SECONDS`）。測試隔離 hook `KG_DELIVERY_LOCK_DIR` 存在時，未設定的預設等待退為 0（fail-fast，#2871）。
+
+`publish`、`drain`、`cleanup-merged`、`release-published` 在第一個 GitHub 讀取之前先做 busy probe（`BUSY_PROBE_COMMANDS`，#2871）：
+取不到 lease 即在任何 GitHub／registry 讀取前拒絕，零 GitHub 成本；probe 只驗可用性，真正的寫入仍由各本機區段 lease 守住，
+網路 I/O 不進 lease（#2236）。probe 與區段 lease 之間的極短競態仍會在區段處拒絕，屬已知殘餘。`queue` 不取 lease（只寫 GitHub），不受 probe 影響。
 
 `OperationLock` 的持有範圍：`publish`、`sync-main`、`record-published-base`、`abandon-pr`、`discard-*`、main preservation、
 `admit-candidate`、`issue-intake` 等 mutating command 仍整段持有；`queue`、`cleanup-merged`、`release-published`
