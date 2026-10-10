@@ -95,14 +95,16 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
     }
 
     func batchDeleteCards(words: [String], notebookId: String) async throws -> KGBatchDeleteResponse {
-        let body = try JSONEncoder().encode(["words": words])
-        return try await authenticatedDecode(
-            KGBatchDeleteResponse.self,
-            path: "api/vocab/batch-delete",
-            method: "POST",
-            queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
-            body: body
-        )
+        try await Self.performChunked(words, send: { chunk in
+            let body = try JSONEncoder().encode(["words": chunk])
+            return try await self.authenticatedDecode(
+                KGBatchDeleteResponse.self,
+                path: "api/vocab/batch-delete",
+                method: "POST",
+                queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
+                body: body
+            )
+        }, merge: Self.merged)
     }
 
     func archiveCard(word: String, archived: Bool, notebookId: String) async throws {
@@ -166,14 +168,16 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
             let words: [String]
             let archived: Bool
         }
-        let body = try JSONEncoder().encode(BatchArchiveBody(words: words, archived: archived))
-        return try await authenticatedDecode(
-            KGBatchArchiveResponse.self,
-            path: "api/vocab/batch-archive",
-            method: "PATCH",
-            queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
-            body: body
-        )
+        return try await Self.performChunked(words, send: { chunk in
+            let body = try JSONEncoder().encode(BatchArchiveBody(words: chunk, archived: archived))
+            return try await self.authenticatedDecode(
+                KGBatchArchiveResponse.self,
+                path: "api/vocab/batch-archive",
+                method: "PATCH",
+                queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
+                body: body
+            )
+        }, merge: Self.merged)
     }
 
     /// 後端 `VocabSource.title/chapter` 上限 500（Pydantic `max_length` 以 code point 計）。
@@ -231,12 +235,60 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
 
     func batchAdd(entries: [VocabularyEntry], notebookId: String = "default") async throws -> KGAddResponse {
         let payload = Self.vocabPayload(for: entries)
-        return try await authenticatedDecode(
-            KGAddResponse.self,
-            path: "api/vocab",
-            method: "POST",
-            queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
-            body: try JSONEncoder().encode(payload)
+        return try await Self.performChunked(payload, send: { chunk in
+            try await self.authenticatedDecode(
+                KGAddResponse.self,
+                path: "api/vocab",
+                method: "POST",
+                queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
+                body: try JSONEncoder().encode(chunk)
+            )
+        }, merge: Self.merged)
+    }
+
+    // MARK: - Batch chunking (backend caps add/delete/archive at 500 items per request)
+
+    static let maxVocabBatchSize = 500
+
+    /// Sends `items` in <= `maxVocabBatchSize` slices and folds the responses.
+    /// Empty input still sends once so legacy behaviour is unchanged.
+    static func performChunked<Item, Response>(
+        _ items: [Item],
+        send: ([Item]) async throws -> Response,
+        merge: (Response, Response) -> Response
+    ) async throws -> Response {
+        guard items.count > maxVocabBatchSize else { return try await send(items) }
+        var result: Response?
+        for start in stride(from: 0, to: items.count, by: maxVocabBatchSize) {
+            let chunk = Array(items[start..<min(start + maxVocabBatchSize, items.count)])
+            let response = try await send(chunk)
+            result = result.map { merge($0, response) } ?? response
+        }
+        return result!
+    }
+
+    static func merged(_ a: KGAddResponse, _ b: KGAddResponse) -> KGAddResponse {
+        KGAddResponse(
+            created: a.created + b.created,
+            skipped: a.skipped + b.skipped,
+            duplicates: a.duplicates + b.duplicates,
+            cardIds: a.cardIds.merging(b.cardIds) { _, new in new }
+        )
+    }
+
+    static func merged(_ a: KGBatchDeleteResponse, _ b: KGBatchDeleteResponse) -> KGBatchDeleteResponse {
+        KGBatchDeleteResponse(
+            deleted: a.deleted + b.deleted,
+            deleted_words: a.deleted_words + b.deleted_words,
+            not_found: a.not_found + b.not_found
+        )
+    }
+
+    static func merged(_ a: KGBatchArchiveResponse, _ b: KGBatchArchiveResponse) -> KGBatchArchiveResponse {
+        KGBatchArchiveResponse(
+            updated: a.updated + b.updated,
+            updated_words: a.updated_words + b.updated_words,
+            not_found: a.not_found + b.not_found
         )
     }
 
