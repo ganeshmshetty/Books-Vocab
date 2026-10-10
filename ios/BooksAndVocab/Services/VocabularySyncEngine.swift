@@ -148,6 +148,8 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     if Task.isCancelled { return cancelledResult(since: start) }
                     do {
                         entries.forEach { $0.prepareForRetryAttempt() }
+                        entries.forEach { $0.isUploadInFlight = true }
+                        defer { entries.forEach { $0.isUploadInFlight = false } }
                         let response = try await service.batchAdd(entries: entries, notebookId: notebookId)
                         SyncCoordinator.convergeAddedEntries(response: response, entries: entries)
                         if !response.rejected.isEmpty {

@@ -311,7 +311,10 @@ final class SyncCoordinator: SyncCoordinating {
                 unresolved.append(entry)
             } else if let cardId = response.cardIds[entry.word] {
                 entry.kgCardId = cardId
-                entry.markSynced()
+                // A delete queued while the add was in flight stays queued: the card now exists server-side (#2733).
+                if entry.syncAction != .delete {
+                    entry.markSynced()
+                }
             } else {
                 unresolved.append(entry)
             }

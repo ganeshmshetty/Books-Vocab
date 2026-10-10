@@ -57,6 +57,8 @@ final class VocabularyEntry {
     var isArchived: Bool = false
     var isReaderHidden: Bool = false
     var isReviewExcluded: Bool = false
+    /// True while this entry's add request is on the wire. Transient: set only by the sync engine (#2733).
+    @Transient var isUploadInFlight = false
 
     // Local spaced-review state
     var reviewIntervalHours: Double = VocabularyReviewPolicy.initialIntervalHours
@@ -213,6 +215,19 @@ extension VocabularyEntry {
         syncAction = .delete
         syncState = .pending
         rejectedReason = nil
+    }
+
+    /// A row whose server copy exists or is being created must not be hard-deleted locally:
+    /// the server card would be re-pulled and resurrected (#2733).
+    var requiresServerDelete: Bool { isSynced || isUploadInFlight }
+
+    /// Single local delete entry point for user-initiated deletes.
+    func deleteLocally(in modelContext: ModelContext) {
+        if requiresServerDelete {
+            queueDelete()
+        } else {
+            modelContext.delete(self)
+        }
     }
 
     func restorePendingEntry() {
