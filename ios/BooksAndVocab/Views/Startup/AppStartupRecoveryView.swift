@@ -40,19 +40,41 @@ struct AppStartupRecoveryActions {
     )
 }
 
-/// #2743 — 清除本機快取會刪除 LocalStore 檔案（可能含尚未同步的資料）。按鈕只呈現確認對話框；
-/// 破壞性動作只由對話框的 destructive 按鈕觸發，gate 本身不執行也不判斷確認。
+/// #2743 — 清除本機快取會刪除 LocalStore 檔案（可能含尚未同步的資料）。所有決策收在這裡：
+/// 只有 `confirm()` 回傳 `.clearLocalCache`；view 只執行回傳的 Effect，
+/// 因此「按鈕永不直接清除」與「只有確認路徑會清除」可以由單元測試直接守護。
+/// `confirm()` 刻意不以 `isPresented` 為前提：destructive 按鈕只存在於已呈現的對話框內，
+/// 且 SwiftUI 關閉 binding 與按鈕 action 的先後順序不保證，前提判斷會讓清除靜默失效。
 struct AppStartupClearCacheGate: Equatable {
     static let titleKey = "要清除本機快取嗎？"
     static let messageKey = "尚未同步到雲端的單字、筆記本與複習紀錄會永久遺失，無法復原。已備份到雲端的資料不受影響。"
     static let confirmKey = "清除本機資料"
 
+    enum Effect: Equatable {
+        case none
+        case presentConfirmation
+        case clearLocalCache
+    }
+
     private(set) var isPresented = false
 
-    /// 「清除本機快取」按鈕的唯一效果：呈現確認對話框。
-    mutating func request() { isPresented = true }
-    /// 對話框關閉（取消或確認後）。
-    mutating func dismiss() { isPresented = false }
+    /// 「清除本機快取」按鈕：只呈現確認對話框，永不回傳 `.clearLocalCache`。
+    mutating func tap() -> Effect {
+        isPresented = true
+        return .presentConfirmation
+    }
+
+    /// 對話框的 destructive 按鈕：唯一回傳清除 Effect 的路徑。
+    mutating func confirm() -> Effect {
+        isPresented = false
+        return .clearLocalCache
+    }
+
+    /// 對話框取消或被系統關閉：不清除。
+    mutating func cancel() -> Effect {
+        isPresented = false
+        return .none
+    }
 }
 
 struct AppStartupRecoveryView: View {
@@ -153,7 +175,7 @@ struct AppStartupRecoveryView: View {
 
             // Layer 2 — Clear local cache
             Button {
-                clearCacheGate.request()
+                perform(clearCacheGate.tap())
             } label: {
                 Label(L10n.string("清除本機快取"), systemImage: "trash.slash")
             }
@@ -163,15 +185,14 @@ struct AppStartupRecoveryView: View {
                 L10n.string(AppStartupClearCacheGate.titleKey),
                 isPresented: Binding(
                     get: { clearCacheGate.isPresented },
-                    set: { if !$0 { clearCacheGate.dismiss() } }
+                    set: { if !$0 { _ = clearCacheGate.cancel() } }
                 ),
                 titleVisibility: .visible
             ) {
                 Button(L10n.string(AppStartupClearCacheGate.confirmKey), role: .destructive) {
-                    clearCacheGate.dismiss()
-                    Task { await runClearCache() }
+                    perform(clearCacheGate.confirm())
                 }
-                Button(L10n.string("取消"), role: .cancel) { clearCacheGate.dismiss() }
+                Button(L10n.string("取消"), role: .cancel) { perform(clearCacheGate.cancel()) }
             } message: {
                 Text(L10n.string(AppStartupClearCacheGate.messageKey))
             }
@@ -307,6 +328,16 @@ struct AppStartupRecoveryView: View {
         // 成功時 host 會切換出 recovery view；view 不需手動清 state。
         if !success {
             phase = .retryFailed
+        }
+    }
+
+    /// 只執行 gate 回傳的 Effect；view 不自行判斷是否清除。
+    private func perform(_ effect: AppStartupClearCacheGate.Effect) {
+        switch effect {
+        case .none, .presentConfirmation:
+            break
+        case .clearLocalCache:
+            Task { await runClearCache() }
         }
     }
 
