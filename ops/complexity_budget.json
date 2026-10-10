@@ -1,13 +1,13 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-10 issue-2026-r5 lane (#2026 leftovers, re-lane of abandoned debug/issue-2026-r4; 12 cherry-picked commits: gap.geom parser, height-varied review UI World, review-flip probe report, and their tests and docs): measured ops 209,813 on this lane head, which is +162 lines over its merge-base 6bd07e659 (origin/main at lane open); ceiling = measured + 20 = 209,833. The raise covers only this lane own growth; ratchet reclaims the slack later.",
+  "note": "2026-10-10 #2833+#2870 r2 re-lane (deliver: area quality hold before queue, fast ejection on merge-queue dequeue, newest-by-startedAt review verdict, absent-suite HOLD): measured ops 210,125 on the lane tree; the lane's own growth is +303 lines over its base origin/main a533c633a (ops 209,822); ceiling = measured + 20 = 210,145; ratchet reclaims the slack later. 2026-10-10 issue-2026-r5 lane (#2026 leftovers, re-lane of abandoned debug/issue-2026-r4; 12 cherry-picked commits: gap.geom parser, height-varied review UI World, review-flip probe report, and their tests and docs): measured ops 209,813 on this lane head, which is +162 lines over its merge-base 6bd07e659 (origin/main at lane open); ceiling = measured + 20 = 209,833. The raise covers only this lane own growth; ratchet reclaims the slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 209833,
+    "ops": 210145,
     "docs": 16077,
     "workflows": 2097
   }

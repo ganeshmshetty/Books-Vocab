@@ -219,6 +219,8 @@ iOS lane 另有 selector-aware targeted 模式（Issue #1051），由 `ops/ci_sc
 
 `agent-review` 是可選的品質與風險觀測 check，不是 repository ruleset 的 hard gate；目前 ruleset 只要求短 `required` context。它可以提供 exact-head 的獨立審查、reviewer provenance 與改進建議，未產生、失敗或延遲本身都不阻塞 native queue、merge、release 或一般 dispatch。若它或其他觀測明確發現 P0、P1 或 security 問題，仍必須以 durable typed hold／label 呈現；真正阻塞來源是該 hold，而不是 `agent-review` check 的 transport 結果。
 
+`deliver --merge` 判讀 `agent-review` verdict（`review_verdict`，#2833）時只計屬於本 PR 的 run（同 head 的他 PR run 不計），並採 newest-wins：failure 只有在沒有「嚴格較新」的 success 時才生效，rerun 轉綠後較新的 success 取代較舊的 failure；同時間戳 failure 仍生效（fail closed），無 `startedAt` 的 failure 永遠生效。仍有未完成的非 verdict-marker run 時維持 pending；全部完成後取 success／neutral verdict，若 bot 未留 verdict marker 則退回 job 結論。`neutral` 只代表 bot 停止等待：只有 bot 已宣告 down、quota 用盡，或 operator 明確 `--accept-no-review '<reason>'`，才不再等待而接受 neutral。
+
 因此固定採以下判讀：
 
 - GitHub 對 exact PR HEAD 列出的所有 required checks 都成功，才是 merge 的最低 Actions 條件；目前唯一 repository-required context 是 `required`，仍須滿足 typed receipt、live base、branch rules 與其他安全條件。`agent-review`、CR／DS 的 routine advisory 不等待；其 P0／P1／security 發現必須以 durable hold 呈現。
