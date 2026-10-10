@@ -387,6 +387,24 @@ done
 expect_blocked_before_base "migrate-run: rm -rf /app/data" migrate-run "rm -rf /app/data"
 expect_blocked_before_base "migrate-run: cd /app && rm -rf data" migrate-run "cd /app && rm -rf data"
 
+# #2923: backup_restore.md §2.5 names commands the guard blocks and says to run them
+# over direct ssh. Every command the SOP names as guard-blocked must really be blocked
+# by the predicate from the default home cwd (the cp .env.example case was ALLOWED there,
+# so it was a false statement). Pure predicate: sources only the guard lib, never runs
+# the command, never touches ssh or devops.sh.
+# shellcheck source=lib/devops_run_guard.sh
+source "$WORKSPACE/ops/lib/devops_run_guard.sh"
+for sop_cmd in \
+  'rm -rf ~/kg-prod/backend/.venv' \
+  "sqlite3 ~/kg-data/data.db \"VACUUM INTO '/tmp/x.db'\"" \
+  'find . -name __pycache__ -exec rm'; do
+  if devops_run_is_blocked run "$sop_cmd"; then
+    ok "backup_restore SOP guard claim holds: $sop_cmd"
+  else
+    fail_t "backup_restore SOP names '$sop_cmd' as guard-blocked, but the guard allows it from home cwd"
+  fi
+done
+
 # False-positive controls — legitimate commands must pass the guard AND reach
 # the (stub) base, so the silence of the checks above is not a broken wrapper.
 declare -a SAFE=(
