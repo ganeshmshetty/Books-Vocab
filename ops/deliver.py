@@ -57,7 +57,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import complexity
+from delivery_control.adapters.github_cache_root import github_cache_dir
 from delivery_control.adapters.operation_lock import OperationLock
+from delivery_control.adapters.rest_conditional_cache import (
+    ConditionalRestCache,
+    RestReadError,
+)
 from delivery_control.domain.check_states import FAILURE_STATES, SUCCESS_STATES
 from delivery_control.domain.errors import DeliverySourceError, PolicyViolation
 from delivery_control.services.pr_contract import (
@@ -664,6 +669,7 @@ class Delivery:
         self.sleep = sleep
         self.clock = clock
         self.work = Path(args.worktree).resolve()
+        self.rest = ConditionalRestCache(runner, github_cache_dir(self.work))
         self.canon: Path | None = None
         self.log: list[str] = []
         self.extra: dict[str, Any] = {}
@@ -1464,17 +1470,10 @@ class Delivery:
 
     def gh_pages(self, endpoint: str, key: str | None = None) -> list[dict[str, Any]]:
         """Every item of a paginated REST list (``key``: the list inside a page)."""
-        out = must(
-            self.runner,
-            ["gh", "api", "--paginate", "--slurp", endpoint],
-            self.home,
-            f"read {endpoint}",
-        ).stdout
-        return [
-            item
-            for page in json.loads(out or "[]")
-            for item in (page.get(key, []) if key else page)
-        ]
+        try:
+            return self.rest.get_pages(endpoint, self.home, key)
+        except RestReadError as error:
+            raise DeliverError(f"read {endpoint} failed: {error}") from error
 
     def runs_of_pr(
         self,
@@ -1496,13 +1495,12 @@ class Delivery:
             if run_id is None:
                 continue
             if run_id not in owners:
-                done = self.runner(
-                    ["gh", "api", f"repos/{repo}/actions/runs/{run_id}"], self.home
-                )
                 try:
-                    doc = json.loads(done.stdout) if done.returncode == 0 else None
-                except ValueError:
-                    doc = None
+                    doc = self.rest.get(
+                        f"repos/{repo}/actions/runs/{run_id}", self.home
+                    )
+                except RestReadError:
+                    continue
                 if not isinstance(doc, dict):
                     continue
                 owners[run_id] = workflow_run_is_of(doc, number, head_ref)
@@ -1949,21 +1947,18 @@ def _merged_pulls(
     One paginated core-quota call replaces a GraphQL ``gh pr list`` per record
     (#2419), which exhausted the shared GraphQL quota on a large registry.
     """
-    out = must(
-        runner,
-        ["gh", "api", "--paginate", "--slurp"]
-        + [f"repos/{repo}/pulls?state=closed&per_page=100"],
-        canon,
-        "list closed PRs",
-    ).stdout
+    rest = ConditionalRestCache(runner, github_cache_dir(canon))
+    try:
+        pulls = rest.get_pages(f"repos/{repo}/pulls?state=closed&per_page=100", canon)
+    except RestReadError as error:
+        raise DeliverError(f"list closed PRs failed: {error}") from error
     merged: dict[str, list[tuple[int, str]]] = {}
-    for page in json.loads(out or "[]"):
-        for pr in page:
-            head = pr.get("head") or {}
-            if pr.get("merged_at") and head.get("ref"):
-                merged.setdefault(str(head["ref"]), []).append(
-                    (int(pr["number"]), str(head.get("sha") or ""))
-                )
+    for pr in pulls:
+        head = pr.get("head") or {}
+        if pr.get("merged_at") and head.get("ref"):
+            merged.setdefault(str(head["ref"]), []).append(
+                (int(pr["number"]), str(head.get("sha") or ""))
+            )
     return merged
 
 

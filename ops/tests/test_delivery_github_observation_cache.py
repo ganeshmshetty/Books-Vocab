@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
@@ -12,6 +15,10 @@ from delivery_control.adapters.github_client import GitHubCliClient
 from delivery_control.adapters.github_queries import GitHubQueries
 from delivery_control.adapters.github_queue import (
     GitHubQueueGraphQLAdapter,
+)
+from delivery_control.adapters.rest_conditional_cache import (
+    ConditionalRestCache,
+    RestReadError,
 )
 from delivery_control.ports.process import CommandResult
 
@@ -292,3 +299,116 @@ def test_changed_paths_pages_are_revalidated_per_page(tmp_path: Path) -> None:
     ]
     assert 'If-None-Match: "p1"' in runner.calls[2]
     assert 'If-None-Match: "p2"' in runner.calls[3]
+
+
+class RestRunner:
+    """Scripted ``gh api --include`` replies for the legacy delivery script's runner."""
+
+    def __init__(self, replies: list[tuple[int, str]]) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str], cwd: Path | None) -> SimpleNamespace:
+        self.calls.append(list(argv))
+        code, stdout = self.replies.pop(0)
+        return SimpleNamespace(returncode=code, stdout=stdout, stderr="")
+
+
+_RUN_URL = "repos/owner/repo/actions/runs/7"
+
+
+def test_rest_read_304_hit_serves_the_cached_body(tmp_path: Path) -> None:
+    runner = RestRunner(
+        [(0, _http(200, '{"id": 7}', etag='"r1"')), (0, _http(304, etag='"r1"'))]
+    )
+    rest = ConditionalRestCache(runner, tmp_path / "c")
+
+    assert rest.get(_RUN_URL, tmp_path) == {"id": 7}
+    assert rest.get(_RUN_URL, tmp_path) == {"id": 7}
+
+    assert "If-None-Match" not in " ".join(runner.calls[0])
+    assert 'If-None-Match: "r1"' in runner.calls[1]
+    assert len(runner.calls) == 2
+
+
+def test_rest_read_invalidates_on_change_and_on_untagged_response(
+    tmp_path: Path,
+) -> None:
+    runner = RestRunner(
+        [
+            (0, _http(200, '["A"]', etag='"v1"')),
+            (0, _http(200, '["B"]', etag='"v2"')),
+            (0, _http(200, '["C"]')),
+            (0, _http(200, '["D"]', etag='"v4"')),
+        ]
+    )
+    rest = ConditionalRestCache(runner, tmp_path / "c")
+
+    assert rest.get(_RUN_URL, tmp_path) == ["A"]
+    assert rest.get(_RUN_URL, tmp_path) == ["B"]
+    assert 'If-None-Match: "v1"' in " ".join(runner.calls[1])
+    assert rest.get(_RUN_URL, tmp_path) == ["C"]
+    assert 'If-None-Match: "v2"' in " ".join(runner.calls[2])
+    assert rest.get(_RUN_URL, tmp_path) == ["D"]
+    assert "If-None-Match" not in " ".join(runner.calls[3])
+
+
+def test_rest_read_error_status_raises_and_stores_nothing(tmp_path: Path) -> None:
+    runner = RestRunner([(1, _http(404, '{"message": "Not Found"}'))])
+    rest = ConditionalRestCache(runner, tmp_path / "c")
+
+    with pytest.raises(RestReadError, match="404"):
+        rest.get(_RUN_URL, tmp_path)
+    assert list((tmp_path / "c").rglob("*.json")) == []
+
+
+def test_rest_read_without_headers_returns_body_uncached(tmp_path: Path) -> None:
+    runner = RestRunner([(0, '{"id": 7}')])
+    rest = ConditionalRestCache(runner, tmp_path / "c")
+
+    assert rest.get(_RUN_URL, tmp_path) == {"id": 7}
+    assert list((tmp_path / "c").rglob("*.json")) == []
+
+
+_PULLS = "repos/owner/repo/pulls?state=closed&per_page=100"
+
+
+def test_rest_pages_are_revalidated_one_by_one(tmp_path: Path) -> None:
+    full = json.dumps([{"number": n} for n in range(100)])
+    tail = json.dumps([{"number": 100}])
+    runner = RestRunner(
+        [
+            (0, _http(200, full, etag='"p1"')),
+            (0, _http(200, tail, etag='"p2"')),
+            (0, _http(304, etag='"p1"')),
+            (0, _http(304, etag='"p2"')),
+        ]
+    )
+    rest = ConditionalRestCache(runner, tmp_path / "c")
+
+    first = rest.get_pages(_PULLS, tmp_path)
+    second = rest.get_pages(_PULLS, tmp_path)
+
+    assert len(first) == 101
+    assert second == first
+    assert [call[-1].rsplit("page=", 1)[1] for call in runner.calls] == [
+        "1",
+        "2",
+        "1",
+        "2",
+    ]
+    assert 'If-None-Match: "p2"' in " ".join(runner.calls[3])
+
+
+def test_rest_pages_select_the_named_key(tmp_path: Path) -> None:
+    body = json.dumps({"total_count": 1, "check_runs": [{"name": "agent-review"}]})
+    runner = RestRunner([(0, _http(200, body, etag='"c1"'))])
+    rest = ConditionalRestCache(runner, tmp_path / "c")
+
+    runs = rest.get_pages(
+        "repos/owner/repo/commits/abc/check-runs?check_name=x&per_page=100",
+        tmp_path,
+        key="check_runs",
+    )
+
+    assert runs == [{"name": "agent-review"}]

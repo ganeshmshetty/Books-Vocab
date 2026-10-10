@@ -236,7 +236,7 @@ class _Response:
     body: str
 
 
-def _parse_include(stdout: str) -> _Response | None:
+def parse_include(stdout: str) -> _Response | None:
     if not stdout.startswith("HTTP/"):
         return None
     head, _, body = stdout.replace("\r\n", "\n").partition("\n\n")
@@ -418,7 +418,7 @@ class GitHubCliClient:
         result = self._run_result(include, allow_nonzero=True, retry_read_only=True)
         fetched_at = self._now()
         self.last_fetched_at = fetched_at
-        response = _parse_include(result.stdout)
+        response = parse_include(result.stdout)
         if response is None:
             if result.exit_code != 0 and not allow_nonzero:
                 raise AdapterCommandError(result)
