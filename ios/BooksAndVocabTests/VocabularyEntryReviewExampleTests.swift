@@ -18,9 +18,9 @@ struct VocabularyEntryReviewExampleTests {
         #expect(Self.fallbackExample(word: "I", context: "It is here, I think.") == "It is here, **I** think.")
     }
 
-    @Test func wordInsideContextWithoutStandaloneOccurrenceFallsBackToStem() {
-        // "I" appears only inside "It", so no whole-word match exists and the
-        // stem fallback is skipped (word length < 4); the context is returned unchanged.
+    @Test func wordInsideContextWithoutStandaloneOccurrenceReturnsContextUnchanged() {
+        // "I" appears only inside "It", so no whole-word match exists. The stem path
+        // is skipped because the word is shorter than 4 characters; the context is returned unchanged.
         #expect(Self.fallbackExample(word: "I", context: "It is here.") == "It is here.")
     }
 }
