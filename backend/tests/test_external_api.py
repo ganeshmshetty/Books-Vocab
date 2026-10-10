@@ -1346,3 +1346,62 @@ def test_external_card_delete_succeeds_when_embedding_store_cannot_open(external
     result = external_router._delete_external_card(user, card_id, "default")
 
     assert result.deleted is True
+
+
+def test_external_card_meaning_update_survives_judge_requeue_failure(external_api, monkeypatch):
+    """#2957: a failing add_pending_judge must not fail a durable meaning edit."""
+    import kg.vocab_crud as vocab_crud
+
+    headers = {"X-KG-API-Key": _create_key(external_api)}
+    created = external_api.client.post("/api/v1/cards", json={"content": "requeue", "meaning": "舊"}, headers=headers)
+    assert created.status_code == 201, created.text
+    card_id = created.json()["card"]["id"]
+
+    original_graph_store = external_router._graph_store
+
+    class JudgeQueueFailsGraph:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def add_pending_judge(self, *_args, **_kwargs):
+            raise RuntimeError("judge queue unavailable")
+
+    monkeypatch.setattr(
+        external_router,
+        "_graph_store",
+        lambda *a, **k: JudgeQueueFailsGraph(original_graph_store(*a, **k)),
+    )
+    captured: list[str] = []
+    monkeypatch.setattr(
+        vocab_crud,
+        "capture_handled",
+        lambda exc, *, context: captured.append(context),
+    )
+
+    edited = external_api.client.patch(f"/api/v1/cards/{card_id}", json={"meaning": "新"}, headers=headers)
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["meaning"] == "新"
+    assert captured == ["vocab.judge_requeue"]
+
+
+def test_external_card_meaning_update_graph_open_failure_is_captured_not_raised(external_api, monkeypatch):
+    """#2957: a graph store that fails to open is captured and skipped by the meaning-edit side effects."""
+    headers = {"X-KG-API-Key": _create_key(external_api)}
+    created = external_api.client.post("/api/v1/cards", json={"content": "gopen", "meaning": "舊"}, headers=headers)
+    assert created.status_code == 201, created.text
+    card_id = created.json()["card"]["id"]
+    user = {"id": external_api.user_id, "dir": external_api.data_dir / "users" / external_api.user_id}
+
+    def broken_graph(*_args, **_kwargs):
+        raise RuntimeError("graph store unavailable")
+
+    captured: list[str] = []
+    monkeypatch.setattr(external_router, "_graph_store", broken_graph)
+    monkeypatch.setattr(external_router, "capture_handled", lambda exc, *, context: captured.append(context))
+
+    external_router._reembed_after_meaning_edit(user, card_id, "default")
+
+    assert captured == ["external_api.judge_requeue"]
