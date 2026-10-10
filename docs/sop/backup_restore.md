@@ -159,18 +159,24 @@ ls -la "$DATA/users/" | head
 
 守門實作：`ops/lib/devops_run_guard.sh`（`run`／`container-run`／`migrate-run` 共用）。受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app` 本身、home／root 目錄（`~`、`$HOME`、`/home/ubuntu`、`/Users/<x>`、`/root`）、docker volumes、`knowledge_graph_api`、`knowledge-graph-api_data`。
 
-以下合法維運指令經 `run`／`container-run` 會被擋（以 `devops_run_is_blocked` 實測）：
+下表為 §2.5 維運指令經守門的實測結果；`ops/tests/test_docs_lint.sh` 逐列以 `devops_run_is_blocked` 核對，表與守門不一致即紅燈。
 
-| 指令 | 結果 | 原因 |
-|---|---|---|
-| `find . -name __pycache__ -exec rm -rf {} +` | 擋 | `find -exec rm` 落在受保護根（cwd 為 home 或 /app） |
-| `rm -rf /app/.venv`、`rm -rf ./data/cache`（container-run） | 擋 | 受保護路徑（`/app`、`/app/data` 為 production volume） |
-| `rm -rf kg-data/tmp` | 擋 | 受保護名稱 |
-| `sqlite3 /app/data/x.db "VACUUM INTO '…'"` | 擋 | 含受保護路徑的 sqlite 寫入 |
+| 子命令 | 指令 | 結果 | 原因 |
+|---|---|---|---|
+| run | `find . -name __pycache__ -exec rm -rf {} +` | 擋 | `find -exec rm` 落在受保護根（cwd 為 home） |
+| container-run | `rm -rf /app/.venv` | 擋 | 受保護路徑（`/app` 為 production 容器樹） |
+| container-run | `rm -rf ./data/cache` | 擋 | cwd 為 `/app` 時 `./data` 即 production volume |
+| run | `rm -rf kg-data/tmp` | 擋 | 受保護名稱 `kg-data` |
+| run | `sqlite3 /app/data/x.db "VACUUM INTO '/tmp/y'"` | 擋 | 含受保護路徑的 sqlite 寫入 |
+| run | `rm -rf ~/kg-prod/backend/.venv` | 擋 | 受保護名稱 `kg-prod` |
+| run | `cd ~/kg-prod/backend && cp .env.example .env` | 擋 | cd 進受保護名稱後，相對路徑即落在其中 |
+| run | `cp .env.example .env` | 允許 | 目標在一般工作目錄，不落在受保護名稱 |
+| run | `rm -rf .venv` | 允許 | 同上 |
+| run | `rm -rf __pycache__` | 允許 | 同上 |
 
-同樣的相對路徑在一般工作目錄的 `rm -rf .venv`、`rm -rf __pycache__`、`cp .env.example .env` 則**不被擋**；守門依「目標路徑是否落在受保護名稱」判定，不依動作種類。
+守門依「目標路徑是否落在受保護名稱」判定，不依動作種類；同一動作在一般工作目錄放行、在受保護路徑下擋下。
 
-被擋的維運不得改以 ssh 或手動 `mv`／`rm` 繞過。需要時：(a) 在 standby 上由人類依本 SOP 手動處理並留紀錄；或 (b) 把該操作寫成具名子命令、附測試後再經守門流程。
+agent 與 `run`／`container-run`／`migrate-run` 守門路徑不得以 ssh 或手動 `mv`／`rm` 繞過。§2.5 由人類經 direct ssh 手動執行是唯一允許的例外，須留紀錄。若要讓被擋的操作能在守門流程內執行，需把它寫成具名子命令、附測試後由 owner 決策（尚未存在）。
 
 ### 2.6 修正 owner
 

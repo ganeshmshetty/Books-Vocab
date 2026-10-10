@@ -166,4 +166,36 @@ if grep -nE 'ssh [^#]*(tar +-?x|mv +[^ ]*kg-data)' docs/sop/backup_restore.md; t
   exit 1
 fi
 
+# #2923 (CR P3): the §2.5a table must list the two maintenance commands the guard blocks
+# that the restore path actually hits, and every 擋／允許 row must agree with the live guard.
+require_grep 'rm -rf ~/kg-prod/backend/.venv' docs/sop/backup_restore.md
+require_grep 'cd ~/kg-prod/backend && cp .env.example .env' docs/sop/backup_restore.md
+# shellcheck source=../lib/devops_run_guard.sh
+source ops/lib/devops_run_guard.sh
+awk '/^#### 2\.5a /{f=1;next} /^#### /{f=0} f && /^\|/ && !/^\|---/' docs/sop/backup_restore.md >"$TMP/guard_table.txt"
+guard_rows=0
+guard_mismatch=0
+while IFS='|' read -r _ sub cmd want _; do
+  sub="$(printf '%s' "$sub" | sed -E 's/^ +| +$//g')"
+  cmd="$(printf '%s' "$cmd" | sed -E 's/^ +| +$//g; s/^`//; s/`$//')"
+  want="$(printf '%s' "$want" | sed -E 's/^ +| +$//g')"
+  case "$want" in
+    擋|允許) ;;
+    *) continue ;;
+  esac
+  guard_rows=$((guard_rows + 1))
+  if devops_run_is_blocked "$sub" "$cmd"; then got="擋"; else got="允許"; fi
+  if [ "$got" != "$want" ]; then
+    echo "backup_restore.md §2.5a row disagrees with devops_run_is_blocked: [$sub] $cmd (doc=$want, guard=$got)" >&2
+    guard_mismatch=$((guard_mismatch + 1))
+  fi
+done <"$TMP/guard_table.txt"
+if [ "$guard_rows" -lt 10 ]; then
+  echo "backup_restore.md §2.5a table has $guard_rows 擋/允許 rows, expected >=10" >&2
+  exit 1
+fi
+if [ "$guard_mismatch" -ne 0 ]; then
+  exit 1
+fi
+
 echo "docs-lint tests: PASS"
