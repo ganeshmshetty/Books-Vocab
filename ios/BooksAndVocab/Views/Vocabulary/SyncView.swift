@@ -122,7 +122,9 @@ struct SyncView: View {
         defer { pendingDeleteID = nil }
         guard let id = pendingDeleteID,
               let entry = pendingEntries.first(where: { $0.id == id }) else { return }
-        modelContext.delete(entry)
+        // Routed through the single delete entry point: an add whose upload is in
+        // flight must be queued as a server delete, not hard-deleted (#2733).
+        entry.deleteLocally(in: modelContext)
         modelContext.safeSaveWithToast(toastCoordinator)
     }
 
