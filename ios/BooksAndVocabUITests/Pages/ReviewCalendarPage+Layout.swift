@@ -1,17 +1,22 @@
 import XCTest
 
 extension ReviewCalendarPage {
-    /// Frames of every addressable day cell in the month grid, including the
+    /// Every addressable day cell button in the month grid, including the
     /// selected one (which carries `reviewCalendar.selectedDay` instead of the
     /// per-day identifier). Blank leading cells are not addressable and are
     /// excluded.
-    func dayCellFrames() -> [CGRect] {
+    fileprivate func dayCellButtons() -> XCUIElementQuery {
         let predicate = NSPredicate(
             format: "identifier BEGINSWITH %@ OR identifier == %@",
             "reviewCalendar.day.",
             "reviewCalendar.selectedDay"
         )
-        let query = app.buttons.matching(predicate)
+        return app.buttons.matching(predicate)
+    }
+
+    /// Frames of every addressable day cell in the month grid.
+    func dayCellFrames() -> [CGRect] {
+        let query = dayCellButtons()
         return (0 ..< query.count).map { query.element(boundBy: $0).frame }
     }
 
@@ -31,12 +36,7 @@ extension ReviewCalendarPage {
     /// Each addressable day cell paired with the frames of its static-text
     /// descendants (the day number), for containment checks.
     func dayCellContents() -> [(cell: CGRect, texts: [CGRect])] {
-        let predicate = NSPredicate(
-            format: "identifier BEGINSWITH %@ OR identifier == %@",
-            "reviewCalendar.day.",
-            "reviewCalendar.selectedDay"
-        )
-        let query = app.buttons.matching(predicate)
+        let query = dayCellButtons()
         return (0 ..< query.count).map { index in
             let button = query.element(boundBy: index)
             let texts = button.staticTexts.allElementsBoundByIndex.map(\.frame)

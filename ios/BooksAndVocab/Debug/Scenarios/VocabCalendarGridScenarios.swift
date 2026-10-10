@@ -143,9 +143,17 @@ private struct VocabCalendarGridScene: View {
 
     /// Deterministic month (2024-03) so snapshots are stable across runs.
     private static func fixedMonth() -> Date {
-        month(year: 2024, month: 3)
+        var comps = DateComponents(calendar: calendar, timeZone: calendar.timeZone)
+        comps.year = 2024
+        comps.month = 3
+        comps.day = 1
+        guard let month = calendar.date(from: comps) else {
+            preconditionFailure("VocabCalendarGridScenarios requires a valid fixed month")
+        }
+        return month
     }
 
+    /// Parameterized variant of `fixedMonth()` for the leading-blank scenarios.
     private static func month(year: Int, month: Int) -> Date {
         var comps = DateComponents(calendar: calendar, timeZone: calendar.timeZone)
         comps.year = year
