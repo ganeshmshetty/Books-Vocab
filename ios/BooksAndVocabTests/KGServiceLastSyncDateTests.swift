@@ -95,7 +95,7 @@ struct KGServiceLastSyncDateTests {
         service.lastSyncDate = Date(timeIntervalSince1970: 1_800_000_000)
 
         await LocalDataCleanerService().clearLocalData(
-            container: try makeEmptyContainer(), reason: "account_switch"
+            container: try makeEmptyContainer(), reason: "account_switch", deletedAccountID: nil
         )
         // The observer hops to the main actor; let it run.
         for _ in 0..<50 where service.lastSyncDate != nil { try await Task.sleep(for: .milliseconds(20)) }
