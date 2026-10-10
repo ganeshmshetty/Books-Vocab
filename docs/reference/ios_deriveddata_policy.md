@@ -195,7 +195,7 @@ start 的 `ps` 探測受報告期限（`--time-budget-seconds`）約束：每次
 它不擋：沒有活著的 writer、bytes 照樣計入 quota，擋下只會讓任一崩潰的 session 癱瘓所有 iOS lane。
 兩者都完整計入 per-lane／aggregate bytes 與 quota。lock 理由不符（他人持有、無理由、名稱指向別的目錄）、
 未上鎖且目錄名非 harness 形狀（例如手建的 `scratch`；dirty 時另觸發 dirty blocker）、
-lock 狀態未觀測到、或不在該 root 直屬的 checkout 無法歸屬，仍是 unregistered hard block。
+lock 狀態未觀測到、或不在該 root 直屬的 checkout 無法歸屬，仍歸為 unregistered，但不再因此 hard block：只以 `unregistered-physical-worktree:<path>` 警告並附 remedy（issue #2905）。
 被 guard 擋下時（暫時性空間／預算 exit 75；`lane-usage-report-blocked` 與 manual-review 這類結構性擋下為 **exit 77、retryable=no**，見 `docs/sop/ios.md` 的 exit code 契約），`kg.ios.disk-budget.v1` 輸出會附 `blockingReasons=`／`unregisteredWorktrees=`／
 `dirtyWorktrees=`；`lane-usage-report-*` 的擋下會先 inline 重跑一次 guard tick（`KG_IOS_DISK_GUARD_AUTO_REFRESH=0` 可關），
 也可手動 `./ops/ios_ops.sh guard [--refresh]` 立即重新評估。
@@ -215,7 +215,7 @@ linked worktree 直接跑 `./ops/kg_disk_guard.sh` 也不會把該 lane 當 work
   --output "$HOME/Library/Application Support/KG/lane_disk_usage.json"
 ```
 
-`--supervision-worktree` 不接受 wildcard，也沒有預設排除；未列出的 physical worktree 一律仍算 delivery／unknown。報告的 `exclusions` 與 guard state 的 `lane_usage_exclusions` 都保留 caller requested／applied path，且 registered active／terminal path 或 canonical main 不可藉此隱藏。unregistered、unknown、malformed、branch identity mismatch、registry unreadable、measurement failure、per-lane／aggregate budget breach，以及非 `active` registered lane 的 dirty worktree（`published`、`cleanup_pending`、`merged`、`abandoned`）仍是 hard block。唯一例外是 exact registered `active` implementation lane 的 dirty worktree：它是正常 in-progress 狀態，必須保留 dirty observation 與完整 bytes 歸戶，並繼續接受其他 policy gate；在沒有其他 blocker 時 verdict 可為 `pass`／`warning`。
+`--supervision-worktree` 不接受 wildcard，也沒有預設排除；未列出的 physical worktree 一律仍算 delivery／unknown。報告的 `exclusions` 與 guard state 的 `lane_usage_exclusions` 都保留 caller requested／applied path，且 registered active／terminal path 或 canonical main 不可藉此隱藏。unknown、malformed、branch identity mismatch、registry unreadable、measurement failure、per-lane／aggregate budget breach，以及非 `active` registered lane 的 dirty worktree（`published`、`cleanup_pending`、`merged`、`abandoned`）仍是 hard block。unregistered physical worktree 不是 hard block（issue #2905）：它的 bytes 歸入自己的 usage line，只有超出 per-lane／aggregate budget 才以 `lane-budget-exceeded:<path>` block；否則 `verdict=warning`，報告的 `warning_reasons` 與 `unregistered_physical_remedies` 列出 path 與一行 remedy。唯一例外是 exact registered `active` implementation lane 的 dirty worktree：它是正常 in-progress 狀態，必須保留 dirty observation 與完整 bytes 歸戶，並繼續接受其他 policy gate；在沒有其他 blocker 時 verdict 可為 `pass`／`warning`。
 
 Supervision checkout 的 bytes 會以 `accounting.supervision_worktree_*` 與
 `lane_attribution.supervision_worktree_*` 另列；`managed_allocated_bytes` 仍只代表
@@ -232,7 +232,7 @@ measurement evidence；dirty、unknown、超出 measurement budget 或其他未�
   --output "$HOME/Library/Application Support/KG/lane_disk_usage.json"
 ```
 
-`ops/kg_disk_guard.sh` 每個 tick 同步更新這個小型狀態檔；它不建立 append-only log，也不在 active、unknown 或 terminal residue worktree 上做破壞性清理。可用重複的 `--supervision-worktree <exact-path>` 將 caller 明確提供的 supervision checkout 傳給 attribution scan；這個排除只影響 disk quota accounting，不改 registry lifecycle 的 fail-closed 規則。預設每條 physical lane 上限 2 GiB、所有未排除 physical lanes 合計上限 8 GiB，可用 `KG_DISK_GUARD_LANE_BUDGET_GIB` 與 `KG_DISK_GUARD_LANE_TOTAL_BUDGET_GIB` 明確調整。超限、無法量測、registry 不可讀、真正 unknown／dirty／unregistered physical worktree，以及非 `active` registered dirty lane 時，報告為 `verdict=block`，且 guard state 會保留 `lane_usage_verdict=block` 與 `lane_usage_rc=75` 供 admission／writer fail-closed；registered active dirty implementation lane 仍完整計入 per-lane／aggregate bytes，只有 budget／identity／measurement 等其他 gate 失敗才 block。只有既有 cache guard 在確認無 consumer 且持有 build lock 後才可自動淘汰可重建產物。missing registered path 本身若沒有 physical bytes 則為 `verdict=warning`、guard lane exit 0，讓可安全計量的新 lane 不被歷史紀錄誤擋。
+`ops/kg_disk_guard.sh` 每個 tick 同步更新這個小型狀態檔；它不建立 append-only log，也不在 active、unknown 或 terminal residue worktree 上做破壞性清理。可用重複的 `--supervision-worktree <exact-path>` 將 caller 明確提供的 supervision checkout 傳給 attribution scan；這個排除只影響 disk quota accounting，不改 registry lifecycle 的 fail-closed 規則。預設每條 physical lane 上限 2 GiB、所有未排除 physical lanes 合計上限 8 GiB，可用 `KG_DISK_GUARD_LANE_BUDGET_GIB` 與 `KG_DISK_GUARD_LANE_TOTAL_BUDGET_GIB` 明確調整。超限、無法量測、registry 不可讀、真正 unknown physical worktree，以及非 `active` registered dirty lane 時，報告為 `verdict=block`，且 guard state 會保留 `lane_usage_verdict=block` 與 `lane_usage_rc=75` 供 admission／writer fail-closed；registered active dirty implementation lane 仍完整計入 per-lane／aggregate bytes，只有 budget／identity／measurement 等其他 gate 失敗才 block。只有既有 cache guard 在確認無 consumer 且持有 build lock 後才可自動淘汰可重建產物。missing registered path 本身若沒有 physical bytes 則為 `verdict=warning`、guard lane exit 0，讓可安全計量的新 lane 不被歷史紀錄誤擋。
 
 歸戶掃描本身也有固定時間上限：`kg_disk_guard.sh` 預設以 240 秒呼叫 `disk_usage.py --time-budget-seconds 240`，任何 caller 提供的值都會被硬性封頂在 240 秒（只能透過 `KG_DISK_GUARD_LANE_USAGE_BUDGET_SECONDS` 調整，無效值回到 240）。期限到達後掃描仍會原子寫出報告，保留已量到的 partial bytes，並在 `measurement.budget_exhausted=true`、各受影響 lane 的 `measurement_complete=false` 與 `policy.verdict=block` 中明確標示；partial 或 timeout 絕不會被當成零 bytes，也不會授權清理或新的 writer。
 

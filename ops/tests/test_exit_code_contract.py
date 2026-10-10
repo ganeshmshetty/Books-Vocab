@@ -142,7 +142,7 @@ def test_in_lock_preflight_callers_propagate_the_preflight_exit():
                 "action": "manual-review-lane-attribution",
                 "lane_usage_verdict": "block",
             },
-            ["unregistered-physical-worktree"],
+            ["dirty-physical-worktree"],
             77,
             "disk-guard-structural-block",
         ),
