@@ -29,7 +29,7 @@ struct AuthProviderFailureTests {
     }
 
     private final class NoopCleaner: LocalDataClearing {
-        func clearLocalData(container: ModelContainer, reason: String) async {}
+        func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {}
     }
 
     @Test func providerFailureIsSurfacedForLoginSheet() {

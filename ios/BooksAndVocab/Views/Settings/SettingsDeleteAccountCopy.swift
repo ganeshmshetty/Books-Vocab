@@ -8,7 +8,7 @@ enum SettingsDeleteAccountCopy {
     static var cancelTitle: String { L10n.string("取消") }
     static var heroTitle: String { L10n.string("此操作不可復原") }
     static var heroDescription: String {
-        L10n.string("刪除後將立即移除你的帳號、雲端生詞、訂閱記錄。請仔細確認下列項目後才能繼續。")
+        L10n.string("刪除後將立即移除你的帳號、雲端生詞、閱讀進度、訂閱記錄。請仔細確認下列項目後才能繼續。")
     }
     static var consequencesTitle: String { L10n.string("將被永久刪除的資料") }
     static var acknowledgementsTitle: String { L10n.string("請確認你已知悉") }
@@ -19,6 +19,7 @@ enum SettingsDeleteAccountCopy {
             ("person.crop.circle", L10n.string("帳號資訊與登入記錄")),
             ("books.vertical", L10n.string("雲端生詞與筆記本")),
             ("point.3.connected.trianglepath.dotted", L10n.string("知識圖譜與關聯")),
+            ("book.closed", L10n.string("閱讀進度與書架")),
             ("checkmark.seal", L10n.string("訂閱記錄（App Store 訂閱請另行至設定取消）"))
         ]
     }

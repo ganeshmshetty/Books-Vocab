@@ -61,7 +61,7 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 - Notebook 資料模型來自 SwiftData，**不**放 coordinator
 - `NotebookEditSheet` 的編輯草稿狀態為 sheet-local，submit 才走 coordinator 持久化
 - Notebook ID 解析必經 `resolveNotebookId` 單一入口（防 orphan）
-- 帳號偏好與 active notebook 游標仍沿用既有 `UserDefaults` / iCloud KVS / server projection API；登入帳號存在時，`ReviewSettingsStore`、`TranslationLanguage` 與 `ActiveNotebookStore` 的 durable keys 以 account namespace 隔離（account identifier 不直接進 key）。`AuthManager` 在登入、冷啟動與恢復 session 邊界啟用 namespace；切換或無帳號時先暫停舊 projection，再由 `SettingsCoordinator` 以 account generation 與 user identity 驗證非同步 response。延遲的舊帳號 response 不得套用到新帳號。第一次啟用 authenticated account 時，各 preference family 只將既有 legacy keys 明確遷移一次；後續帳號不重複繼承 legacy state。直接使用 guest/preview API 的 caller 仍可明確選擇 legacy namespace，但 app 的 logged-out/demo 邊界維持 suspended projection。
+- 帳號偏好與 active notebook 游標仍沿用既有 `UserDefaults` / iCloud KVS / server projection API；登入帳號存在時，`ReviewSettingsStore`、`TranslationLanguage` 與 `ActiveNotebookStore` 的 durable keys 以 account namespace 隔離（account identifier 不直接進 key）。`AuthManager` 在登入、冷啟動與恢復 session 邊界啟用 namespace；切換或無帳號時先暫停舊 projection，再由 `SettingsCoordinator` 以 account generation 與 user identity 驗證非同步 response。延遲的舊帳號 response 不得套用到新帳號。第一次啟用 authenticated account 時，各 preference family 只將既有 legacy keys 明確遷移一次；後續帳號不重複繼承 legacy state。直接使用 guest/preview API 的 caller 仍可明確選擇 legacy namespace，但 app 的 logged-out/demo 邊界維持 suspended projection。delete_account 只清除「被刪除帳號」的 `kg.account.<digest>.*` 偏好（本機 `UserDefaults` 與 iCloud KVS），其他帳號不受影響；legacy-migration marker 保留，防止之後的帳號重新領養 raw 值。sign-out 僅移除已被領養的 pre-account raw layout。
 - Active notebook 的 raw key 僅作當前帳號的 UI compatibility projection；notebook/card ownership、backend schema/API 與既有產品資料模型邊界不因 account namespace 改變。
 
 ## 共用依賴
