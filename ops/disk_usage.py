@@ -753,6 +753,8 @@ def inspect_xctest_devices(
         try:
             stat_result = entry.stat(follow_symlinks=False)
         except OSError as exc:
+            if _removed_during_scan(entry_path):
+                continue
             errors.append(f"{entry.name}:stat:{exc.__class__.__name__}")
             measurement_complete = False
             continue
