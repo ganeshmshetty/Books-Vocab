@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import copy
 import errno
 import hashlib
 import json
@@ -658,6 +659,15 @@ def _reclaim_xctest_device(candidate: dict[str, Any]) -> dict[str, Any]:
     return {"status": "reclaimed", "command": "xcrun simctl delete"}
 
 
+def _removed_during_scan(entry_path: Path) -> bool:
+    # A vanished device no longer occupies storage; any other OSError fails closed.
+    try:
+        os.stat(entry_path, follow_symlinks=False)
+    except OSError as exc:
+        return isinstance(exc, (FileNotFoundError, NotADirectoryError))
+    return False
+
+
 def inspect_xctest_devices(
     root: str | Path | None = None,
     *,
@@ -743,6 +753,8 @@ def inspect_xctest_devices(
         try:
             stat_result = entry.stat(follow_symlinks=False)
         except OSError as exc:
+            if _removed_during_scan(entry_path):
+                continue
             errors.append(f"{entry.name}:stat:{exc.__class__.__name__}")
             measurement_complete = False
             continue
@@ -753,7 +765,7 @@ def inspect_xctest_devices(
             errors.append(f"unexpected-root-entry:{entry.name}")
             measurement_complete = False
             continue
-        base["device_count"] += 1
+        observation_before = copy.deepcopy(physical_observation)
         measured = measure_tree(
             entry_path,
             deadline=deadline,
@@ -761,6 +773,13 @@ def inspect_xctest_devices(
                 physical_observation if _supports_physical_extents() else None
             ),
         )
+        metadata, metadata_error = _read_xctest_device_plist(
+            entry_path / "device.plist", entry.name
+        )
+        if _removed_during_scan(entry_path):
+            physical_observation.update(observation_before)
+            continue
+        base["device_count"] += 1
         base["logical_bytes"] += int(measured["logical_bytes"])
         base["allocated_bytes"] += int(measured["allocated_bytes"])
         base["files"] += int(measured["files"])
@@ -770,9 +789,6 @@ def inspect_xctest_devices(
                 f"{entry.name}:{error}"
                 for error in measured.get("errors", ["measurement-incomplete"])
             )
-        metadata, metadata_error = _read_xctest_device_plist(
-            entry_path / "device.plist", entry.name
-        )
         if metadata_error:
             errors.append(f"{entry.name}:{metadata_error}")
             base["metadata_complete"] = False
