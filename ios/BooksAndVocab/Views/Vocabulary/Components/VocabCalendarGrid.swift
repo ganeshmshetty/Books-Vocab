@@ -81,7 +81,7 @@ struct VocabCalendarGrid: View {
                         .font(appSkin.typography.monoLabel)
                         .foregroundStyle(appSkin.palette.quaternaryText)
                         .frame(maxWidth: .infinity)
-                        .accessibilityIdentifier("reviewCalendar.weekday.\(index)")
+                        .accessibilityIdentifier(ReviewCalendarAccessibility.weekday(index))
                 }
             }
 

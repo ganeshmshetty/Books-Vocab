@@ -51,25 +51,11 @@ enum VocabCalendarGridScenarios {
             Scenario("Current month with today", layout: .fillH) {
                 VocabCalendarGridScene(fixture: .currentMonth)
             }
-            // 前導空白 1–6 各一：2026 年 9 月起始週一位移 1，4 月 2，10 月 3，5 月 4，8 月 5，2 月 6。
-            // 3/8/9 有活動，驗證 row-1 空白格之後的日格仍落在正確欄位（#2861）。
-            Scenario("Leading blanks 1 (2026-09)", layout: .fillH) {
-                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 9, days: [3, 8, 9]))
-            }
-            Scenario("Leading blanks 2 (2026-04)", layout: .fillH) {
-                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 4, days: [3, 8, 9]))
-            }
-            Scenario("Leading blanks 3 (2026-10)", layout: .fillH) {
+            // 前導空白 3 的 2026-10（#2861 原始範圍）：3/8/9 有活動，驗證 row-1 空白格之後的日格仍落在正確欄位。
+            // 注意：固定 projection clock 為 2026-06-01，10 月整月在未來，日格會 disabled 並 opacity 0.45，
+            // 此場景只用於幾何結構檢視，不代表一般日格外觀；六種 offset 的對齊由 UITest 逐月走訪驗證。
+            Scenario("Leading blanks (2026-10)", layout: .fillH) {
                 VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 10, days: [3, 8, 9]))
-            }
-            Scenario("Leading blanks 4 (2026-05)", layout: .fillH) {
-                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 5, days: [3, 8, 9]))
-            }
-            Scenario("Leading blanks 5 (2026-08)", layout: .fillH) {
-                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 8, days: [3, 8, 9]))
-            }
-            Scenario("Leading blanks 6 (2026-02)", layout: .fillH) {
-                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 2, days: [3, 8, 9]))
             }
         }
     }

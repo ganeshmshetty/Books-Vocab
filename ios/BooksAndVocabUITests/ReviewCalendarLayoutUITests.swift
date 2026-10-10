@@ -49,7 +49,7 @@ final class ReviewCalendarLayoutUITests: UITestCase {
     /// (that is `testCalendarDayCellsShareOneSquareFrame`).
     @MainActor
     func testCalendarDayCellsAlignUnderWeekdayHeaders() throws {
-        try assertDayCellsAlignUnderWeekdayHeaders(extraArgs: [])
+        try assertDayCellsAlignUnderWeekdayHeaders(openReviewCalendar(extraArgs: []), context: "opening month")
     }
 
     /// Regression guard (see above) at the largest accessibility category,
@@ -57,10 +57,10 @@ final class ReviewCalendarLayoutUITests: UITestCase {
     /// must stay inside the square cell frame.
     @MainActor
     func testCalendarDayCellsAlignUnderWeekdayHeadersAtAccessibility3() throws {
-        try assertDayCellsAlignUnderWeekdayHeaders(extraArgs: [
+        try assertDayCellsAlignUnderWeekdayHeaders(openReviewCalendar(extraArgs: [
             "-UIPreferredContentSizeCategoryName",
             "UICTContentSizeCategoryAccessibilityXXXL",
-        ])
+        ]), context: "opening month at AX3")
     }
 
     @MainActor
@@ -88,10 +88,31 @@ final class ReviewCalendarLayoutUITests: UITestCase {
         XCTAssertGreaterThanOrEqual(textsSeen, 28, "day numbers must be addressable inside cells (found \(textsSeen))")
     }
 
+    /// The leading-blank count (Monday-first offset 0...6) is the only thing
+    /// that changes the grid's column phase, and the opening month fixes just
+    /// one of those seven. Walk back month by month, checking each rendered
+    /// grid, until every offset has been observed.
     @MainActor
-    private func assertDayCellsAlignUnderWeekdayHeaders(extraArgs: [String]) throws {
-        let calendar = try openReviewCalendar(extraArgs: extraArgs)
+    func testCalendarLeadingBlankOffsetsAlignForEveryMonthPhase() throws {
+        let calendar = try openReviewCalendar(extraArgs: [])
+        var observedOffsets = Set<Int>()
+        for step in 0 ..< 12 {
+            let offset = try XCTUnwrap(calendar.leadingBlankOffset(), "first day cell must be addressable at step \(step)")
+            observedOffsets.insert(offset)
+            assertDayCellsAlignUnderWeekdayHeaders(calendar, context: "month step \(step) offset \(offset)")
+            if observedOffsets.count == 7 { break }
 
+            let before = calendar.monthHeader.label
+            _ = calendar.previousMonthButton.tapWhenReady()
+            let changed = NSPredicate(format: "label != %@", before)
+            let waiter = XCTNSPredicateExpectation(predicate: changed, object: calendar.monthHeader)
+            XCTAssertEqual(XCTWaiter().wait(for: [waiter], timeout: 5), .completed, "month header must advance from \(before)")
+        }
+        XCTAssertEqual(observedOffsets, Set(0 ... 6), "walked months must cover every leading-blank offset")
+    }
+
+    @MainActor
+    private func assertDayCellsAlignUnderWeekdayHeaders(_ calendar: ReviewCalendarPage, context: String) {
         let headers = calendar.weekdayHeaderFrames()
         XCTAssertEqual(headers.count, 7, "weekday header must expose all seven columns (found \(headers.count))")
         let columnCenters = headers.map(\.midX)
@@ -101,13 +122,13 @@ final class ReviewCalendarLayoutUITests: UITestCase {
 
         var distinctCenters: [CGFloat] = []
         for (index, frame) in frames.enumerated() {
-            let nearest = try XCTUnwrap(
-                columnCenters.min(by: { abs($0 - frame.midX) < abs($1 - frame.midX) }),
-                "no weekday column centers available"
-            )
+            guard let nearest = columnCenters.min(by: { abs($0 - frame.midX) < abs($1 - frame.midX) }) else {
+                XCTFail("no weekday column centers available (\(context))")
+                return
+            }
             XCTAssertEqual(
                 frame.midX, nearest, accuracy: tolerance,
-                "day cell \(index) midX must sit under a weekday column (frame=\(frame), columns=\(columnCenters))"
+                "day cell \(index) midX must sit under a weekday column (\(context), frame=\(frame), columns=\(columnCenters))"
             )
             if !distinctCenters.contains(where: { abs($0 - frame.midX) <= tolerance }) {
                 distinctCenters.append(frame.midX)
@@ -115,7 +136,7 @@ final class ReviewCalendarLayoutUITests: UITestCase {
         }
         XCTAssertEqual(
             distinctCenters.count, 7,
-            "day cells must occupy exactly seven columns (distinct midX=\(distinctCenters.sorted()))"
+            "day cells must occupy exactly seven columns (\(context), distinct midX=\(distinctCenters.sorted()))"
         )
 
         // Cells in the same row must not overlap at larger text sizes.
@@ -124,7 +145,7 @@ final class ReviewCalendarLayoutUITests: UITestCase {
                 let intersection = frame.intersection(other)
                 XCTAssertTrue(
                     intersection.isNull || intersection.width * intersection.height <= tolerance,
-                    "day cells \(index) and \(otherIndex) overlap (frames=\(frame), \(other))"
+                    "day cells \(index) and \(otherIndex) overlap (\(context), frames=\(frame), \(other))"
                 )
             }
         }

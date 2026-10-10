@@ -188,6 +188,11 @@ enum ReviewCalendarAccessibility {
     static func day(_ key: String) -> String {
         "reviewCalendar.day.\(key)"
     }
+
+    /// Monday-first weekday header column, index 0 = Monday.
+    static func weekday(_ index: Int) -> String {
+        "reviewCalendar.weekday.\(index)"
+    }
 }
 
 enum ReviewCalendarPresentation {

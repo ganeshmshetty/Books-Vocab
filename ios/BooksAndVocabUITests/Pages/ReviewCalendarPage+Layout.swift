@@ -26,9 +26,27 @@ extension ReviewCalendarPage {
     func weekdayHeaderFrames() -> [CGRect] {
         (0 ..< 7).compactMap { index in
             let matches = app.descendants(matching: .any)
-                .matching(identifier: "reviewCalendar.weekday.\(index)")
+                .matching(identifier: weekdayIdentifier(index))
             return matches.count == 1 ? matches.element(boundBy: 0).frame : nil
         }
+    }
+
+    /// Number of leading blank cells (Monday-first offset 0...6) in the
+    /// displayed month: the column of day 1, which is always in the top row.
+    /// Nil when no day cell is addressable.
+    func leadingBlankOffset() -> Int? {
+        let frames = dayCellFrames()
+        let headers = weekdayHeaderFrames()
+        guard headers.count == 7,
+              let firstDay = frames.min(by: { $0.minY == $1.minY ? $0.minX < $1.minX : $0.minY < $1.minY })
+        else { return nil }
+        return headers.indices.min(by: { abs(headers[$0].midX - firstDay.midX) < abs(headers[$1].midX - firstDay.midX) })
+    }
+
+    /// Mirrors `ReviewCalendarAccessibility.weekday(_:)` in the app target,
+    /// which the UI test target cannot import.
+    private func weekdayIdentifier(_ index: Int) -> String {
+        "reviewCalendar.weekday.\(index)"
     }
 }
 
