@@ -26,3 +26,21 @@ extension ReviewCalendarPage {
         }
     }
 }
+
+extension ReviewCalendarPage {
+    /// Each addressable day cell paired with the frames of its static-text
+    /// descendants (the day number), for containment checks.
+    func dayCellContents() -> [(cell: CGRect, texts: [CGRect])] {
+        let predicate = NSPredicate(
+            format: "identifier BEGINSWITH %@ OR identifier == %@",
+            "reviewCalendar.day.",
+            "reviewCalendar.selectedDay"
+        )
+        let query = app.buttons.matching(predicate)
+        return (0 ..< query.count).map { index in
+            let button = query.element(boundBy: index)
+            let texts = button.staticTexts.allElementsBoundByIndex.map(\.frame)
+            return (button.frame, texts)
+        }
+    }
+}

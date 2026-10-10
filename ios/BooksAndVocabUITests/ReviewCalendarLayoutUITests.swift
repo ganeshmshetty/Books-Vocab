@@ -44,20 +44,48 @@ final class ReviewCalendarLayoutUITests: UITestCase {
         }
     }
 
+    /// Regression guard only: flush cells keep their column-centre midX even
+    /// before the #2861 fix, so this is not the discriminating test for it
+    /// (that is `testCalendarDayCellsShareOneSquareFrame`).
     @MainActor
     func testCalendarDayCellsAlignUnderWeekdayHeaders() throws {
         try assertDayCellsAlignUnderWeekdayHeaders(extraArgs: [])
     }
 
-    /// Accessibility3 text sizes are where the leading-blank row and the
-    /// content-driven height both break first, so the same contract runs
-    /// at the largest accessibility category.
+    /// Regression guard (see above) at the largest accessibility category,
+    /// plus content containment: the day number and its 5pt activity dot
+    /// must stay inside the square cell frame.
     @MainActor
     func testCalendarDayCellsAlignUnderWeekdayHeadersAtAccessibility3() throws {
         try assertDayCellsAlignUnderWeekdayHeaders(extraArgs: [
             "-UIPreferredContentSizeCategoryName",
             "UICTContentSizeCategoryAccessibilityXXXL",
         ])
+    }
+
+    @MainActor
+    func testCalendarDayContentFitsCellAtAccessibility3() throws {
+        let calendar = try openReviewCalendar(extraArgs: [
+            "-UIPreferredContentSizeCategoryName",
+            "UICTContentSizeCategoryAccessibilityXXXL",
+        ])
+        let contents = calendar.dayCellContents()
+        XCTAssertGreaterThanOrEqual(contents.count, 28, "calendar must expose every day cell (found \(contents.count))")
+        // Dot is 5pt below a 1pt gap under the number; it is not addressable, so bound it by the text.
+        let dotExtent: CGFloat = 6
+        var textsSeen = 0
+        for (index, content) in contents.enumerated() {
+            let bounds = content.cell.insetBy(dx: -tolerance, dy: -tolerance)
+            for text in content.texts {
+                textsSeen += 1
+                XCTAssertTrue(bounds.contains(text), "day number of cell \(index) overflows (text=\(text), cell=\(content.cell))")
+                XCTAssertLessThanOrEqual(
+                    text.maxY + dotExtent, bounds.maxY,
+                    "activity dot of cell \(index) would overflow the cell (text=\(text), cell=\(content.cell))"
+                )
+            }
+        }
+        XCTAssertGreaterThanOrEqual(textsSeen, 28, "day numbers must be addressable inside cells (found \(textsSeen))")
     }
 
     @MainActor

@@ -119,8 +119,6 @@ struct VocabCalendarGrid: View {
                     VStack(spacing: 1) {
                         Text("\(cell.dayNumber)")
                             .font(appSkin.typography.caption)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
                             .foregroundStyle(
                                 cell.isToday ? AppColors.chartHighlight :
                                 isSelected ? appSkin.palette.primaryText :
