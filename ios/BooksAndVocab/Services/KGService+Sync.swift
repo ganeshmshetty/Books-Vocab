@@ -519,7 +519,7 @@ extension KGService {
 
     /// 處理單一 backgroundSync phase 的並行結果，統一處理 401 / log / Sentry /
     /// CancellationError 過濾。回傳該 phase 的 failure label + UI message；若遇到 401
-    /// 則已內部處理 handleUnauthorized + lastBackgroundSyncError 並回傳 nil
+    /// 則登出已由真實 401 來源完成（#2806），此處只設 lastBackgroundSyncError 並回傳 nil
     /// 以通知 caller 直接 return。
     /// internal（原本 private）純粹是為了讓測試看得到。這三個型別 + `processSyncPhase`
     /// 是 backgroundSync 唯一的失敗分類邏輯——401 短路、取消不算失敗、部分失敗聚合——
@@ -564,7 +564,7 @@ extension KGService {
                 continue
             }
             if error is KGError, case KGError.unauthorized = error {
-                await handleUnauthorized(modelContainer: container, reason: "backgroundSync_401")
+                // 登出已在真實 401 來源（authenticatedRequest／authedResponseData）完成，這裡不重複登出。
                 lastBackgroundSyncError = L10n.string("登入已過期")
                 return nil
             }
@@ -802,18 +802,11 @@ extension KGService {
         // 沒有**有效** session 就不抓目錄。以前這條腿排在 vocab pull 的 401 早退
         // 之後，等於被那個 return 順手擋掉；現在它跑在最前面，就得自己擋。
         //
-        // **過期也要擋，不能只擋 nil。** 只檢查 `token != nil` 會被過期 JWT 穿過去，
-        // 而下游 `PodcastSyncService.optionallyAuthedData` 會呼 `currentAuthToken()`
-        // ——那支對過期 token 會**觸發 logout 與本地資料清除**，而且 `try?` 會把拋出
-        // 吞掉、請求照發。後果是三重的：(1) 那趟注定白跑的 GET 還是發了；(2) logout
-        // 從 t≈0 就啟動，繞過 backgroundSync 開頭那道
-        // `waitForPendingLocalDataCleanup()`（它存在的唯一理由就是不讓 sync 與清除
-        // 重疊——2026-06-09 000287 事故）；(3) `PodcastSyncService` 全檔沒有任何
-        // 取消檢查，所以它的寫入階段會在清除之後才落地，把剛被刪掉的列寫回去。
-        //
-        // 在這裡自己判 expiry（純讀，無副作用），過期就當作沒 session。
-        guard let token = kgService.authSession.token,
-              !JWTExpiry.isExpired(token) else { return }
+        // 只擋「沒有 token」（keychain 尚未載入，#2714）。**不以本地時鐘判斷過期**（#2806）：
+        // 本地時鐘偏移時，過期判斷會讓整條 podcast 腿靜默跳過。目錄 browse 走
+        // `optionallyAuthedData`，它對本地過期 token 以 guest 身分送出（不登出、不 wipe）；
+        // 真的過期由伺服器 401（authedResponseData）決定。
+        guard kgService.authSession.token != nil else { return }
         progress?(.started(.podcast))
         // 儀器必須放在 service 內，不能掛在 `progress` 上：冷啟動路徑傳的是
         // `progress: nil`，而 `SyncProgress` 是純 UI store（零 AppLog／零

@@ -292,7 +292,9 @@ final class KGService: KGServing {
         guard let token = await authSession.token else {
             throw KGSessionPendingError()
         }
-        // #2806: 本地時鐘判斷 JWT 過期不得觸發 logout／wipe；由伺服器真實 401 經 handleUnauthorized 決定。
+        // #2806: 不以本地時鐘判斷 JWT 過期（不 logout、不 wipe）。送出請求後由伺服器真實 401
+        // 決定：authenticatedRequest 收到 401 才呼叫 handleUnauthorized；podcast 直連路徑由
+        // PodcastSyncServiceCore.authedResponseData 同樣處理。
         return token
     }
 

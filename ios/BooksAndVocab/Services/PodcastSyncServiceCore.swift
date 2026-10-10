@@ -185,7 +185,13 @@ final class PodcastSyncService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        return try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+        // #2806: 與 KGService.authenticatedRequest 相同的唯一真相——伺服器真實 401 才登出。
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            await kgService.handleUnauthorized(modelContainer: nil, reason: "http_401")
+            throw KGError.unauthorized
+        }
+        return (data, response)
     }
 
     /// Browse fetch that tolerates an anonymous (guest) caller. The backend

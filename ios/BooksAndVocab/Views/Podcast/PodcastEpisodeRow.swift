@@ -32,7 +32,7 @@ struct PodcastEpisodeRow: View {
     }
 
     /// Required-auth seam for the user-initiated download path.
-    /// Keep `currentAuthToken()` so expired credentials follow login handling.
+    /// Required-auth: 不以本地時鐘判斷過期（#2806）；過期由伺服器 401 經 authedResponseData／authenticatedRequest 登出。
     static func downloadAuthToken(kgService: any AuthTokenProviding) async throws -> String {
         try await kgService.currentAuthToken()
     }
