@@ -1226,6 +1226,113 @@ def test_the_review_verdict_reads_every_run_on_the_head(
     assert deliver.review_verdict(runs) == verdict
 
 
+def _job(conclusion: str, started_at: str | None) -> dict[str, Any]:
+    return {
+        "name": "agent-review",
+        "status": "completed",
+        "conclusion": conclusion,
+        "external_id": "",
+        "started_at": started_at,
+        "details_url": "https://github.com/o/r/actions/runs/1/job/9",
+        "output": {"title": None, "summary": None},
+    }
+
+
+def test_a_stale_failed_run_does_not_override_a_newer_success() -> None:
+    runs = [
+        _job("failure", "2026-10-10T10:00:00Z"),
+        _job("success", "2026-10-10T11:00:00Z"),
+    ]
+    assert deliver.review_verdict(runs) == "success"
+
+
+def test_a_newer_failed_run_overrides_an_older_success() -> None:
+    runs = [
+        _job("success", "2026-10-10T10:00:00Z"),
+        _job("failure", "2026-10-10T11:00:00Z"),
+    ]
+    assert deliver.review_verdict(runs) == "failure"
+
+
+def _check(name: str, state: str, started: str = "", link: str = "") -> dict[str, Any]:
+    return {"name": name, "state": state, "startedAt": started, "link": link}
+
+
+_REQUIRED_OK = _check("required", "SUCCESS")
+
+
+def test_a_red_area_quality_job_refuses_to_queue_before_the_queue_call() -> None:
+    world = FakeWorld(
+        checks=[[_REQUIRED_OK, _check("backend-quality", "FAILURE")]],
+        review_runs=[[_review(job=True), _review()]],
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1
+    assert "backend-quality" in result["error"]
+    assert not _calls_at(world, _is_queue)
+
+
+def test_the_newest_area_quality_run_by_started_at_decides_not_the_list_order() -> None:
+    world = FakeWorld(
+        checks=[
+            [
+                _REQUIRED_OK,
+                _check("backend-quality", "SUCCESS", "2026-10-10T11:00:00Z"),
+                _check("backend-quality", "FAILURE", "2026-10-10T10:00:00Z"),
+            ]
+        ],
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 0, result
+    assert _calls_at(world, _is_queue)
+
+
+def test_an_area_quality_job_still_pending_at_the_timeout_holds_the_queue() -> None:
+    world = FakeWorld(
+        checks=[[_REQUIRED_OK, _check("ios-quality", "IN_PROGRESS")]],
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1
+    assert "timed out" in result["error"] and "area quality" in result["error"]
+    assert not _calls_at(world, _is_queue)
+
+
+def _queued_world(
+    pr_states: list[str], queue_entry: Any, checks: list[Any]
+) -> FakeWorld:
+    return FakeWorld(
+        checks=checks,
+        pr_state=pr_states,
+        prs_by_branch={"other/branch": [{"number": 77, "state": "OPEN"}]},
+        pr_guard=[{"mergeQueueEntry": queue_entry}],
+    )
+
+
+def test_a_queued_pr_dequeued_without_merging_fails_fast_naming_the_failing_check() -> (
+    None
+):
+    ok = [_REQUIRED_OK, _check("ops-suite", "SUCCESS")]
+    bad = [
+        _REQUIRED_OK,
+        _check("ops-suite", "FAILURE", link="https://github.com/o/r/runs/42"),
+    ]
+    world = _queued_world(["OPEN"], None, [ok, ok, bad])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1
+    assert "dequeued" in result["error"]
+    assert "ops-suite" in result["error"]
+    assert "https://github.com/o/r/runs/42" in result["error"]
+    assert not world.sleeps  # decided on the first probe, not after the timeout
+
+
+def test_a_queued_pr_still_in_the_queue_keeps_waiting_for_the_merge() -> None:
+    ok = [_REQUIRED_OK]
+    world = _queued_world(["OPEN", "MERGED"], {"id": "q1"}, [ok])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 0, result
+    assert result["result"] == "merged"
+
+
 def test_the_review_bots_are_read_from_the_workflow() -> None:
     workflow = deliver.AGENT_REVIEW.read_text()
     assert deliver.review_bots(workflow) == (BOT, "chatgpt-codex-connector")
