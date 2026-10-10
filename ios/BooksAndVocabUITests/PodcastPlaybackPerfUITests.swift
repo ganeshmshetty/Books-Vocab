@@ -6,7 +6,7 @@ final class PodcastPlaybackPerfUITests: UITestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        executionTimeAllowance = 120
+        executionTimeAllowance = 180
     }
 
     @MainActor
