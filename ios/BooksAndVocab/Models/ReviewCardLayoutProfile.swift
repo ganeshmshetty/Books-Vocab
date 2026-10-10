@@ -342,6 +342,16 @@ final class ReviewCardLayoutStore {
         resolvedUpdatedAt = nil
     }
 
+    /// Sign-out / delete cleanup for the pre-account raw layout (#2434). Only a
+    /// copy that legacy migration has already adopted is dropped; until the
+    /// marker exists the raw key is the sole copy of the pre-account layout.
+    static func purgeAdoptedLegacyRawLayout(defaults: UserDefaults, cloud: CloudKeyValueStore) {
+        guard defaults.bool(forKey: AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout"))
+        else { return }
+        defaults.removeObject(forKey: Self.storageKey)
+        cloud.removeObject(forKey: Self.storageKey)
+    }
+
     private var storageKey: String { Self.namespacedKey(accountID: accountID) }
 
     private static func namespacedKey(accountID: String?) -> String {
