@@ -119,7 +119,7 @@ struct AccountPreferenceNamespacePurgeTests {
         cloud.set("cloud-a", forKey: namespaced)
         cloud.set("cloud-legacy", forKey: "review_settings_mode")
 
-        AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloud)
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
 
         #expect(defaults.object(forKey: namespaced) == nil)
         #expect(cloud.string(forKey: namespaced) == nil)
@@ -131,8 +131,28 @@ struct AccountPreferenceNamespacePurgeTests {
     @Test func purgeIsIdempotentOnAnEmptyDevice() {
         let defaults = makeDefaults()
         let cloud = PurgeCloudSpy()
-        AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloud)
-        AccountPreferenceNamespace.purgeAllNamespacedPreferences(defaults: defaults, cloud: cloud)
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
         #expect(cloud.values.isEmpty)
+    }
+
+    /// #2434: deleting account B must not erase account A's preferences on the
+    /// same device (local defaults and iCloud KVS).
+    @Test func deleteAccountLeavesOtherAccountsNamespacedPreferencesIntact() {
+        let defaults = makeDefaults()
+        let cloud = PurgeCloudSpy()
+        let keyA = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let keyB = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-b")
+        defaults.set("compact", forKey: keyA)
+        defaults.set("standard", forKey: keyB)
+        cloud.set("cloud-a", forKey: keyA)
+        cloud.set("cloud-b", forKey: keyB)
+
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-b", defaults: defaults, cloud: cloud)
+
+        #expect(defaults.object(forKey: keyB) == nil)
+        #expect(cloud.string(forKey: keyB) == nil)
+        #expect(defaults.string(forKey: keyA) == "compact")
+        #expect(cloud.string(forKey: keyA) == "cloud-a")
     }
 }
