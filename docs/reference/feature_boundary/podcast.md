@@ -86,7 +86,7 @@ podcast catalog 同步現有兩條觸發鏈：
 
    **2026-08-06 起改為與整條 vocab 管線併行**（`async let`，起跑於整輪最前面；原為序執行於 vocab pull 之後）。動機是量測：生產一輪 7.55s 裡 6.08s 在這條腿，而資料量僅約 7 KB——貴的是往返次數，且那些往返不需要等 vocab。用 `async let` 而非 `Task`：401 / cancelled 早退離開 scope 時，結構化併發自動取消並等待，不留孤兒（catalog 同步冪等，取消無後果）。**這筆成本 Release 從來不付**（leg 受 `podcastEnabled` gate），修它是為了不污染我們自己的量測與 debug 體感。
    - **併行後它必須自帶 session 前置檢查。** 以前它排在 vocab pull 的 401 早退之後、被那個 return 順手擋掉；跑在最前面就沒有那道保護。判定讀 `authSession.token` 並**自行判 expiry**，不呼 `currentAuthToken()`——後者對過期 token 會觸發 logout 與本地資料清除，拿它當前置檢查等於繞過 `waitForPendingLocalDataCleanup()`（000287 事故的防線），而 `PodcastSyncService` 全檔沒有取消檢查，寫入階段會在清除之後才落地。
-   - **失敗只染紅設定頁的那一列，不進 `failureMessages`。** 進去會讓整輪判定為部分失敗、`lastSyncDate` 不前進、彈出「背景同步部分失敗」——讓 catalog 的一次 hiccup 凍住「上次同步時間」是明確的退步。逐步清單已提供該有的可見性。
+   - **失敗只染紅設定頁的那一列，不進 `failures`。** 進去會讓整輪判定為部分失敗、`lastSyncDate` 不前進、彈出「背景同步部分失敗」——讓 catalog 的一次 hiccup 凍住「上次同步時間」是明確的退步。逐步清單已提供該有的可見性。
 
 ### metadata.json contract
 

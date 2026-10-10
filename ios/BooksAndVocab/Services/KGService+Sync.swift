@@ -499,7 +499,7 @@ extension KGService {
     /// `nil` = feature flag 關著，這一步根本沒被宣告，回一個對未宣告步驟的事件
     /// （store 會丟棄）比回 `.skipped` 誠實——Release 使用者的清單裡沒有這一列。
     ///
-    /// **`.listFetchFailed` 只染紅這一列，不進 `failureMessages`。** 那個欄位會
+    /// **`.listFetchFailed` 只染紅這一列，不進 `failures`。** 那個欄位會
     /// 讓整輪判定為部分失敗、`lastSyncDate` 不前進、設定頁彈出「背景同步部分失敗」。
     /// 讓 podcast 目錄的一次 hiccup 把「上次同步時間」凍住，對使用者是明確的退步；
     /// 而現在有了逐步清單，那一列自己會紅——可見性已經拿到了，不需要再借用一個
@@ -528,7 +528,7 @@ extension KGService {
     /// 那才是真正的壞主意。
     struct SyncPhaseFailure {
         let label: String
-        let message: String
+        let reason: String
     }
 
     /// Outcome of one `backgroundSync` phase. `cancelled` is tracked separately
@@ -574,7 +574,7 @@ extension KGService {
             }
             outcome.failures.append(SyncPhaseFailure(
                 label: label,
-                message: SyncFailurePresentation.message(label: label, error: error)
+                reason: SyncFailurePresentation.reason(for: error)
             ))
         }
         return outcome
@@ -638,8 +638,7 @@ extension KGService {
         }
 
         AppCrashReporting.addBreadcrumb(category: "sync", message: "sync.start")
-        var failureMessages: [String] = []
-        var failureLabels: [String] = []
+        var failures: [SyncPhaseFailure] = []
         var wasCancelled = false
 
         // Podcast catalog 從整輪的最前面就起跑，與底下整條 vocab 管線併行。
@@ -672,8 +671,7 @@ extension KGService {
         if let pushOutcome = await processSyncPhase(
             results: pushResults, labels: ["pushReview", "pushReviewEvents"], container: container
         ) {
-            failureMessages.append(contentsOf: pushOutcome.failures.map(\.message))
-            failureLabels.append(contentsOf: pushOutcome.failures.map(\.label))
+            failures.append(contentsOf: pushOutcome.failures)
             wasCancelled = wasCancelled || pushOutcome.cancelled
         } else {
             return .failed  // 401：processSyncPhase 已設「登入已過期」
@@ -719,8 +717,7 @@ extension KGService {
         if let pullOutcome = await processSyncPhase(
             results: pullResults, labels: ["pull", "pullReviewEvents"], container: container
         ) {
-            failureMessages.append(contentsOf: pullOutcome.failures.map(\.message))
-            failureLabels.append(contentsOf: pullOutcome.failures.map(\.label))
+            failures.append(contentsOf: pullOutcome.failures)
             wasCancelled = wasCancelled || pullOutcome.cancelled
         } else {
             return .failed  // 401：同上
@@ -753,7 +750,7 @@ extension KGService {
         // 早退路徑（401 / wasCancelled）不會走到這裡，那時 `async let` 的隱式取消
         // 會把這條腿收掉——podcast 目錄同步是冪等的，取消一次沒有任何後果。
 
-        if failureMessages.isEmpty {
+        if failures.isEmpty {
             lastBackgroundSyncError = nil
             let syncedAt = Date()
             lastSyncDate = syncedAt
@@ -761,15 +758,27 @@ extension KGService {
             AppCrashReporting.addBreadcrumb(category: "sync", message: "sync.end.success")
             return .completed
         } else {
-            lastBackgroundSyncError = L10n.format("背景同步部分失敗：%@", failureMessages.joined(separator: ", "))
+            recordPartialFailure(failures)
             AppCrashReporting.addBreadcrumb(
                 category: "sync",
                 message: "sync.end.partial",
                 level: .warning,
-                data: ["failures": failureLabels]
+                data: ["failures": failures.map(\.label)]
             )
             return .failed
         }
+    }
+
+    /// 部分失敗時的使用者文案組裝點。獨立成方法，讓測試直接釘住 production 的
+    /// 組裝路徑（回退成寫死的 ", " 會在這裡被抓到），不必打網路跑完整一輪。
+    func recordPartialFailure(
+        _ failures: [SyncPhaseFailure],
+        language: AppLanguage = AppLanguageStore.shared.selection
+    ) {
+        lastBackgroundSyncError = SyncFailurePresentation.partialFailureSummary(
+            failures.map { (label: $0.label, reason: $0.reason) },
+            language: language
+        )
     }
 
     /// 併行的 podcast 目錄腿：開場事件 → 同步 → 收尾事件，整包給一個 `async let`。

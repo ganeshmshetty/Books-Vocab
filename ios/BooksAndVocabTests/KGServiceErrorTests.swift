@@ -241,4 +241,95 @@ struct KGServiceErrorTests {
         )
         #expect(!m500.contains("500"))
     }
+
+    // 部分失敗彙總：同一原因只說一次；多組之間用該語系的列表分隔，不寫死 ASCII ", "。
+    @Test func sync_failure_summary_states_a_shared_reason_once() {
+        let language = AppLanguage.traditionalChinese
+        let reason = SyncFailurePresentation.reason(for: KGError.offline, language: language)
+        let summary = SyncFailurePresentation.partialFailureSummary(
+            [("pull", reason), ("pullReviewEvents", reason)],
+            language: language
+        )
+
+        #expect(summary.components(separatedBy: reason).count - 1 == 1, "同一原因重複列出：\(summary)")
+    }
+
+    // 每個語系的組間分隔都必須等於該語系的 ListFormatter 輸出（不寫死 ", "）。
+    @Test(arguments: AppLanguage.allCases.filter { $0 != .system })
+    func sync_failure_summary_joins_groups_with_locale_list_separator(language: AppLanguage) {
+        let timeout = SyncFailurePresentation.reason(
+            for: KGError.networkError(underlying: URLError(.timedOut)),
+            language: language
+        )
+        let offline = SyncFailurePresentation.reason(for: KGError.offline, language: language)
+        let summary = SyncFailurePresentation.partialFailureSummary(
+            [("pull", offline), ("pullReviewEvents", timeout)],
+            language: language
+        )
+
+        let listFormatter = ListFormatter()
+        listFormatter.locale = language.locale
+        let groups = [
+            SyncFailurePresentation.message(label: "pull", error: KGError.offline, language: language),
+            SyncFailurePresentation.message(
+                label: "pullReviewEvents",
+                error: KGError.networkError(underlying: URLError(.timedOut)),
+                language: language
+            ),
+        ]
+        let expectedList = listFormatter.string(from: groups) ?? ""
+        #expect(summary == L10n.format("背景同步部分失敗：%@", language: language, expectedList),
+                "分隔未依語系列表格式：\(summary)")
+    }
+
+    // 四腿（兩種原因 × 兩個操作）：每個原因只說一次、每個操作名只出現一次、組間以列表分隔。
+    @Test func sync_failure_summary_four_legs_two_reasons_each_stated_once() {
+        let language = AppLanguage.traditionalChinese
+        let upload = SyncFailurePresentation.reason(
+            for: KGError.httpError(statusCode: 503, detail: ""),
+            language: language
+        )
+        let timeout = SyncFailurePresentation.reason(
+            for: KGError.networkError(underlying: URLError(.timedOut)),
+            language: language
+        )
+        let summary = SyncFailurePresentation.partialFailureSummary(
+            [
+                ("pushReview", upload),
+                ("pushReviewEvents", upload),
+                ("pull", timeout),
+                ("pullReviewEvents", timeout),
+            ],
+            language: language
+        )
+
+        #expect(summary.components(separatedBy: upload).count - 1 == 1, "上傳原因重複：\(summary)")
+        #expect(summary.components(separatedBy: timeout).count - 1 == 1, "逾時原因重複：\(summary)")
+        for key in [
+            "sync.failure.operation.pushReview",
+            "sync.failure.operation.pushReviewEvents",
+            "sync.failure.operation.pull",
+            "sync.failure.operation.pullReviewEvents",
+        ] {
+            let title = L10n.string(key, language: language)
+            #expect(summary.components(separatedBy: title).count - 1 == 1, "操作名 \(title) 未恰好出現一次：\(summary)")
+        }
+        #expect(summary.hasPrefix(L10n.format("背景同步部分失敗：%@", language: language, "")), "前綴遺失：\(summary)")
+    }
+
+    // 單一失敗：輸出必須與改動前的組合完全相同（不變的既有文案）。
+    @Test(arguments: AppLanguage.allCases.filter { $0 != .system })
+    func sync_failure_summary_single_leg_matches_pre_change_composition(language: AppLanguage) {
+        let error = KGError.offline
+        let summary = SyncFailurePresentation.partialFailureSummary(
+            [("pull", SyncFailurePresentation.reason(for: error, language: language))],
+            language: language
+        )
+        let expected = L10n.format(
+            "背景同步部分失敗：%@",
+            language: language,
+            SyncFailurePresentation.message(label: "pull", error: error, language: language)
+        )
+        #expect(summary == expected)
+    }
 }
