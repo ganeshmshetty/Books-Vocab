@@ -343,13 +343,15 @@ final class ReviewCardLayoutStore {
     }
 
     /// Sign-out / delete cleanup for the pre-account raw layout (#2434). Only a
-    /// copy that legacy migration has already adopted is dropped; until the
-    /// marker exists the raw key is the sole copy of the pre-account layout.
-    static func purgeAdoptedLegacyRawLayout(defaults: UserDefaults, cloud: CloudKeyValueStore) {
+    /// local copy that legacy migration has already adopted is dropped; until the
+    /// marker exists the raw key is the sole local copy of the pre-account layout.
+    /// The iCloud KVS raw key is deliberately left alone: removing it would
+    /// propagate to every device on the same Apple ID, including devices that
+    /// have not adopted the layout yet (cross-device data loss).
+    static func purgeAdoptedLegacyRawLayout(defaults: UserDefaults) {
         guard defaults.bool(forKey: AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout"))
         else { return }
         defaults.removeObject(forKey: Self.storageKey)
-        cloud.removeObject(forKey: Self.storageKey)
     }
 
     private var storageKey: String { Self.namespacedKey(accountID: accountID) }
