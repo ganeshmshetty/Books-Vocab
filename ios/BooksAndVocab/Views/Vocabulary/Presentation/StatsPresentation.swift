@@ -138,11 +138,13 @@ enum StatsPresentation {
         return nodeCount == 0 ? .empty : .graph
     }
 
-    /// Status row shown inside the graph card's content area (#2860). `reason`
-    /// is nil when there is no server failure to explain (thumbnail never
-    /// painted); the row still carries the stale title and a retry.
+    /// Status row shown inside the graph card's content area (#2860).
     enum GraphCardNotice: Equatable {
-        case stale(reason: String?)
+        /// The latest load failed; the cached graph stays visible with its reason.
+        case stale(reason: String)
+        /// The thumbnail has not reported its first paint within the watchdog
+        /// window. Neutral copy: a slow-converging graph is not stale data.
+        case rendering
 
         var reason: String? {
             if case .stale(let reason) = self { return reason }
@@ -177,7 +179,7 @@ enum StatsPresentation {
             return .content(body: body, notice: .stale(reason: failureReason))
         }
         if body == .graph && paintTimedOut {
-            return .content(body: body, notice: .stale(reason: nil))
+            return .content(body: body, notice: .rendering)
         }
         return .content(body: body, notice: nil)
     }

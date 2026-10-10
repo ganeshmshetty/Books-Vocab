@@ -57,8 +57,14 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "graphBridge",
               let body = message.body as? [String: Any],
-              let type = body["type"] as? String,
-              ["ready", "painted"].contains(type) else { return }
+              let type = body["type"] as? String else { return }
+        receiveBridgeEvent(type)
+    }
+
+    /// Applies one graph.html bridge event. Split from the script-message entry
+    /// point so the bridge state machine is unit-testable without WebKit.
+    func receiveBridgeEvent(_ type: String) {
+        guard ["ready", "painted"].contains(type) else { return }
         if type == "painted" {
             hasPainted = true
             onPainted?()

@@ -100,7 +100,7 @@ struct VocabGraphEntryCard<Destination: View>: View {
                         .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.liftable)
 
                 if case .content(_, let notice?) = state {
                     statusRow(notice: notice)
@@ -122,7 +122,7 @@ struct VocabGraphEntryCard<Destination: View>: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.liftable)
             }
         }
         .accessibilityElement(children: .contain)
@@ -135,16 +135,23 @@ struct VocabGraphEntryCard<Destination: View>: View {
     }
 
     private func statusRow(notice: StatsPresentation.GraphCardNotice) -> some View {
-        let reason = notice.reason
+        // Only a failed load is a freshness warning; an unpainted thumbnail is
+        // neutral progress with the same retry.
+        let isStale: Bool
+        let title: String
+        switch notice {
+        case .stale: isStale = true; title = StatsCopy.staleDataTitle
+        case .rendering: isStale = false; title = StatsCopy.renderingTitle
+        }
         return HStack(spacing: appSkin.spacing.inlineGap) {
-                Image(systemName: "exclamationmark.triangle")
+                Image(systemName: isStale ? "exclamationmark.triangle" : "hourglass")
                     .font(appSkin.typography.iconSmall)
-                    .foregroundStyle(appSkin.palette.warning)
+                    .foregroundStyle(isStale ? appSkin.palette.warning : appSkin.palette.tertiaryText)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(StatsCopy.staleDataTitle)
+                    Text(title)
                         .font(appSkin.typography.caption)
                         .foregroundStyle(appSkin.palette.primaryText)
-                    if let reason {
+                    if let reason = notice.reason {
                         Text(reason)
                             .font(appSkin.typography.caption)
                             .foregroundStyle(appSkin.palette.tertiaryText)
@@ -156,11 +163,11 @@ struct VocabGraphEntryCard<Destination: View>: View {
             }
             .padding(.leading, appSkin.spacing.inlineGap)
             .background(
-                appSkin.palette.warningBg,
+                isStale ? appSkin.palette.warningBg : Color.clear,
                 in: AppRoundedRect(roundness: AppRoundness.control)
             )
             .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("overview.graph.stale")
+            .accessibilityIdentifier("overview.graph.status")
     }
 
     private var retryButton: some View {
@@ -183,8 +190,9 @@ struct VocabGraphEntryCard<Destination: View>: View {
     }
 
     private func retry() {
-        if failureReason == nil {
-            // Thumbnail never painted: rebuild the web view content, then re-arm the timer.
+        // Paint state, not the failure reason, decides whether the web view must
+        // be rebuilt: a cached-link failure can coexist with an unpainted thumbnail.
+        if !holder.coordinator.hasPainted {
             holder.coordinator.recover()
             paintTimedOut = false
             paintTimerGeneration &+= 1
