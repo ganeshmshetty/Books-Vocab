@@ -96,7 +96,7 @@ final class ReviewCalendarLayoutUITests: UITestCase {
     func testCalendarLeadingBlankOffsetsAlignForEveryMonthPhase() throws {
         let calendar = try openReviewCalendar(extraArgs: [])
         var observedOffsets = Set<Int>()
-        for step in 0 ..< 12 {
+        for step in 0 ..< 24 {
             let offset = try XCTUnwrap(calendar.leadingBlankOffset(), "first day cell must be addressable at step \(step)")
             observedOffsets.insert(offset)
             assertDayCellsAlignUnderWeekdayHeaders(calendar, context: "month step \(step) offset \(offset)")
