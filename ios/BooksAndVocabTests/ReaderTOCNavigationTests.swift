@@ -180,12 +180,12 @@ struct ReaderTOCNavigationTests {
     }
 
     @Test @MainActor
-    func sameResourceFragmentTOCItemsEachReachSuccess() {
-        for fragment in ["section-1", "section-2"] {
+    func sameResourceFragmentTOCItemsEachReachSuccessOnOneState() {
+        var state = ReaderTOCNavigationState()
+        for (index, fragment) in ["section-1", "section-2"].enumerated() {
             let requestID = UUID()
-            var state = ReaderTOCNavigationState()
             _ = state.beginSelection(
-                path: [0, 0],
+                path: [0, index],
                 title: fragment,
                 expectedHref: "OEBPS/chapter-a.xhtml#\(fragment)",
                 requestID: requestID
@@ -207,6 +207,54 @@ struct ReaderTOCNavigationTests {
             #expect(state.phase == .success)
             #expect(state.failureReason == nil)
         }
+    }
+
+    @Test @MainActor
+    func fragmentBearingEvidenceEntryValidatesAgainstResourceLocator() {
+        let hash = String(repeating: "a", count: 64)
+        let asset = ReaderTOCEvidenceAsset(
+            assetID: "books.fixture",
+            installedPath: "/tmp/fixture.epub",
+            expectedSHA256: hash,
+            expectedByteSize: 1,
+            actualSHA256: hash,
+            actualByteSize: 1
+        )
+        let row = ReaderTOCEvidenceSelectedRow(
+            path: [0, 0],
+            href: "OEBPS/chapter-a.xhtml#section-1",
+            title: "Section 1"
+        )
+        let required = ReaderTOCEvidenceEntry(
+            label: "fragment-required",
+            partition: "required",
+            fixtureID: "fixture",
+            asset: asset,
+            path: [0, 0],
+            selectedRow: row,
+            observation: ReaderTOCEvidenceObservation(
+                requestedHref: "OEBPS/chapter-a.xhtml#section-1",
+                observedLocatorHref: "OEBPS/chapter-a.xhtml",
+                observedContent: "content",
+                contentSelector: "selector"
+            )
+        )
+        let counterexample = ReaderTOCEvidenceEntry(
+            label: "fragment-counterexample",
+            partition: "counterexample",
+            fixtureID: "fixture",
+            asset: asset,
+            path: [0, 0],
+            selectedRow: row,
+            observation: ReaderTOCEvidenceObservation(
+                requestedHref: "OEBPS/chapter-a.xhtml#section-1",
+                observedLocatorHref: "OEBPS/chapter-b.xhtml",
+                observedContent: nil,
+                contentSelector: nil
+            )
+        )
+
+        #expect(ReaderTOCEvidenceEntry.validationErrors(for: [required, counterexample]).isEmpty)
     }
 
     @Test @MainActor
