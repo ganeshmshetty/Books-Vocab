@@ -103,17 +103,21 @@ struct ReviewCardPendingRefreshTests {
         }
     }
 
-    @Test("an uncached card is left to the next build")
-    func uncachedCardIsNotBuilt() {
+    @Test("a refresh on a cache miss builds the card instead of silently dropping the update")
+    func uncachedCardIsBuiltOnRefresh() throws {
+        let entry = entry()
         var cache = TodayReviewCardCache()
-        cache.refreshLinks(for: entry(), pendingLinks: [pending(.creating)])
-        #expect(cache.storage.isEmpty)
+        let pendingLink = pending(.creating)
+        cache.refreshLinks(for: entry, pendingLinks: [pendingLink])
+        let built = try #require(cache.storage[entry.id], "miss must fall back to rebuild(for:)")
+        #expect(built.linkGroups.flatMap(\.items).map(\.id) == [pendingLink.id])
     }
 
     /// #2408: AddLink success (TodayReviewView `onLinked`) adds a real link row to the
     /// open card. It must refresh in place, not rebuild: only graph-links re-measures.
-    @Test("AddLink success adds a link, re-measures only graph-links (#2408)")
-    func addLinkSuccessKeepsOtherMeasurements() throws {
+    /// State-level contract: the view call site is not covered by a view test.
+    @Test("state refresh on AddLink success keeps measurements, re-measures only graph-links (#2408)")
+    func stateRefreshOnAddLinkSuccessKeepsOtherMeasurements() throws {
         let entry = entry()
         let state = TodayReviewState(entries: [entry], allEntries: [entry], currentUserID: nil)
         let before = try #require(state.preparedCardCache[entry.id])
@@ -127,7 +131,7 @@ struct ReviewCardPendingRefreshTests {
                 label: "x", confidence: 1, reason: "r"
             )
         ]]
-        state.refreshLinksForEntry(entry)
+        state.refreshLinksForEntry(entry, pendingLinks: [])
 
         let after = try #require(state.preparedCardCache[entry.id])
         #expect(after.measurementCache === before.measurementCache, "success must not rebuild the cache")
