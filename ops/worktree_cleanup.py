@@ -82,9 +82,26 @@ def resolve_remove_target(
     rc, _ = git(["check-ref-format", "--branch", branch], root)
     if rc != 0:
         return None, worktree, f"invalid local branch name: {branch}"
+    if worktree is None:
+        worktree = _worktree_for_branch(branch, root=root, git=git)
     if worktree == root:
         return None, worktree, "canonical repository worktree cannot be removed"
     return branch, worktree, None
+
+
+def _worktree_for_branch(branch: str, *, root: Path, git: Git) -> Path | None:
+    """Return the linked worktree that has `branch` checked out, if any."""
+
+    rc, output = git(["worktree", "list", "--porcelain"], root)
+    if rc != 0:
+        return None
+    worktree: Path | None = None
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            worktree = Path(line[len("worktree ") :])
+        elif line == f"branch refs/heads/{branch}":
+            return worktree
+    return None
 
 
 def preflight_resolve_remove(
@@ -154,6 +171,13 @@ def cleanup_resolved_local_assets(
         git_rc, output = git(["worktree", "remove", str(worktree)], root)
         if git_rc != 0:
             print(f"✗ worktree remove failed: {output}", file=sys.stderr)
+            return exit_block
+    elif worktree is not None:
+        # Directory already gone but git still holds its registration; prune
+        # stale entries so the checked-out branch becomes deletable.
+        git_rc, output = git(["worktree", "prune"], root)
+        if git_rc != 0:
+            print(f"✗ worktree prune failed: {output}", file=sys.stderr)
             return exit_block
     local_head, problem = _local_branch_head(branch, root=root, git=git)
     if problem:

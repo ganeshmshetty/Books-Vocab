@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from argparse import Namespace
@@ -135,6 +136,78 @@ def test_resolve_remove_deletes_exact_local_branch_after_remote_absence(
     assert calls.index(["branch", "-D", "--", branch]) > calls.index(
         ["worktree", "remove", str(worktree)]
     )
+
+
+def _real_repo_with_lane_branch(tmp_path: Path, branch: str) -> tuple[Path, Path]:
+    origin = tmp_path / "origin.git"
+    repo = tmp_path / "repo"
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
+    _git(tmp_path, "init", "-q", "-b", "main", str(repo))
+    # Hermetic: never rely on the runner's global identity, signing, or hooks.
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "config", "core.hooksPath", str(tmp_path / "no-hooks"))
+    _commit(repo, "README.md", "base\n", "init")
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-q", "origin", "main")
+    worktree = tmp_path / "lane-wt"
+    _git(repo, "worktree", "add", "-q", "-b", branch, str(worktree), "main")
+    _commit(worktree, "lane.txt", "lane\n", "lane work")
+    return repo, worktree
+
+
+@pytest.mark.parametrize("worktree_dir_present", [True, False])
+def test_resolve_remove_branch_only_removes_real_worktree_and_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worktree_dir_present: bool,
+) -> None:
+    branch = "debug/orphan-e2e"
+    repo, worktree = _real_repo_with_lane_branch(tmp_path, branch)
+    head = _git(repo, "rev-parse", f"refs/heads/{branch}")
+    if not worktree_dir_present:
+        shutil.rmtree(worktree)
+
+    monkeypatch.setattr(coordinator, "ROOT", repo)
+    monkeypatch.setattr(coordinator, "_already_abandoned", lambda _args: False)
+    monkeypatch.setattr(
+        coordinator,
+        "_cleanup_pending_retire_evidence",
+        lambda _args: (None, None),
+    )
+    registry_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        coordinator.registry,
+        "main",
+        lambda argv, acquire_lock=False, **_kw: (
+            registry_calls.append(argv) or coordinator.registry.EXIT_OK
+        ),
+    )
+
+    args = Namespace(
+        status="abandoned",
+        branch=branch,
+        path=None,
+        state=None,
+        json=True,
+        expected_generation=0,
+        expected_head_sha=head,
+        remove=True,
+    )
+
+    assert coordinator.cmd_resolve(args) == coordinator.EXIT_OK
+    assert registry_calls
+    assert not worktree.exists()
+    branch_probe = subprocess.run(
+        ["git", "-C", str(repo), "show-ref", "--verify", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert branch_probe.returncode != 0
+    worktree_list = _git(repo, "worktree", "list", "--porcelain")
+    assert f"branch refs/heads/{branch}" not in worktree_list
 
 
 def test_resolve_remove_preserves_assets_when_remote_branch_exists(
