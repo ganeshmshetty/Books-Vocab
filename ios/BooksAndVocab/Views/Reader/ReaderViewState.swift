@@ -335,6 +335,9 @@ struct ReaderTOCNavigationState: Equatable {
         return "phase=\(phaseValue);selected=\(selected);expected=\(expected);destination=\(destination)"
     }
 
+    /// Starts a TOC navigation request. `expectedHref` may carry a `#fragment`;
+    /// the stored expectation is the resource href only (see `resourceHref`),
+    /// so callers must not expect `expectedLocatorHref` to equal the input.
     @discardableResult
     mutating func beginSelection(
         path: [Int],
