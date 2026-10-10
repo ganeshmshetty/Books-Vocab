@@ -100,6 +100,25 @@ struct StatsPresenterTests {
         #expect(s.forecast.map(\.count).reduce(0, +) == 1)
     }
 
+    /// Pins the edge-day bucket the Overview UI oracle mirrors (#2920): at the
+    /// last forecast day only reviewed, non-excluded cards count; new cards
+    /// (reviewCount == 0) and excluded cards landing on the same day do not.
+    @Test func forecast_edgeDayBucketCountsOnlyReviewedCards() {
+        let reviewed = syncedEntry(dueOffset: 13)
+        let fresh = syncedEntry(dueOffset: 13)
+        fresh.reviewCount = 0
+        let excluded = syncedEntry(dueOffset: 13)
+        excluded.isReviewExcluded = true
+
+        let s = StatsPresentation.buildSummary(
+            from: [reviewed, fresh, excluded], reviewRecords: [], clock: Self.canonicalClock
+        )
+
+        let edge = s.forecast.first { $0.id == dayKey(13) }
+        #expect(edge?.count == 1)
+        #expect(s.dueToday == 0)
+    }
+
     private func review(dayOffset: Int) -> ReviewRecord {
         ReviewRecord(word: "x", entryID: nil, feedback: 1, reviewedAt: day(dayOffset))
     }
