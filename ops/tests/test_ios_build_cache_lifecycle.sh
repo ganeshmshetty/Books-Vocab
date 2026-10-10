@@ -122,6 +122,47 @@ grep -F 'return "$preflight_rc"' <<<"$rebuild_body" >/dev/null \
   || fail "ios_test disk-budget block does not propagate the preflight exit (75 temporary / 77 structural)"
 
 # ── --clean-cache must honour the build lock and active-consumer liveness (#2819) ──
+# Linux runners do not provide macOS's shlock. --clean-cache is fail-closed without
+# it (lock wait times out, exit 75 infrastructure=unavailable), which is correct for
+# production; this fixture must still reach the refusal contract, so give it the same
+# deterministic primitive test_kg_disk_guard.sh uses. Real shlock stays authoritative
+# wherever it exists.
+if ! command -v shlock >/dev/null 2>&1; then
+  fake_bin="$tmp/fake-bin"
+  mkdir -p "$fake_bin"
+  cat >"$fake_bin/shlock" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+lock_file=""
+owner_pid=""
+while (($#)); do
+  case "$1" in
+    -f) lock_file="$2"; shift 2 ;;
+    -p) owner_pid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$lock_file" && -n "$owner_pid" ]]
+if [[ -f "$lock_file" ]]; then
+  held_pid="$(cat "$lock_file" 2>/dev/null || true)"
+  if [[ "$held_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$held_pid" 2>/dev/null; then
+    rm -f "$lock_file"
+  else
+    exit 1
+  fi
+fi
+if mkdir "${lock_file}.claim" 2>/dev/null; then
+  printf '%s\n' "$owner_pid" >"$lock_file"
+  rmdir "${lock_file}.claim"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$fake_bin/shlock"
+  export PATH="$fake_bin:$PATH"
+fi
+command -v shlock >/dev/null 2>&1 || fail "shlock primitive unavailable for the --clean-cache lock fixture"
+
 clean_root="$tmp/clean-cache"
 clean_lock="$tmp/clean.lock"
 mkdir -p "$clean_root"

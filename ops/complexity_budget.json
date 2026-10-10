@@ -1,13 +1,13 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 issue-2893-r2 lane (#2893 re-lane of abandoned debug/issue-2893-wave; branch-only resolve --remove fix in ops/worktree_cleanup.py, worktree prune on stale registration, and their real-git e2e tests in ops/tests/test_worktree_orchestrate.py): measured ops 209,919 on this lane head; ceiling = measured + 20 = 209,939. The raise covers only this lane own growth; ratchet reclaims the slack later.",
+  "note": "2026-10-11 lane debug/ops-baseline-reds-r2 (#2956 baseline reds + 150-line batch headroom for sibling ops lanes): measured ops 209,960 on this lane head via ops/complexity.py show; ceiling = measured + 150 = 210,110. The +150 is deliberate batch headroom so in-flight ops CI-fix lanes can land without each fighting over this JSON line; it is not feature growth. ratchet reclaims any unused slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 209939,
+    "ops": 210110,
     "docs": 16077,
     "workflows": 2097
   }
