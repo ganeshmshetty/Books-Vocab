@@ -177,6 +177,42 @@ def test_queue_admits_while_another_process_holds_the_operation_lock(
     assert calls == [("github.enqueue", False)]
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [["cleanup-merged", "--pr", "41"], ["release-published", "--pr", "41"]],
+)
+def test_busy_lease_refuses_before_any_github_read(
+    tmp_path: Path,
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#2871: a busy lease costs zero GitHub calls (refusal precedes the reads)."""
+
+    monkeypatch.setenv("KG_DELIVERY_LOCK_WAIT_SECONDS", "0.05")
+    application, registry, _, github = _application(tmp_path)
+    calls: Calls = []
+    _observe(github, "github", ("get_pull_request", "changed_paths"), calls, _no)
+    _observe(registry, "registry", ("resolve",), calls, _no)
+
+    lock_path = OperationLock(tmp_path, command="x").path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as foreign:
+        fcntl.flock(foreign.fileno(), fcntl.LOCK_EX)
+        exit_code = cli.main(
+            ["--repo", str(tmp_path), *argv],
+            application_factory=lambda **_: application,
+        )
+
+    assert exit_code != 0
+    assert "already in progress" in capsys.readouterr().err
+    assert calls == []
+
+
+def _no() -> bool:
+    return False
+
+
 def test_cleanup_merged_network_io_runs_outside_the_operation_lease(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -297,7 +333,7 @@ def test_publish_network_io_runs_outside_and_registry_writes_inside_the_lease(
     assert by_name["git.remove_worktree"] == {True}
 
 
-def test_publish_proceeds_while_another_process_holds_the_lock_until_registry_write(
+def test_publish_refuses_before_any_push_while_the_lock_is_busy(
     tmp_path: Path,
 ) -> None:
     application, registry, git, _ = _application(tmp_path)
@@ -328,8 +364,8 @@ def test_publish_proceeds_while_another_process_holds_the_lock_until_registry_wr
                 ),
                 application,
             )
-    # network phase ran without the lock; only the registry section refused.
-    assert seen == ["push"]
+    # #2871: the busy probe refuses before the network phase (no push at all).
+    assert seen == []
     assert registry.record.status == "active"
 
 
