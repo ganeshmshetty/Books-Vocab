@@ -30,9 +30,14 @@ enum KGVocabCopy {
 /// 不依賴 SwiftUI，讓「取消不刪、確認才刪一次」可直接單元測試。
 struct BatchDeleteConfirmation {
     var isPending = false
+    /// 請求當下的選取數快照。確認後 selection 會被清空，dialog dismiss 動畫期間標題必須仍顯示原數量，不能讀即時值。
+    private(set) var requestedCount = 0
 
     mutating func request(selectionCount: Int) {
         isPending = selectionCount > 0
+        if isPending {
+            requestedCount = selectionCount
+        }
     }
 
     mutating func cancel() {

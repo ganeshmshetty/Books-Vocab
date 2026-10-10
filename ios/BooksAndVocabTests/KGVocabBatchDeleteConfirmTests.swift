@@ -19,6 +19,18 @@ struct KGVocabBatchDeleteConfirmTests {
         #expect(!confirmation.isPending)
     }
 
+    /// Selection is cleared during dismissal; the dialog title must keep the requested count.
+    @Test func requestedCountSnapshotSurvivesSelectionClear() {
+        var deletes = 0
+        var confirmation = BatchDeleteConfirmation()
+        confirmation.request(selectionCount: 3)
+
+        confirmation.confirm(selectionCount: 0) { deletes += 1 }
+
+        #expect(confirmation.requestedCount == 3)
+        #expect(deletes == 0)
+    }
+
     @Test func cancelClearsPending() {
         var confirmation = BatchDeleteConfirmation()
         confirmation.request(selectionCount: 2)

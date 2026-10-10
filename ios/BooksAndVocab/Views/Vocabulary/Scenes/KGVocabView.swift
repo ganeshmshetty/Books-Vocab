@@ -216,7 +216,7 @@ struct KGVocabView: View {
         }
         .animateSpring(selectionState.isSelecting)
         .confirmationDialog(
-            KGVocabCopy.batchDeleteTitle(count: selectionState.selectionCount),
+            KGVocabCopy.batchDeleteTitle(count: batchDeleteConfirmation.requestedCount),
             isPresented: $batchDeleteConfirmation.isPending,
             titleVisibility: .visible
         ) {
