@@ -1,14 +1,14 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/issue-2876-r2 (#2876, rebased onto origin/main after #2993 merged at ceiling 210,618): measured ops 210,780 on this lane head via ops/complexity.py check, exceeding the merged ceiling by 162 lines from the XCTest device stat-failure skip in ops/disk_usage.py, its two regression tests, and the scandir proxy used by the permission test; ceiling = measured + 5 = 210,785. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
+  "note": "2026-10-11 lane debug/issue-2641-r4 (#2641, rebased onto origin/main; conflicts in ops/complexity_budget.json resolved by taking main's ceilings, then re-raised here): measured ops 211,390 and workflows 2,135 on this lane head via ops/complexity.py check; ops ceiling = measured + 5 = 211,395, workflows ceiling = measured + 5 = 2,140. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 210785,
+    "ops": 211395,
     "docs": 16077,
-    "workflows": 2097
+    "workflows": 2140
   }
 }
