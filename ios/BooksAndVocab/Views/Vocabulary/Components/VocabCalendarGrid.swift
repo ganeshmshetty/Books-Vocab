@@ -76,11 +76,12 @@ struct VocabCalendarGrid: View {
         VStack(spacing: appSkin.spacing.rowMicroGap) {
             // Weekday header
             LazyVGrid(columns: columns, spacing: AppSpacing.s1) {
-                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { index, symbol in
                     Text(symbol)
                         .font(appSkin.typography.monoLabel)
                         .foregroundStyle(appSkin.palette.quaternaryText)
                         .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("reviewCalendar.weekday.\(index)")
                 }
             }
 
@@ -118,6 +119,8 @@ struct VocabCalendarGrid: View {
                     VStack(spacing: 1) {
                         Text("\(cell.dayNumber)")
                             .font(appSkin.typography.caption)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
                             .foregroundStyle(
                                 cell.isToday ? AppColors.chartHighlight :
                                 isSelected ? appSkin.palette.primaryText :

@@ -51,6 +51,26 @@ enum VocabCalendarGridScenarios {
             Scenario("Current month with today", layout: .fillH) {
                 VocabCalendarGridScene(fixture: .currentMonth)
             }
+            // 前導空白 1–6 各一：2026 年 9 月起始週一位移 1，4 月 2，10 月 3，5 月 4，8 月 5，2 月 6。
+            // 3/8/9 有活動，驗證 row-1 空白格之後的日格仍落在正確欄位（#2861）。
+            Scenario("Leading blanks 1 (2026-09)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 9, days: [3, 8, 9]))
+            }
+            Scenario("Leading blanks 2 (2026-04)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 4, days: [3, 8, 9]))
+            }
+            Scenario("Leading blanks 3 (2026-10)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 10, days: [3, 8, 9]))
+            }
+            Scenario("Leading blanks 4 (2026-05)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 5, days: [3, 8, 9]))
+            }
+            Scenario("Leading blanks 5 (2026-08)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 8, days: [3, 8, 9]))
+            }
+            Scenario("Leading blanks 6 (2026-02)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 2, days: [3, 8, 9]))
+            }
         }
     }
 }
@@ -62,6 +82,7 @@ private struct VocabCalendarGridScene: View {
         case heavyIntensity
         case noActivity
         case currentMonth
+        case monthWithActivityDays(year: Int, month: Int, days: [Int])
     }
 
     let fixture: Fixture
@@ -110,19 +131,30 @@ private struct VocabCalendarGridScene: View {
         case .currentMonth:
             let month = Self.projectionClock.now
             return Config(month: month, activity: Self.gradientActivity(in: month), initialSelection: nil)
+        case let .monthWithActivityDays(year, month, days):
+            let displayed = Self.month(year: year, month: month)
+            var activity: [String: Int] = [:]
+            for day in days {
+                if let key = Self.dayKey(in: displayed, day: day) { activity[key] = 3 }
+            }
+            return Config(month: displayed, activity: activity, initialSelection: nil)
         }
     }
 
     /// Deterministic month (2024-03) so snapshots are stable across runs.
     private static func fixedMonth() -> Date {
+        month(year: 2024, month: 3)
+    }
+
+    private static func month(year: Int, month: Int) -> Date {
         var comps = DateComponents(calendar: calendar, timeZone: calendar.timeZone)
-        comps.year = 2024
-        comps.month = 3
+        comps.year = year
+        comps.month = month
         comps.day = 1
-        guard let month = calendar.date(from: comps) else {
+        guard let date = calendar.date(from: comps) else {
             preconditionFailure("VocabCalendarGridScenarios requires a valid fixed month")
         }
-        return month
+        return date
     }
 
     private static func dayKey(in month: Date, day: Int) -> String? {
