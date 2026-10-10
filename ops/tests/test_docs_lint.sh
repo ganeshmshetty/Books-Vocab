@@ -151,10 +151,14 @@ if [ -n "$(ls -A "$TMP/scratch")" ]; then
 fi
 
 # #2923: the restore SOP must route the destructive kg-data write through the guarded
-# `devops.sh restore`, and must never document a direct-ssh path around devops_run_guard.
+# `devops.sh restore`, must enumerate the protected names, must explain which legitimate
+# maintenance commands the guard blocks, and must never show a remote shell that runs
+# restore or an extraction/move into kg-data (no direct-ssh path around the guard).
 require_grep 'devops.sh restore <YYYY-MM-DD>' docs/sop/backup_restore.md
-if grep -n '直接 ssh' docs/sop/backup_restore.md; then
-  echo "backup_restore.md still documents a direct-ssh restore path (#2923)" >&2
+require_grep '受保護名稱' docs/sop/backup_restore.md
+require_grep 'rm -rf .venv' docs/sop/backup_restore.md
+if grep -nE 'ssh [^#]*(devops\.sh restore|tar +-?x|mv +[^ ]*kg-data)' docs/sop/backup_restore.md; then
+  echo "backup_restore.md documents a direct-ssh restore/overwrite path (#2923)" >&2
   exit 1
 fi
 
