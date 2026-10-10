@@ -1284,9 +1284,14 @@ def test_a_red_area_quality_job_refuses_to_queue_before_the_queue_call() -> None
     assert not _calls_at(world, _is_queue)
 
 
-def test_a_skipped_area_caller_is_a_pass_not_a_hold() -> None:
+SCOPE_CLASSIFIER = "classify confidence scope"
+
+
+def test_a_skipped_area_caller_is_a_pass_when_the_scope_decision_succeeded() -> None:
+    # The classifier ran and legitimately skipped backend-quality; SKIPPED passes.
     checks = [
         _REQUIRED_OK,
+        _check(SCOPE_CLASSIFIER, "SUCCESS"),
         _check("backend-quality", "SKIPPED"),
         _check("ops-suite / Linux ops shard 1", "SUCCESS"),
     ]
@@ -1294,6 +1299,29 @@ def test_a_skipped_area_caller_is_a_pass_not_a_hold() -> None:
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 0, result
     assert _calls_at(world, _is_queue)
+
+
+@pytest.mark.parametrize("classifier", [None, "FAILURE", "CANCELLED", "IN_PROGRESS"])
+def test_a_skipped_area_holds_unless_the_scope_classifier_succeeded(
+    classifier: str | None,
+) -> None:
+    # A SKIPPED area job is only a decision when the classifier made it; if the
+    # classifier is missing, failed, cancelled or unfinished, the suite never
+    # proved anything and the queue is held until the timeout.
+    checks = [_REQUIRED_OK, _check("backend-quality", "SKIPPED")]
+    if classifier is not None:
+        checks.append(_check(SCOPE_CLASSIFIER, classifier, "2026-10-10T10:00:00Z"))
+    world = FakeWorld(checks=[checks])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1
+    assert "timed out" in result["error"] and "area quality" in result["error"]
+    assert not _calls_at(world, _is_queue)
+
+
+def test_the_scope_classifier_name_matches_the_pr_gate_job() -> None:
+    # The gate matches the check run by name; a renamed job must fail here.
+    gate = Path(__file__).resolve().parents[2] / ".github/workflows/pr-gate.yml"
+    assert f"name: {SCOPE_CLASSIFIER}" in gate.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("newer_first", [True, False])
