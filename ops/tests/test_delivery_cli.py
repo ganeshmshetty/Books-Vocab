@@ -394,7 +394,7 @@ class FakeGitHub:
         return CheckSnapshot(
             status=CheckStatus.SUCCESS,
             head_sha=HEAD,
-            observed_at=datetime(2026, 8, 21, tzinfo=UTC),
+            observed_at=datetime.now(UTC),
             names=("required",),
             started_at=EVENT_START.replace(second=40),
             completed_at=EVENT_START.replace(second=50),

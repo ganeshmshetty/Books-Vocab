@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .models import CheckStatus, HandbackReceipt
@@ -19,6 +20,8 @@ REANCHOR_CONFLICT_REASON = "reanchor_required: PR conflicts with live main"
 # The short blocking status context that main's rules require; the merge queue
 # only validates the merged result when this exact context gates the group.
 REQUIRED_CONTEXT = "required"
+# Same bound as the client's stale-body cap: an older required-check observation is not admissible.
+REQUIRED_OBSERVATION_MAX_AGE = timedelta(seconds=300)
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ def evaluate_merge_gate(
     live_main_sha: str,
     registry: RegistrySnapshot,
     required: CheckSnapshot,
+    evaluated_at: datetime,
     holds: frozenset[HoldKind] = frozenset(),
     merge_queue_validates: bool = False,
 ) -> PolicyDecision:
@@ -127,6 +131,10 @@ def evaluate_merge_gate(
         reasons.append("required checks belong to another HEAD")
     if required.status is not CheckStatus.SUCCESS:
         reasons.append("required checks are not successful")
+    # A success observed earlier than the cap may belong to a head or base that
+    # has since moved; the gate must re-observe rather than admit it.
+    if evaluated_at - required.observed_at > REQUIRED_OBSERVATION_MAX_AGE:
+        reasons.append("required checks observation is stale")
     if holds:
         reasons.append("explicit hold is active")
     return PolicyDecision(allowed=not reasons, reasons=tuple(reasons))

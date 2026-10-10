@@ -76,7 +76,7 @@ def _graphql_http(remaining: int) -> str:
     return head + json.dumps(_required_pr_body())
 
 
-def test_stale_required_snapshot_is_observed_at_its_fetch_time(
+def test_required_snapshot_under_low_quota_is_revalidated_live(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("GH_TOKEN", raising=False)
@@ -97,13 +97,19 @@ def test_stale_required_snapshot_is_observed_at_its_fetch_time(
         (12,),
     )
 
+    # Low quota must not admit the body fetched 60s ago: the gate re-reads GraphQL.
     second = StaticRunner(
-        [CommandResult(_REPO_VIEW, 0, json.dumps({"nameWithOwner": "owner/repo"}), "")]
+        [
+            CommandResult(
+                _REPO_VIEW, 0, json.dumps({"nameWithOwner": "owner/repo"}), ""
+            ),
+            CommandResult(_GRAPHQL, 0, _graphql_http(remaining=499), ""),
+        ]
     )
     client = GitHubCliClient(
         repo=tmp_path, runner=second, cache_dir=cache, now=lambda: FETCHED + 60
     )
     snapshots = batch_required_snapshots(client, (12,))
 
-    assert len(second.calls) == 1  # only the repo lookup; GraphQL was served stale
-    assert snapshots[12].observed_at == datetime.fromtimestamp(FETCHED, tz=UTC)
+    assert len(second.calls) == 2
+    assert snapshots[12].observed_at == datetime.fromtimestamp(FETCHED + 60, tz=UTC)

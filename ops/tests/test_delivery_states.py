@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -283,6 +283,9 @@ def test_publication_policy_does_not_require_current_base_or_local_quality() -> 
     ).allowed
 
 
+GATE_NOW = datetime(2026, 8, 21, tzinfo=UTC)
+
+
 def _registry(
     receipt: HandbackReceipt, *, published_base_sha: str | None = None
 ) -> RegistrySnapshot:
@@ -318,6 +321,7 @@ def test_merge_policy_requires_exact_live_base_required_success_and_no_hold() ->
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt),
+        evaluated_at=GATE_NOW,
         live_main_sha="a" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -330,6 +334,7 @@ def test_merge_policy_requires_exact_live_base_required_success_and_no_hold() ->
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt),
+        evaluated_at=GATE_NOW,
         live_main_sha="c" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -342,6 +347,7 @@ def test_merge_policy_requires_exact_live_base_required_success_and_no_hold() ->
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt),
+        evaluated_at=GATE_NOW,
         live_main_sha="a" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -373,6 +379,7 @@ def test_merge_policy_uses_published_pr_target_after_handback_base_advances() ->
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt, published_base_sha="c" * 40),
+        evaluated_at=GATE_NOW,
         live_main_sha="c" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -401,6 +408,7 @@ def test_merge_policy_rejects_published_pr_target_that_is_not_live() -> None:
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt, published_base_sha="b" * 40),
+        evaluated_at=GATE_NOW,
         live_main_sha="c" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -430,6 +438,7 @@ def test_merge_policy_requires_published_target_for_stale_handback() -> None:
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt),
+        evaluated_at=GATE_NOW,
         live_main_sha="c" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -459,6 +468,7 @@ def test_merge_policy_rejects_success_from_another_head() -> None:
         pull_request=pull_request,
         receipt=receipt,
         registry=_registry(receipt),
+        evaluated_at=GATE_NOW,
         live_main_sha=receipt.base_sha,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -499,6 +509,7 @@ def test_merge_queue_admits_lagging_pr_unless_conflicting_or_moved(
         pull_request=replace(lagging, **changes),
         receipt=receipt,
         registry=_registry(receipt),
+        evaluated_at=GATE_NOW,
         live_main_sha="c" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -544,6 +555,7 @@ def test_merge_queue_admits_lagging_published_registry_base(
         pull_request=replace(lagging, **changes),
         receipt=receipt,
         registry=_registry(receipt, published_base_sha=published),
+        evaluated_at=GATE_NOW,
         live_main_sha="c" * 40,
         required=CheckSnapshot(
             status=CheckStatus.SUCCESS,
@@ -698,3 +710,33 @@ def test_normalized_rename_source_participates_in_scope_collision() -> None:
             "other": {"ops/old.py"},
         }
     ) == {"other", "rename"}
+
+
+def test_merge_policy_rejects_required_success_observed_too_long_ago() -> None:
+    receipt = _receipt(base_sha="a" * 40)
+    pull_request = PullRequestSnapshot(
+        number=1,
+        url="https://example.test/pull/1",
+        branch=receipt.branch,
+        base_sha=receipt.base_sha,
+        head_sha=receipt.head_sha,
+        state="OPEN",
+        draft=False,
+        mergeable=True,
+    )
+    decision = evaluate_merge_gate(
+        pull_request=pull_request,
+        receipt=receipt,
+        registry=_registry(receipt),
+        evaluated_at=GATE_NOW + timedelta(seconds=301),
+        live_main_sha="a" * 40,
+        required=CheckSnapshot(
+            status=CheckStatus.SUCCESS,
+            head_sha=receipt.head_sha,
+            observed_at=GATE_NOW,
+            names=("required",),
+        ),
+    )
+
+    assert not decision.allowed
+    assert "required checks observation is stale" in decision.reasons

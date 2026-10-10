@@ -165,7 +165,7 @@ class FakeGitHub:
         return CheckSnapshot(
             status=self.required,
             head_sha=self.pull_request.head_sha,
-            observed_at=datetime(2026, 8, 21, tzinfo=UTC),
+            observed_at=datetime.now(UTC),
             names=("required",),
         )
 

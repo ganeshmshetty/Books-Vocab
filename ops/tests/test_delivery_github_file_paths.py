@@ -9,13 +9,15 @@ import pytest
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
-from delivery_control.adapters.errors import AdapterPayloadError  # noqa: E402
-from delivery_control.adapters.github_file_paths import (  # noqa: E402
+from delivery_control.adapters.errors import AdapterPayloadError
+from delivery_control.adapters.github_file_paths import (
     PullRequestFilePathBatch,
     parse_open_pull_request_file_pages,
 )
-from delivery_control.adapters.github_queries import GitHubQueries  # noqa: E402
-from delivery_control.adapters.github_parsing import parse_pull_request_inventory  # noqa: E402
+from delivery_control.adapters.github_parsing import (
+    parse_pull_request_inventory,
+)
+from delivery_control.adapters.github_queries import GitHubQueries
 
 
 def _page(

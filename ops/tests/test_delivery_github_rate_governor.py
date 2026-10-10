@@ -90,7 +90,7 @@ def test_governor_maps_remaining_to_decisions_per_resource() -> None:
     assert governor.decide("graphql") == (QuotaDecision.PROCEED, 0.0)
 
 
-def test_low_quota_serves_cached_body_without_network(tmp_path: Path) -> None:
+def test_low_quota_serves_cached_body_only_when_caller_opts_in(tmp_path: Path) -> None:
     body = '[{"filename": "ops/a.py"}]'
     runner = StaticRunner(
         [CommandResult(("gh",), 0, _http(200, body, etag='"v1"', remaining=500), "")]
@@ -98,9 +98,36 @@ def test_low_quota_serves_cached_body_without_network(tmp_path: Path) -> None:
     client = _client(tmp_path, runner)
 
     assert client.load_json(_ARGV) == json.loads(body)
-    assert client.load_json(_ARGV) == json.loads(body)
+    assert client.load_json(_ARGV, allow_stale=True) == json.loads(body)
     assert len(runner.calls) == 1
     assert _spend(tmp_path)[-1]["served"] == "stale-cache"
+
+
+def test_gate_read_under_low_quota_revalidates_instead_of_serving_cache(
+    tmp_path: Path,
+) -> None:
+    # Quota 700 is inside the stale band. A PR's files cached at T0 must not
+    # decide admission at T0+120 after a new commit changed them.
+    runner = StaticRunner(
+        [
+            CommandResult(
+                ("gh",), 0, _http(200, '["ops/a.py"]', etag='"v1"', remaining=700), ""
+            ),
+            CommandResult(
+                ("gh",),
+                0,
+                _http(200, '["ops/a.py", "backend/x.py"]', etag='"v2"', remaining=699),
+                "",
+            ),
+        ]
+    )
+    client = _client(tmp_path, runner)
+
+    assert client.load_json(_ARGV) == ["ops/a.py"]
+    assert client.load_json(_ARGV) == ["ops/a.py", "backend/x.py"]
+    assert len(runner.calls) == 2
+    assert 'If-None-Match: "v1"' in runner.calls[1]
+    assert _spend(tmp_path)[-1]["served"] == "network"
 
 
 def test_exhausted_quota_waits_for_reset_before_next_network_call(
@@ -206,7 +233,7 @@ def test_stale_entry_within_cap_keeps_its_original_fetch_time(tmp_path: Path) ->
     second = StaticRunner([])
     client = _client(tmp_path, second, now=NOW)
 
-    assert client.load_json(_ARGV) == [1]
+    assert client.load_json(_ARGV, allow_stale=True) == [1]
     assert second.calls == []
     assert client.last_fetched_at == NOW - 60
 
@@ -411,7 +438,7 @@ def test_subcommand_quota_wait_beyond_budget_fails_closed(tmp_path: Path) -> Non
 _GRAPHQL_ARGV = ("gh", "api", "graphql", "-f", "query=query { viewer { login } }")
 
 
-def test_graphql_body_without_etag_is_served_stale_under_low_quota(
+def test_graphql_body_without_etag_is_served_stale_only_on_opt_in(
     tmp_path: Path,
 ) -> None:
     body = '{"data": {"viewer": {"login": "bot"}}}'
@@ -424,7 +451,54 @@ def test_graphql_body_without_etag_is_served_stale_under_low_quota(
     )
     client = _client(tmp_path, runner)
 
-    assert client.load_json(_GRAPHQL_ARGV) == json.loads(body)
-    assert client.load_json(_GRAPHQL_ARGV) == json.loads(body)
+    assert client.load_json(_GRAPHQL_ARGV, allow_stale=True) == json.loads(body)
+    assert client.load_json(_GRAPHQL_ARGV, allow_stale=True) == json.loads(body)
     assert len(runner.calls) == 1
     assert _spend(tmp_path)[-1]["served"] == "stale-cache"
+
+
+def test_seeding_reads_only_the_bounded_tail_of_a_large_spend_log(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    old_reading = {
+        "ts": NOW,
+        "resource": "core",
+        "served": "network",
+        "remaining": "40",
+        "reset": str(NOW + 120),
+    }
+    filler = {
+        "ts": NOW,
+        "resource": "graphql",
+        "served": "network",
+        "remaining": None,
+        "reset": None,
+        "padding": "x" * 200,
+    }
+    lines = [json.dumps(old_reading)] + [json.dumps(filler)] * 2000
+    (cache / "spend.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    sleeps: list[float] = []
+    runner = StaticRunner(
+        [CommandResult(("gh",), 0, _http(200, "[2]", remaining=4000), "")]
+    )
+
+    # The 40-remaining reading sits beyond the tail window, so it is not seeded.
+    assert _client(tmp_path, runner, sleeps).load_json(_OTHER) == [2]
+    assert sleeps == []
+
+
+def test_spend_log_rotates_once_it_outgrows_its_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(github_client, "_SPEND_ROTATE_BYTES", 64)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "spend.jsonl").write_text("x" * 128 + "\n", encoding="utf-8")
+    runner = StaticRunner([CommandResult(("gh",), 0, _http(200, "[1]"), "")])
+
+    assert _client(tmp_path, runner).load_json(_ARGV) == [1]
+
+    assert (cache / "spend.jsonl.1").read_text(encoding="utf-8").startswith("xxx")
+    assert len(_spend(tmp_path)) == 1

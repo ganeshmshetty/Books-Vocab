@@ -213,9 +213,12 @@ def _is_transient_failure(result: CommandResult) -> bool:
 
 
 _HTTP_STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})")
-_MAX_QUOTA_WAIT_SECONDS = 3900.0
-# A body may be served under low quota only while it is this young; older bodies
-# fall through to a live (revalidated) read so required checks cannot go stale.
+_MAX_QUOTA_WAIT_SECONDS = 600.0
+# Seeding reads only the newest bytes of spend.jsonl; the log rotates once it grows past the cap.
+_SPEND_TAIL_BYTES = 64 * 1024
+_SPEND_ROTATE_BYTES = 1024 * 1024
+# An ``allow_stale`` caller may be served a body under low quota only while it is this
+# young; older bodies fall through to a live (revalidated) read.
 _STALE_MAX_AGE_SECONDS = 300.0
 _MAX_CACHE_ENTRIES = 2000
 
@@ -272,6 +275,26 @@ def _is_api_read(argv: tuple[str, ...]) -> bool:
     return _is_read_only_json_query(argv)
 
 
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _spend_tail_lines(path: Path) -> list[str]:
+    """Complete lines from the last ``_SPEND_TAIL_BYTES`` of the spend log."""
+
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - _SPEND_TAIL_BYTES))
+        text = handle.read().decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    # Past the first byte of the window the leading line is a fragment, not a record.
+    return lines[1:] if size > _SPEND_TAIL_BYTES else lines
+
+
 class GitHubCliClient:
     def __init__(
         self,
@@ -301,11 +324,7 @@ class GitHubCliClient:
         """
 
         try:
-            lines = (
-                (self.cache_dir / "spend.jsonl")
-                .read_text(encoding="utf-8")
-                .splitlines()
-            )
+            lines = _spend_tail_lines(self.cache_dir / "spend.jsonl")
         except OSError:
             return
         latest: dict[str, dict[str, object]] = {}
@@ -351,10 +370,24 @@ class GitHubCliClient:
     def run(self, argv: tuple[str, ...], *, allow_nonzero: bool = False) -> str:
         return self._run_result(argv, allow_nonzero=allow_nonzero).stdout.strip()
 
-    def load_json(self, argv: tuple[str, ...], *, allow_nonzero: bool = False) -> Any:
+    def load_json(
+        self,
+        argv: tuple[str, ...],
+        *,
+        allow_nonzero: bool = False,
+        allow_stale: bool = False,
+    ) -> Any:
+        """Read JSON; a cached body is served under low quota only when ``allow_stale``.
+
+        Gate-path reads keep the default and always revalidate live (ETag or network),
+        so a head-dependent answer can never come from a body fetched before a push.
+        """
+
         self.last_fetched_at = None
         if _is_api_read(argv):
-            output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
+            output = self._load_api_read(
+                argv, allow_nonzero=allow_nonzero, allow_stale=allow_stale
+            )
         elif _is_read_only_json_query(argv):
             # Subcommand and paginated reads carry no response headers, so they
             # cannot be revalidated; they are still admitted by the quota gate
@@ -393,7 +426,9 @@ class GitHubCliClient:
         )
         self._sleep(wait)
 
-    def _load_api_read(self, argv: tuple[str, ...], *, allow_nonzero: bool) -> str:
+    def _load_api_read(
+        self, argv: tuple[str, ...], *, allow_nonzero: bool, allow_stale: bool
+    ) -> str:
         """Serve a ``gh api`` read through quota governance and ETag revalidation."""
 
         resource = "graphql" if _gh_api_endpoint(argv) == "graphql" else "core"
@@ -402,7 +437,8 @@ class GitHubCliClient:
 
         decision, _ = self.governor.decide(resource)
         if (
-            decision is QuotaDecision.SERVE_STALE
+            allow_stale
+            and decision is QuotaDecision.SERVE_STALE
             and cached is not None
             and self._now() - cached.fetched_at <= _STALE_MAX_AGE_SECONDS
         ):
@@ -487,7 +523,10 @@ class GitHubCliClient:
             )
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            with (self.cache_dir / "spend.jsonl").open("a", encoding="utf-8") as handle:
+            spend_path = self.cache_dir / "spend.jsonl"
+            if _file_size(spend_path) >= _SPEND_ROTATE_BYTES:
+                os.replace(spend_path, spend_path.with_name("spend.jsonl.1"))
+            with spend_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
         except OSError:
             return

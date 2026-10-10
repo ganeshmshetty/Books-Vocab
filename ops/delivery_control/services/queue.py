@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from ..domain.errors import PolicyViolation
 from ..domain.models import HandbackReceipt
@@ -35,7 +37,9 @@ class QueueService:
         git: GitQueryPort,
         github_query: GitHubQueryPort,
         github_command: GitHubCommandPort,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self.clock = clock
         self.registry = registry
         self.git = git
         self.github_query = github_query
@@ -79,6 +83,7 @@ class QueueService:
             live_main_sha=live_main_sha,
             registry=record,
             required=required,
+            evaluated_at=self.clock(),
             holds=holds | durable_holds,
             merge_queue_validates=validates,
         )
