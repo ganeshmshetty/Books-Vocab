@@ -157,13 +157,6 @@ protocol CloudKeyValueStore {
     func allKeys() -> [String]
 }
 
-/// 未實作清除／列舉的 fake 維持 no-op；`CloudPreferencesSync` 與需要驗證清除的
-/// 測試替身必須覆寫。
-extension CloudKeyValueStore {
-    func removeObject(forKey key: String) {}
-    func allKeys() -> [String] { [] }
-}
-
 extension CloudPreferencesSync: CloudKeyValueStore {}
 
 /// pause 時鐘的跨裝置狀態快照:`isPaused` + `pausedAt` 複合,共用單一 `updatedAt` 時戳。
@@ -231,30 +224,37 @@ enum AccountPreferenceNamespace {
 
     static func key(_ key: String, accountID: String?) -> String {
         guard let normalizedAccountID = normalizedAccountID(accountID) else { return key }
+        return "\(accountPrefix(normalizedAccountID))\(key)"
+    }
+
+    private static func accountPrefix(_ normalizedAccountID: String) -> String {
         let digest = SHA256.hash(data: Data(normalizedAccountID.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return "\(prefix)\(digest).\(key)"
+        return "\(prefix)\(digest)."
     }
 
     static func legacyMigrationMarker(feature: String) -> String {
         "\(prefix)legacy-migration.\(feature).v1"
     }
 
-    /// delete_account 專用：移除本機與 iCloud KVS 內所有帳號命名空間偏好
-    /// （`kg.account.<digest>.*`）。cleaner 不持有帳號 ID，因此以前綴掃描；
-    /// legacy-migration marker 保留，避免之後的帳號重新領養 pre-account raw 值。
-    static func purgeAllNamespacedPreferences(defaults: UserDefaults, cloud: CloudKeyValueStore) {
-        for key in defaults.dictionaryRepresentation().keys where isPurgeableNamespacedKey(key) {
+    /// delete_account 專用：僅移除「被刪除帳號」在本機與 iCloud KVS 內的命名空間偏好
+    /// （`kg.account.<digest>.*`）。其他帳號在同裝置上的偏好保持不動。
+    /// legacy-migration marker 不屬於任何帳號 digest，故天然保留，避免之後的帳號重新領養
+    /// pre-account raw 值。
+    static func purgeNamespacedPreferences(
+        accountID: String,
+        defaults: UserDefaults,
+        cloud: CloudKeyValueStore
+    ) {
+        guard let normalizedAccountID = normalizedAccountID(accountID) else { return }
+        let accountPrefix = accountPrefix(normalizedAccountID)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(accountPrefix) {
             defaults.removeObject(forKey: key)
         }
-        for key in cloud.allKeys() where isPurgeableNamespacedKey(key) {
+        for key in cloud.allKeys() where key.hasPrefix(accountPrefix) {
             cloud.removeObject(forKey: key)
         }
-    }
-
-    private static func isPurgeableNamespacedKey(_ key: String) -> Bool {
-        key.hasPrefix(prefix) && !key.hasPrefix("\(prefix)legacy-migration.")
     }
 
     /// Migrate the pre-account raw preference namespace exactly once per

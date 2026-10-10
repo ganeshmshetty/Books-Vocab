@@ -113,5 +113,10 @@ private final class ReaderSettingsFixtureCloudStore: CloudKeyValueStore {
     func set(_ value: Double, forKey key: String) { doubles[key] = value }
     func string(forKey key: String) -> String? { strings[key] }
     func set(_ value: String, forKey key: String) { strings[key] = value }
+    func removeObject(forKey key: String) {
+        doubles[key] = nil
+        strings[key] = nil
+    }
+    func allKeys() -> [String] { Array(doubles.keys) + Array(strings.keys) }
 }
 #endif

@@ -37,25 +37,25 @@ struct SettingsDeleteAccountCopyTests {
         #expect(SettingsDeleteAccountCopy.cancelTitle == L10n.string("取消"))
     }
 
+    /// Delete wipes the server-side `users/<uid>/library.db` (bookshelf + reading progress), so the
+    /// copy must keep promising that deletion. Dropping the row would understate the blast radius.
+    @Test func consequenceRowsStillListCloudReadingProgressAndBookshelf() {
+        let rows = SettingsDeleteAccountCopy.consequenceRows.map(\.text)
+        #expect(rows.contains(L10n.string("閱讀進度與書架")))
+        #expect(
+            SettingsDeleteAccountCopy.heroDescription
+                == L10n.string("刪除後將立即移除你的帳號、雲端生詞、閱讀進度、訂閱記錄。請仔細確認下列項目後才能繼續。")
+        )
+    }
+
     @Test func consequenceAndAcknowledgementLists_keepExpectedItems() {
-        #expect(SettingsDeleteAccountCopy.consequenceRows.count == 4)
+        #expect(SettingsDeleteAccountCopy.consequenceRows.count == 5)
         #expect(SettingsDeleteAccountCopy.acknowledgementRows.count == 3)
         #expect(SettingsDeleteAccountCopy.consequenceRows[0].text == L10n.string("帳號資訊與登入記錄"))
         #expect(SettingsDeleteAccountCopy.acknowledgementRows[2] == L10n.string("我了解資料一旦刪除即無法經由客服救回"))
         #expect(
             SettingsDeleteAccountCopy.confirmationPrompt(phrase: "DELETE")
                 == L10n.format("為避免誤觸，請輸入 %@ 後繼續：", "DELETE")
-        )
-    }
-
-    /// #2556: the copy must not promise bookshelf / reading-progress deletion,
-    /// because delete_account keeps local Book rows and files by owner decision.
-    @Test func copyDoesNotPromiseBookshelfOrReadingProgressDeletion() {
-        let bookshelfRow = L10n.string("閱讀進度與書架")
-        #expect(!SettingsDeleteAccountCopy.consequenceRows.contains { $0.text == bookshelfRow })
-        #expect(
-            SettingsDeleteAccountCopy.heroDescription
-                == L10n.string("刪除後將立即移除你的帳號、雲端生詞、訂閱記錄。請仔細確認下列項目後才能繼續。")
         )
     }
 }
