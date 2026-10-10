@@ -140,4 +140,41 @@ struct SyncAddConvergenceTests {
         #expect(entry.isSynced)
         #expect(entry.kgCardId == "card-r")
     }
+
+    @Test("後端 rejected 依 index 標 failed，不留 pending，其他項目照常收斂")
+    func rejected_item_marks_failed_not_pending() {
+        let ok = makePendingAdd("ok-word")
+        let bad = makePendingAdd("bad-word")
+        let response = KGAddResponse(
+            created: 1,
+            skipped: 0,
+            duplicates: [],
+            cardIds: ["ok-word": "card-ok"],
+            rejected: [KGRejectedItem(index: 1, word: "bad-word", reason: "source.title: too long")]
+        )
+
+        let unresolved = SyncCoordinator.convergeAddedEntries(response: response, entries: [ok, bad])
+
+        #expect(ok.isSynced)
+        #expect(bad.isFailed)
+        #expect(!bad.isPending)
+        #expect(bad.rejectedReason == "source.title: too long")
+        #expect(!bad.shouldUploadOnNextSync)
+        #expect(unresolved.map(\.word) == ["bad-word"])
+    }
+
+    @Test("KGAddResponse 解碼 rejected；舊回應缺欄位時預設為空陣列")
+    func decodes_rejected_and_defaults_when_absent() throws {
+        let withRejected = #"{"created":0,"skipped":0,"duplicates":[],"cardIds":{},"rejected":[{"index":0,"word":"x","reason":"word: bad"}]}"#
+        let decoded = try JSONDecoder().decode(KGAddResponse.self, from: Data(withRejected.utf8))
+        #expect(decoded.rejected == [KGRejectedItem(index: 0, word: "x", reason: "word: bad")])
+
+        let legacy = #"{"created":0,"skipped":0,"duplicates":[],"cardIds":{}}"#
+        let decodedLegacy = try JSONDecoder().decode(KGAddResponse.self, from: Data(legacy.utf8))
+        #expect(decodedLegacy.rejected.isEmpty)
+
+        let nullWord = #"{"created":0,"skipped":0,"duplicates":[],"cardIds":{},"rejected":[{"index":0,"word":null,"reason":"source.title: too long"}]}"#
+        let decodedNullWord = try JSONDecoder().decode(KGAddResponse.self, from: Data(nullWord.utf8))
+        #expect(decodedNullWord.rejected == [KGRejectedItem(index: 0, word: nil, reason: "source.title: too long")])
+    }
 }

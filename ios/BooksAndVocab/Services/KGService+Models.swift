@@ -39,6 +39,38 @@ struct KGAddResponse: Codable {
     let skipped: Int
     let duplicates: [String]
     let cardIds: [String: String]
+    /// 後端 per-item 拒收（#2248）；其他項目照常寫入。舊回應缺欄位時為空陣列。
+    let rejected: [KGRejectedItem]
+
+    init(
+        created: Int,
+        skipped: Int,
+        duplicates: [String],
+        cardIds: [String: String],
+        rejected: [KGRejectedItem] = []
+    ) {
+        self.created = created
+        self.skipped = skipped
+        self.duplicates = duplicates
+        self.cardIds = cardIds
+        self.rejected = rejected
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        created = try container.decode(Int.self, forKey: .created)
+        skipped = try container.decode(Int.self, forKey: .skipped)
+        duplicates = try container.decode([String].self, forKey: .duplicates)
+        cardIds = try container.decode([String: String].self, forKey: .cardIds)
+        rejected = try container.decodeIfPresent([KGRejectedItem].self, forKey: .rejected) ?? []
+    }
+}
+
+/// 後端 `RejectedVocabItem`：`index` 為原始提交陣列位置；`word` 可能缺失。
+struct KGRejectedItem: Codable, Equatable {
+    let index: Int
+    let word: String?
+    let reason: String
 }
 
 struct KGTranslationConfig: Codable {

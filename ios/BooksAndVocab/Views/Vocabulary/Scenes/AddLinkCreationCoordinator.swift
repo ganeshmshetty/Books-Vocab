@@ -712,9 +712,10 @@ final class AddLinkCreationCoordinator {
     }
 
     private static func source(for entry: VocabularyEntry) -> KGVocabSource? {
-        let title = entry.bookTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 與 vocab add payload 共用 500 scalar 上限（#2793），超長會讓後端整筆拒收。
+        let title = KGService.clampedSourceText(entry.bookTitle)
         guard !title.isEmpty else { return nil }
-        let chapter = entry.chapterTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chapter = entry.chapterTitle.map(KGService.clampedSourceText)
         return .book(title: title, chapter: chapter?.isEmpty == false ? chapter : nil)
     }
 

@@ -176,6 +176,16 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
         )
     }
 
+    /// 後端 `VocabSource.title/chapter` 上限 500（Pydantic `max_length` 以 code point 計）。
+    /// 超過會讓整筆 item 被 rejected，故 iOS 端先 trim 再以 unicodeScalars 截斷對齊。
+    static let sourceTextMaxScalars = 500
+
+    static func clampedSourceText(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.unicodeScalars.count > sourceTextMaxScalars else { return trimmed }
+        return String(String.UnicodeScalarView(trimmed.unicodeScalars.prefix(sourceTextMaxScalars)))
+    }
+
     /// `batchAdd` 的 VocabularyEntry → 線上 payload 映射。
     ///
     /// 抽成 static 純函式讓測試與 production 共用同一份邏輯（比照
@@ -191,9 +201,8 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
             // is a book. `bookTitle` is filled at capture time by
             // `ReaderVocabularyContext` — only omit `source` when it is
             // genuinely empty (e.g. demo / legacy entries).
-            let title = entry.bookTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-            let trimmedChapter = entry.chapterTitle?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = clampedSourceText(entry.bookTitle)
+            let trimmedChapter = entry.chapterTitle.map(clampedSourceText)
             let chapter = (trimmedChapter?.isEmpty == false) ? trimmedChapter : nil
             // Feature flag: backend doesn't persist source_lang/target_lang yet,
             // so suppress the fields entirely until KGFeatureFlags flips on.

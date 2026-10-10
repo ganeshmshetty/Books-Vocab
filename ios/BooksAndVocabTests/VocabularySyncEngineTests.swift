@@ -289,6 +289,65 @@ struct VocabularySyncEngineTests {
         #expect(!entry.isFailed)
     }
 
+    @Test("backend rejected add items fail the add step and make the sync partial")
+    func rejectedAddIsFailedAndPartial() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "rejected-word")
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.addResponse = KGAddResponse(
+            created: 0,
+            skipped: 0,
+            duplicates: [],
+            cardIds: [:],
+            rejected: [KGRejectedItem(index: 0, word: "rejected-word", reason: "word: bad")]
+        )
+
+        let result = await VocabularySyncEngine().execute(
+            pendingEntries: [entry],
+            modelContext: context,
+            service: service,
+            emit: { _ in }
+        )
+
+        #expect(result.terminalOutcome == .partial)
+        #expect(entry.isFailed)
+        #expect(!entry.isPending)
+    }
+
+    @Test("rejected add is terminal: the next sync neither re-uploads it nor re-reports the failure")
+    func rejectedAddIsNotRetriedOnNextSync() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "rejected-word")
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.addResponse = KGAddResponse(
+            created: 0,
+            skipped: 0,
+            duplicates: [],
+            cardIds: [:],
+            rejected: [KGRejectedItem(index: 0, word: "rejected-word", reason: "word: bad")]
+        )
+        let first = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+        #expect(first.terminalOutcome == .partial)
+
+        let second = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(service.calls.filter { $0 == "add" }.count == 1)
+        #expect(second.terminalOutcome == .completed)
+        #expect(entry.isFailed)
+    }
+
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema([VocabularyEntry.self, Notebook.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)

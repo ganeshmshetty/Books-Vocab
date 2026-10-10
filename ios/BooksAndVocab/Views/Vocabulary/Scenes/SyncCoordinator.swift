@@ -290,16 +290,26 @@ final class SyncCoordinator: SyncCoordinating {
     /// strip 尾標點/首字小寫破壞，例 "chateau," 永遠對不上 "chateau" →
     /// 卡在佇列重送）。無 cardId（異常）才保持 pending，下次重試。
     ///
-    /// 回傳未收斂的 entries（正常情況為空）供觀測；呼叫端不需特別處理，
-    /// 它們維持 pending+add 自然進下一輪。
+    /// 後端 `rejected` 以提交陣列 `index` 指向原 entry（#2248），依 index 而非 word
+    /// 標記（同字重複時 word 對不上）：直接 markSyncFailed，不留 pending 無限重送。
+    ///
+    /// 回傳未收斂的 entries（rejected 與無 cardId 的異常項）供呼叫端判定失敗；
+    /// 無 cardId 且未被拒收者維持 pending+add，下一輪自然重試。
     @discardableResult
     static func convergeAddedEntries(
         response: KGAddResponse,
         entries: [VocabularyEntry]
     ) -> [VocabularyEntry] {
+        let rejectedReasons = Dictionary(
+            response.rejected.map { ($0.index, $0.reason) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var unresolved: [VocabularyEntry] = []
-        for entry in entries {
-            if let cardId = response.cardIds[entry.word] {
+        for (index, entry) in entries.enumerated() {
+            if let reason = rejectedReasons[index] {
+                entry.markRejected(reason: reason)
+                unresolved.append(entry)
+            } else if let cardId = response.cardIds[entry.word] {
                 entry.kgCardId = cardId
                 entry.markSynced()
             } else {
