@@ -131,6 +131,8 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
 
+> **執行方式（#2923）**：本節的 `mv` 與 `tar x` 會寫入受保護的 `kg-data`／`kg-prod`，`devops_kg_safe.sh run` 會以 `devops_run_guard`（`ops/lib/devops_run_guard.sh`）攔截，因此**必須直接 ssh 到 standby 逐行執行，不可經 `devops_kg_safe.sh run` 包裝**。同理，以下維運指令也會被 guard 擋下，改用直接 ssh 執行：`rm -rf ~/kg-prod/backend/.venv`、`cp .env.example .env`、`sqlite3 ... VACUUM INTO`、`find . -name __pycache__ -exec rm`。受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app`、home 與 docker volume。
+
 ```bash
 set -e
 DATE=2026-05-31  # 同 §2.3

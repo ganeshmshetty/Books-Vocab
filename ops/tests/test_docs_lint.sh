@@ -36,6 +36,22 @@ require_grep() {
   }
 }
 
+# #2923: §2.5 restore moves/extracts into kg-data, which devops run guard blocks.
+# The SOP must say to run it over direct ssh and name the protected surface.
+require_grep_quiet() {
+  grep -q "$1" docs/sop/backup_restore.md || {
+    echo "backup_restore §2.5 missing '$1'" >&2
+    exit 1
+  }
+}
+require_grep_quiet "直接 ssh"
+require_grep_quiet "devops_kg_safe.sh run"
+require_grep_quiet "kg-data"
+require_grep_quiet "kg-prod"
+require_grep_quiet "devops_run_guard"
+require_grep_quiet "__pycache__"
+require_grep_quiet "VACUUM INTO"
+
 grep -q "docs/registry.yml" CLAUDE.md
 grep -q "ops/docs_impact.py" CLAUDE.md
 grep -q "ops/docs_lint.sh" CLAUDE.md
