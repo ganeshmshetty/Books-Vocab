@@ -100,15 +100,38 @@ enum VocabularyExporter {
 
     // MARK: - Internal Helpers
 
+    /// 每次匯出各自一個 `<tmp>/exports/<UUID>/` 目錄，檔名保持純淨（`vocabulary_*.{csv,json,tsv}`）。
     private static func saveToTemp(content: String, filename: String) -> URL? {
-        let uniqueFilename = "\(UUID().uuidString)-\(filename)"
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(uniqueFilename)
+        let dir = exportsRoot().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = dir.appendingPathComponent(filename)
         do {
-            try content.write(to: tempURL, atomically: true, encoding: .utf8)
-            return tempURL
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            return fileURL
         } catch {
+            try? FileManager.default.removeItem(at: dir)
             return nil
         }
+    }
+
+    /// 分享結束（sheet dismiss）後刪除該次匯出的目錄。只接受 `<tmp>/exports/<UUID>/<file>` 精確結構，
+    /// 其他路徑一律不動，避免誤刪非匯出檔案。
+    static func cleanup(_ url: URL?) {
+        guard let url else { return }
+        let dir = url.deletingLastPathComponent()
+        guard dir.deletingLastPathComponent().standardizedFileURL.path == exportsRoot().standardizedFileURL.path,
+              UUID(uuidString: dir.lastPathComponent) != nil
+        else { return }
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// App 啟動時清掉上次 session 殘留（未走到 dismiss 的）匯出目錄；純 file I/O，呼叫端不阻塞啟動。
+    static func purgeStaleExports(in tempDirectory: URL = FileManager.default.temporaryDirectory) {
+        try? FileManager.default.removeItem(at: exportsRoot(in: tempDirectory))
+    }
+
+    private static func exportsRoot(in tempDirectory: URL = FileManager.default.temporaryDirectory) -> URL {
+        tempDirectory.appendingPathComponent("exports", isDirectory: true)
     }
 
     private static func escapeCSV(_ text: String) -> String {
