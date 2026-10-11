@@ -20,11 +20,17 @@ import complexity
 import deliver
 
 BUDGET = complexity.BUDGET_FILE
+FRAGMENT_DIR = "ops/complexity_budget.d"
 
 
 def sh(repo: Path, *argv: str) -> str:
     done = subprocess.run(argv, cwd=repo, capture_output=True, text=True, check=True)
     return done.stdout.strip()
+
+
+def effective(repo: Path) -> dict[str, int]:
+    """The ceilings HEAD enforces: the base file plus every fragment beside it."""
+    return complexity.effective_ceilings_at(repo, "HEAD")
 
 
 def write(repo: Path, rel: str, text: str) -> None:
@@ -94,14 +100,24 @@ def test_budget_only_conflict_takes_trunk_ceiling_and_raises_the_lane_overage(
     repo = build_lane(tmp_path, clash=False, lane_grows=True)
     rebase(repo)
 
-    # The lane's own 120 is gone; trunk's 101 was re-raised to measured (111) + LIFT_MARGIN.
-    ceilings = json.loads(sh(repo, "git", "show", f"HEAD:{BUDGET}"))["ceilings"]
-    assert ceilings == {"ops": 116, "docs": 1000, "workflows": 1000}
+    # The lane's own 120 is gone: the base keeps trunk's 101, and the lane's overage (111 measured,
+    # LIFT_MARGIN 5) is a fragment beside it, so the effective ceiling is 116.
+    assert (
+        json.loads(sh(repo, "git", "show", f"HEAD:{BUDGET}"))["ceilings"]["ops"] == 101
+    )
+    assert effective(repo) == {"ops": 116, "docs": 1000, "workflows": 1000}
+    assert json.loads(sh(repo, "git", "show", f"HEAD:{FRAGMENT_DIR}/lane.json"))[
+        "raise"
+    ] == {"ops": 15}
     # Rebase finished: the lane commit is replayed, then exactly one named raise commit on top.
     assert sh(repo, "git", "log", "-2", "--format=%s").splitlines() == [
         "chore(ops): raise complexity ceiling after rebase onto origin/main",
         "feat(ops): lane growth (#3004)",
     ]
+    assert (
+        sh(repo, "git", "show", "--name-only", "--format=", "HEAD")
+        == f"{FRAGMENT_DIR}/lane.json"
+    )
     body = sh(repo, "git", "log", "-1", "--format=%B")
     assert "- ops: 101 -> 116 (measured 111 + 5)" in body
     assert "- docs" not in body and "- workflows" not in body
@@ -193,8 +209,7 @@ def test_lift_judges_the_lane_without_its_fork_point(tmp_path: Path) -> None:
 
     # 135 measured against trunk's 126 is 10 lines of lane growth over 1 line of base room.  The
     # raise is judged the way CI judges it (no fork point), so it holds in both views.
-    ceilings = json.loads(sh(repo, "git", "show", f"HEAD:{BUDGET}"))["ceilings"]
-    assert ceilings["ops"] == 140
+    assert effective(repo)["ops"] == 140
     assert "- ops: 126 -> 140 (measured 135 + 5)" in sh(
         repo, "git", "log", "-1", "--format=%B"
     )
@@ -237,8 +252,7 @@ def test_a_failed_lift_rolls_the_rebase_back_so_a_rerun_completes(
     monkeypatch.setattr(complexity, "lift", real_lift)
     # A rerun redoes the rebase and the raise, instead of finding the lane already behind.
     rebase(repo)
-    ceilings = json.loads(sh(repo, "git", "show", f"HEAD:{BUDGET}"))["ceilings"]
-    assert ceilings["ops"] == 116
+    assert effective(repo)["ops"] == 116
     assert sh(repo, "git", "log", "-1", "--format=%s") == (
         "chore(ops): raise complexity ceiling after rebase onto origin/main"
     )
@@ -259,3 +273,67 @@ def test_lift_never_raises_on_the_base_itself(tmp_path: Path) -> None:
 
     assert complexity.lift(repo, "origin/main") == {}
     assert (repo / BUDGET).read_text() == budget_text(100)
+
+
+def fragment_text(raise_ops: int) -> str:
+    data = {
+        "schema": complexity.FRAGMENT_SCHEMA,
+        "issue": 0,
+        "raise": {"ops": raise_ops},
+        "note": "fixture",
+    }
+    return json.dumps(data, indent=2) + "\n"
+
+
+def build_clean_sibling_lane(tmp_path: Path) -> Path:
+    """Base headroom is 400 (ops 100 lines, ceiling 500), not 10.
+
+    The lane adds 450 ops lines and raises its own fragment by 55 (measured 550, effective 555).
+    Trunk then lands a sibling that adds 450 lines and raises its own fragment by 55.  The lane's
+    commit touches neither the base file nor the sibling's fragment, so the rebase is clean and the
+    budget-only path never runs.  Measured 1000 is over effective 610 all the same.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sh(repo, "git", "init", "-q", "-b", "main")
+    sh(repo, "git", "config", "user.email", "t@example.com")
+    sh(repo, "git", "config", "user.name", "T")
+    write(repo, "ops/a.py", "a\n" * 100)
+    write(repo, "docs/d.md", "d\n" * 5)
+    write(repo, ".github/workflows/w.yml", "w\n" * 5)
+    write(repo, BUDGET, budget_text(500))
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-qm", "base")
+
+    sh(repo, "git", "switch", "-q", "-c", "lane")
+    write(repo, "ops/b.py", "b\n" * 450)
+    write(repo, f"{FRAGMENT_DIR}/lane.json", fragment_text(55))
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-qm", "feat(ops): lane growth (#3004)")
+
+    sh(repo, "git", "switch", "-q", "main")
+    write(repo, "ops/c.py", "c\n" * 450)
+    write(repo, f"{FRAGMENT_DIR}/sibling.json", fragment_text(55))
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-qm", "feat(ops): sibling growth")
+    sh(repo, "git", "update-ref", "refs/remotes/origin/main", "main")
+    sh(repo, "git", "switch", "-q", "lane")
+    return repo
+
+
+def test_a_clean_rebase_onto_a_sibling_fragment_still_lifts_the_lane(
+    tmp_path: Path,
+) -> None:
+    repo = build_clean_sibling_lane(tmp_path)
+    rebase(repo)
+
+    # 1000 measured against 610 needs 395 more: the lane's fragment goes 55 -> 450, effective 1005.
+    assert json.loads(sh(repo, "git", "show", f"HEAD:{FRAGMENT_DIR}/lane.json"))[
+        "raise"
+    ] == {"ops": 450}
+    assert effective(repo)["ops"] == 1005
+    assert complexity.main(["check"], repo=repo) == 0
+    assert sh(repo, "git", "status", "--porcelain") == ""
+    assert sh(repo, "git", "log", "-1", "--format=%s") == (
+        "chore(ops): raise complexity ceiling after rebase onto origin/main"
+    )

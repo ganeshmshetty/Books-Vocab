@@ -726,14 +726,12 @@ class Delivery:
         )
         before = self.git("rev-parse", "HEAD", stage="preflight")
         done = self.runner(["git", "rebase", TRUNK], self.work)
-        budget_only = False
         # Each budget-only step settles one lane commit, so ``replay`` bounds the loop.
         for _ in range(replay):
             if done.returncode == 0 or self.unmerged_paths() != [
                 complexity.BUDGET_FILE
             ]:
                 break
-            budget_only = True
             done = self.take_trunk_budget()
         if done.returncode != 0:
             self.runner(["git", "rebase", "--abort"], self.work)
@@ -742,8 +740,10 @@ class Delivery:
                 f"cleanly (rebase aborted):\n{failure_detail(done) or 'no output'}"
             )
         self.say(f"rebased onto {TRUNK} ({behind} commit(s))")
-        if budget_only:
-            self.lift_budget(before)
+        # A clean rebase can leave the lane over its headroom too: a sibling's fragment spends the
+        # base room under it, and the lane's commits never conflict on the budget.  Lift always;
+        # it writes nothing when no area is over.
+        self.lift_budget(before)
 
     def unmerged_paths(self) -> list[str]:
         return self.git(
@@ -774,12 +774,12 @@ class Delivery:
         )
 
     def lift_budget(self, before: str) -> None:
-        """After a budget-only rebase, raise the ceilings the lane is over, in one named commit.
+        """After a rebase onto trunk, raise the ceilings the lane is over, in one named commit.
 
         Runs once the rebase has settled, not per step: a step measures only the commits replayed
         so far, so a later commit's growth would slip past the ceiling set there.  The rebase and
         its raise land together or not at all: any failure, Ctrl-C included, resets the lane to
-        ``before``, budget file included, so a rerun still sees it behind and redoes the step.
+        ``before``, budget fragment included, so a rerun still sees it behind and redoes the step.
         Otherwise a rebased lane whose raise was lost would look current and never be lifted.
         """
         try:
@@ -795,10 +795,15 @@ class Delivery:
                 + "\n".join(lines)
                 + "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
             )
-            self.git("add", "--", complexity.BUDGET_FILE, stage="budget commit")
+            # The rebase has settled on a clean tree, so this stages only the fragment lift just wrote.
+            self.git("add", "--", complexity.FRAGMENT_DIR, stage="budget commit")
             self.git("commit", "-m", message, stage="budget commit")
         except BaseException as exc:
             self.git("reset", "--hard", before, stage="budget rollback")
+            # reset leaves untracked files alone: the fragment lift wrote is one, so clear that path too.
+            self.git(
+                "clean", "-fd", "--", complexity.FRAGMENT_DIR, stage="budget rollback"
+            )
             if not isinstance(exc, Exception):
                 raise
             raise DeliverError(
