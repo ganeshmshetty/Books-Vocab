@@ -5,6 +5,12 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/ops/kg_disk_guard.sh"
 TMP="$(mktemp -d -t kg_disk_guard_test_XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
+# Hermetic HOME: any path the guard derives from $HOME (Application Support,
+# ~/.local) must land in the fixture, never on the runner's real home.  The
+# real uv binary is pinned before the override.
+REAL_UV_BIN="${KG_DISK_GUARD_UV_BIN:-$HOME/.local/bin/uv}"
+export HOME="$TMP/home"
+mkdir -p "$HOME"
 PASS=0; FAIL=0
 # Each fixture is a serial one-shot; bypass the host-level singleton lock so
 # the test suite does not depend on launchd/shlock state from another run.
@@ -27,6 +33,8 @@ bad(){ echo "  ✗ $*"; FAIL=$((FAIL+1)); }
 # A failed state assertion must say what the guard actually recorded; CI is the
 # only place some of these diverge and its log is all we get.
 bad_state(){ bad "$1"; printf '      state: %s\n' "$(tr -d '\n' < "$2" 2>/dev/null | head -c 1600)"; }
+
+[[ "$HOME" == "$TMP/home" ]] && ok "harness HOME is the fixture, not the runner home" || bad "harness HOME escaped the fixture: $HOME"
 
 # Linux runners do not provide macOS's shlock.  Keep production behavior
 # fail-closed when it is unavailable, but give lock-acquisition fixtures the
@@ -652,7 +660,7 @@ git -C "$supervision" commit -m supervision >/dev/null 2>&1
 printf '%s\n' '{"schema":"kg.worktree.registry.v2","records":[]}' > "$registry"
 KG_DISK_GUARD_WORKSPACE="$root" KG_DISK_GUARD_STATE="$state" \
   KG_DISK_GUARD_REGISTRY_STATE="$registry" KG_DISK_GUARD_LANE_USAGE_STATE="$lane_state" \
-  KG_DISK_USAGE_CODEX_WORKTREE_ROOT="$codex_root" KG_DISK_GUARD_UV_BIN="$HOME/.local/bin/uv" \
+  KG_DISK_USAGE_CODEX_WORKTREE_ROOT="$codex_root" KG_DISK_GUARD_UV_BIN="$REAL_UV_BIN" \
   KG_DISK_GUARD_FREE_BYTES=$((30*1073741824)) KG_DISK_GUARD_ACTIVE_BUILD=0 \
   "$SCRIPT" >/dev/null 2>&1
 grep -q '"lane_kind": "supervision"' "$lane_state" && ok "supervision checkout kind is explicit" || bad "supervision checkout kind missing"
@@ -719,7 +727,7 @@ state_count="$(find "$TMP/high" -maxdepth 1 -type f -name 'state.json*' | wc -l 
 [[ "$bytes2" -lt 1400 && "$state_count" -eq 1 ]] && ok "state bounded, one atomic file (${bytes2} bytes)" || bad "state accumulation: bytes=$bytes2 files=$state_count"
 
 echo "── lane usage: missing active lanes warn without blocking disk attribution ──"
-export KG_DISK_GUARD_UV_BIN="$HOME/.local/bin/uv"
+export KG_DISK_GUARD_UV_BIN="$REAL_UV_BIN"
 root="$TMP/lane-usage"; state="$root/guard.json"; registry="$root/registry.json"; lane_state="$root/lane-disk-usage.json"
 mkdir -p "$root"
 git -C "$root" init -b main >/dev/null 2>&1
