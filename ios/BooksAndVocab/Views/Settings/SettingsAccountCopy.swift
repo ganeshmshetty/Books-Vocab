@@ -18,12 +18,17 @@ enum SettingsAccountCopy {
     static var unsyncedLogoutCancelTitle: String { L10n.string("取消") }
     static var unsyncedLogoutUnknownMessage: String { L10n.string("無法確認未同步資料，登出後可能永久遺失。") }
 
-    /// Logout gate copy for `count` rows the server has not confirmed (#2745).
-    static func unsyncedLogoutMessage(count: Int) -> String {
-        L10n.format(
-            "尚有 %@ 未同步，登出後將永久遺失。",
-            L10n.format("card_count_plural", Int64(count))
-        )
+    /// Logout gate copy for the cards and review records the server has not
+    /// confirmed (#2745). Same card / review wording as the reset dialog.
+    static func unsyncedLogoutMessage(cards: Int, reviews: Int) -> String {
+        var parts: [String] = []
+        if cards > 0 {
+            parts.append(L10n.format("card_count_plural", Int64(cards)))
+        }
+        if reviews > 0 {
+            parts.append(L10n.format("%@ 筆複習紀錄", String(reviews)))
+        }
+        return L10n.format("尚有 %@ 未同步，登出後將永久遺失。", parts.joined(separator: " / "))
     }
     static var upgradeTitle: String { L10n.string("升級") }
     static var activePlanTitle: String { L10n.string("Pro 已啟用") }

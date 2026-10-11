@@ -808,26 +808,65 @@ struct BackgroundSyncActorTests {
         #expect(try BackgroundSyncActor.unsyncedEntryCount(in: context) == 0)
     }
 
-    // #2745: the logout gate decision. Zero unsynced rows must proceed with no
-    // prompt; any unsynced row or an unreadable count must require confirmation.
-    @Test func logoutGate_zeroPendingRowsProceedsDirectly() throws {
+    // #2745: clearUserData also deletes every ReviewRecord, so unacknowledged
+    // reviews (pushedAt == nil) are logout losses too and must be counted.
+    @Test func unsyncedReviewCount_countsOnlyUnacknowledgedRecords() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let owed = ReviewRecord(word: "owed", entryID: nil, feedback: 1)
+        let acknowledged = ReviewRecord(word: "acked", entryID: nil, feedback: 1)
+        acknowledged.pushedAt = .now
+        context.insert(owed)
+        context.insert(acknowledged)
+        try context.save()
+
+        #expect(try BackgroundSyncActor.unsyncedReviewCount(in: context) == 1)
+    }
+
+    // #2745: the logout gate reads every row logout deletes. It proceeds with no
+    // prompt only when no card and no review is unconfirmed by the server.
+    @Test func logoutGate_allSyncedAndAcknowledgedProceedsDirectly() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let synced = VocabularyEntry(word: "synced", translation: "m", context: "ctx", bookTitle: "Book")
+        synced.markSynced()
+        let acknowledged = ReviewRecord(word: "synced", entryID: nil, feedback: 1)
+        acknowledged.pushedAt = .now
+        context.insert(synced)
+        context.insert(acknowledged)
+        try context.save()
+
+        #expect(SettingsLogoutGate.evaluate(in: context) == .proceed)
+    }
+
+    @Test func logoutGate_unsyncedCardsRequireConfirmation() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        context.insert(VocabularyEntry(word: "pending", translation: "m", context: "ctx", bookTitle: "Book"))
+        try context.save()
+
+        #expect(SettingsLogoutGate.evaluate(in: context) == .confirmUnsynced(cards: 1, reviews: 0))
+    }
+
+    // Regression for the review finding on #3159: an offline review of an already
+    // synced card leaves zero unsynced VocabularyEntry rows, yet clearUserData still
+    // deletes the unacknowledged ReviewRecord. The gate must ask before that loss.
+    @Test func logoutGate_unacknowledgedReviewOnlyRequiresConfirmation() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let synced = VocabularyEntry(word: "synced", translation: "m", context: "ctx", bookTitle: "Book")
         synced.markSynced()
         context.insert(synced)
+        context.insert(ReviewRecord(word: "synced", entryID: nil, feedback: 1))
         try context.save()
 
-        let count = try BackgroundSyncActor.unsyncedEntryCount(in: context)
-        #expect(SettingsLogoutGate.decide(unsyncedCount: count) == .proceed)
-    }
-
-    @Test func logoutGate_unsyncedRowsRequireConfirmation() {
-        #expect(SettingsLogoutGate.decide(unsyncedCount: 3) == .confirmUnsynced(3))
+        #expect(SettingsLogoutGate.evaluate(in: context) == .confirmUnsynced(cards: 0, reviews: 1))
     }
 
     @Test func logoutGate_unreadableCountRequiresConfirmation() {
-        #expect(SettingsLogoutGate.decide(unsyncedCount: nil) == .confirmUnreadable)
+        #expect(SettingsLogoutGate.decide(unsyncedCards: nil, unsyncedReviews: 0) == .confirmUnreadable)
+        #expect(SettingsLogoutGate.decide(unsyncedCards: 0, unsyncedReviews: nil) == .confirmUnreadable)
     }
 
     @Test func buildReviewEventsPushPayload_encodesLocalRecords() async throws {

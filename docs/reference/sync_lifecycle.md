@@ -197,6 +197,7 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 - **generation re-check（防 TOCTOU）**：`waitForPendingLocalDataCleanup` 進場記 `localDataCleanupGeneration`，await 完若 generation 已被新 logout 遞增則重 loop，直到鏈上最後一個 cleanup 完成 —— 單次 await 只跟得到進場當下 handle，re-check 補住懸掛期間又 logout 的窗口。
 - **gate 期間被擋的是同一次 sync（不變式）**：sync 被 gate 擋下等待，等待結束後**是同一次 sync 繼續往下跑**（非取消後補跑），因此「等 cleanup」與「跳過這次 sync 待下次補跑」語意等價，**不會漏 sync**。
 - **Accepted residual**：gate 通過後、sync 真正動工前，caller（非 MainActor 的 `backgroundSync`）resume 有一次 executor hop；logout 恰落在此窗口仍會與新 cleanup 並行。徹底閉合需 sync 內部 generation re-check/abort（另案），現靠空庫安全網 + 帳號切換清 boundary 緩解。
+- **使用者觸發的登出前置確認（#2745）**：Settings 登出按鈕經 `SettingsLogoutGate.evaluate(in:)` 計數未被 server 確認的卡（`syncStatus != 1`）與複習紀錄（`pushedAt == nil`）；皆為 0 直接登出，否則先確認，計數讀取失敗同樣確認。401 觸發的自動登出（`KGService.handleUnauthorized`）不經此確認，未同步列的處理另案。
 
 ## 帳號偏好 purge 與 delete_account 邊界（#2434 / #2556）
 

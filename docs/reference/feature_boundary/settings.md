@@ -127,6 +127,7 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 ## 現況判讀
 
 - `SettingsView` 已從單檔主容器拆成 `View + State + Bindings` 三檔；主檔 143 行，保留組裝、task、sheet、alert 與 RenderStormProbe wiring
+- 登出按鈕先過 `SettingsLogoutGate`（定義在 `SettingsAccountSection.swift`）：未同步卡或複習紀錄非零即 confirmationDialog，文案 `SettingsAccountCopy.unsyncedLogoutMessage(cards:reviews:)`；登出流程與 sync 不變式見 `sync_lifecycle.md` 的 logout-cleanup gate 段
 - 原 645 行 `+Components` 已拆三檔：微元件留 `+Components`（192）、複合互動元件進 `+Actions`（438，現為最大檔案）、控件樣式進 `+Controls`（116）
 - `SettingsCoordinator` 已從純導航狀態機（190 行）長成「狀態 + 非同步協調」混合職責（413 行）；再長大時優先考慮把樂觀寫＋回滾協調抽 service，而不是繼續堆 coordinator
 - 後續若再新增設定區塊，優先擴充 `SettingsView+State.swift` 或對應 section view，而不是把狀態組裝塞回主檔

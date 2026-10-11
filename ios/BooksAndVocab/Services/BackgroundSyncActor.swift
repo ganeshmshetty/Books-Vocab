@@ -415,6 +415,14 @@ actor BackgroundSyncActor {
         )
     }
 
+    /// Counts review events the server has not acknowledged (`pushedAt == nil`).
+    /// `clearUserData` deletes every ReviewRecord, so these are lost on logout too.
+    static func unsyncedReviewCount(in context: ModelContext) throws -> Int {
+        try context.fetchCount(
+            FetchDescriptor<ReviewRecord>(predicate: #Predicate<ReviewRecord> { $0.pushedAt == nil })
+        )
+    }
+
     /// Deletes only server-synced entries (syncStatus == 1).
     /// Used on startup when not logged in to remove stale KG data
     /// while preserving locally-created pending words (syncStatus == 0).
