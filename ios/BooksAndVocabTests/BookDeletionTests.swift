@@ -153,6 +153,64 @@ struct LocalBookFileManagerDeletionTests {
         #expect(FileManager.default.fileExists(atPath: locked.appendingPathComponent("book.epub").path))
         #expect(!FileManager.default.fileExists(atPath: open.appendingPathComponent("book.epub").path))
     }
+
+    // MARK: - tombstone 只在成功時記錄（#2750）
+
+    private func makeStore() -> PendingBookDeletionStore {
+        PendingBookDeletionStore(defaults: UserDefaults(suiteName: "BookDeletionTombstone-\(UUID().uuidString)")!)
+    }
+
+    @Test func failedRemovalRecordsNoTombstone() throws {
+        let root = try makeRoot()
+        defer { cleanUp(root) }
+        let locked = try makeDir("locked", in: root)
+        try Data("x".utf8).write(to: locked.appendingPathComponent("book.epub"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        let store = makeStore()
+
+        #expect(throws: BookFileDeletionError.self) {
+            try LocalBookFileManager(locations: [locked], pendingDeletions: store, iCloudAvailable: { false })
+                .deleteBookFile(named: "book.epub")
+        }
+
+        #expect(store.fileNames.isEmpty)
+    }
+
+    @Test func deleteBookFileNeverRecordsTombstoneByItself() throws {
+        // tombstone 只能在書列刪除 save 成功後由 coordinator 記錄（見 recordPendingICloudDeletion），不得由檔案刪除提前落地。
+        let root = try makeRoot()
+        defer { cleanUp(root) }
+        let a = try makeDir("a", in: root)
+        let store = makeStore()
+
+        try LocalBookFileManager(locations: [a], pendingDeletions: store, iCloudAvailable: { false })
+            .deleteBookFile(named: "book.epub")
+
+        #expect(store.fileNames.isEmpty)
+    }
+
+    @Test func recordWhileICloudUnavailableRecordsTombstone() throws {
+        let root = try makeRoot()
+        defer { cleanUp(root) }
+        let a = try makeDir("a", in: root)
+        let store = makeStore()
+        let files = LocalBookFileManager(locations: [a], pendingDeletions: store, iCloudAvailable: { false })
+
+        try files.deleteBookFile(named: "book.epub")
+        files.recordPendingICloudDeletion(named: "book.epub")
+
+        #expect(store.fileNames == ["book.epub"])
+    }
+
+    @Test func tombstoneStoreKeepsOnlyNewestEntries() {
+        let store = makeStore()
+        let total = PendingBookDeletionStore.maxEntries + 5
+        for index in 0..<total { store.insert("\(index).epub") }
+
+        #expect(store.fileNames.count == PendingBookDeletionStore.maxEntries)
+        #expect(!store.fileNames.contains("0.epub"))
+        #expect(store.fileNames.contains("\(total - 1).epub"))
+    }
 }
 
 #if os(iOS)
@@ -163,10 +221,14 @@ struct BookshelfDeleteBookTests {
     private final class SpyFileManager: BookFileManaging {
         let failure: Error?
         private(set) var requested: [String] = []
+        private(set) var recorded: [String] = []
         init(failure: Error? = nil) { self.failure = failure }
         func deleteBookFile(named fileName: String) throws {
             requested.append(fileName)
             if let failure { throw failure }
+        }
+        func recordPendingICloudDeletion(named fileName: String) {
+            recorded.append(fileName)
         }
     }
 
@@ -211,6 +273,7 @@ struct BookshelfDeleteBookTests {
         )
 
         #expect(files.requested == [fileName])
+        #expect(files.recorded.isEmpty)
         #expect(toast.current?.style == .error)
         #expect(toast.current?.message != "已刪除".localized)
 
@@ -243,11 +306,67 @@ struct BookshelfDeleteBookTests {
         )
 
         #expect(files.requested == [fileName])
+        #expect(files.recorded == [fileName])
         #expect(toast.current?.style == .success)
         let fresh = ModelContext(container)
         #expect(try fresh.fetch(FetchDescriptor<Book>()).isEmpty)
         let entries = try fresh.fetch(FetchDescriptor<VocabularyEntry>())
         #expect(entries.map(\.bookId) == [nil])
+    }
+
+    /// #2750 r2（P1）：書列 save 失敗（回滾保留）時不得留下 tombstone。否則 iCloud 回來後 reconcile 會刪掉仍在庫書的 iCloud 副本與 manifest，書永久遺失。
+    @Test func saveFailureWhileICloudUnavailableRecordsNoTombstoneAndICloudCopySurvivesReconcile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let local = dir.appendingPathComponent("local", isDirectory: true)
+        let icloud = dir.appendingPathComponent("icloud", isDirectory: true)
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: icloud, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let storeURL = dir.appendingPathComponent("store.sqlite")
+        let schema = Schema([
+            Book.self, VocabularyEntry.self, ReviewRecord.self, Notebook.self,
+            PodcastSeries.self, PodcastEpisode.self, PodcastProgress.self
+        ])
+
+        // 可寫 store：種一本書，iCloud 副本與 manifest 都在
+        let writable = try ModelContainer(for: schema, configurations: [ModelConfiguration(url: storeURL, cloudKitDatabase: .none)])
+        let fileName = "\(UUID().uuidString)_kept.epub"
+        let book = Book(title: "Kept", author: "A", fileName: fileName)
+        writable.mainContext.insert(book)
+        try writable.mainContext.save()
+        try Data("epub".utf8).write(to: icloud.appendingPathComponent(fileName))
+        try BookManifestStore(rootDirectory: icloud).write(BookManifest(
+            bookId: book.id, fileName: fileName, originalFileName: nil, title: "Kept", author: "A",
+            format: .epub, coverImageData: nil, dateAdded: Date(), dateLastRead: nil,
+            progression: nil, lastReadLocatorJSON: nil, preferredNotebookId: nil
+        ))
+
+        // 唯讀 store：刪除的 save 必定失敗，走 rollback 分支
+        let readOnly = try ModelContainer(for: schema, configurations: [ModelConfiguration(url: storeURL, allowsSave: false, cloudKitDatabase: .none)])
+        let target = try #require(try readOnly.mainContext.fetch(FetchDescriptor<Book>()).first)
+        let tombstones = PendingBookDeletionStore(defaults: UserDefaults(suiteName: "BookDeletionSaveFailure-\(UUID().uuidString)")!)
+        let files = LocalBookFileManager(locations: [local], pendingDeletions: tombstones, iCloudAvailable: { false })
+        let toast = AppToastCoordinator()
+
+        BookshelfCoordinator().deleteBook(
+            target,
+            modelContext: readOnly.mainContext,
+            fileManager: files,
+            toastCoordinator: toast
+        )
+
+        #expect(toast.current?.style == .error)
+        #expect(tombstones.fileNames.isEmpty)
+
+        // iCloud 回來後 reconcile：書列仍在，iCloud 副本與 manifest 不得被刪
+        let context = ModelContext(writable)
+        _ = try BookLibraryReconciler(
+            rootDirectory: icloud, legacyDirectories: [], pendingDeletions: tombstones, isICloudAvailable: { true }
+        ).reconcile(context: context)
+
+        #expect(FileManager.default.fileExists(atPath: icloud.appendingPathComponent(fileName).path))
+        #expect(FileManager.default.fileExists(atPath: BookManifestStore(rootDirectory: icloud).url(for: book.id).path))
+        #expect(try context.fetch(FetchDescriptor<Book>()).map(\.id) == [book.id])
     }
 }
 #endif

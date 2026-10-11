@@ -462,4 +462,99 @@ struct BookLibraryReconcilerTests {
         #expect(result.duplicateRowsRemoved == 0)
         #expect(books.count == 2)
     }
+
+    // MARK: - iCloud 不可用時刪除（#2750）
+
+    private func makeTombstones() -> PendingBookDeletionStore {
+        PendingBookDeletionStore(defaults: UserDefaults(suiteName: "PendingDeletion-\(UUID().uuidString)")!)
+    }
+
+    private func seedICloudBook(_ fileName: String, bookId: UUID, in icloud: URL) throws {
+        try Data("epub".utf8).write(to: icloud.appendingPathComponent(fileName))
+        try BookManifestStore(rootDirectory: icloud).write(BookManifest(
+            bookId: bookId, fileName: fileName, originalFileName: nil, title: "Gone", author: "A",
+            format: .epub, coverImageData: nil, dateAdded: Date(), dateLastRead: nil,
+            progression: nil, lastReadLocatorJSON: nil, preferredNotebookId: nil
+        ))
+    }
+
+    @Test func deleteWhileICloudUnavailableDoesNotResurrectAfterICloudReturns() throws {
+        let context = ModelContext(try makeContainer())
+        let local = try makeTempRoot()
+        let icloud = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: local); try? FileManager.default.removeItem(at: icloud) }
+        let bookId = UUID()
+        let fileName = "\(UUID().uuidString).epub"
+        try seedICloudBook(fileName, bookId: bookId, in: icloud)
+        let tombstones = makeTombstones()
+
+        // iCloud 關閉：只解析得到本機位置，刪檔「成功」但 iCloud 副本還在
+        let files = LocalBookFileManager(locations: [local], pendingDeletions: tombstones, iCloudAvailable: { false })
+        try files.deleteBookFile(named: fileName)
+        files.recordPendingICloudDeletion(named: fileName)
+        #expect(tombstones.fileNames == [fileName])
+
+        // iCloud 回來：reconcile 必須完成刪除而不是把書救回來
+        let result = try BookLibraryReconciler(
+            rootDirectory: icloud, legacyDirectories: [], pendingDeletions: tombstones, isICloudAvailable: { true }
+        ).reconcile(context: context)
+
+        #expect(result.recoveredRows == 0)
+        #expect(try context.fetch(FetchDescriptor<Book>()).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: icloud.appendingPathComponent(fileName).path))
+        #expect(!FileManager.default.fileExists(atPath: BookManifestStore(rootDirectory: icloud).url(for: bookId).path))
+        #expect(tombstones.fileNames.isEmpty)
+    }
+
+    @Test func tombstoneSurvivesReconcileWhileICloudStillUnavailable() throws {
+        let context = ModelContext(try makeContainer())
+        let local = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: local) }
+        let tombstones = makeTombstones()
+        tombstones.insert("pending.epub")
+
+        _ = try BookLibraryReconciler(
+            rootDirectory: local, legacyDirectories: [], pendingDeletions: tombstones, isICloudAvailable: { false }
+        ).reconcile(context: context)
+
+        #expect(tombstones.fileNames == ["pending.epub"])
+    }
+
+    @Test func deleteWhileICloudAvailableRecordsNoTombstone() throws {
+        let local = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: local) }
+        let tombstones = makeTombstones()
+        let files = LocalBookFileManager(locations: [local], pendingDeletions: tombstones, iCloudAvailable: { true })
+        try files.deleteBookFile(named: "x.epub")
+        files.recordPendingICloudDeletion(named: "x.epub")
+        #expect(tombstones.fileNames.isEmpty)
+    }
+
+    /// #2750 r2（P2-3）：iCloud 已驅逐的書只剩隱藏 `.<name>.icloud` placeholder；tombstone 補刪必須一併移除它，否則 reconcile 會把書還原、下載管理器再把檔案拉回。
+    @Test func tombstoneSweepRemovesEvictedPlaceholderAndManifest() throws {
+        let context = ModelContext(try makeContainer())
+        let icloud = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: icloud) }
+        let bookId = UUID()
+        let fileName = "\(UUID().uuidString).epub"
+        let placeholder = icloud.appendingPathComponent(LocalBookFileManager.icloudPlaceholderName(for: fileName))
+        try Data().write(to: placeholder)
+        try BookManifestStore(rootDirectory: icloud).write(BookManifest(
+            bookId: bookId, fileName: fileName, originalFileName: nil, title: "Evicted", author: "A",
+            format: .epub, coverImageData: nil, dateAdded: Date(), dateLastRead: nil,
+            progression: nil, lastReadLocatorJSON: nil, preferredNotebookId: nil
+        ))
+        let tombstones = makeTombstones()
+        tombstones.insert(fileName)
+
+        let result = try BookLibraryReconciler(
+            rootDirectory: icloud, legacyDirectories: [], pendingDeletions: tombstones, isICloudAvailable: { true }
+        ).reconcile(context: context)
+
+        #expect(result.recoveredRows == 0)
+        #expect(try context.fetch(FetchDescriptor<Book>()).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: placeholder.path))
+        #expect(!FileManager.default.fileExists(atPath: BookManifestStore(rootDirectory: icloud).url(for: bookId).path))
+        #expect(tombstones.fileNames.isEmpty)
+    }
 }
