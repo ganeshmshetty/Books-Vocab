@@ -212,6 +212,51 @@ final class WordDetailFlowUITests: UITestCase {
         captureStep("word-detail-edit-refresh", app: app)
     }
 
+    // MARK: - #2047 pill
+
+    /// 卡片動作失敗是使用者剛觸發的一次性結果：頂端 error pill 承載通知（不放按鈕）。
+    /// KG 伺服器不可達 → 同步卡的封存必然失敗 → 同一則 pill 只出現一次。
+    @MainActor
+    func testFailedArchivePostsOneErrorPill() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.vocabulary("wordDetail")],
+            extraEnvironment: ["KG_UI_TEST_SERVER_URL": "http://127.0.0.1:9"],
+            perfLog: "word-detail-archive-failed-pill"
+        )
+        let notebooks = AppPage(app: app).goToNotebooks()
+        guard notebooks.waitForNotebookCard(id: Fixture.notebookID, timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize its notebook")
+            return
+        }
+        notebooks.notebookCard(id: Fixture.notebookID).tapWhenReady()
+        XCTAssertTrue(app.waitForNavigationToSettle())
+
+        let vocabulary = VocabularySearchPage(app: app)
+        guard vocabulary.searchField.waitUntilExists(timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize the vocabulary search field")
+            return
+        }
+        vocabulary.search(Fixture.word)
+        guard vocabulary.waitForRowMaterialized(word: Fixture.word, timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize the target word row")
+            return
+        }
+        vocabulary.row(word: Fixture.word).tapWhenReady()
+        guard vocabulary.detailHeroWord.waitUntilExists(timeout: 10) else {
+            XCTFail("Selecting the target word must open Word Detail")
+            return
+        }
+
+        let archive = app.buttons["wordDetail.action.archive"]
+        XCTAssertTrue(archive.waitUntilExists(timeout: 10), "Word Detail must expose the archive action")
+        archive.tapWhenReady()
+
+        let pill = app.descendants(matching: .any).matching(identifier: "app.toast").firstMatch
+        XCTAssertTrue(pill.waitUntilExists(timeout: 10), "a failed card action must post a pill")
+        XCTAssertEqual(pill.value as? String, "error", "the card action failure uses the error style")
+        captureStep("word-detail-archive-failed-pill", app: app)
+    }
+
     private func appendText(_ text: String, to editor: XCUIElement) -> String {
         editor.tapWhenReady()
         editor.typeText(text)
