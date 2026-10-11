@@ -188,6 +188,12 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 - **gate 期間被擋的是同一次 sync（不變式）**：sync 被 gate 擋下等待，等待結束後**是同一次 sync 繼續往下跑**（非取消後補跑），因此「等 cleanup」與「跳過這次 sync 待下次補跑」語意等價，**不會漏 sync**。
 - **Accepted residual**：gate 通過後、sync 真正動工前，caller（非 MainActor 的 `backgroundSync`）resume 有一次 executor hop；logout 恰落在此窗口仍會與新 cleanup 並行。徹底閉合需 sync 內部 generation re-check/abort（另案），現靠空庫安全網 + 帳號切換清 boundary 緩解。
 
+## 帳號偏好 purge 與 delete_account 邊界（#2434 / #2556）
+
+- **登出 purge（不變式）**：`clearLocalData` 只清 pre-account raw review-card layout 的本機領養副本（`ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout`）。iCloud KVS 的 raw layout 刻意保留：移除共享 KVS raw key 會把刪除傳播到同一 Apple ID 的其他未領養裝置。
+- **delete_account purge（不變式）**：只清被刪帳號的 `kg.account.<digest>.*`，UserDefaults 與 KVS 兩層都清；其他帳號的命名空間不動。被刪帳號 ID 必須由 `SettingsCoordinator` 於 `await DELETE` 前擷取，經 `AuthManaging.logoutAfterAccountDeletion(modelContainer:deletedAccountID:)` 傳入。不得於 await 後才讀 `userId`：併發的 401 teardown 會先把它清成 nil，purge 會被靜默跳過（#2556）。
+- **刪除範圍（不變式）**：刪除文案宣稱的「雲端閱讀進度與書架」由後端 `DELETE /api/user/account` 移除 `users/<uid>/library.db`（`_remove_user_dir`，同一請求內完成）。本機 Book rows 與檔案刻意保留（`BackgroundSyncActor`，#758），文案不宣稱本機刪除。
+
 ## 知識圖譜變更的傳播（server 端 touch barrier）
 
 知識圖譜連結（建立 / hide / unhide / delete）本身不在上述 `syncStatus` 流轉中。client 透過 `get_modified_since(updated_at)` 抓 card 增量，看到 card 變更後**重拉該 card 的 links**。因此每個 graph op 必須在改完 graph 後 **bump 兩端 card 的 `updated_at`**（`cards_store.touch`），否則 graph 變了但 client 永遠抓不到 → 靜默不一致。

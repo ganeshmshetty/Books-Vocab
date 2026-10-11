@@ -128,13 +128,29 @@ struct AccountPreferenceNamespacePurgeTests {
         #expect(cloud.string(forKey: "review_settings_mode") == "cloud-legacy")
     }
 
-    @Test func purgeIsIdempotentOnAnEmptyDevice() {
+    /// A retried delete (or a second purge of the same account) must be a no-op: the deleted
+    /// namespace stays gone and the other account's namespace is untouched on a populated device.
+    @Test func purgeIsIdempotentAndLeavesOtherAccountsIntact() {
         let defaults = makeDefaults()
         let cloud = PurgeCloudSpy()
+        let deletedKey = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let keptKey = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-b")
+        defaults.set("deleted", forKey: deletedKey)
+        cloud.set("deleted", forKey: deletedKey)
+        defaults.set("kept", forKey: keptKey)
+        cloud.set("kept", forKey: keptKey)
+
         AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
+        let defaultsCountAfterFirstPurge = defaults.dictionaryRepresentation().count
+        let cloudCountAfterFirstPurge = cloud.values.count
         AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
-        #expect(cloud.values.isEmpty)
-        #expect(!defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix("kg.account.") })
+
+        #expect(defaults.object(forKey: deletedKey) == nil)
+        #expect(cloud.string(forKey: deletedKey) == nil)
+        #expect(defaults.string(forKey: keptKey) == "kept")
+        #expect(cloud.string(forKey: keptKey) == "kept")
+        #expect(defaults.dictionaryRepresentation().count == defaultsCountAfterFirstPurge)
+        #expect(cloud.values.count == cloudCountAfterFirstPurge)
     }
 
     /// #2434: deleting account B must not erase account A's preferences on the
