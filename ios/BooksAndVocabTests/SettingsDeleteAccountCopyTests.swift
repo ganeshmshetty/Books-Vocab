@@ -59,5 +59,51 @@ struct SettingsDeleteAccountCopyTests {
                 == L10n.format("為避免誤觸，請輸入 %@ 後繼續：", "DELETE")
         )
     }
+
+    /// #2556 acceptance 3: the sheet's cloud-scope promise must match what delete_account purges,
+    /// not only the copy strings. The deleted account's namespaced preferences disappear from both
+    /// UserDefaults and KVS, another account's copy survives, and the copy declares the cloud scope.
+    @Test func deleteAccountPurge_matchesTheCloudScopeTheCopyDeclares() {
+        let suite = "test.delete-copy-scope.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let cloud = DeleteScopeCloudSpy()
+        let features = ["review_settings_mode", ReviewCardLayoutStore.storageKey]
+        for feature in features {
+            let deleted = AccountPreferenceNamespace.key(feature, accountID: "account-b")
+            let kept = AccountPreferenceNamespace.key(feature, accountID: "account-a")
+            defaults.set("deleted", forKey: deleted)
+            cloud.set("deleted", forKey: deleted)
+            defaults.set("kept", forKey: kept)
+            cloud.set("kept", forKey: kept)
+        }
+
+        LocalDataCleanerService.purgeAccountPreferences(
+            deletedAccountID: "account-b", defaults: defaults, cloud: cloud
+        )
+
+        for feature in features {
+            let deleted = AccountPreferenceNamespace.key(feature, accountID: "account-b")
+            let kept = AccountPreferenceNamespace.key(feature, accountID: "account-a")
+            #expect(defaults.object(forKey: deleted) == nil)
+            #expect(cloud.string(forKey: deleted) == nil)
+            #expect(defaults.string(forKey: kept) == "kept")
+            #expect(cloud.string(forKey: kept) == "kept")
+        }
+        let rows = SettingsDeleteAccountCopy.consequenceRows.map(\.text)
+        #expect(rows.contains(L10n.string("雲端閱讀進度與書架")))
+        #expect(!rows.contains(L10n.string("閱讀進度與書架")))
+    }
+}
+
+private final class DeleteScopeCloudSpy: CloudKeyValueStore {
+    var values: [String: String] = [:]
+
+    func double(forKey key: String) -> Double? { nil }
+    func set(_ value: Double, forKey key: String) {}
+    func string(forKey key: String) -> String? { values[key] }
+    func set(_ value: String, forKey key: String) { values[key] = value }
+    func removeObject(forKey key: String) { values[key] = nil }
+    func allKeys() -> [String] { Array(values.keys) }
 }
 #endif
