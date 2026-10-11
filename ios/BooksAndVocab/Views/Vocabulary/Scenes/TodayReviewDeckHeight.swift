@@ -84,8 +84,33 @@ enum TodayReviewDeckHeight {
             return target > 0 ? min(resolved, target) : resolved
         }
         if revealed || shell <= 0 { return nil }
-        let transitioning = inFlight || abs(shell - target) > epsilon
-        return transitioning ? resolved : nil
+        return isTransitioning(shell: shell, target: target, inFlight: inFlight) ? resolved : nil
+    }
+
+    /// 卡片區是否仍在過渡（#3110：點一下展開 hint 的隱藏判定，與 slot 釘高共用）。
+    ///
+    /// = 已建立過渡值（shell > 0）且 動畫進行中（`inFlight`）**或** 模型值尚未追上目標
+    /// （|shell − target| > ε）。shell = 0（尚未建立）不算過渡，與 `slotHeight` 的啟動守衛一致。
+    /// 只看 `inFlight` 會漏掉翻面當幀（onChange 尚未觸發），hint 會在舊 y 多亮一幀。
+    static func isTransitioning(shell: CGFloat, target: CGFloat, inFlight: Bool) -> Bool {
+        shell > 0 && (inFlight || abs(shell - target) > epsilon)
+    }
+
+    /// 點一下展開 hint 的動效種類（#3110）。
+    enum ExpandZoneMotion: Equatable {
+        /// 瞬間切換（卡片區飛行中隱藏，不沿彈簧上飄）。
+        case snap
+        /// 飛行結束後淡入。
+        case contentFade
+        /// 答案揭示／收合：沿 ambient reviewRevealSpring（與 main 的 withAnimation 翻面一致）。
+        case revealSpring
+    }
+
+    /// zone 離開 front（揭示）時一律用翻面彈簧，避免 `.animation(nil)` 把淡出 snap 掉；
+    /// front 中僅飛行期間 snap、飛行結束才 contentFade。
+    static func expandZoneMotion(zoneActive: Bool, deckIsTransitioning: Bool) -> ExpandZoneMotion {
+        guard zoneActive else { return .revealSpring }
+        return deckIsTransitioning ? .snap : .contentFade
     }
 
     // MARK: 背面離場接手（previous / shuffle / autoplay 不經 fling 的縫）

@@ -270,4 +270,64 @@ struct TodayReviewDeckHeightTests {
         #expect(bleed.bottom == 0)
         #expect(bleed.side > 0)
     }
+
+    // MARK: 過渡判定（#3110：點一下展開 hint 的隱藏時機，與 slot 釘高共用同一判定）
+
+    /// role 翻面當幀：模型值已到目標、但 shell 仍是舊高度，onChange 尚未啟動動畫。
+    @Test func flipFrameIsTransitioningBeforeTheSpringStarts() {
+        #expect(H.isTransitioning(shell: 360, target: 120, inFlight: false))
+    }
+
+    @Test func settledDeckIsNotTransitioning() {
+        #expect(!H.isTransitioning(shell: 120, target: 120, inFlight: false))
+    }
+
+    /// 動畫進行中即使模型值已追上目標，畫面仍在飛。
+    @Test func inFlightIsTransitioningEvenWhenTheModelHasCaughtUp() {
+        #expect(H.isTransitioning(shell: 120, target: 120, inFlight: true))
+    }
+
+    /// 量測雜訊（|Δ| ≤ ε）不算過渡，否則 hint 會在穩態被無謂地隱藏。
+    @Test func subEpsilonNoiseIsNotTransitioning() {
+        #expect(!H.isTransitioning(shell: 120, target: 120 + H.epsilon, inFlight: false))
+        #expect(!H.isTransitioning(shell: 120 + H.epsilon, target: 120, inFlight: false))
+    }
+
+    /// 啟動期 shell 尚未建立（0）：沒有待過渡的值，hint 不得因此永久隱藏（直到翻面）。
+    @Test func unsetShellIsNotTransitioning() {
+        #expect(!H.isTransitioning(shell: 0, target: 120, inFlight: false))
+    }
+
+    /// 與 slotHeight 的 active 分支必須同一判定：過渡中釘高，穩態回自然高度。
+    @Test func slotHeightPinsExactlyWhenTheTransitionPredicateHolds() {
+        let cases: [(shell: CGFloat, target: CGFloat, inFlight: Bool)] = [
+            (360, 120, false), (120, 120, false), (120, 120, true), (120, 120.2, false),
+            (0, 120, false),
+        ]
+        for c in cases {
+            let pinned = H.slotHeight(
+                isActive: true, shell: c.shell, target: c.target,
+                inFlight: c.inFlight, revealed: false
+            ) != nil
+            #expect(pinned == H.isTransitioning(shell: c.shell, target: c.target, inFlight: c.inFlight))
+        }
+    }
+
+    // MARK: 點一下展開 hint 的動效選擇（#3110，與 main 的翻面彈簧對齊）
+
+    /// 答案揭示／收合走 reviewRevealSpring：zone 離開 front 時必須用彈簧淡出，不可 snap。
+    @Test func revealHideKeepsTheRevealSpring() {
+        #expect(H.expandZoneMotion(zoneActive: false, deckIsTransitioning: false) == .revealSpring)
+        #expect(H.expandZoneMotion(zoneActive: false, deckIsTransitioning: true) == .revealSpring)
+    }
+
+    /// 卡片區飛行中（zone 仍 active）隱藏：瞬間 snap，不沿彈簧上飄。
+    @Test func deckFlightHideSnaps() {
+        #expect(H.expandZoneMotion(zoneActive: true, deckIsTransitioning: true) == .snap)
+    }
+
+    /// 飛行結束後的淡入走 contentFade。
+    @Test func settledFrontFadesIn() {
+        #expect(H.expandZoneMotion(zoneActive: true, deckIsTransitioning: false) == .contentFade)
+    }
 }
