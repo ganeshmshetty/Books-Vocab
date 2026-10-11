@@ -84,8 +84,15 @@ enum TodayReviewDeckHeight {
             return target > 0 ? min(resolved, target) : resolved
         }
         if revealed || shell <= 0 { return nil }
-        let transitioning = inFlight || abs(shell - target) > epsilon
-        return transitioning ? resolved : nil
+        return isTransitioning(shell: shell, target: target, inFlight: inFlight) ? resolved : nil
+    }
+
+    /// 卡片區是否仍在過渡（#3110：點一下展開 hint 的隱藏判定，與 slot 釘高共用）。
+    ///
+    /// = 動畫進行中（`inFlight`）**或** 模型值尚未追上目標（|shell − target| > ε）。
+    /// 只看 `inFlight` 會漏掉翻面當幀（onChange 尚未觸發），hint 會在舊 y 多亮一幀。
+    static func isTransitioning(shell: CGFloat, target: CGFloat, inFlight: Bool) -> Bool {
+        inFlight || abs(shell - target) > epsilon
     }
 
     // MARK: 背面離場接手（previous / shuffle / autoplay 不經 fling 的縫）
