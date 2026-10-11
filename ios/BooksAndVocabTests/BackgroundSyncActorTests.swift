@@ -395,7 +395,7 @@ struct BackgroundSyncActorTests {
     @Test func syncDown_tombstone_doesNotDeleteLiveCardWithSameWord() async throws {
         let container = try makeContainer()
         let seedContext = ModelContext(container)
-        let live = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example")
+        let live = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
         live.notebookId = "default"
         live.kgCardId = "card-Y"
         live.markSynced()
@@ -418,7 +418,7 @@ struct BackgroundSyncActorTests {
     @Test func syncDown_tombstone_doesNotDeletePendingCardWithSameWord() async throws {
         let container = try makeContainer()
         let seedContext = ModelContext(container)
-        let pending = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example")
+        let pending = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
         pending.notebookId = "default"
         seedContext.insert(pending)
         try seedContext.save()
@@ -440,7 +440,7 @@ struct BackgroundSyncActorTests {
     @Test func syncDown_tombstone_matchingCardId_deletesCard() async throws {
         let container = try makeContainer()
         let seedContext = ModelContext(container)
-        let live = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example")
+        let live = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
         live.notebookId = "default"
         live.kgCardId = "card-X"
         live.markSynced()
@@ -462,7 +462,7 @@ struct BackgroundSyncActorTests {
     @Test func syncDown_tombstoneThenLiveCardSameWord_insertsNewEntry() async throws {
         let container = try makeContainer()
         let seedContext = ModelContext(container)
-        let old = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example")
+        let old = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
         old.notebookId = "default"
         old.kgCardId = "card-X"
         old.markSynced()
@@ -488,7 +488,7 @@ struct BackgroundSyncActorTests {
     @Test func syncDown_liveRekeyThenTombstoneForOldId_keepsRekeyedEntry() async throws {
         let container = try makeContainer()
         let seedContext = ModelContext(container)
-        let existing = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example")
+        let existing = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
         existing.notebookId = "default"
         existing.kgCardId = "card-X"
         existing.markSynced()
