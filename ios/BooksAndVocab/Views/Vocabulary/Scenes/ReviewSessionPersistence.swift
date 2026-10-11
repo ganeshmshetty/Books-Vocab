@@ -14,10 +14,21 @@ enum ReviewSessionPersistence {
         return "local:\(entry.id.uuidString)"
     }
 
-    /// 同一 persistenceID 只保留第一筆（保持原順序）。
+    /// 同一 persistenceID 只保留一筆，勝者與輸入順序無關：`dateAdded` 最早者勝，平手以 `id` 字典序決定。
+    /// 回傳保持輸入的相對順序。輸入來自無排序的 fetch，「第一筆」不具決定性。
     static func uniqueByPersistenceID(_ entries: [VocabularyEntry]) -> [VocabularyEntry] {
-        var seen = Set<String>()
-        return entries.filter { seen.insert(persistenceID(for: $0)).inserted }
+        var winners: [String: VocabularyEntry] = [:]
+        for entry in entries {
+            let key = persistenceID(for: entry)
+            if let current = winners[key], !precedes(entry, current) { continue }
+            winners[key] = entry
+        }
+        return entries.filter { winners[persistenceID(for: $0)] === $0 }
+    }
+
+    private static func precedes(_ lhs: VocabularyEntry, _ rhs: VocabularyEntry) -> Bool {
+        if lhs.dateAdded != rhs.dateAdded { return lhs.dateAdded < rhs.dateAdded }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 
     static func makeBaseline(

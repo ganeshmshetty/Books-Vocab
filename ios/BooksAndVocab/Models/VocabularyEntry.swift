@@ -249,7 +249,15 @@ extension VocabularyEntry {
     }
 
     /// 後端確定性拒收的 add：進終態，不再納入 `shouldUploadOnNextSync`。
+    ///
+    /// 例外：add 在 in-flight 期間被使用者刪除（`queueDelete` 已覆寫 syncAction）時，刪除意圖必須保留。
+    /// server 從未建立該卡，下一輪 batchDelete 會回 not_found，由 `locallyResolvableDeletes` 本地移除（#2733）。
+    /// 若這裡改寫成 terminal rejected add，SyncView 會永久顯示一筆使用者已刪除的字。
     func markRejected(reason: String) {
+        guard syncAction != .delete else {
+            syncState = .pending
+            return
+        }
         syncAction = .add
         syncState = .failed
         rejectedReason = reason

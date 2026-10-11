@@ -142,6 +142,42 @@ struct SyncAddConvergenceTests {
         #expect(unresolved.isEmpty)
     }
 
+    @Test("in-flight 期間被刪除後 server 拒收 add → 不成為 rejected add，保留 delete 並經 batchDelete 本地移除（#2733）")
+    func delete_queued_during_flight_survives_rejection() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let entry = makePendingAdd("ghost")
+        context.insert(entry)
+        entry.isUploadInFlight = true
+        entry.deleteLocally(in: context)
+        #expect(entry.isPendingDelete)
+        let response = KGAddResponse(
+            created: 0,
+            skipped: 0,
+            duplicates: [],
+            cardIds: [:],
+            rejected: [KGRejectedItem(index: 0, word: "ghost", reason: "word: bad")]
+        )
+
+        let unresolved = SyncCoordinator.convergeAddedEntries(response: response, entries: [entry])
+
+        #expect(!entry.isRejectedAdd)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.isPendingDelete)
+        #expect(entry.shouldUploadOnNextSync)
+        #expect(unresolved.map(\.word) == ["ghost"])
+
+        // 下一輪 batchDelete：server 從未建立該卡 → not_found → 本地移除，不殘留任何終態列。
+        _ = SyncCoordinator.applyBatchDeleteResponse(
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["ghost"]),
+            entries: [entry],
+            modelContext: context
+        )
+        #expect(entry.isDeleted)
+    }
+
     @Test("非 in-flight 的 pending add 本地刪除 → 直接移除，不排 server delete")
     func idle_pending_add_delete_is_local_only() throws {
         let container = try ModelContainer(
