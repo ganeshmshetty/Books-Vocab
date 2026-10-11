@@ -275,11 +275,11 @@ final class TodayReviewState {
     }
 
     /// A peer was archived, restored or queued for delete while the session is open
-    /// (e.g. in the linked-card overlay). Chips are dropped at build time, so every
-    /// prepared card is rebuilt from the peers' current state (#2535). Called when the
-    /// overlay stack changes; the peer objects are live, only their cached chips are stale.
+    /// (e.g. in the linked-card overlay). Chips are dropped at build time, so the link
+    /// content of the prepared cards is re-derived from the peers' current state (#2535).
+    /// Measurements are kept, so the card on screen does not jump (#2133).
     func refreshPeerDependentCards() {
-        cardCache.invalidateAll()
+        cardCache.refreshLinks(forPreparedEntries: queue, peers: linkedEntryLookup)
         prewarmCardWindow()
     }
 
