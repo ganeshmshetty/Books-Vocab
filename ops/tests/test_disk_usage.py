@@ -963,6 +963,52 @@ def test_unregistered_worktree_over_budget_blocks_on_its_own_line(
     )
 
 
+def test_unregistered_warning_does_not_mask_registered_terminal_dirty_block(
+    tmp_path: Path,
+) -> None:
+    """Issue #3001 item 3: a stray unregistered checkout only warns, so its
+    warning must not mask a registered non-active worktree that is dirty.  The
+    verdict keeps the dirty block and the unregistered path stays listed."""
+
+    repo, terminal = _repo_with_worktree(tmp_path)
+    (terminal / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    unregistered = tmp_path / "unregistered"
+    _run_git(repo, "worktree", "add", "-b", "unregistered", str(unregistered), "main")
+    (unregistered / "unregistered.txt").write_bytes(b"unregistered\n" * 128)
+    state = tmp_path / "registry.json"
+    output = tmp_path / "lane-usage.json"
+    _write_registry(
+        state,
+        [
+            {
+                "branch": "lane-one",
+                "path": str(terminal),
+                "status": "published",
+                "claim_generation": 0,
+                "external_ids": ["DIRECT-DELIVERY-DIRTY-PUBLISHED-COMBINED"],
+            }
+        ],
+    )
+
+    assert (
+        main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
+        == BLOCKED_EXIT
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    policy = report["policy"]
+    assert policy["verdict"] == "block"
+    assert "dirty-physical-worktree" in policy["blocking_reasons"]
+    assert policy["blocking_dirty_physical_worktrees"] == [str(terminal)]
+    assert policy["unregistered_physical_worktrees"] == [str(unregistered)]
+    assert f"unregistered-physical-worktree:{unregistered}" in policy["warning_reasons"]
+    assert not any(
+        reason.startswith("unregistered-physical-worktree")
+        for reason in policy["blocking_reasons"]
+    )
+    assert len(policy["unregistered_physical_remedies"]) == 1
+    assert str(unregistered) in policy["unregistered_physical_remedies"][0]
+
+
 def test_terminal_registered_residue_is_visible_but_not_active(
     tmp_path: Path,
 ) -> None:
