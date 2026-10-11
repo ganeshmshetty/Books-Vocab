@@ -14,10 +14,13 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 LOGGER = logging.getLogger("ops.ios_diagnostics")
+# Checkout that owns this script; xcresult paths under it are reported repo-relative.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 DIAGNOSTIC_RE = re.compile(
@@ -29,13 +32,26 @@ DIAGNOSTIC_RE = re.compile(
 
 def category_for(message: str) -> str:
     lowered = message.lower()
-    if "swift 6 language mode" in lowered or "main actor-isolated" in lowered or "nonisolated" in lowered:
+    if (
+        "swift 6 language mode" in lowered
+        or "main actor-isolated" in lowered
+        or "nonisolated" in lowered
+    ):
         return "swift6"
     if "storekit configuration" in lowered or ".storekit" in lowered:
         return "storekit"
-    if "umbrella header" in lowered or "swift package" in lowered or "package" in lowered:
+    if (
+        "umbrella header" in lowered
+        or "swift package" in lowered
+        or "package" in lowered
+    ):
         return "spm"
-    if "provision" in lowered or "codesign" in lowered or "signing" in lowered or "certificate" in lowered:
+    if (
+        "provision" in lowered
+        or "codesign" in lowered
+        or "signing" in lowered
+        or "certificate" in lowered
+    ):
         return "signing"
     return "compiler"
 
@@ -91,7 +107,13 @@ def parse_log(text: str, *, limit: int = 80) -> dict[str, Any]:
         "spm": sum(1 for item in diagnostics if item["category"] == "spm"),
         "signing": sum(1 for item in diagnostics if item["category"] == "signing"),
     }
-    result = "fail" if counts["errors"] or build_failed else "pass" if build_succeeded else "unknown"
+    result = (
+        "fail"
+        if counts["errors"] or build_failed
+        else "pass"
+        if build_succeeded
+        else "unknown"
+    )
     return {
         "schema": "kg.ios.diagnostics.v1",
         "source": "raw-log",
@@ -104,30 +126,68 @@ def parse_log(text: str, *, limit: int = 80) -> dict[str, Any]:
 
 
 def _message_from_xcresult_issue(item: dict[str, Any]) -> str:
+    # The location URL is a locator, never a message.
     return str(
         item.get("message")
         or item.get("issueText")
         or item.get("title")
         or item.get("description")
-        or item.get("documentLocationInCreatingWorkspace", {}).get("url")
         or item
     )
 
 
-def parse_xcresult_build_results(payload: dict[str, Any], *, limit: int = 80) -> dict[str, Any]:
+def _zero_based_to_one(fragment: dict[str, list[str]], key: str) -> int | None:
+    raw = fragment.get(key, [""])[0]
+    return int(raw) + 1 if raw.isdigit() else None
+
+
+def _repo_relative(path: str) -> str:
+    try:
+        return PurePosixPath(path).relative_to(REPO_ROOT.as_posix()).as_posix()
+    except ValueError:
+        return path
+
+
+def _location_from_xcresult_url(url: str) -> tuple[str | None, int | None, int | None]:
+    parts = urlsplit(url)
+    if parts.scheme != "file" or not parts.path:
+        return None, None, None
+    # xcresult sourceURL fragments are 0-based: swiftc 3:13 maps to StartingLineNumber=2&StartingColumnNumber=12.
+    fragment = parse_qs(parts.fragment)
+    return (
+        _repo_relative(unquote(parts.path)),
+        _zero_based_to_one(fragment, "StartingLineNumber"),
+        _zero_based_to_one(fragment, "StartingColumnNumber"),
+    )
+
+
+def _xcresult_issue_location(
+    item: dict[str, Any],
+) -> tuple[str | None, int | None, int | None]:
+    url = item.get("sourceURL") or (
+        item.get("documentLocationInCreatingWorkspace") or {}
+    ).get("url")
+    return _location_from_xcresult_url(str(url)) if url else (None, None, None)
+
+
+def parse_xcresult_build_results(
+    payload: dict[str, Any], *, limit: int = 80
+) -> dict[str, Any]:
     diagnostics: list[dict[str, Any]] = []
     error_items = payload.get("errors") or []
     warning_items = payload.get("warnings") or []
     for severity, items in (("error", error_items), ("warning", warning_items)):
         for item in items:
             message = _message_from_xcresult_issue(item)
+            file_path, line, column = _xcresult_issue_location(item)
             diagnostics.append(
                 {
                     "severity": severity,
                     "category": category_for(message),
-                    "file": None,
-                    "line": None,
-                    "column": None,
+                    "file": file_path,
+                    "line": line,
+                    "column": column,
+                    "target": str(item.get("targetName") or "") or None,
                     "message": message,
                     "raw": message,
                 }
@@ -157,8 +217,12 @@ def parse_xcresult_build_results(payload: dict[str, Any], *, limit: int = 80) ->
         "result": result,
         "counts": counts,
         "diagnostics": diagnostics,
-        "truncated": (len((payload.get("errors") or [])) + len((payload.get("warnings") or []))) > limit,
-        "totalDiagnostics": len((payload.get("errors") or [])) + len((payload.get("warnings") or [])),
+        "truncated": (
+            len((payload.get("errors") or [])) + len((payload.get("warnings") or []))
+        )
+        > limit,
+        "totalDiagnostics": len((payload.get("errors") or []))
+        + len((payload.get("warnings") or [])),
     }
 
 
@@ -210,7 +274,9 @@ def _parse_duration_seconds(value: Any) -> float | None:
     try:
         return float(text)
     except ValueError:
-        LOGGER.debug("Failed to parse duration seconds from value %r", value, exc_info=True)
+        LOGGER.debug(
+            "Failed to parse duration seconds from value %r", value, exc_info=True
+        )
         return None
 
 
@@ -234,7 +300,9 @@ def _summarize_metric_entry(metric: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def summarize_performance_metrics(metrics_payload: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+def summarize_performance_metrics(
+    metrics_payload: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
     if not metrics_payload:
         return None
     tests: list[dict[str, Any]] = []
@@ -256,7 +324,10 @@ def summarize_performance_metrics(metrics_payload: list[dict[str, Any]] | None) 
                 summary = _summarize_metric_entry(metric)
                 metrics.append(summary)
                 identifier = str(summary.get("identifier") or "")
-                if identifier == "com.apple.dt.XCTMetric_ApplicationLaunch-AppLaunch.duration":
+                if (
+                    identifier
+                    == "com.apple.dt.XCTMetric_ApplicationLaunch-AppLaunch.duration"
+                ):
                     sample_count = int(summary["sampleCount"])
                     avg = summary["average"]
                     if sample_count and isinstance(avg, (int, float)):
@@ -276,12 +347,22 @@ def summarize_performance_metrics(metrics_payload: list[dict[str, Any]] | None) 
 
     app_launch = None
     if app_launch_summaries:
-        min_ms = min(int(round(float(item["min"]) * 1000.0)) for item in app_launch_summaries if item["min"] is not None)
-        max_ms = max(int(round(float(item["max"]) * 1000.0)) for item in app_launch_summaries if item["max"] is not None)
+        min_ms = min(
+            int(round(float(item["min"]) * 1000.0))
+            for item in app_launch_summaries
+            if item["min"] is not None
+        )
+        max_ms = max(
+            int(round(float(item["max"]) * 1000.0))
+            for item in app_launch_summaries
+            if item["max"] is not None
+        )
         app_launch = {
             "tests": len(app_launch_summaries),
             "samples": total_samples,
-            "averageMs": int(round(weighted_sum_ms / total_samples)) if total_samples else None,
+            "averageMs": int(round(weighted_sum_ms / total_samples))
+            if total_samples
+            else None,
             "minMs": min_ms,
             "maxMs": max_ms,
         }
@@ -292,7 +373,13 @@ def summarize_performance_metrics(metrics_payload: list[dict[str, Any]] | None) 
     }
 
 
-def parse_xcresult_test_results(summary_payload: dict[str, Any], tests_payload: dict[str, Any] | None = None, metrics_payload: list[dict[str, Any]] | None = None, *, limit: int = 80) -> dict[str, Any]:
+def parse_xcresult_test_results(
+    summary_payload: dict[str, Any],
+    tests_payload: dict[str, Any] | None = None,
+    metrics_payload: list[dict[str, Any]] | None = None,
+    *,
+    limit: int = 80,
+) -> dict[str, Any]:
     total = int(summary_payload.get("totalTestCount") or 0)
     passed = int(summary_payload.get("passedTests") or 0)
     failed = int(summary_payload.get("failedTests") or 0)
@@ -301,7 +388,13 @@ def parse_xcresult_test_results(summary_payload: dict[str, Any], tests_payload: 
     effective = passed + failed + expected
     result_text = str(summary_payload.get("result") or "").lower()
     integrity_error = total > 0 and effective == 0
-    result = "fail" if failed or result_text == "failed" or integrity_error else "pass" if result_text == "passed" and effective > 0 else "unknown"
+    result = (
+        "fail"
+        if failed or result_text == "failed" or integrity_error
+        else "pass"
+        if result_text == "passed" and effective > 0
+        else "unknown"
+    )
 
     diagnostics: list[dict[str, Any]] = []
     if integrity_error:
@@ -324,7 +417,9 @@ def parse_xcresult_test_results(summary_payload: dict[str, Any], tests_payload: 
     for item in _as_list(summary_payload.get("testFailures")):
         if not isinstance(item, dict):
             continue
-        name = str(item.get("testName") or item.get("testIdentifierString") or "unknown test")
+        name = str(
+            item.get("testName") or item.get("testIdentifierString") or "unknown test"
+        )
         target = str(item.get("targetName") or "")
         failure = str(item.get("failureText") or item.get("message") or "")
         message = f"{target + ' ' if target else ''}{name}: {failure}".strip()
@@ -342,8 +437,12 @@ def parse_xcresult_test_results(summary_payload: dict[str, Any], tests_payload: 
 
     all_test_nodes: list[dict[str, Any]] = []
     if tests_payload:
-        nodes = tests_payload.get("testNodes") if isinstance(tests_payload, dict) else None
-        all_test_nodes = _walk_test_nodes([n for n in (nodes or []) if isinstance(n, dict)])
+        nodes = (
+            tests_payload.get("testNodes") if isinstance(tests_payload, dict) else None
+        )
+        all_test_nodes = _walk_test_nodes(
+            [n for n in (nodes or []) if isinstance(n, dict)]
+        )
     if integrity_error and all_test_nodes:
         for node in all_test_nodes:
             if str(node.get("nodeType") or "") != "Test Case":
@@ -443,7 +542,15 @@ def parse_xcresult_test_results(summary_payload: dict[str, Any], tests_payload: 
 
 def read_xcresult_build_results(path: Path) -> dict[str, Any]:
     proc = subprocess.run(
-        ["xcrun", "xcresulttool", "get", "build-results", "--path", str(path), "--compact"],
+        [
+            "xcrun",
+            "xcresulttool",
+            "get",
+            "build-results",
+            "--path",
+            str(path),
+            "--compact",
+        ],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -454,7 +561,16 @@ def read_xcresult_build_results(path: Path) -> dict[str, Any]:
 
 def read_xcresult_test_summary(path: Path) -> dict[str, Any]:
     proc = subprocess.run(
-        ["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(path), "--compact"],
+        [
+            "xcrun",
+            "xcresulttool",
+            "get",
+            "test-results",
+            "summary",
+            "--path",
+            str(path),
+            "--compact",
+        ],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -465,7 +581,16 @@ def read_xcresult_test_summary(path: Path) -> dict[str, Any]:
 
 def read_xcresult_tests(path: Path) -> dict[str, Any]:
     proc = subprocess.run(
-        ["xcrun", "xcresulttool", "get", "test-results", "tests", "--path", str(path), "--compact"],
+        [
+            "xcrun",
+            "xcresulttool",
+            "get",
+            "test-results",
+            "tests",
+            "--path",
+            str(path),
+            "--compact",
+        ],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -476,7 +601,16 @@ def read_xcresult_tests(path: Path) -> dict[str, Any]:
 
 def read_xcresult_metrics(path: Path) -> list[dict[str, Any]]:
     proc = subprocess.run(
-        ["xcrun", "xcresulttool", "get", "test-results", "metrics", "--path", str(path), "--compact"],
+        [
+            "xcrun",
+            "xcresulttool",
+            "get",
+            "test-results",
+            "metrics",
+            "--path",
+            str(path),
+            "--compact",
+        ],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -486,7 +620,9 @@ def read_xcresult_metrics(path: Path) -> list[dict[str, Any]]:
     return payload if isinstance(payload, list) else []
 
 
-def apply_result_override(summary: dict[str, Any], override: str | None) -> dict[str, Any]:
+def apply_result_override(
+    summary: dict[str, Any], override: str | None
+) -> dict[str, Any]:
     counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
     has_errors = int(counts.get("errors") or 0) > 0
     if override == "fail":
@@ -498,7 +634,12 @@ def apply_result_override(summary: dict[str, Any], override: str | None) -> dict
     return summary
 
 
-def format_text(summary: dict[str, Any], *, log_path: str | None = None, xcresult_path: str | None = None) -> str:
+def format_text(
+    summary: dict[str, Any],
+    *,
+    log_path: str | None = None,
+    xcresult_path: str | None = None,
+) -> str:
     counts = summary["counts"]
     lines = [
         "[ios][issues] source={source} result={result} errors={errors} warnings={warnings} swift6={swift6} storekit={storekit} spm={spm} signing={signing}".format(
@@ -525,7 +666,7 @@ def format_text(summary: dict[str, Any], *, log_path: str | None = None, xcresul
                     xcresultSessionMs=timings.get("xcresultSessionMs"),
                 )
             )
-        app_launch = ((summary.get("performanceMetrics") or {}).get("appLaunch") or {})
+        app_launch = (summary.get("performanceMetrics") or {}).get("appLaunch") or {}
         if app_launch.get("samples"):
             lines.append(
                 "[ios][perf] metric=AppLaunch tests={tests} samples={samples} averageMs={averageMs} minMs={minMs} maxMs={maxMs}".format(
@@ -538,27 +679,39 @@ def format_text(summary: dict[str, Any], *, log_path: str | None = None, xcresul
             )
     for item in summary["diagnostics"]:
         location = ""
+        target = ""
         if item.get("file"):
             location = item["file"]
             if item.get("line"):
                 location += f":{item['line']}"
             location += " "
+            if item.get("target"):
+                target = f"target={item['target']} "
         lines.append(
-            "[ios][{severity}] category={category} {location}{message}".format(
+            "[ios][{severity}] category={category} {target}{location}{message}".format(
                 severity=item["severity"],
                 category=item["category"],
+                target=target,
                 location=location,
                 message=item["message"],
             )
         )
     if summary.get("truncated"):
-        lines.append(f"[ios][issues] truncated=true total={summary['totalDiagnostics']}")
-    if summary.get("source") == "xcresult-test-results" and counts.get("failedTests", 0):
-        lines.append("[ios][next] fix the first failing test above; inspect xcresult for attachments and activity logs.")
+        lines.append(
+            f"[ios][issues] truncated=true total={summary['totalDiagnostics']}"
+        )
+    if summary.get("source") == "xcresult-test-results" and counts.get(
+        "failedTests", 0
+    ):
+        lines.append(
+            "[ios][next] fix the first failing test above; inspect xcresult for attachments and activity logs."
+        )
     elif counts["errors"]:
         lines.append("[ios][next] fix the first error above; warnings may be fallout.")
     elif counts["warnings"]:
-        lines.append("[ios][next] build passed but warnings should be triaged before release.")
+        lines.append(
+            "[ios][next] build passed but warnings should be triaged before release."
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -566,10 +719,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--xcresult", help="Xcode result bundle path; preferred source")
     parser.add_argument("--log", help="raw xcodebuild log path; fallback source")
-    parser.add_argument("--kind", choices=("build", "test", "archive"), default="build", help="xcresult surface to read")
-    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument(
+        "--kind",
+        choices=("build", "test", "archive"),
+        default="build",
+        help="xcresult surface to read",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
     parser.add_argument("--limit", type=int, default=80)
-    parser.add_argument("--result", choices=("pass", "fail", "unknown"), help="override result from caller exit code")
+    parser.add_argument(
+        "--result",
+        choices=("pass", "fail", "unknown"),
+        help="override result from caller exit code",
+    )
     args = parser.parse_args(argv)
 
     if not args.xcresult and not args.log:
@@ -586,12 +750,16 @@ def main(argv: list[str] | None = None) -> int:
                     limit=args.limit,
                 )
             else:
-                summary = parse_xcresult_build_results(read_xcresult_build_results(xcresult_path), limit=args.limit)
+                summary = parse_xcresult_build_results(
+                    read_xcresult_build_results(xcresult_path), limit=args.limit
+                )
         else:
             raise RuntimeError("no xcresult")
     except Exception as exc:
         if not log_path:
-            raise SystemExit(f"✗ failed to read xcresult and no --log fallback was provided: {exc}") from exc
+            raise SystemExit(
+                f"✗ failed to read xcresult and no --log fallback was provided: {exc}"
+            ) from exc
         if log_path.exists():
             text = log_path.read_text(encoding="utf-8", errors="replace")
             summary = parse_log(text, limit=args.limit)
