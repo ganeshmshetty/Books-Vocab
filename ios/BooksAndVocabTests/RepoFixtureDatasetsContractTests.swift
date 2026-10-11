@@ -50,13 +50,12 @@ struct RepoFixtureDatasetsContractTests {
     /// Podcast fixture invariants (#2906): a preview can never be longer than its
     /// episode, and the runtime podcast clips pin the real length of the audio
     /// asset they point to (ffprobe: `podcast_demo_long.mp3` = 120.000 s,
-    /// `podcast_demo.mp3` = 12.000 s).
+    /// `podcast_demo.mp3` = 12.000 s). Applies to every named UI World and to the
+    /// generated demo, so a non-default world cannot ship a violated invariant.
     @Test func runtimePodcastEpisodeDurationsMatchClipsAndPreviewBounds() throws {
         let fixturesRoot = Self.datasetsDirectory.deletingLastPathComponent().deletingLastPathComponent()
-        let urls = [
-            Self.datasetsDirectory.appendingPathComponent("marketing_demo.json"),
-            fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"),
-        ]
+        var urls = try Self.datasetURLs()
+        urls.append(fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"))
         // Keyed by the audio file the episode actually plays (asset sourcePath basename), not by runtime key.
         let clipSecondsByFile: [String: Double] = [
             "podcast_demo.mp3": 12.0,
