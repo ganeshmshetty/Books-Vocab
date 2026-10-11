@@ -143,19 +143,34 @@ class GitHubQuotaGovernor:
         remaining = None if budget is None else budget.remaining
         try:
             result = execute()
-        finally:
-            # Evict on every mutation attempt, not only on success: a write that
-            # raises may already have landed on GitHub.
-            if kind == "mutation":
-                self._read_cache.clear()
+        except BaseException:
+            # A raised attempt still reached the transport: it spends budget and gets
+            # its spend row (no exit code), so the log accounts for every call.
+            self._settle(argv, kind, remaining, exit_code=None)
+            raise
+        self._settle(argv, kind, remaining, exit_code=result.exit_code)
         if kind == "cached-read" and result.exit_code == 0:
             self._remember(argv, result)
+        return result, True
+
+    def _settle(
+        self,
+        argv: tuple[str, ...],
+        kind: CallKind,
+        remaining: int | None,
+        *,
+        exit_code: int | None,
+    ) -> None:
+        """Account for one network attempt: evict on writes, spend one unit, log one row."""
+        # Evict on every mutation attempt, not only on success: a write that
+        # raises may already have landed on GitHub.
+        if kind == "mutation":
+            self._read_cache.clear()
         if self._budget is not None:
             self._budget = replace(
                 self._budget, remaining=max(0, self._budget.remaining - 1)
             )
-        self._record(argv, remaining, "network", result.exit_code)
-        return result, True
+        self._record(argv, remaining, "network", exit_code)
 
     def _remember(self, argv: tuple[str, ...], result: CommandResult) -> None:
         """Cache one read and drop entries past their TTL so the cache stays bounded."""

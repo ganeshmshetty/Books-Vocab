@@ -338,7 +338,7 @@ branch-audit 的 branch-scoped source problem 會同步投影到該 branch actio
 
 `branch-audit` 的 `raw_active_registry_records` 與 metrics 採同一 cardinality 契約：它等於可解析的 active claim，加上 malformed active record 的唯一 `(identity_kind, identity, record_status)` identity。`malformed_registry_records`、`registry_record_problem_actions` 與 `registry_record_problem_status_counts` 則保留每一筆 diagnostic entry；同一 raw record 的多個 reason 不得被靜默刪除，也不得被誤加總成多筆 active record。diagnostic 數與 record cardinality 必須分開閱讀。
 
-GitHub API 預算 governor（`ops/delivery_control/adapters/github_quota.py`）由 `GitHubCliAdapter` 建構時把唯一 runner 包成 `github_governed_runner.py` 的 decorator，所有 `gh` argv 都只經過一次；git argv 不受影響。預算以 `gh api rate_limit` 的 core／graphql 較小 `remaining` 為準，probe 每 60 秒最多一次且不計入預算。
+GitHub API 預算 governor（`ops/delivery_control/adapters/github_quota.py`）由 `GitHubCliAdapter` 建構時把其 runner 包成 `github_governed_runner.py` 的 decorator，該 adapter 發出的 `gh` argv 都只經過一次；git argv 不受影響。`ops/deliver.py` 的直接 `gh` 呼叫不經此 governor（不在本 lane Scope，尚未受治理）。預算以 `gh api rate_limit` 的 core／graphql 較小 `remaining` 為準，probe 每 60 秒最多一次且不計入預算。此來源偏離 #2873 驗收文字（讀 X-RateLimit header）與 #2647（不得讀 `gh api rate_limit`）：GraphQL-backed `gh` 子命令不回 header，故由 IM／CM 裁定驗收或改寫來源。
 
 - 三種 call kind：`cached-read`（gh JSON 查詢與 GraphQL 唯讀）會被 cache；`live-read`（目前只有 `gh pr checks`，required status 直接 gate merge）每次都走網路、不 cache、不 stale serve，且因為沒有改動任何東西所以**不清 cache**；`mutation`（其餘所有未能證明為唯讀的 gh argv，fail safe）一律走網路並清空 cache，即使呼叫 raise 也清。
 - `remaining < 800`：非 authoritative 的 `cached-read` 結果可由 process 內 cache 服務，但僅限 300 秒內取得的 entry；超過 TTL 即重打網路，且每次寫入 cache 時會順便移除已過期 entry。

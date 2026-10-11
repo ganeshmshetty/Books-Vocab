@@ -13,6 +13,8 @@ sys.path.insert(0, str(OPS))
 from delivery_control.adapters import github_commands, github_quota
 from delivery_control.adapters.errors import AdapterError
 from delivery_control.adapters.github_cli import GitHubCliAdapter
+from delivery_control.adapters.github_client import _is_read_only_json_query
+from delivery_control.adapters.github_governed_runner import _call_kind
 from delivery_control.adapters.github_quota import (
     MAX_RESET_WAITS,
     PROBE_TTL_SECONDS,
@@ -595,3 +597,56 @@ def test_required_check_snapshot_binds_the_live_head_below_800(tmp_path: Path) -
     snapshot = adapter.required_check_snapshot(7)
 
     assert snapshot.head_sha == NEW_HEAD
+
+
+class RaisingReadRunner(FakeRunner):
+    """Fails the read before any response, as a transport error that raises would."""
+
+    def run(self, argv: tuple[str, ...], *, cwd: Path | None = None) -> CommandResult:
+        if argv == READ:
+            self.calls.append(argv)
+            raise RuntimeError("transport failed before any response")
+        return super().run(argv, cwd=cwd)
+
+
+def test_call_that_raises_still_appends_one_spend_log_row(tmp_path: Path) -> None:
+    runner = RaisingReadRunner(remaining=5_000)
+    clock = FakeClock()
+    spend_log = tmp_path / "spend.ndjson"
+    governor = _governor(runner, clock, spend_log)
+
+    with pytest.raises(RuntimeError):
+        _call(governor, runner, READ, read_only=True)
+
+    rows = _spend_rows(spend_log)
+    assert [row["endpoint"] for row in rows] == ["api rate_limit", "issue list"]
+    assert rows[1]["outcome"] == "network"
+    assert rows[1]["exit_code"] is None
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "query A { viewer { login } } mutation B { addStar(input: {}) { clientMutationId } }",
+        "{ viewer { login } } mutation B { addStar(input: {}) { clientMutationId } }",
+        "query A { viewer { login } } subscription B { viewer { login } }",
+    ],
+)
+def test_graphql_document_holding_a_mutation_is_never_a_cached_read(query: str) -> None:
+    argv = ("gh", "api", "graphql", "-f", f"query={query}")
+
+    assert _is_read_only_json_query(argv) is False
+    assert _call_kind(argv) == "mutation"
+
+
+def test_graphql_document_of_only_queries_stays_a_cached_read() -> None:
+    argv = (
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        "query=query A { viewer { login } } query B { rateLimit { remaining } }",
+    )
+
+    assert _is_read_only_json_query(argv) is True
+    assert _call_kind(argv) == "cached-read"
