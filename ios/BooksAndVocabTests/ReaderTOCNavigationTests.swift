@@ -100,24 +100,61 @@ struct ReaderTOCNavigationTests {
         #expect(!pendingFirstFinished)
         #expect(gate.isCurrent(replacementRequest))
 
-        let replacementFinished = gate.finish(
+        // An idle callback after acceptance carries no anchor and may be the
+        // first jump's late callback. The anchored replacement must not
+        // complete on it.
+        let lateIdleFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
             locatorFragments: []
+        )
+        #expect(!lateIdleFinished)
+        #expect(gate.isCurrent(replacementRequest))
+
+        let replacementFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["b"]
         )
         #expect(replacementFinished)
         #expect(gate.activeRequestID == nil)
     }
 
     @Test
-    func sameResourceCallbackWithoutReportedAnchorStillCompletesRequest() {
+    func anchoredRequestCannotCompleteOnAnchorlessCallbackAfterAcceptance() {
         let requestID = UUID()
         var gate = ReaderTOCNavigationRequestGate()
 
-        // Readium idle callbacks carry no anchor; once the jump is accepted,
-        // resource-level matching must still complete the request (no refused
-        // legitimate taps).
         gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.markNavigationAccepted(requestID))
+
+        let anchorlessFinished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!anchorlessFinished)
+        #expect(gate.isCurrent(requestID))
+
+        let anchoredFinished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["b"]
+        )
+        #expect(anchoredFinished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
+    func resourceLevelRequestStillCompletesOnAnchorlessCallback() {
+        let requestID = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        // A TOC entry without a fragment expects the resource only. Readium
+        // idle callbacks carry no anchor, so once the jump is accepted the
+        // anchorless callback must still complete it (no refused legitimate
+        // taps).
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml")
         #expect(gate.markNavigationAccepted(requestID))
 
         let finished = gate.finish(
@@ -223,6 +260,29 @@ struct ReaderTOCNavigationTests {
 
         #expect(event == .goAccepted(requestID: requestID, locatorHref: "OEBPS/chapter-b.xhtml"))
         #expect(navigator.requestedLocator?.href.string == "OEBPS/chapter-b.xhtml")
+    }
+
+    @Test @MainActor
+    func acceptanceHookRunsBeforeNavigateReturnsOnlyForAcceptedJump() async throws {
+        let locator = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+        let acceptedRequestID = UUID()
+        let accepted = AcceptanceCounter()
+        let acceptedEvent = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .accepted),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: acceptedRequestID, locator: locator, onAccepted: { accepted.count += 1 })
+
+        // The gate must already be armed when the caller resumes, so a
+        // location callback delivered right after acceptance is not dropped.
+        #expect(accepted.count == 1)
+        #expect(acceptedEvent == .goAccepted(requestID: acceptedRequestID, locatorHref: "OEBPS/chapter-b.xhtml"))
+
+        let rejected = AcceptanceCounter()
+        _ = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .rejected),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: UUID(), locator: locator, onAccepted: { rejected.count += 1 })
+        #expect(rejected.count == 0)
     }
 
     @Test @MainActor
@@ -805,6 +865,11 @@ struct ReaderTOCNavigationTests {
 @MainActor
 private final class ReaderNavigationTaskBox {
     var task: Task<ReaderTOCNavigationEvent, Never>?
+}
+
+@MainActor
+private final class AcceptanceCounter {
+    var count = 0
 }
 
 @MainActor
