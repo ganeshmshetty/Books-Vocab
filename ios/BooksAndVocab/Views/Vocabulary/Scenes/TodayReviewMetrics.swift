@@ -97,6 +97,9 @@ enum TodayReviewMetrics {
     static let notebookBadgeDotSize: CGFloat = 6
     /// 卡內「＋」新增連結的可點範圍下限（HIG 44pt，#2044）。只擴可點範圍，不擴版面。
     static let addLinkHitTarget: CGFloat = AppFloatingChromeMetrics.hitTarget
+    /// 摺頁 chevron 的命中下限（HIG 44pt，#3117）。命中帶以摺線為中心，半高 = 此值 / 2 = 22，
+    /// 必須小於正反面共用的 `ReviewCardChrome.padding`（28），帶子才只落在空白 padding 內。
+    static let chevronHitTarget: CGFloat = AppFloatingChromeMetrics.hitTarget
     /// 複習卡解釋段落的行距。等同 `CardDocumentMeaningBlock(compact: true)` 一直
     /// 在畫的值 —— 預設佈局要重現目前畫面，這顆就必須是同一個數字。
     static let foldMeaningLineSpacing: CGFloat = 5

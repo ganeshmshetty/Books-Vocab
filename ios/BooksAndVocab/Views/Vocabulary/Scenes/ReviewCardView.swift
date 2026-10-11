@@ -240,7 +240,7 @@ struct ReviewCardView: View {
                 .padding(.top, TodayReviewMetrics.stackLayerMicroOffset)
                 .modifier(PaperFoldModifier(progress: showsAnswer ? 1 : 0))
                 .frame(height: showsAnswer ? nil : 0, alignment: .top)
-                .allowsHitTesting(showsAnswer)
+                .allowsHitTesting(ReviewFoldTapTargets.chevronEnabled(showsAnswer: showsAnswer))
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
             guard newWidth > 0, abs(containerWidth - newWidth) > 0.5 else { return }
@@ -365,7 +365,7 @@ struct ReviewCardView: View {
             .frame(height: drawnHeight, alignment: .topLeading)
             .contentShape(Rectangle())
             .onTapGesture {
-                guard !showsAnswer, interactive else { return }
+                guard ReviewFoldTapTargets.flipEnabled(showsAnswer: showsAnswer, interactive: interactive) else { return }
                 actions.advanceReveal?()
             }
             // The face is an accessibility CONTAINER, not one merged element.
@@ -383,7 +383,7 @@ struct ReviewCardView: View {
             .accessibilityValue(evidenceIdentityValue(for: card))
             .accessibilityHint(showsAnswer || !interactive ? "" : "點一下翻轉卡片".localized)
             .accessibilityAction {
-                guard !showsAnswer, interactive else { return }
+                guard ReviewFoldTapTargets.flipEnabled(showsAnswer: showsAnswer, interactive: interactive) else { return }
                 actions.advanceReveal?()
             }
         }
