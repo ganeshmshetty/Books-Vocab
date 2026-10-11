@@ -549,7 +549,9 @@ actor BackgroundSyncActor {
             entry.lastReviewedAt = serverLast
             entry.reviewCount = max(entry.reviewCount, card.reviewCount ?? 0)
             entry.lapseCount = max(entry.lapseCount, card.lapseCount ?? 0)
-            entry.reviewStreak = max(entry.reviewStreak, card.reviewStreak ?? 0)
+            // Streak is state, not a counter: a newer server that forgot the card
+            // (streak 0) must reset it. Only an absent field keeps the local value (#2485).
+            entry.reviewStreak = card.reviewStreak ?? entry.reviewStreak
             entry.lastReviewFeedbackRaw = card.lastReviewFeedback ?? entry.lastReviewFeedbackRaw
             // Server won, so the server already has this state — queuing it for
             // push would send its own data back to it on the next sync.

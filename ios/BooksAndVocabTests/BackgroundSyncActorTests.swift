@@ -43,18 +43,22 @@ struct BackgroundSyncActorTests {
         lastReviewedAt: String? = nil,
         readerHidden: Bool? = nil,
         reviewExcluded: Bool? = nil,
-        isDeleted: Bool = false
+        isDeleted: Bool = false,
+        reviewStreak: Int? = nil,
+        reviewCount: Int? = nil
     ) throws -> KGCard {
         let sourceFragment = sourceJSON.map { ",\"source\":\($0)" } ?? ""
         let meaningValue = meaning ?? "meaning-\(content)"
         let reviewFragment = lastReviewedAt.map { ",\"lastReviewedAt\":\"\($0)\"" } ?? ""
         let readerHiddenFragment = readerHidden.map { ",\"isReaderHidden\":\($0)" } ?? ""
         let reviewExcludedFragment = reviewExcluded.map { ",\"isReviewExcluded\":\($0)" } ?? ""
+        let streakFragment = reviewStreak.map { ",\"reviewStreak\":\($0)" } ?? ""
+        let reviewCountFragment = reviewCount.map { ",\"reviewCount\":\($0)" } ?? ""
         let json = """
         {"id":"\(id)","content":"\(content)","meaning":"\(meaningValue)",
          "pos":null,"difficulty":null,"difficultyTier":null,"note":null,
          "collocations":[],"examples":["an example"],"mode":"recognition",
-         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)}
+         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)}
         """.data(using: .utf8)!
         return try JSONDecoder().decode(KGCard.self, from: json)
     }
@@ -962,6 +966,62 @@ struct BackgroundSyncActorTests {
         _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
 
         #expect(try await actor.buildReviewStatePushPayload().isEmpty)
+    }
+
+    /// #2485: a server copy newer than local that forgot the card (streak 0) is
+    /// the authoritative state, so the local streak must reset. The old
+    /// `max(local, server)` kept the stale streak of 5.
+    @Test func pullCardsToLocal_serverNewerForgotResetsLocalStreak() async throws {
+        let container = try makeContainer()
+        let localReviewedAt = try #require(ISO8601DateFormatter().date(from: "2027-01-10T10:00:00Z"))
+        let seedContext = ModelContext(container)
+        let existing = VocabularyEntry(word: "forgot", translation: "meaning-forgot", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "c-streak"
+        existing.markSynced()
+        existing.lastReviewedAt = localReviewedAt
+        existing.reviewStreak = 5
+        existing.reviewCount = 5
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(
+            id: "c-streak", content: "forgot", sourceJSON: nil,
+            lastReviewedAt: "2027-01-15T10:00:00Z", reviewStreak: 0, reviewCount: 6
+        )
+
+        _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
+
+        let entry = try #require(try fetchEntry(container, word: "forgot"))
+        #expect(entry.reviewStreak == 0)
+        #expect(entry.reviewCount == 6)
+    }
+
+    /// A server card that omits `reviewStreak` carries no streak to adopt, so
+    /// the local streak must survive the server-newer merge.
+    @Test func pullCardsToLocal_serverNewerWithoutStreakKeepsLocalStreak() async throws {
+        let container = try makeContainer()
+        let localReviewedAt = try #require(ISO8601DateFormatter().date(from: "2027-01-10T10:00:00Z"))
+        let seedContext = ModelContext(container)
+        let existing = VocabularyEntry(word: "nostreak", translation: "meaning-nostreak", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "c-nostreak"
+        existing.markSynced()
+        existing.lastReviewedAt = localReviewedAt
+        existing.reviewStreak = 4
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(
+            id: "c-nostreak", content: "nostreak", sourceJSON: nil,
+            lastReviewedAt: "2027-01-15T10:00:00Z"
+        )
+
+        _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
+
+        #expect(try #require(try fetchEntry(container, word: "nostreak")).reviewStreak == 4)
     }
 
     // MARK: - Push watermark
