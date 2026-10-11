@@ -135,6 +135,23 @@ def test_nothing_to_raise_leaves_the_budget_equal_to_trunk(tmp_path: Path) -> No
     )
 
 
+def test_budget_rebase_opens_no_editor_on_a_dumb_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI has no editor and TERM=dumb; the rebase must finish without asking for a message."""
+    repo = build_lane(tmp_path, clash=False, lane_grows=True)
+    for name in ("GIT_EDITOR", "EDITOR", "VISUAL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TERM", "dumb")
+
+    rebase(repo)
+
+    assert sh(repo, "git", "log", "-1", "--format=%s") == (
+        "chore(ops): raise complexity ceiling after rebase onto origin/main"
+    )
+    assert sh(repo, "git", "status", "--porcelain") == ""
+
+
 def build_fork_credit_lane(tmp_path: Path) -> Path:
     """The lane forked with 30 lines of ceiling room; trunk later spends all but one of them.
 

@@ -766,7 +766,12 @@ class Delivery:
                 return done
         staged = self.runner(["git", "diff", "--cached", "--quiet"], self.work)
         action = "--skip" if staged.returncode == 0 else "--continue"
-        return self.runner(["git", "rebase", action], self.work)
+        # --continue commits the lane's own message, which needs no editor.  GIT_EDITOR is set
+        # explicitly because it outranks core.editor, and a dumb terminal with no EDITOR (CI) fails
+        # the commit instead of reusing that message.
+        return self.runner(
+            ["env", "GIT_EDITOR=true", "git", "rebase", action], self.work
+        )
 
     def lift_budget(self, before: str) -> None:
         """After a budget-only rebase, raise the ceilings the lane is over, in one named commit.
