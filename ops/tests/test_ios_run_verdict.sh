@@ -129,8 +129,20 @@ in_proc '
 ' | grep -q SAFE \
   && ok "publish tolerates pin==latest" || fail_t "publish broke when pinned to latest path"
 
-# ── 9. ok-path verdict + summary embed HEAD commit (#2906) ───────────────────
-grep -qE 'RESULT=ok .*commit=\$\(git -C "\$PROJECT_ROOT" rev-parse HEAD' "$WORKSPACE/ops/ios_test.sh" && grep -qE 'all tests passed .*commit=\$\(git -C' "$WORKSPACE/ops/ios_test.sh" && ok "ok verdict and success summary embed HEAD commit" || fail_t "ok-path output lacks HEAD commit"
+# ── 9. every verdict line names the commit under test (#2906) ────────────────
+section "commit in verdict"
+repo="$TMP/commit-repo"; mkdir -p "$repo"; git -C "$repo" init -q
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
+got="$(in_proc "kg_ios_verdict_commit_kv '$repo'" 2>/dev/null || true)"
+[[ "$got" == "commit=$(git -C "$repo" rev-parse HEAD)" && "$got" =~ ^commit=[0-9a-f]{40}$ ]] \
+  && ok "commit kv is commit=<40-hex HEAD of project root>" || fail_t "commit kv wrong: '$got'"
+got="$(GIT_CEILING_DIRECTORIES="$TMP" in_proc "kg_ios_verdict_commit_kv '$TMP'" 2>/dev/null || true)"
+[[ "$got" == "commit=unknown" ]] && ok "non-repo root degrades to commit=unknown" || fail_t "non-repo commit kv: '$got'"
+# wiring: every RESULT= verdict line in ios_test.sh (echo or printf) carries the helper
+ios_test="$WORKSPACE/ops/ios_test.sh"
+unwired="$(grep -E 'RESULT=(ok|fail|inconclusive) ' "$ios_test" | grep -vc 'kg_ios_verdict_commit_kv "\$PROJECT_ROOT"' || true)"
+[[ "$unwired" == 0 ]] && grep -q 'all tests passed.*kg_ios_verdict_commit_kv "\$PROJECT_ROOT"' "$ios_test" \
+  && ok "all RESULT= verdict lines and the success summary embed the commit" || fail_t "verdict lines without commit: $unwired"
 
 # ── result ────────────────────────────────────────────────────────────────────
 echo ""
