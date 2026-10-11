@@ -134,6 +134,24 @@ struct CardPresentationPeerStateTests {
         #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
     }
 
+    /// #2133 + #2535: a peer change re-derives the on-screen card's chips in place and
+    /// keeps its measurement cache, so the card does not jump.
+    @Test func peerRefreshKeepsPreparedCardMeasurements() throws {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        let before = try #require(state.preparedCardCache[source.id])
+        before.measurementCache.recordFront(ReviewCardFrontMeasurement(height: 240, cardKey: "k"))
+
+        b.isArchived = true
+        state.refreshPeerDependentCards()
+        let after = try #require(state.preparedCardCache[source.id])
+        #expect(after.measurementCache === before.measurementCache)
+        #expect(after.measurementCache.measuredFrontHeight == 240)
+        #expect(after.linkGroups.isEmpty)
+    }
+
     /// #2535: a stale chip tapped after its peer was delete-queued must not open the peer.
     @Test func navigatingToDeleteQueuedPeerIsRefused() {
         let source = Self.source(linkingTo: ["b"])
