@@ -694,6 +694,23 @@ final class TodayReviewState {
         persistence.clearSnapshot()
     }
 
+    /// True while some answer is not confirmed in the store (skipped by a deferred
+    /// flush, or never flushed). Such an answer exists only in the snapshot.
+    var hasUnflushedAnswers: Bool {
+        scoring.submittedAnswers.values.contains { !$0.flushed }
+    }
+
+    /// Crash-recovery finalize after a deferred flush (#3123). The snapshot is dropped
+    /// only when the session is complete AND every answer is confirmed in the store.
+    /// Otherwise it is rewritten, so restore re-flushes whatever was skipped.
+    func finalizeSnapshotAfterFlush(completed: Bool) {
+        if completed && !hasUnflushedAnswers {
+            clearSnapshot()
+        } else {
+            persistSnapshot()
+        }
+    }
+
     // MARK: - Cache Builders
 
     private func prewarmCardWindow() {
