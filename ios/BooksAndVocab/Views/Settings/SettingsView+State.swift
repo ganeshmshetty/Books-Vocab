@@ -195,7 +195,7 @@ extension SettingsView {
                 case .success(let url):
                     exportURL = url
                 case .failure(.empty):
-                    toastCoordinator.error(NotebookListCopy.exportEmpty)
+                    toastCoordinator.error(NotebookListCopy.allWordsExportEmpty)
                 case .failure(.writeFailed):
                     toastCoordinator.error("匯出失敗".localized)
                 }
