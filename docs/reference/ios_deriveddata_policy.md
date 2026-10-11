@@ -196,7 +196,7 @@ start 的 `ps` 探測受報告期限（`--time-budget-seconds`）約束：每次
 兩者都完整計入 per-lane／aggregate bytes 與 quota。lock 理由不符（他人持有、無理由、名稱指向別的目錄）、
 未上鎖且目錄名非 harness 形狀（例如手建的 `scratch`；dirty 時另觸發 dirty blocker）、
 lock 狀態未觀測到、或不在該 root 直屬的 checkout 無法歸屬，仍歸為 unregistered，但不再因此 hard block：只以 `unregistered-physical-worktree:<path>` 警告並附 remedy（issue #2905）。
-被 guard 擋下時（暫時性空間／預算 exit 75；`lane-usage-report-blocked` 與 manual-review 這類結構性擋下為 **exit 77、retryable=no**，見 `docs/sop/ios.md` 的 exit code 契約），`kg.ios.disk-budget.v1` 輸出會附 `blockingReasons=`／`unregisteredWorktrees=`／
+被 guard 擋下時（暫時性空間／預算與 `lane-usage-report-blocked` 預設 exit 75；只有 lane 報告的 `blocking_reasons` 含結構性原因（dirty／unknown／duplicate／identity mismatch 等）或 XCTestDevices／simulator runtime 需人工審查時才是 **exit 77、retryable=no**，見 `docs/sop/ios.md` 的 exit code 契約），`kg.ios.disk-budget.v1` 輸出會附 `blockingReasons=`／`unregisteredWorktrees=`／
 `dirtyWorktrees=`；`lane-usage-report-*` 的擋下會先 inline 重跑一次 guard tick（`KG_IOS_DISK_GUARD_AUTO_REFRESH=0` 可關），
 也可手動 `./ops/ios_ops.sh guard [--refresh]` 立即重新評估。
 guard state 與 `lane_disk_usage.json` 是 host-global、只有一個 writer 身分：`kg_disk_guard.sh` 未設

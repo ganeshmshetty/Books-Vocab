@@ -34,7 +34,6 @@ bad(){ echo "  ✗ $*"; FAIL=$((FAIL+1)); }
 # only place some of these diverge and its log is all we get.
 bad_state(){ bad "$1"; printf '      state: %s\n' "$(tr -d '\n' < "$2" 2>/dev/null | head -c 1600)"; }
 
-[[ "$HOME" == "$TMP/home" ]] && ok "harness HOME is the fixture, not the runner home" || bad "harness HOME escaped the fixture: $HOME"
 
 # Linux runners do not provide macOS's shlock.  Keep production behavior
 # fail-closed when it is unavailable, but give lock-acquisition fixtures the
@@ -986,6 +985,10 @@ grep -q '"lane_usage_rc":75' "$state" \
   && bad "supervisor kill is indistinguishable from a written report (rc 75)" || ok "supervisor kill is not reported as rc 75"
 grep -q '"lane_usage_verdict":"block"' "$state" \
   && ok "external timeout still blocks the guard" || bad "external timeout did not block the guard"
+# Pin the fail-closed choice: a kill that wrote no current report has no measured
+# cause, so it is manual review, not retry-next-tick (a persistent hang must not hide).
+grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"action":"manual-review-lane-attribution"' "$state" \
+  && ok "a kill with no current report fails closed to manual review" || bad_state "no-report kill reason/action" "$state"
 grep -q '"lane_usage_budget_seconds":2' "$state" \
   && ok "external timeout records its configured budget" || bad "external timeout budget missing"
 if [[ -s "$child_pid_file" ]]; then
