@@ -1158,6 +1158,8 @@
 "reader.settings.section.highlight" = "単語マーカー";
 "reader.settings.section.debug" = "開発者とデバッグ";
 "reader.settings.fontSize" = "文字サイズ";
+"reader.settings.adjust.decrease" = "%@を小さくする";
+"reader.settings.adjust.increase" = "%@を大きくする";
 "reader.settings.lineHeight" = "行間";
 "reader.settings.letterSpacing" = "文字間隔";
 "reader.settings.readingMode" = "読書モード";

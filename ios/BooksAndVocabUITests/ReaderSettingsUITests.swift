@@ -55,7 +55,9 @@ final class ReaderSettingsUITests: UITestCase {
 
     @MainActor
     func testReaderSettingsTypographyAndHighlightControlsExposeBoundedInputs() throws {
+        // Pin English so the exact VoiceOver labels below are deterministic (#2752).
         let app = launchIsolatedApp(
+            extraArgs: ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
             fixtures: [.readerRealBookLibrary],
             perfLog: "reader-settings-typography-highlight-controls"
         )
@@ -81,6 +83,16 @@ final class ReaderSettingsUITests: UITestCase {
         XCTAssertFalse(String(describing: fontRow.value ?? "").isEmpty)
         XCTAssertTrue(reader.fontSizeDecrementButton.exists)
         XCTAssertTrue(reader.fontSizeIncrementButton.exists)
+        XCTAssertEqual(
+            reader.fontSizeDecrementButton.label,
+            "Decrease Text Size",
+            "icon-only font-size decrement must expose its localized VoiceOver label"
+        )
+        XCTAssertEqual(
+            reader.fontSizeIncrementButton.label,
+            "Increase Text Size",
+            "icon-only font-size increment must expose its localized VoiceOver label"
+        )
         XCTAssertGreaterThanOrEqual(reader.fontSizeIncrementButton.frame.height, 44)
         XCTAssertGreaterThanOrEqual(reader.fontSizeDecrementButton.frame.height, 44)
 

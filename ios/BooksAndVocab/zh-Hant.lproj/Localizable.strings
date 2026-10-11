@@ -1166,6 +1166,8 @@
 "reader.settings.section.highlight" = "生字標記";
 "reader.settings.section.debug" = "開發者與除錯";
 "reader.settings.fontSize" = "字級";
+"reader.settings.adjust.decrease" = "減少%@";
+"reader.settings.adjust.increase" = "增加%@";
 "reader.settings.lineHeight" = "行距";
 "reader.settings.letterSpacing" = "字距";
 "reader.settings.readingMode" = "閱讀模式";

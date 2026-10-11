@@ -264,6 +264,24 @@ extension ReaderSettingsPresenter {
     #endif
 }
 
+enum ReaderTypographyAdjustmentDirection: CaseIterable {
+    case decrease
+    case increase
+}
+
+/// VoiceOver label for the icon-only minus/plus stepper buttons, e.g. "Increase Text Size".
+/// Kept as a pure function so the per-locale wording is unit-testable without a View.
+func readerTypographyAdjustmentAccessibilityLabel(
+    _ direction: ReaderTypographyAdjustmentDirection,
+    title: String,
+    language: AppLanguage
+) -> String {
+    let key = direction == .decrease
+        ? "reader.settings.adjust.decrease"
+        : "reader.settings.adjust.increase"
+    return L10n.format(key, language: language, title)
+}
+
 private struct ReaderTypographyAdjustmentRow: View {
     let title: String
     let value: String
@@ -283,12 +301,22 @@ private struct ReaderTypographyAdjustmentRow: View {
             Spacer(minLength: AppSpacing.s2)
             adjustmentButton(
                 systemName: "minus",
+                label: readerTypographyAdjustmentAccessibilityLabel(
+                    .decrease,
+                    title: title,
+                    language: AppLanguageStore.shared.effectiveLanguage
+                ),
                 identifier: decrementIdentifier,
                 disabled: !canDecrement,
                 action: onDecrement
             )
             adjustmentButton(
                 systemName: "plus",
+                label: readerTypographyAdjustmentAccessibilityLabel(
+                    .increase,
+                    title: title,
+                    language: AppLanguageStore.shared.effectiveLanguage
+                ),
                 identifier: incrementIdentifier,
                 disabled: !canIncrement,
                 action: onIncrement
@@ -302,6 +330,7 @@ private struct ReaderTypographyAdjustmentRow: View {
 
     private func adjustmentButton(
         systemName: String,
+        label: String,
         identifier: String,
         disabled: Bool,
         action: @escaping () -> Void
@@ -315,6 +344,7 @@ private struct ReaderTypographyAdjustmentRow: View {
         }
         .buttonStyle(.appCompactAction(.neutral))
         .disabled(disabled)
+        .accessibilityLabel(label)
         .accessibilityIdentifier(identifier)
     }
 }
