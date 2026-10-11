@@ -166,5 +166,43 @@ struct WordEditSheetSaveTests {
 
         #expect(entry.explanation == atLimit)
     }
+
+    /// 後端 Python `str.strip()`（`vocab.py` 的 meaning 空白驗證）剝除 U+001C–U+001F（`isspace()` 為真），
+    /// Swift `whitespacesAndNewlines` 不含這四個 scalar。若客端不一併剝除，僅含分隔符的翻譯會
+    /// 通過本地驗證，PATCH 得 422 並進入重試迴圈（#2548）。
+    @Test func informationSeparatorsCountAsBlankLikeBackendStrip() {
+        for blank in ["\u{1C}", "\u{1D}\u{1E}", " \u{1F} \n", "\u{1F}\u{1C}"] {
+            let entry = makeSyncedEntry()
+            var saveCalled = false
+
+            #expect(throws: WordEditSheet.EditValidationError.translationLength) {
+                try WordEditSheet.commitEdit(
+                    entry: entry,
+                    translation: blank,
+                    explanation: "新筆記",
+                    save: { saveCalled = true }
+                )
+            }
+
+            #expect(!saveCalled)
+            #expect(entry.translation == "短暫的")
+            #expect(entry.syncAction == .add)
+            #expect(entry.syncState == .synced)
+        }
+    }
+
+    @Test func informationSeparatorsAreTrimmedFromSavedValueEdges() throws {
+        let entry = makeSyncedEntry()
+
+        try WordEditSheet.commitEdit(
+            entry: entry,
+            translation: "\u{1C}新翻譯\u{1F}",
+            explanation: "\u{1D} \u{1E}",
+            save: {}
+        )
+
+        #expect(entry.translation == "新翻譯")
+        #expect(entry.explanation == nil)
+    }
 }
 #endif
