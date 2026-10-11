@@ -206,4 +206,11 @@ if [ "$guard_mismatch" -ne 0 ]; then
   exit 1
 fi
 
+# #2923 review: the SOP must not assert an owner decision date. The issue records no owner decision,
+# so a dated claim is unverifiable; the status must read as pending until an owner link exists.
+if grep -nE 'owner 決策 20[0-9]{2}-' docs/sop/backup_restore.md; then
+  echo "backup_restore.md asserts a dated owner decision the issue does not record (#2923)" >&2
+  exit 1
+fi
+
 echo "docs-lint tests: PASS"
