@@ -986,6 +986,45 @@ Agent 環境變數:
 HELP
 }
 
+# ── 指令：restore <YYYY-MM-DD> ────────────────────────────────────────────────
+# 唯一被授權寫入 kg-data 的路徑（#2923）。`run` 會被 devops_run_guard 擋下 mv／tar x 覆寫受保護
+# 目錄，因此 restore 不走 run：固定的遠端腳本 ops/lib/devops_restore_remote.sh 逐道驗證後才 swap
+#   1. backup log 必須有該日 exit=0 紀錄，且 sha256 與 S3 物件一致（來源可信）
+#   2. archive 第一層必須 == basename(data dir)，且無絕對／上層路徑
+#   3. 解壓到 staging，每個 *.db 須 PRAGMA quick_check=ok
+#   4. 停容器 → 現況 rename 成 <data>.broken.<ts>（保留為快照，不 rm）→ 新資料就位 → 起容器
+# 任何一道失敗都在動到現況之前中止；swap 失敗會把現況搬回。
+# 確認閘門刻意不走 confirm()：restore 覆寫生產資料，DEVOPS_YES=1（agent 模式）一律拒絕，
+# 且必須是互動 TTY 上由人類輸入 yes（P1 2026-10-10，見 docs/sop/backup_restore.md §2.5）。
+restore_human_confirm() {
+  if [[ -n "${DEVOPS_YES:-}" ]]; then
+    echo "✗ restore 不接受 DEVOPS_YES：覆寫 kg-data 只能由人類在互動終端確認" >&2
+    exit 1
+  fi
+  if [[ ! -t 0 ]]; then
+    echo "✗ restore 需要互動終端（stdin 必須是 TTY），拒絕非互動執行" >&2
+    exit 1
+  fi
+  echo ""
+  echo "⚠️  $1"
+  read -r -p "   輸入 yes 確認: " ans
+  [[ "$ans" == "yes" ]] || { echo "已取消。"; exit 0; }
+}
+
+cmd_restore() {
+  local date_arg="${1:-}"
+  local payload="$DEVOPS_SCRIPT_DIR/ops/lib/devops_restore_remote.sh"
+  if [[ ! "$date_arg" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "用法: ./devops.sh restore <YYYY-MM-DD>   （S3 data/<date>.tar.gz；唯一授權的 kg-data 寫入路徑）" >&2
+    exit 2
+  fi
+  local bucket="${KG_BACKUP_BUCKET:-kg-backups-prod-967512079054}"
+  [[ -f "$payload" ]] || err "缺少 restore 遠端腳本: $payload"
+  restore_human_confirm "restore：以 S3 data/${date_arg}.tar.gz 覆寫 ${REMOTE_DATA_DIR}（現況改名保留為 .broken.<ts>，不刪除），期間停止容器"
+  section "restore ${date_arg}（S3 $bucket）"
+  run_remote "bash -s -- ${date_arg} ${bucket} ${REMOTE_DATA_DIR} ${REMOTE_DIR}" < "$payload"
+}
+
 # ── 指令：ssh ─────────────────────────────────────────────────────────────────
 # 注意：此指令為互動式，agent 應使用 ./devops.sh run "<cmd>" 代替
 cmd_ssh() {

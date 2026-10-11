@@ -1224,6 +1224,213 @@ STUB_LOG="$LOCK_LOG" KG_SSH_CMD="$LOCK_STUB" KG_DEPLOY_LOCK_DIR="$LOCK_LOCAL" DE
 [[ ! -e "$LOCK_LOCAL" ]] && ok "acquire/release left no local lock dir" || fail_t "acquire created a LOCAL lock dir"
 rm -rf "$LOCK_FIX"
 
+# ── 15. restore：唯一被授權寫入 kg-data 的路徑（#2923）────────────────────────
+# 兩層證明，缺一不可；全程 hermetic，沒有任何指令會抵達真機：
+#   (a) 遠端 payload（ops/lib/devops_restore_remote.sh）以本地 bash 直接執行，HOME 指向 fixture，
+#       aws／docker 為 PATH 前置的 stub。此層不經任何 transport（沒有 ssh），驗證校驗、swap、回滾。
+#   (b) devops.sh restore 的閘門（參數、DEVOPS_YES、非 TTY、人類輸入 no／yes）以 KG_SSH_CMD=
+#       「只留痕、永不執行遠端字串」的 deny stub 執行。閘門拒絕時 transport 不得被呼叫；
+#       人類輸入 yes 時 transport 必須恰被呼叫一次（正控：證明閘門不是永遠拒絕）。
+section "restore is the guarded sole writer of kg-data (#2923)"
+RS_FIX="$(mktemp -d)"
+RS_HOME="$RS_FIX/home"
+RS_TRACE="$RS_FIX/trace"
+RS_PAYLOAD="$WORKSPACE/ops/lib/devops_restore_remote.sh"
+RS_BUCKET=kg-backups-prod-967512079054
+mkdir -p "$RS_HOME/kg-data" "$RS_HOME/kg-prod/backend" "$RS_HOME/Library/Logs" "$RS_FIX/bin" "$RS_FIX/src/kg-data"
+printf 'restored\n' > "$RS_FIX/src/kg-data/marker"
+sqlite3 "$RS_FIX/src/kg-data/cards.db" 'CREATE TABLE t(a); INSERT INTO t VALUES (1);'
+cat > "$RS_FIX/bin/kg-record-deny" <<'STUB'
+#!/usr/bin/env bash
+# transport deny stub：只記錄 argv，從不執行遠端字串、不連線。
+echo "ssh: $*" >> "$RS_TRACE"
+exit 97
+STUB
+cat > "$RS_FIX/bin/aws" <<'STUB'
+#!/usr/bin/env bash
+echo "aws: $*" >> "$RS_TRACE"
+[[ "$1 $2" == "s3 cp" ]] || exit 2
+cp "$RS_FIX/archive.tar.gz" "$4"
+STUB
+cat > "$RS_FIX/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker: $*" >> "$RS_TRACE"
+if [[ "$*" == "compose stop" && -n "${RS_DOCKER_STOP_FAIL:-}" ]]; then exit 1; fi
+if [[ "$*" == "compose up -d" && -n "${RS_DOCKER_UP_FAIL:-}" ]]; then exit 1; fi
+STUB
+cat > "$RS_FIX/bin/mv" <<'STUB'
+#!/usr/bin/env bash
+# 注入 swap 失敗：只拒絕「staging 新資料 → kg-data」那一步（來源路徑以 /x/kg-data 結尾）
+if [[ -n "${RS_FAIL_SWAP:-}" && "$1" == */x/kg-data ]]; then echo "mv: injected swap failure" >&2; exit 1; fi
+exec /bin/mv "$@"
+STUB
+chmod +x "$RS_FIX/bin/"*
+
+rs_make_archive() {  # $1 = archive 第一層目錄名；$2 可覆寫 log 內 sha256；產出 archive + 成功的 backup log 紀錄
+  tar -czf "$RS_FIX/archive.tar.gz" -C "$RS_FIX/src" "$1"
+  local sha; sha="${2:-$(shasum -a 256 "$RS_FIX/archive.tar.gz" | awk '{print $1}')}"
+  printf '2026-10-09T03:00:00Z exit=0 bytes=1 sha256=%s key=data/2026-10-09.tar.gz\n' "$sha" \
+    > "$RS_HOME/Library/Logs/kg_backup.log"
+}
+rs_reset_live() {
+  rm -rf "$RS_HOME/kg-data" "$RS_HOME"/kg-data.broken.*
+  mkdir -p "$RS_HOME/kg-data" && printf 'live\n' > "$RS_HOME/kg-data/live-marker"
+  rm -f "$RS_TRACE"; : > "$RS_TRACE"
+}
+rs_payload() {  # 以本地 bash 直接執行遠端 payload（參數與 cmd_restore 送出的相同）；不經任何 transport
+  : > "$RS_TRACE"; rs_rc=0
+  rs_out=$(env HOME="$RS_HOME" PATH="$RS_FIX/bin:$PATH" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" \
+    RS_FAIL_SWAP="${RS_FAIL_SWAP:-}" RS_DOCKER_UP_FAIL="${RS_DOCKER_UP_FAIL:-}" RS_DOCKER_STOP_FAIL="${RS_DOCKER_STOP_FAIL:-}" \
+    bash "$RS_PAYLOAD" 2026-10-09 "$RS_BUCKET" '~/kg-data' '~/kg-prod/backend' 2>&1) || rs_rc=$?
+}
+rs_gate() {  # 執行 `devops.sh restore ...`，transport 為 kg-record-deny；stdin 非 TTY
+  : > "$RS_TRACE"; rs_rc=0
+  rs_out=$(env HOME="$RS_HOME" PATH="$RS_FIX/bin:$PATH" DEVOPS_YES="${RS_DEVOPS_YES:-}" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" \
+    KG_SSH_CMD="$RS_FIX/bin/kg-record-deny" KG_REMOTE_DATA_DIR='~/kg-data' KG_REMOTE_DIR='~/kg-prod/backend' \
+    bash "$KG" restore "$@" 2>&1 </dev/null) || rs_rc=$?
+}
+rs_gate_tty() {  # 同 rs_gate，但 stdin 為互動 pty，送入 ${RS_ANSWER:-yes}（restore 只接受人類在 TTY 確認）
+  : > "$RS_TRACE"; rs_rc=0
+  rs_out=$( (sleep 1; printf '%s\n' "${RS_ANSWER:-yes}"; sleep 2) | script -q /dev/null env HOME="$RS_HOME" \
+    PATH="$RS_FIX/bin:$PATH" DEVOPS_YES="${RS_DEVOPS_YES:-}" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" \
+    KG_SSH_CMD="$RS_FIX/bin/kg-record-deny" KG_REMOTE_DATA_DIR='~/kg-data' KG_REMOTE_DIR='~/kg-prod/backend' \
+    bash "$KG" restore "$@" 2>&1) || rs_rc=$?
+}
+rs_ssh_calls() { grep -c '^ssh:' "$RS_TRACE" || true; }
+
+# (a) 遠端 payload：校驗、swap、回滾、容器順序（不經 transport）
+rs_reset_live; rs_make_archive kg-data
+rs_payload
+[[ "$rs_rc" -eq 0 ]] && grep -q 'restore 完成' <<< "$rs_out" && ok "payload restores 2026-10-09 from a matching backup" \
+  || fail_t "payload happy path failed (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+[[ -f "$RS_HOME/kg-data/marker" ]] && grep -q restored "$RS_HOME/kg-data/marker" \
+  && ok "restored data dir now holds the archive contents" \
+  || fail_t "restored data dir missing archive contents"
+bk=$(ls -d "$RS_HOME"/kg-data.broken.* 2>/dev/null | head -1 || true)
+[[ -n "$bk" && -f "$bk/live-marker" ]] \
+  && ok "previous live data is renamed to kg-data.broken.<ts>, not deleted" \
+  || fail_t "live data was not preserved as a .broken snapshot"
+[[ ! -e "$RS_HOME/kg-data/live-marker" ]] && ok "live marker no longer in kg-data after swap" \
+  || fail_t "live marker still in kg-data"
+stop_line=$(grep -n 'docker: compose stop' "$RS_TRACE" | head -1 | cut -d: -f1 || true)
+start_line=$(grep -n 'docker: compose up -d' "$RS_TRACE" | head -1 | cut -d: -f1 || true)
+[[ -n "$stop_line" && -n "$start_line" && "$stop_line" -lt "$start_line" ]] \
+  && ok "container is stopped before the swap and started after" \
+  || fail_t "container stop/start order wrong: $(tr '\n' '|' < "$RS_TRACE")"
+
+rs_reset_live; rs_make_archive kg-data 0000000000000000000000000000000000000000000000000000000000000000
+rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q 'sha256 不符' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "sha256 mismatch refuses before stopping the container; live data intact" \
+  || fail_t "sha256 mismatch did not refuse safely (rc=$rs_rc)"
+
+rs_reset_live; rs_make_archive kg-data
+: > "$RS_HOME/Library/Logs/kg_backup.log"
+rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '成功紀錄' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "no successful backup record for the date refuses the restore" \
+  || fail_t "restore ran without a backup record (rc=$rs_rc)"
+
+rs_reset_live
+mkdir -p "$RS_FIX/src/other-root" && printf 'x\n' > "$RS_FIX/src/other-root/marker"
+rs_make_archive other-root
+rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '第一層' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "archive whose top-level dir is not kg-data is refused before any swap" \
+  || fail_t "archive root mismatch was not refused (rc=$rs_rc)"
+
+rs_reset_live
+printf 'not a sqlite database\n' > "$RS_FIX/src/kg-data/corrupt.db"
+rs_make_archive kg-data
+rm -f "$RS_FIX/src/kg-data/corrupt.db"
+rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q 'quick_check' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "corrupt .db in archive is refused by quick_check; live data untouched" \
+  || fail_t "corrupt .db was not refused (rc=$rs_rc)"
+
+rs_reset_live
+printf 'not a tarball' > "$RS_FIX/archive.tar.gz"  # sha 與 log 相符，但不是合法 tar.gz：必須具名拒絕
+rs_sha=$(shasum -a 256 "$RS_FIX/archive.tar.gz" | awk '{print $1}')
+printf '2026-10-09T03:00:00Z exit=0 bytes=1 sha256=%s key=data/2026-10-09.tar.gz\n' "$rs_sha" \
+  > "$RS_HOME/Library/Logs/kg_backup.log"
+rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '無法列出' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "unreadable archive (sha matches log) is refused by name before any stop; live data intact" \
+  || fail_t "unreadable archive was not refused by name (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
+rs_reset_live; rs_make_archive kg-data
+RS_FAIL_SWAP=1 rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '已還原現況' <<< "$rs_out" \
+  && grep -q 'docker: compose up -d' "$RS_TRACE" \
+  && ok "swap failure rolls live data back and restarts the container" \
+  || fail_t "swap failure did not roll back (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
+rs_reset_live; rs_make_archive kg-data
+RS_DOCKER_UP_FAIL=1 rs_payload
+[[ "$rs_rc" -ne 0 ]] && ! grep -q '✓ restore 完成' <<< "$rs_out" && grep -q '資料已還原但容器未啟動' <<< "$rs_out" \
+  && ok "docker up failure exits non-zero and never prints restore success" \
+  || fail_t "docker up failure reported success (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
+rs_reset_live; rs_make_archive kg-data
+RS_DOCKER_STOP_FAIL=1 rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '停止容器失敗' <<< "$rs_out" \
+  && ! ls -d "$RS_HOME"/kg-data.broken.* >/dev/null 2>&1 \
+  && ok "failed container stop refuses before touching live data" \
+  || fail_t "failed container stop did not refuse safely (rc=$rs_rc)"
+
+# (b) devops.sh restore 閘門：transport 為 kg-record-deny（只留痕、不執行）
+rs_reset_live
+rs_gate
+[[ "$rs_rc" -ne 0 ]] && grep -q '用法' <<< "$rs_out" && [[ "$(rs_ssh_calls)" -eq 0 ]] \
+  && ok "restore without a date prints usage and never reaches the transport" \
+  || fail_t "restore without a date did not refuse (rc=$rs_rc)"
+
+rs_gate 2026/10/09
+[[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 0 ]] \
+  && ok "restore rejects a malformed date before any transport call" \
+  || fail_t "restore accepted a malformed date (rc=$rs_rc)"
+
+# P1：DEVOPS_YES 不得跳過人類確認，即使人類真的在 TTY 輸入 yes
+rs_reset_live
+RS_DEVOPS_YES=1 RS_ANSWER=yes rs_gate_tty 2026-10-09
+[[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q 'DEVOPS_YES' <<< "$rs_out" \
+  && ok "DEVOPS_YES=1 cannot bypass restore confirmation; transport never called" \
+  || fail_t "DEVOPS_YES=1 bypassed restore confirmation (rc=$rs_rc)"
+
+# P1：非互動 stdin（agent／管線）一律拒絕，且不得觸及遠端
+rs_reset_live
+rs_gate 2026-10-09
+[[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '互動終端' <<< "$rs_out" \
+  && ok "non-interactive restore is refused before any transport call" \
+  || fail_t "non-interactive restore was not refused (rc=$rs_rc)"
+
+# 人類在 TTY 輸入 no：取消，不觸及遠端
+rs_reset_live
+RS_ANSWER=no rs_gate_tty 2026-10-09
+[[ "$rs_rc" -eq 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '已取消' <<< "$rs_out" \
+  && ok "typing anything but yes cancels restore before any transport call" \
+  || fail_t "restore did not cancel on 'no' (rc=$rs_rc)"
+
+# 正控：人類在 TTY 輸入 yes → 恰好一次、帶正確參數抵達 guarded 遠端呼叫（transport 拒絕執行，kg-data 不動）
+rs_reset_live
+RS_ANSWER=yes rs_gate_tty 2026-10-09
+[[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 1 && -f "$RS_HOME/kg-data/live-marker" ]] \
+  && grep -qF "bash -s -- 2026-10-09 $RS_BUCKET ~/kg-data ~/kg-prod/backend" "$RS_TRACE" \
+  && ok "typing yes reaches the guarded remote call exactly once (positive control; transport denies)" \
+  || fail_t "positive control failed: confirmed restore did not reach the guarded call (rc=$rs_rc): $(tr '\n' '|' < "$RS_TRACE")"
+
+# 被守門的 safe wrapper 不得把 restore 放行到 base
+expect_blocked_before_base "devops_kg_safe restore (must go through guarded base only)" restore 2026-10-09
+help_out=$(KG_SSH_CMD=/usr/bin/true bash "$KG" --help 2>/dev/null || true)
+grep -q 'restore <YYYY-MM-DD>' <<< "$help_out" && ok "base help lists restore" \
+  || fail_t "base help does not list restore"
+rm -rf "$RS_FIX"
+
 # ── 結果 ──────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════"
