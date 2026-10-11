@@ -50,6 +50,8 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     private(set) var activeRequestID: UUID?
     private(set) var activeExpectedLocatorHref: String?
     private(set) var activeExpectedFragments: [String] = []
+    /// Set once Readium's `go(to:)` returned true for the active request.
+    private(set) var isNavigationAccepted = false
 
     /// `expectedFragments` are the anchors the TOC entry targets inside
     /// `expectedLocatorHref`. Empty means resource-level expectation only.
@@ -61,16 +63,29 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         activeRequestID = requestID
         activeExpectedLocatorHref = expectedLocatorHref
         activeExpectedFragments = expectedFragments
+        isNavigationAccepted = false
     }
 
     mutating func invalidate() {
         activeRequestID = nil
         activeExpectedLocatorHref = nil
         activeExpectedFragments = []
+        isNavigationAccepted = false
     }
 
     func isCurrent(_ requestID: UUID) -> Bool {
         activeRequestID == requestID
+    }
+
+    /// Records that Readium accepted the jump for `requestID`. From this point
+    /// on, a location callback may be attributed to the request. Readium
+    /// reports idle locations without request identity, so a callback emitted
+    /// before the jump began must not complete it.
+    @discardableResult
+    mutating func markNavigationAccepted(_ requestID: UUID) -> Bool {
+        guard isCurrent(requestID) else { return false }
+        isNavigationAccepted = true
+        return true
     }
 
     func matchesCurrent(
@@ -79,6 +94,7 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         locatorFragments: [String] = []
     ) -> Bool {
         isCurrent(requestID)
+            && isNavigationAccepted
             && activeExpectedLocatorHref == locatorHref
             && Self.fragmentsAccept(
                 expected: activeExpectedFragments,
@@ -86,19 +102,15 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
             )
     }
 
-    /// Readium callbacks carry no request ID, so two entries that share one
-    /// resource are told apart by the anchor the callback reports. A callback
-    /// that reports no anchor keeps resource-level matching, so legitimate
-    /// same-resource taps are not refused; one that reports an anchor must name
-    /// the active request's anchor. Both sides are percent-decoded first, so an
-    /// encoded TOC href and a decoded callback fragment still match.
-    ///
-    /// Known residual (#3043): an anchorless active request accepts a callback
-    /// reporting an anchor, so a late callback of an earlier anchor of the same
-    /// resource can complete it. Refusing it would time out legitimate
-    /// anchorless taps whenever Readium reports incidental fragments.
+    /// Readium 3.11 idle location callbacks carry empty `locations.fragments`
+    /// (positions and resource-level fallback locators have none), so an
+    /// empty report is attributed by ordering alone (`markNavigationAccepted`).
+    /// A report that names an anchor can only be Readium's pending-jump locator
+    /// of some request, so it must name the active request's anchor. Both sides
+    /// are percent-decoded first, so an encoded TOC href and a decoded callback
+    /// fragment still match.
     static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
-        guard !expected.isEmpty, !reported.isEmpty else { return true }
+        guard !reported.isEmpty else { return true }
         let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
         return !Set(expected.map(normalized)).isDisjoint(with: reported.map(normalized))
     }
@@ -111,8 +123,9 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     }
 
     /// A Readium location callback has no request ID. It may be a late event
-    /// from a cancelled request, so only a callback for the active request's
-    /// expected href and anchor may consume the token.
+    /// from a cancelled request, so only a callback observed after the active
+    /// request was accepted, for its expected href and a compatible anchor, may
+    /// consume the token.
     @discardableResult
     mutating func finish(
         _ requestID: UUID,
