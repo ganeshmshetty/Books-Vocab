@@ -6,7 +6,7 @@ struct TodayReviewSessionPersistenceController {
     private(set) var queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline]
     /// The queued rows' own ids, in queue order. Unlike `queuePersistenceIDs` they survive a
     /// mid-session kgCardId re-key, so the deferred flush can still find the row (#3123).
-    /// Empty when restored from a snapshot without row ids; the flush then uses persistence ids.
+    /// Empty only for callers that have no row ids; the flush then uses persistence ids.
     private(set) var queueEntryIDs: [UUID]
     private let currentUserID: String?
 
@@ -113,7 +113,6 @@ struct TodayReviewSessionPersistenceController {
             queueCount: queueCount,
             queuePersistenceIDs: queuePersistenceIDs,
             queueBaselines: queueBaselines,
-            queueEntryIDs: queueEntryIDs,
             submittedAnswers: submittedAnswers
         )
     }
