@@ -846,6 +846,18 @@
 "預覽內容已脫敏；完整內容仍以本機 os.Logger 為主。" = "Preview content is redacted; full content remains in the local os.Logger.";
 "預設" = "Default";
 "顏色" = "Color";
+"森林" = "Forest";
+"海洋" = "Ocean";
+"琥珀" = "Amber";
+"紫藤" = "Wisteria";
+"珊瑚" = "Coral";
+"石墨" = "Graphite";
+"薄荷" = "Mint";
+"靛藍" = "Indigo";
+"玫瑰" = "Rose";
+"焦糖" = "Caramel";
+"天空" = "Sky Blue";
+"薰衣草" = "Lavender";
 "顯示快捷鍵" = "Show shortcuts";
 "顯示目前播放到的單字底線，關閉後改為純句子跟隨" = "Underline the word currently being played; turn off for sentence-only follow";
 

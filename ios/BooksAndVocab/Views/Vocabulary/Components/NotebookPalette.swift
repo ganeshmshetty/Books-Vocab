@@ -30,9 +30,6 @@ enum NotebookPalette {
 
     /// VoiceOver label for a swatch: `name` is a stable zh-Hant key resolved through L10n.
     static func localizedName(_ name: String) -> String { L10n.string(name) }
-    static func localizedName(_ name: String, language: AppLanguage) -> String {
-        L10n.string(name, language: language)
-    }
 
     static let defaultHex = "#AFC2D3"  // token-allow: notebook palette default data color
 
