@@ -167,7 +167,7 @@ final class KGVocabCoordinator: KGVocabCoordinating {
                 let resolvableSet = SyncCoordinator.locallyResolvableDeletes(from: response)
                 for entry in entries {
                     if resolvableSet.contains(entry.word) {
-                        modelContext.delete(entry)
+                        hardDeleteResolvedDelete(entry, in: modelContext)
                     } else {
                         failedCount += 1
                         AppLog.kg.error("batchDelete: word unresolved on server '\(entry.word)'")
@@ -178,10 +178,10 @@ final class KGVocabCoordinator: KGVocabCoordinating {
                 for entry in entries {
                     do {
                         try await kgService.deleteCard(word: entry.word, notebookId: entry.notebookId)
-                        modelContext.delete(entry)
+                        hardDeleteResolvedDelete(entry, in: modelContext)
                     } catch let KGError.httpError(statusCode: 404, _) {
                         // 404 = server 已無此字 → 刪除意圖已達成，本地收斂（#2728）。
-                        modelContext.delete(entry)
+                        hardDeleteResolvedDelete(entry, in: modelContext)
                     } catch {
                         failedCount += 1
                         AppLog.kg.error("deleteCard retry failed '\(entry.word)': \(error.localizedDescription)")
@@ -205,6 +205,13 @@ final class KGVocabCoordinator: KGVocabCoordinating {
         noticeRevision += 1
 
         await kgService.healthCheck()
+    }
+
+    /// 本地收斂的硬刪守門（#2733）。`isUploadInFlight` 的列仍由進行中的 sync 持有：
+    /// 它的刪除由該輪 sync 回應收斂（I3 / T5），retry 不得搶先移除，否則 server 稍後建立的卡會被 pull 復活。
+    private func hardDeleteResolvedDelete(_ entry: VocabularyEntry, in modelContext: ModelContext) {
+        guard !entry.isUploadInFlight else { return }
+        modelContext.delete(entry)
     }
 
     func handleBatchDelete(
