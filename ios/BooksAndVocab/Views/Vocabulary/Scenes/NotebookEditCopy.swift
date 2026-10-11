@@ -10,6 +10,24 @@ enum NotebookEditPhotoError: Equatable {
 }
 
 enum NotebookEditCopy {
+    /// Backend caps notebook name at 100 chars (notebook.py); keep the field within it.
+    static let nameMaxLength = 100
+
+    /// Clamps to `nameMaxLength` unicode scalars (the backend's limit) without splitting a
+    /// user-perceived character: a cluster that would cross the limit is dropped whole.
+    static func clampedName(_ name: String) -> String {
+        guard name.unicodeScalars.count > nameMaxLength else { return name }
+        var clamped = ""
+        var scalarCount = 0
+        for character in name {
+            let width = character.unicodeScalars.count
+            guard scalarCount + width <= nameMaxLength else { break }
+            clamped.append(character)
+            scalarCount += width
+        }
+        return clamped
+    }
+
     static var previewTitle: String { L10n.string("預覽") }
     static var namePlaceholder: String { L10n.string("單字本名稱") }
     static var colorSectionTitle: String { L10n.string("顏色") }

@@ -58,4 +58,21 @@ struct NotebookPaletteTests {
             #expect(abs(d.h - o.h) < 0.02, "\(name) hue should be near-preserved")
         }
     }
+
+    /// 色票 VoiceOver 名稱的嚴格契約：每個 shipped locale 的 bundle 必須自己持有該鍵，
+    /// 故用 `fallback: nil`。若走 `L10n.string` 的英文回落，en-only 的鍵會讓 ja/ko 假綠，
+    /// VoiceOver 仍念出中文 key。zh-Hant 以原文為鍵（identity），只要求 en/ja/ko 不等於原文。
+    @Test func swatchNames_resolveInEveryShippedLocaleWithoutEnglishFallback() {
+        let translatedLanguages: Set<AppLanguage> = [.english, .japanese, .korean]
+        for language in AppLanguage.allCases where language != .system {
+            let bundle = AppLanguageStore.shared.stringBundle(for: language)
+            for swatch in NotebookPalette.colors {
+                let resolved = L10n.lookup(swatch.name, in: bundle, fallback: nil)
+                #expect(!resolved.isEmpty, "\(language) resolved \(swatch.name) to empty")
+                if translatedLanguages.contains(language) {
+                    #expect(resolved != swatch.name, "\(language) has no translation for \(swatch.name)")
+                }
+            }
+        }
+    }
 }

@@ -28,6 +28,9 @@ enum NotebookPalette {
         ("天空", "#C5DAE2"), ("薰衣草", "#C3BCCF"), // token-allow: notebook palette data colors
     ]
 
+    /// VoiceOver label for a swatch: `name` is a stable zh-Hant key resolved through L10n.
+    static func localizedName(_ name: String) -> String { L10n.string(name) }
+
     static let defaultHex = "#AFC2D3"  // token-allow: notebook palette default data color
 
     /// 老資料 hex → 新 Morandi hex 對照表。
