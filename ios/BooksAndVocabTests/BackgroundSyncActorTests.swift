@@ -513,6 +513,53 @@ struct BackgroundSyncActorTests {
         #expect(entries.first?.kgCardId == "card-Y")
     }
 
+    @Test func fullSync_tombstoneDoesNotShieldUnmatchedSyncedGhost_reapsIt() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        // Row the tombstone (card-X) deletes; orphan cleanup must not count it again.
+        let deletedRow = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        deletedRow.notebookId = "default"
+        deletedRow.kgCardId = "card-X"
+        deletedRow.markSynced()
+        // Synced ghosts sharing the tombstone's word key: no kgCardId, and a different one.
+        let ghostNil = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        ghostNil.notebookId = "default"
+        ghostNil.markSynced()
+        let ghostOther = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        ghostOther.notebookId = "default"
+        ghostOther.kgCardId = "card-OTHER"
+        ghostOther.markSynced()
+        // Synced row whose kgCardId matches a live card: must survive cleanup.
+        let kept = VocabularyEntry(word: "lucid", translation: "meaning-lucid", context: "an example", bookTitle: "Book")
+        kept.notebookId = "default"
+        kept.kgCardId = "card-L"
+        kept.markSynced()
+        seedContext.insert(deletedRow)
+        seedContext.insert(ghostNil)
+        seedContext.insert(ghostOther)
+        seedContext.insert(kept)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+        let live = try makeCard(id: "card-L", content: "lucid", sourceJSON: nil)
+
+        // 4 local synced rows vs 2 server cards → ratio 0.5, diff 2: cleanup runs.
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: [tombstone, live],
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == false)
+        let context = ModelContext(container)
+        let remaining = try context.fetch(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining.filter { $0.word == "ephemeral" }.isEmpty)
+        #expect(remaining.contains { $0.word == "lucid" && $0.kgCardId == "card-L" })
+        // deletedRow is counted once (tombstone) plus the two ghosts: 3, not 4.
+        #expect(result.deleted == 3)
+    }
+
     // MARK: - Orphan cleanup safety-valve signalling
     //
     // Regression coverage for the sync-boundary leak: when a FULL sync's
