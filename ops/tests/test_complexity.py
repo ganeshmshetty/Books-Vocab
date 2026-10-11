@@ -829,4 +829,4 @@ def test_two_lanes_each_adding_a_fragment_merge_in_either_order_without_a_confli
     assert complexity.main(["check", "--base", before_second], repo=repo) == 0
     assert (
         complexity.main(["check", "--strict"], repo=repo) == 0
-    )  # 58 measured <= 63 effective
+    )  # 62 measured (30 + 20 + 12) <= 62 effective (40 + 15 + 7): each raise covers exactly its own growth
