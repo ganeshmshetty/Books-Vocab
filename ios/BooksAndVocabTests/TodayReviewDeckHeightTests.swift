@@ -270,4 +270,40 @@ struct TodayReviewDeckHeightTests {
         #expect(bleed.bottom == 0)
         #expect(bleed.side > 0)
     }
+
+    // MARK: 過渡判定（#3110：點一下展開 hint 的隱藏時機，與 slot 釘高共用同一判定）
+
+    /// role 翻面當幀：模型值已到目標、但 shell 仍是舊高度，onChange 尚未啟動動畫。
+    @Test func flipFrameIsTransitioningBeforeTheSpringStarts() {
+        #expect(H.isTransitioning(shell: 360, target: 120, inFlight: false))
+    }
+
+    @Test func settledDeckIsNotTransitioning() {
+        #expect(!H.isTransitioning(shell: 120, target: 120, inFlight: false))
+    }
+
+    /// 動畫進行中即使模型值已追上目標，畫面仍在飛。
+    @Test func inFlightIsTransitioningEvenWhenTheModelHasCaughtUp() {
+        #expect(H.isTransitioning(shell: 120, target: 120, inFlight: true))
+    }
+
+    /// 量測雜訊（|Δ| ≤ ε）不算過渡，否則 hint 會在穩態被無謂地隱藏。
+    @Test func subEpsilonNoiseIsNotTransitioning() {
+        #expect(!H.isTransitioning(shell: 120, target: 120 + H.epsilon, inFlight: false))
+        #expect(!H.isTransitioning(shell: 120 + H.epsilon, target: 120, inFlight: false))
+    }
+
+    /// 與 slotHeight 的 active 分支必須同一判定：過渡中釘高，穩態回自然高度。
+    @Test func slotHeightPinsExactlyWhenTheTransitionPredicateHolds() {
+        let cases: [(shell: CGFloat, target: CGFloat, inFlight: Bool)] = [
+            (360, 120, false), (120, 120, false), (120, 120, true), (120, 120.2, false),
+        ]
+        for c in cases {
+            let pinned = H.slotHeight(
+                isActive: true, shell: c.shell, target: c.target,
+                inFlight: c.inFlight, revealed: false
+            ) != nil
+            #expect(pinned == H.isTransitioning(shell: c.shell, target: c.target, inFlight: c.inFlight))
+        }
+    }
 }
