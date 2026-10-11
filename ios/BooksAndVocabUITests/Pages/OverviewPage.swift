@@ -33,6 +33,7 @@ struct OverviewPage {
         let scrollQuery = app.scrollViews.matching(identifier: "overview.statsContent")
         let scrollView = scrollQuery.element(boundBy: 0)
         let deadline = Date().addingTimeInterval(timeout)
+        var swipes = 0
 
         while Date() < deadline {
             if query.count == 1 {
@@ -56,13 +57,28 @@ struct OverviewPage {
             } else {
                 app.swipeUp()
             }
+            swipes += 1
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
 
         XCTAssertEqual(query.count, 1, "reviewCalendar.open must remain unique after scrolling", file: file, line: line)
+        // Exhaustion evidence (#2886): the failure message carries the opener frame, the
+        // Overview ScrollView frame and the swipe count, so the CI log alone shows whether the
+        // opener sat outside the scroll viewport (scroll never reached it) or inside it but
+        // not hittable (occlusion or gesture capture). Read only when the element exists:
+        // XCUIElement property access on a missing element throws instead of reporting.
+        let opener = query.element(boundBy: 0)
+        let openerExists = opener.exists
+        let openerState = openerExists
+            ? "frame=\(opener.frame) hittable=\(opener.isHittable)"
+            : "missing"
+        let scrollState = scrollQuery.count == 1 && scrollView.exists
+            ? "scrollFrame=\(scrollView.frame)"
+            : "scrollView=\(scrollQuery.count)"
         XCTAssertTrue(
-            query.element(boundBy: 0).exists && query.element(boundBy: 0).isHittable,
-            "reviewCalendar.open must be hittable after scrolling the production Overview ScrollView",
+            openerExists && opener.isHittable,
+            "reviewCalendar.open must be hittable after scrolling the production Overview ScrollView "
+                + "(\(openerState), \(scrollState), swipes=\(swipes))",
             file: file,
             line: line
         )
