@@ -79,7 +79,11 @@ extension ReadiumNavigatorView.Coordinator {
             activeTOCNavigationTask?.cancel()
             activeTOCTimeoutTask?.cancel()
             activeTOCTimeoutTask = nil
-            tocNavigationGate.begin(requestID, expectedLocatorHref: locator.href.string)
+            tocNavigationGate.begin(
+                requestID,
+                expectedLocatorHref: locator.href.string,
+                expectedFragments: locator.locations.fragments
+            )
             let bridge = ReaderTOCNavigationBridge(
                 navigator: ReadiumNavigatorDriver(navigator: navigator),
                 timeoutNanoseconds: ReaderMetrics.tocNavigationTimeoutNanoseconds
