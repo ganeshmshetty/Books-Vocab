@@ -153,6 +153,32 @@ tar xzf "$ARCHIVE" -C "$(dirname "$DATA")"
 ls -la "$DATA/users/" | head
 ```
 
+#### 2.5a 受保護名稱與守門範圍
+
+`devops_kg_safe.sh run`、`devops.sh run`、`container-run`、`migrate-run` 共用 `ops/lib/devops_run_guard.sh` 的 `devops_run_is_blocked` 守門。本節只為排查維運指令「為何被擋」而寫，不是替代路徑；被擋的操作若確有需要，須另立 issue 由 owner 決策，本 SOP 不新增替代路徑。
+
+路徑級受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app` 本身、home／root 目錄（`~`、`$HOME`、`/home/ubuntu`、`/Users/<x>`、`/root`）、`knowledge_graph_api`、`knowledge-graph-api_data`。
+
+docker volumes 不是路徑級受保護名稱，只有命令級守門：`docker volume rm`、`docker … prune`（system／volume／image／builder）、`compose down -v` 一律擋，不看目標。以刪除指令直接指向 `/var/lib/docker/volumes/...` 的路徑目前不被守門擋（見下表已知缺口列）；守門未擋不代表可執行。
+
+下表為 §2.5 相關維運指令經 `run` 守門的結果；`ops/tests/test_docs_lint.sh` 逐列以 `devops_run_is_blocked` 核對，表與守門不一致即紅燈。
+
+| 子命令 | 指令 | 結果 | 原因 |
+|---|---|---|---|
+| run | `rm -rf ~/kg-prod/backend/.venv` | 擋 | 受保護名稱 `kg-prod` |
+| run | `cd ~/kg-prod/backend && cp .env.example .env` | 擋 | cd 進受保護名稱後，相對路徑即落在其中 |
+| run | `sqlite3 /app/data/x.db "VACUUM INTO '/tmp/y'"` | 擋 | 含受保護路徑的 sqlite 寫入 |
+| run | `find . -name __pycache__ -exec rm -rf {} +` | 擋 | `find -exec rm` 落在受保護根（cwd 為 home） |
+| run | `rm -rf kg-data/tmp` | 擋 | 受保護名稱 `kg-data` |
+| run | `docker volume rm kg_data` | 擋 | docker volume 命令級，不看目標 |
+| run | `docker compose down -v` | 擋 | compose down 帶 volume 移除，命令級 |
+| run | `rm -rf /var/lib/docker/volumes/kg_data/_data` | 允許 | 已知缺口：守門不以路徑判斷 docker volume，此結果不是許可 |
+| run | `cp .env.example .env` | 允許 | 目標在一般工作目錄，不落在受保護名稱 |
+| run | `rm -rf .venv` | 允許 | 同上 |
+| run | `rm -rf __pycache__` | 允許 | 同上 |
+
+守門的擋法分兩類：(a) 路徑級：寫入／刪除類指令（`rm`、`mv`、`tar x`、`cp`／`ln` 的目的端、`tee`、`>` 重導、`find -delete`、`sqlite3` 寫入）且目標落在受保護名稱；(b) 命令級：上述 docker volume 指令，不論目標。對受保護目錄的讀取（`ls`、`du`、`tar czf`、`sqlite3` 查詢、`git log`）照常放行，見 `docs/policy/safety.md`。`cp .env.example .env` 在一般工作目錄放行，在 `~/kg-prod/backend` 內（cd 進受保護名稱）即被擋。
+
 ### 2.6 修正 owner
 
 standby 上檔案 owner 應為 `chenliangyu`（tar 以當前使用者解壓即是，通常不需處理）。若異常再修正，macOS 不需 `sudo`：

@@ -150,4 +150,54 @@ if [ -n "$(ls -A "$TMP/scratch")" ]; then
   exit 1
 fi
 
+# #2923: §2.5a must name the protected names the run guard enforces and list the legitimate
+# maintenance commands it blocks; every 擋／允許 row must agree with devops_run_is_blocked.
+require_grep '^#### 2\.5a ' docs/sop/backup_restore.md
+awk '/^#### 2\.5a /{f=1;next} /^#+ /{f=0} f' docs/sop/backup_restore.md >"$TMP/sop_25a.txt"
+require_grep '受保護名稱' "$TMP/sop_25a.txt"
+require_grep 'rm -rf ~/kg-prod/backend/.venv' "$TMP/sop_25a.txt"
+require_grep 'cd ~/kg-prod/backend && cp .env.example .env' "$TMP/sop_25a.txt"
+require_grep 'VACUUM INTO' "$TMP/sop_25a.txt"
+require_grep 'find \. -name __pycache__ -exec rm' "$TMP/sop_25a.txt"
+# shellcheck source=../lib/devops_run_guard.sh
+source ops/lib/devops_run_guard.sh
+awk '/^路徑級受保護名稱：/' "$TMP/sop_25a.txt" >"$TMP/protected_names.txt"
+require_grep '路徑級受保護名稱' "$TMP/protected_names.txt"
+if grep -q 'docker volumes' "$TMP/protected_names.txt"; then
+  echo "backup_restore.md §2.5a lists docker volumes as a path-level protected name; the guard only blocks docker volume commands (#2923)" >&2
+  exit 1
+fi
+for name in kg-data kg-prod /app/data knowledge_graph_api knowledge-graph-api_data; do
+  require_grep "\`$name\`" "$TMP/protected_names.txt"
+  devops_run_is_blocked run "rm -rf $name" || {
+    echo "protected name '$name' is listed in backup_restore.md §2.5a but the run guard does not block it (#2923)" >&2
+    exit 1
+  }
+done
+awk -F'|' '/^\|/ && !/^\|---/' "$TMP/sop_25a.txt" >"$TMP/guard_table.txt"
+guard_rows=0
+guard_mismatch=0
+while IFS='|' read -r _ sub cmd want _; do
+  sub="$(printf '%s' "$sub" | sed -E 's/^ +| +$//g')"
+  cmd="$(printf '%s' "$cmd" | sed -E 's/^ +| +$//g; s/^`//; s/`$//')"
+  want="$(printf '%s' "$want" | sed -E 's/^ +| +$//g')"
+  case "$want" in
+    擋|允許) ;;
+    *) continue ;;
+  esac
+  guard_rows=$((guard_rows + 1))
+  if devops_run_is_blocked "$sub" "$cmd"; then got="擋"; else got="允許"; fi
+  if [ "$got" != "$want" ]; then
+    echo "backup_restore.md §2.5a row disagrees with devops_run_is_blocked: [$sub] $cmd (doc=$want, guard=$got)" >&2
+    guard_mismatch=$((guard_mismatch + 1))
+  fi
+done <"$TMP/guard_table.txt"
+if [ "$guard_rows" -lt 8 ]; then
+  echo "backup_restore.md §2.5a table has $guard_rows 擋/允許 rows, expected >=8" >&2
+  exit 1
+fi
+if [ "$guard_mismatch" -ne 0 ]; then
+  exit 1
+fi
+
 echo "docs-lint tests: PASS"
