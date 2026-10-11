@@ -215,7 +215,7 @@ struct TodayReviewDeckHeightTests {
             let slots = [
                 FlipSlot(natural: c.back, before: nil, after: outgoing),
                 FlipSlot(natural: c.next, before: preflipCap, after: incoming),
-                FlipSlot(natural: c.front, before: c.front, after: outgoing),
+                FlipSlot(natural: c.front, before: preflipCap, after: outgoing),
             ]
             #expect(preflipCap == c.back, "preflip cap back=\(c.back) next=\(c.next)")
             #expect(stackHeight(slots) == c.back, "preflip stack back=\(c.back) next=\(c.next)")
