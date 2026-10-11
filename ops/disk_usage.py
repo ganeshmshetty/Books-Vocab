@@ -2377,9 +2377,11 @@ def build_report(
     # Issue #2905: one stray checkout must not make every lane non-retryable.  It
     # keeps its own usage line, so it blocks only through the measured quota
     # (lane-budget-exceeded:<path>); on its own it warns and names its path.
+    # #3001: the remedy is a command an operator copies, so every path is shell-quoted.
     unregistered_remedies = [
         f"{path}: adopt it with ./ops/worktree_orchestrate.py adopt, or once its "
-        f"work is saved remove it with git -C {workspace} worktree remove {path}"
+        f"work is saved remove it with git -C {shlex.quote(str(workspace))} "
+        f"worktree remove {shlex.quote(str(path))}"
         for path in unregistered
     ]
     warning_reasons.extend(

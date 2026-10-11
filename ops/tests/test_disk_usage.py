@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -855,9 +856,11 @@ def test_registered_worktree_branch_identity_mismatch_is_a_hard_block(
     assert str(worktree) in report["policy"]["physical_identity_mismatches"]
 
 
-def _unregistered_dirty_worktree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _unregistered_dirty_worktree(
+    tmp_path: Path, name: str = "unregistered"
+) -> tuple[Path, Path, Path, Path]:
     repo, worktree = _repo_with_worktree(tmp_path)
-    unregistered = tmp_path / "unregistered"
+    unregistered = tmp_path / name
     _run_git(repo, "worktree", "add", "-b", "unregistered", str(unregistered), "main")
     (unregistered / "unregistered.txt").write_bytes(b"unregistered\n" * 128)
     state = tmp_path / "registry.json"
@@ -905,6 +908,28 @@ def test_unregistered_dirty_worktree_under_budget_warns_and_names_path(
     assert len(remedies) == 1
     assert str(unregistered) in remedies[0]
     assert f"git -C {repo} worktree remove {unregistered}" in remedies[0]
+
+
+def test_unregistered_remedy_shell_quotes_paths_with_spaces(tmp_path: Path) -> None:
+    """Issue #3001: the remedy is a command an operator copies, so a path with
+    spaces must reach the shell as one quoted argument, not split words."""
+
+    repo, unregistered, state, output = _unregistered_dirty_worktree(
+        tmp_path, name="stray checkout"
+    )
+
+    assert (
+        main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
+        == 0
+    )
+    remedies = json.loads(output.read_text(encoding="utf-8"))["policy"][
+        "unregistered_physical_remedies"
+    ]
+    assert len(remedies) == 1
+    assert (
+        f"git -C {repo} worktree remove {shlex.quote(str(unregistered))}" in remedies[0]
+    )
+    assert f"worktree remove {unregistered}" not in remedies[0]
 
 
 def test_unregistered_worktree_over_budget_blocks_on_its_own_line(
