@@ -714,3 +714,125 @@ def test_graphql_document_of_only_queries_stays_a_cached_read() -> None:
 
     assert is_read_only_json_query(argv) is True
     assert _call_kind(argv) == "cached-read"
+
+
+PR_NODE = "PR_node_7"
+QUEUE_ENTRY = {"id": "QE_7", "enqueuedAt": "2026-10-12T00:00:00Z"}
+
+
+def _queue_node(*, queued: bool) -> dict[str, object]:
+    return {
+        "id": PR_NODE,
+        "number": 7,
+        "baseRefName": "main",
+        "baseRefOid": "c" * 40,
+        "headRefOid": OLD_HEAD,
+        "body": "b",
+        "state": "OPEN",
+        "mergeQueueEntry": QUEUE_ENTRY if queued else None,
+    }
+
+
+class QueueRunner(FakeRunner):
+    """Serves one PR's merge-queue state; tests flip ``queued`` out-of-band."""
+
+    def __init__(self, *, remaining: int) -> None:
+        super().__init__(remaining=remaining)
+        self.queued = False
+
+    def run(self, argv: tuple[str, ...], *, cwd: Path | None = None) -> CommandResult:
+        text = " ".join(argv)
+        if "DeliveryQueueState" in text:
+            self.calls.append(argv)
+            payload = {"data": {"node": _queue_node(queued=self.queued)}}
+            return CommandResult(argv, 0, json.dumps(payload), "")
+        if "DeliveryOpenQueueStates" in text:
+            self.calls.append(argv)
+            connection = {
+                "nodes": [_queue_node(queued=self.queued)],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+            page = {"data": {"repository": {"pullRequests": connection}}}
+            return CommandResult(argv, 0, json.dumps([page]), "")
+        return super().run(argv, cwd=cwd)
+
+    def queue_reads(self) -> int:
+        return sum(1 for call in self.calls if "DeliveryQueueState" in " ".join(call))
+
+
+def _queue_adapter(
+    tmp_path: Path, runner: QueueRunner, clock: FakeClock
+) -> GitHubCliAdapter:
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson", repo=tmp_path)
+    return GitHubCliAdapter(repo=tmp_path, runner=runner, quota=governor)
+
+
+def _drop_budget_below_stale_serve(runner: QueueRunner, clock: FakeClock) -> None:
+    runner.remaining = STALE_SERVE_BELOW - 1
+    clock.t += PROBE_TTL_SECONDS + 1
+
+
+def test_merge_queue_entry_snapshot_guard_is_authoritative_below_800(
+    tmp_path: Path,
+) -> None:
+    # abandon and legacy cleanup refuse a PR that is already queued. A cached "not
+    # queued" read from before the enqueue must not let that guard pass.
+    runner = QueueRunner(remaining=5_000)
+    clock = FakeClock()
+    adapter = _queue_adapter(tmp_path, runner, clock)
+    assert adapter.merge_queue_entry_snapshot(PR_NODE) is None
+
+    runner.queued = True
+    _drop_budget_below_stale_serve(runner, clock)
+    entry = adapter.merge_queue_entry_snapshot(PR_NODE)
+
+    assert entry is not None
+    assert entry.entry_id == "QE_7"
+    assert runner.queue_reads() == 2
+
+
+def test_merge_queue_entry_id_guard_is_authoritative_below_800(tmp_path: Path) -> None:
+    runner = QueueRunner(remaining=5_000)
+    clock = FakeClock()
+    adapter = _queue_adapter(tmp_path, runner, clock)
+    assert adapter.merge_queue_entry_id(PR_NODE) is None
+
+    runner.queued = True
+    _drop_budget_below_stale_serve(runner, clock)
+
+    assert adapter.merge_queue_entry_id(PR_NODE) == "QE_7"
+    assert runner.queue_reads() == 2
+
+
+def test_open_queue_batch_observation_is_authoritative_below_800(
+    tmp_path: Path,
+) -> None:
+    runner = QueueRunner(remaining=5_000)
+    clock = FakeClock()
+    adapter = _queue_adapter(tmp_path, runner, clock)
+    adapter.prime_open_observations()
+
+    runner.queued = True
+    _drop_budget_below_stale_serve(runner, clock)
+    adapter.prime_open_observations()
+    entry = adapter.merge_queue_entry_snapshot(PR_NODE)
+
+    assert entry is not None
+    assert entry.entry_id == "QE_7"
+
+
+def test_spend_log_with_non_utf8_bytes_fails_open_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    # Trimming an oversized log decodes it as UTF-8; that ValueError must not escape a
+    # governed call, because observability may never block delivery.
+    spend_log = tmp_path / "spend.ndjson"
+    spend_log.write_bytes(b"\xff" * (github_quota.SPEND_LOG_MAX_BYTES + 1))
+    runner = FakeRunner(remaining=5_000)
+    clock = FakeClock()
+    governor = _governor(runner, clock, spend_log)
+
+    result, executed = _call(governor, runner, WRITE, read_only=False)
+
+    assert executed is True
+    assert result.exit_code == 0

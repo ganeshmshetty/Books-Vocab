@@ -22,16 +22,17 @@ cached or stale-served, and changed nothing, so it does not evict the cache.
 call raises, because a partial write may already have landed.
 
 Stale serve is never applied inside an ``authoritative_reads()`` scope. The adapter
-opens that scope around every mutation, its pre/post verification reads, and the
-required-check observation, because those reads decide whether a write or a merge is
-authorized; a cached answer there would replay one stale head on every retry or bind
-checks to an old head. Authoritative reads still pay the budget wait and the spend-log
+opens that scope around every mutation, its pre/post verification reads, the
+required-check observation, and the merge-queue guard reads, because those reads decide
+whether a write or a merge is authorized; a cached answer there would replay one stale
+head on every retry, bind checks to an old head, or let a queued PR pass abandonment. Authoritative reads still pay the budget wait and the spend-log
 row.
 
 Below ``WAIT_BELOW`` the governor sleeps until the bottleneck resource resets (bounded
 by ``MAX_RESET_WAITS``), then fails closed with ``GitHubQuotaExhausted``. Every governed
 call, including probes, appends one NDJSON spend-log line under a lock; a spend-log
-write failure fails open (the call proceeds and its row is lost). The spend log is
+write or decode failure fails open (the call proceeds and its row is lost). The
+spend log is
 bounded: once it reaches ``SPEND_LOG_MAX_BYTES`` only the newest
 ``SPEND_LOG_KEEP_LINES`` rows are kept.
 """
@@ -287,8 +288,9 @@ class GitHubQuotaGovernor:
                     stream.flush()
                 finally:
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            # Observability must not block delivery: a spend-log write failure fails open.
+        except (OSError, ValueError):
+            # Observability must not block delivery: a spend-log write or decode failure
+            # (ValueError covers UnicodeDecodeError while trimming) fails open.
             return
 
 

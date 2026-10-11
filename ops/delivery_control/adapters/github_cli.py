@@ -169,13 +169,15 @@ class GitHubCliAdapter:
     def prime_open_observations(self) -> None:
         """Batch queue observations for one read-only inventory pass."""
 
-        try:
-            self.queue.prime_open_snapshots(repository_name=self._repo_name())
-        except (AdapterCommandError, AdapterPayloadError):
-            # A failed optimization must fall back to exact per-PR reads.
-            self.queue.clear_observed_snapshots()
-        finally:
-            self._open_observations_pending = False
+        # The batch feeds merge-queue guards, so its read is authoritative too.
+        with self._authoritative():
+            try:
+                self.queue.prime_open_snapshots(repository_name=self._repo_name())
+            except (AdapterCommandError, AdapterPayloadError):
+                # A failed optimization must fall back to exact per-PR reads.
+                self.queue.clear_observed_snapshots()
+            finally:
+                self._open_observations_pending = False
 
     def _ensure_open_observations(self) -> None:
         if self._open_observations_pending:
@@ -244,14 +246,18 @@ class GitHubCliAdapter:
         )
 
     def merge_queue_entry_id(self, pull_request_id: str) -> str | None:
-        self._ensure_open_observations()
-        return self.queue.observed_snapshot(pull_request_id).entry_id
+        # Abandon and legacy cleanup refuse a PR already in the queue: this guard
+        # must not be answered from a stale cache entry.
+        with self._authoritative():
+            self._ensure_open_observations()
+            return self.queue.observed_snapshot(pull_request_id).entry_id
 
     def merge_queue_entry_snapshot(
         self, pull_request_id: str
     ) -> MergeQueueEntrySnapshot | None:
-        self._ensure_open_observations()
-        return self.queue.observed_snapshot(pull_request_id).entry
+        with self._authoritative():
+            self._ensure_open_observations()
+            return self.queue.observed_snapshot(pull_request_id).entry
 
     def trigger_required(
         self,
