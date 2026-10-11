@@ -112,6 +112,48 @@ struct ReaderTOCNavigationTests {
     }
 
     @Test
+    func encodedAnchorMatchesDecodedCallbackFragment() {
+        // Readium may report an anchor percent-encoded (TOC href) while the
+        // location callback reports it decoded, or the reverse. Both sides are
+        // normalized, so a legitimate tap is not refused until timeout.
+        #expect(ReaderTOCNavigationRequestGate.fragmentsAccept(
+            expected: ["caf%C3%A9"],
+            reported: ["café"]
+        ))
+        #expect(ReaderTOCNavigationRequestGate.fragmentsAccept(
+            expected: ["café"],
+            reported: ["caf%C3%A9"]
+        ))
+        #expect(!ReaderTOCNavigationRequestGate.fragmentsAccept(
+            expected: ["caf%C3%A9"],
+            reported: ["cafe"]
+        ))
+    }
+
+    /// Documented residual (#3043, not closed): a later anchorless request
+    /// accepts a callback that reports an earlier anchor of the same resource.
+    /// Readium's resource-level callbacks may carry incidental fragments, so
+    /// refusing them would time out legitimate anchorless taps. Pinned here so
+    /// any change to this trade-off is deliberate.
+    @Test
+    func anchorlessLaterRequestAcceptsEarlierAnchorCallbackDocumentedResidual() {
+        let firstRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: [])
+
+        let lateFirstFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["a"]
+        )
+        #expect(lateFirstFinished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
     func invalidatingNavigationGateRejectsLateTeardownCompletion() {
         let requestID = UUID()
         var gate = ReaderTOCNavigationRequestGate()
