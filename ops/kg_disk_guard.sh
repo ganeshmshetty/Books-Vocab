@@ -81,8 +81,9 @@ LANE_USAGE_GRACE_SECONDS="${KG_DISK_GUARD_LANE_USAGE_GRACE_SECONDS:-60}"
 (( LANE_USAGE_GRACE_SECONDS < 1 )) && LANE_USAGE_GRACE_SECONDS=1
 (( LANE_USAGE_GRACE_SECONDS > 120 )) && LANE_USAGE_GRACE_SECONDS=120
 # disk_usage.py exits 0 or 75 only after it atomically wrote its report.  A scan
-# the supervisor had to kill wrote nothing this run, so it gets the conventional
-# timeout(1) status instead of sharing 75 with "report written".
+# the supervisor had to kill gets the conventional timeout(1) status instead of
+# sharing 75 with "report written".  The kill may land after this run already
+# wrote a current report; only that report can feed the tick (write_lane_usage).
 LANE_USAGE_KILLED_RC=124
 LANE_USAGE_RC=0
 LANE_USAGE_VERDICT="unavailable"
@@ -898,9 +899,18 @@ main() {
   # Existing lane evidence remains in the report; this only prevents new
   # work from being admitted on incomplete accounting.
   if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" || "$LANE_USAGE_VERDICT" == "unavailable" ]]; then
-    # A supervisor kill (rc 124) leaves lane attribution unmeasured, but it does
-    # not erase a precise, retryable cause measured in this same tick: an
-    # XCTestDevices walk that ran out of time keeps its own reason and action.
+    # Why only rc 124 keeps the XCTestDevices time-limit reason, and rc 75 does not:
+    # - rc 75: the scan finished and its report carries complete lane attribution
+    #   with its own block cause.  That finding outranks the time-limit, which is
+    #   only a subordinate sub-measurement (test: "lane report that exits 75").
+    # - rc 124: the scan was killed, so its attribution is unknown and the
+    #   time-limit is the only measured cause in this tick.  It is kept, and it is
+    #   retryable.  The reason survives only if write_lane_usage saw a current
+    #   report, because XCTEST_DEVICES_TIME_LIMITED is set only from one.
+    # A kill with no current report of its own has no measured cause at all.  It
+    # deliberately stays lane-usage-report-blocked / manual-review, fail-closed: a
+    # scan that dies without writing a report is a persistent hang, and
+    # retry-next-tick would hide it.
     if (( LANE_USAGE_RC == LANE_USAGE_KILLED_RC )) && [[ "$reason" == "xctest-devices-measurement-incomplete" ]]; then
       :
     else
