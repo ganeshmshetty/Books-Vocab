@@ -104,15 +104,19 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
 
     /// Readium 3.11 idle location callbacks carry empty `locations.fragments`
     /// (positions and resource-level fallback locators have none), so an
-    /// empty report is attributed by ordering alone (`markNavigationAccepted`).
-    /// A report that names an anchor can only be Readium's pending-jump locator
-    /// of some request, so it must name the active request's anchor. Both sides
-    /// are percent-decoded first, so an encoded TOC href and a decoded callback
+    /// anchorless report cannot be told apart from a late idle callback of a
+    /// superseded request. Only a request without an anchor of its own (a
+    /// resource-level expectation) may be completed by an empty report. An
+    /// anchored request completes only on a report that names its own anchor.
+    /// A report that names an anchor is Readium's pending-jump locator of some
+    /// request, so it must name the active request's anchor. Both sides are
+    /// percent-decoded first, so an encoded TOC href and a decoded callback
     /// fragment still match.
     static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
-        guard !reported.isEmpty else { return true }
         let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
-        return !Set(expected.map(normalized)).isDisjoint(with: reported.map(normalized))
+        let expectedAnchors = Set(expected.map(normalized))
+        guard !expectedAnchors.isEmpty else { return reported.isEmpty }
+        return !expectedAnchors.isDisjoint(with: reported.map(normalized))
     }
 
     @discardableResult
@@ -189,7 +193,15 @@ final class ReaderTOCNavigationBridge {
         self.beforeContinuationInstall = beforeContinuationInstall
     }
 
-    func navigate(requestID: UUID, locator: Locator) async -> ReaderTOCNavigationEvent {
+    /// `onAccepted` runs in the same main-actor turn that Readium's `go(to:)`
+    /// reports acceptance, before the caller resumes. A location callback that
+    /// Readium delivers right after acceptance is therefore already attributable
+    /// to the request, instead of being dropped and timing out.
+    func navigate(
+        requestID: UUID,
+        locator: Locator,
+        onAccepted: (@MainActor () -> Void)? = nil
+    ) async -> ReaderTOCNavigationEvent {
         let race = ReaderTOCNavigationRace(requestID: requestID)
         let navigator = self.navigator
         let timeoutNanoseconds = self.timeoutNanoseconds
@@ -212,6 +224,7 @@ final class ReaderTOCNavigationBridge {
                         race.finish(.navigatorUnavailable(requestID: requestID))
                         return
                     }
+                    if accepted { onAccepted?() }
                     race.finish(
                         accepted
                             ? .goAccepted(requestID: requestID, locatorHref: locator.href.string)
