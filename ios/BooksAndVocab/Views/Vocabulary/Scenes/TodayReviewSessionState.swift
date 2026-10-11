@@ -14,7 +14,6 @@ struct TodayReviewSessionState<Entry> {
 
     var canGoPrevious: Bool { currentIndex > 0 }
     var canGoNext: Bool { currentIndex < queue.count - 1 }
-    var canShuffle: Bool { queue.count - currentIndex > 1 }
     var remainingCount: Int { max(queue.count - currentIndex - 1, 0) }
     var isComplete: Bool { currentIndex >= queue.count }
 
@@ -60,18 +59,36 @@ struct TodayReviewSessionState<Entry> {
         return isComplete
     }
 
-    @discardableResult
-    mutating func shuffleRemaining() -> Bool {
-        var rng = SystemRandomNumberGenerator()
-        return shuffleRemaining(using: &rng)
+    /// 洗牌可動的槽位：`currentIndex` 起、未被 `pinned` 釘住的槽。
+    /// `pinned` = 已作答的槽（答案以 queue index 為鍵，移動即誤判；#2482）。
+    private func shufflableSlots(pinned: Set<Int>) -> [Int] {
+        guard currentIndex < queue.count else { return [] }
+        return (currentIndex..<queue.count).filter { !pinned.contains($0) }
+    }
+
+    func canShuffle(pinned: Set<Int> = []) -> Bool {
+        shufflableSlots(pinned: pinned).count > 1
     }
 
     @discardableResult
-    mutating func shuffleRemaining<RNG: RandomNumberGenerator>(using rng: inout RNG) -> Bool {
-        guard canShuffle else { return false }
-        var tail = Array(queue[currentIndex...])
-        tail.shuffle(using: &rng)
-        queue.replaceSubrange(currentIndex..., with: tail)
+    mutating func shuffleRemaining(pinned: Set<Int> = []) -> Bool {
+        var rng = SystemRandomNumberGenerator()
+        return shuffleRemaining(pinned: pinned, using: &rng)
+    }
+
+    /// 只重排未釘住的槽；釘住的槽（已作答）原地不動。
+    @discardableResult
+    mutating func shuffleRemaining<RNG: RandomNumberGenerator>(
+        pinned: Set<Int> = [],
+        using rng: inout RNG
+    ) -> Bool {
+        guard canShuffle(pinned: pinned) else { return false }
+        let slots = shufflableSlots(pinned: pinned)
+        var entries = slots.map { queue[$0] }
+        entries.shuffle(using: &rng)
+        for (slot, entry) in zip(slots, entries) {
+            queue[slot] = entry
+        }
         revealStage = .front
         return true
     }
