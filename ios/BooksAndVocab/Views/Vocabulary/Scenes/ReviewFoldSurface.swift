@@ -69,7 +69,12 @@ struct ReviewFoldChevronPill: View {
     let accessibilityLabel: String
 
     var body: some View {
-        Button(action: action) {
+        // 版面維持 48×30；可點區由 ReviewCardHitTargetButton 外擴到 44pt 見方（#3117）。
+        ReviewCardHitTargetButton(
+            action: action,
+            accessibilityIdentifier: "todayReview.fold.collapse",
+            accessibilityLabel: accessibilityLabel
+        ) {
             Image(systemName: "chevron.up")
                 .font(appSkin.typography.iconTiny.weight(.semibold))
                 .foregroundStyle(appSkin.palette.tertiaryText.opacity(0.78))
@@ -84,9 +89,6 @@ struct ReviewFoldChevronPill: View {
                 )
                 .frame(width: 48, height: TodayReviewMetrics.chevronButtonSize)
         }
-        .buttonStyle(.plain)
-        .contentShape(AppRoundedRect(roundness: AppRoundness.pill))
-        .accessibilityLabel(accessibilityLabel)
         .enableInjection()
     }
 }
