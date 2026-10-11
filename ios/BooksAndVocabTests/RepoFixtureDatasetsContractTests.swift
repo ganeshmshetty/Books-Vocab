@@ -30,6 +30,14 @@ struct RepoFixtureDatasetsContractTests {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    /// Every named UI World plus the generated demo dataset.
+    private static func allWorldAndGeneratedURLs() throws -> [URL] {
+        let fixturesRoot = Self.datasetsDirectory.deletingLastPathComponent().deletingLastPathComponent()
+        var urls = try Self.datasetURLs()
+        urls.append(fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"))
+        return urls
+    }
+
     private static func generatedDemoTopLevel() throws -> [String: Any] {
         let url = datasetsDirectory
             .deletingLastPathComponent() // ui_worlds
@@ -45,6 +53,85 @@ struct RepoFixtureDatasetsContractTests {
         var topLevel = try generatedDemoTopLevel()
         try mutate(&topLevel)
         return try JSONSerialization.data(withJSONObject: topLevel)
+    }
+
+    /// Podcast fixture invariants (#2906): a preview can never be longer than its
+    /// episode, and the runtime podcast clips pin the real length of the audio
+    /// asset they point to (ffprobe: `podcast_demo_long.mp3` = 120.000 s,
+    /// `podcast_demo.mp3` = 12.000 s). Applies to every named UI World and to the
+    /// generated demo, so a non-default world cannot ship a violated invariant.
+    @Test func runtimePodcastEpisodeDurationsMatchClipsAndPreviewBounds() throws {
+        let urls = try Self.allWorldAndGeneratedURLs()
+        // Keyed by the audio file the episode actually plays (asset sourcePath basename), not by runtime key.
+        let clipSecondsByFile: [String: Double] = [
+            "podcast_demo.mp3": 12.0,
+            "podcast_demo_long.mp3": 120.0,
+        ]
+
+        for url in urls {
+            let top = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            let runtime = try #require(top["runtimePodcast"] as? [String: Any], "\(url.lastPathComponent): runtimePodcast")
+            let audioAssets = try #require(
+                (top["assets"] as? [String: Any])?["audio"] as? [String: Any],
+                "\(url.lastPathComponent): assets.audio"
+            )
+            for (fixtureID, value) in runtime {
+                let series = try #require(value as? [String: Any])
+                let episodes = try #require(series["episodes"] as? [[String: Any]])
+                for episode in episodes {
+                    let remoteID = episode["remoteId"] as? String ?? "?"
+                    let durationSec = try #require(episode["durationSec"] as? Double, "\(remoteID) durationSec")
+                    if episode["previewAvailable"] as? Bool == true {
+                        let previewSec = try #require(episode["previewDurationSec"] as? Double, "\(remoteID) previewDurationSec")
+                        #expect(previewSec > 0 && previewSec <= durationSec,
+                                "\(url.lastPathComponent) \(remoteID): previewDurationSec \(previewSec) must be within durationSec \(durationSec)")
+                    }
+                    if episode["audioAvailable"] as? Bool == true {
+                        // Fail closed: a re-pointed or unpinned audio file must not skip the check.
+                        let audioRef = try #require(
+                            (episode["download"] as? [String: Any])?["audioAssetRef"] as? String,
+                            "\(remoteID) audioAssetRef"
+                        )
+                        // Refs are `audio.<key>` (see FixtureDatasetDocument asset-ref prefix).
+                        let assetKey = try #require(
+                            audioRef.hasPrefix("audio.") ? String(audioRef.dropFirst("audio.".count)) : nil,
+                            "\(audioRef): expected audio. prefix"
+                        )
+                        let asset = try #require(audioAssets[assetKey] as? [String: Any], "\(url.lastPathComponent) \(audioRef): asset")
+                        let sourcePath = try #require(asset["sourcePath"] as? String, "\(audioRef) sourcePath")
+                        let file = URL(fileURLWithPath: sourcePath).lastPathComponent
+                        let clip = try #require(clipSecondsByFile[file], "\(url.lastPathComponent) \(fixtureID) \(file): no pinned clip length")
+                        #expect(abs(durationSec - clip) < 0.05,
+                                "\(url.lastPathComponent) \(remoteID): durationSec \(durationSec) must match clip length \(clip)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Series aggregate invariant (#2906 CR round 3): the series-level `durationSec`
+    /// seeds `PodcastSeries.totalDurationSec` (UITestFixtureSeed+Podcast.swift), and the
+    /// production catalog reports the sum of episode durations. Every named UI World and
+    /// the generated demo must therefore declare series length == sum of episode lengths.
+    @Test func runtimePodcastSeriesDurationEqualsEpisodeSum() throws {
+        for url in try Self.allWorldAndGeneratedURLs() {
+            let top = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            let runtime = try #require(top["runtimePodcast"] as? [String: Any], "\(url.lastPathComponent): runtimePodcast")
+            #expect(!runtime.isEmpty, "\(url.lastPathComponent): runtimePodcast must declare at least one series")
+            for (fixtureID, value) in runtime {
+                let series = try #require(value as? [String: Any], "\(url.lastPathComponent) \(fixtureID): series object")
+                let episodes = try #require(series["episodes"] as? [[String: Any]], "\(url.lastPathComponent) \(fixtureID): episodes")
+                #expect(!episodes.isEmpty, "\(url.lastPathComponent) \(fixtureID): series must have episodes")
+                let declaredSec = try #require(series["durationSec"] as? Double, "\(url.lastPathComponent) \(fixtureID): series durationSec")
+                var episodeSumSec = 0.0
+                for episode in episodes {
+                    let episodeSec = try #require(episode["durationSec"] as? Double, "\(url.lastPathComponent) \(fixtureID): episode durationSec")
+                    episodeSumSec += episodeSec
+                }
+                #expect(abs(declaredSec - episodeSumSec) < 0.05,
+                        "\(url.lastPathComponent) \(fixtureID): series durationSec \(declaredSec) must equal sum of episode durationSec \(episodeSumSec)")
+            }
+        }
     }
 
     @Test func repoContainsAtLeastOneDataset() throws {
