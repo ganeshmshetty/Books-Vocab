@@ -1237,6 +1237,7 @@ RS_HOME="$RS_FIX/home"
 RS_TRACE="$RS_FIX/trace"
 RS_PAYLOAD="$WORKSPACE/ops/lib/devops_restore_remote.sh"
 RS_BUCKET=kg-backups-prod-967512079054
+RS_LOCK="$RS_FIX/deploy.lock"  # 遠端 deploy 鎖目錄（payload 的第 6 個參數）
 mkdir -p "$RS_HOME/kg-data" "$RS_HOME/kg-prod/backend" "$RS_HOME/Library/Logs" "$RS_FIX/bin" "$RS_FIX/src/kg-data"
 printf 'restored\n' > "$RS_FIX/src/kg-data/marker"
 sqlite3 "$RS_FIX/src/kg-data/cards.db" 'CREATE TABLE t(a); INSERT INTO t VALUES (1);'
@@ -1280,7 +1281,7 @@ rs_make_archive() {  # $1 = archive 第一層目錄名；$2 可覆寫 log 內 sh
     > "$RS_HOME/Library/Logs/kg_backup.log"
 }
 rs_reset_live() {
-  rm -rf "$RS_HOME/kg-data" "$RS_HOME"/kg-data.broken.*
+  rm -rf "$RS_HOME/kg-data" "$RS_HOME"/kg-data.broken.* "$RS_LOCK"
   mkdir -p "$RS_HOME/kg-data" && printf 'live\n' > "$RS_HOME/kg-data/live-marker"
   rm -f "$RS_TRACE"; : > "$RS_TRACE"
 }
@@ -1288,7 +1289,7 @@ rs_payload() {  # 以本地 bash 直接執行遠端 payload（參數與 cmd_rest
   : > "$RS_TRACE"; rs_rc=0
   rs_out=$(env HOME="$RS_HOME" PATH="$RS_FIX/bin:$PATH" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" \
     RS_FAIL_SWAP="${RS_FAIL_SWAP:-}" RS_REAPPEAR="${RS_REAPPEAR:-}" RS_DOCKER_UP_FAIL="${RS_DOCKER_UP_FAIL:-}" RS_DOCKER_STOP_FAIL="${RS_DOCKER_STOP_FAIL:-}" \
-    bash "$RS_PAYLOAD" 2026-10-09 "$RS_BUCKET" '~/kg-data' '~/kg-prod/backend' "${RS_TOKEN:-restore 2026-10-09 $RS_BUCKET}" 2>&1) || rs_rc=$?
+    bash "$RS_PAYLOAD" 2026-10-09 "$RS_BUCKET" '~/kg-data' '~/kg-prod/backend' "${RS_TOKEN:-restore 2026-10-09 $RS_BUCKET}" "$RS_LOCK" 2>&1) || rs_rc=$?
 }
 rs_pty() {  # 在真正的 pty 中執行「$@」；script(1) 語法依平台：BSD `script -q /dev/null cmd`，GNU `script -qec cmd /dev/null`
   if [[ "$(uname -s)" == Darwin ]]; then
@@ -1414,6 +1415,58 @@ RS_REAPPEAR=1 rs_payload
   && ok "data dir reappearing mid-swap is refused; restored archive is not nested into it" \
   || fail_t "reappearing data dir was not refused safely (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
 
+# P1：鎖由 payload 自持。容器已停後的任何失敗都保留鎖（deploy／restart 因此拒絕，不會在空的 kg-data 上起容器）
+rs_reset_live; rs_make_archive kg-data
+RS_DOCKER_UP_FAIL=1 rs_payload
+[[ "$rs_rc" -ne 0 && -d "$RS_LOCK" ]] && ! grep -q '✓ restore 完成' <<< "$rs_out" \
+  && ok "container-up failure after swap keeps the deploy lock (deploy/restart refused until a human clears it)" \
+  || fail_t "container-up failure released the deploy lock (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
+rs_reset_live; rs_make_archive kg-data
+RS_REAPPEAR=1 rs_payload
+[[ "$rs_rc" -ne 0 && -d "$RS_LOCK" ]] && ! grep -q 'docker: compose up -d' "$RS_TRACE" \
+  && ok "interrupted swap keeps the lock and never starts the container" \
+  || fail_t "interrupted swap released the lock or started the container (rc=$rs_rc)"
+
+# P1：swap 失敗且原本沒有 kg-data：不得起容器（否則在空目錄重建空資料庫），鎖保留
+rs_reset_live; rs_make_archive kg-data
+rm -rf "$RS_HOME/kg-data"
+RS_FAIL_SWAP=1 rs_payload
+[[ "$rs_rc" -ne 0 && -d "$RS_LOCK" && ! -e "$RS_HOME/kg-data" ]] && ! grep -q 'docker: compose up -d' "$RS_TRACE" \
+  && ok "swap failure with no prior kg-data never starts the container on an empty dir; lock kept" \
+  || fail_t "swap failure with no prior data started the container or dropped the lock (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
+# 成功、以及容器停止前的拒絕，都必須釋放 payload 自己取得的鎖
+rs_reset_live; rs_make_archive kg-data
+rs_payload
+[[ "$rs_rc" -eq 0 && ! -e "$RS_LOCK" ]] && ok "successful restore releases the deploy lock it took" \
+  || fail_t "successful restore left the deploy lock behind (rc=$rs_rc)"
+
+rs_reset_live; rs_make_archive kg-data 0000000000000000000000000000000000000000000000000000000000000000
+rs_payload
+[[ "$rs_rc" -ne 0 && ! -e "$RS_LOCK" ]] && ok "pre-stop refusal releases the lock it took" \
+  || fail_t "pre-stop refusal left the deploy lock behind (rc=$rs_rc)"
+
+# P2：他人持有鎖時 payload 拒絕、不 stop、且不 rmdir 他人的鎖
+rs_reset_live; mkdir "$RS_LOCK"; rs_make_archive kg-data
+rs_payload
+[[ "$rs_rc" -ne 0 && -d "$RS_LOCK" && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '另一個 deploy' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "payload refuses while another deploy holds the lock and leaves that lock untouched" \
+  || fail_t "payload ran or removed another holder's lock (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+rmdir "$RS_LOCK"
+
+# P3：symlink 條目在解壓與停容器前即拒絕（解壓後的 symlink 可把寫入導向 kg-data 之外）
+rs_reset_live
+ln -s /etc/hosts "$RS_FIX/src/kg-data/evil-link"
+rs_make_archive kg-data
+rm -f "$RS_FIX/src/kg-data/evil-link"
+rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" && ! -e "$RS_LOCK" ]] && grep -q '非一般檔' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "archive with a symlink entry is refused before any stop; live data intact" \
+  || fail_t "archive with a symlink entry was not refused (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
 # (b) devops.sh restore 閘門：transport 為 kg-record-deny（只留痕、不執行）
 rs_reset_live
 rs_gate
@@ -1459,22 +1512,23 @@ RS_ANSWER="restore 2026-10-08 $RS_BUCKET" rs_gate_tty 2026-10-09
   && ok "a confirmation bound to another date is refused at the gate" \
   || fail_t "confirmation for another date was accepted (rc=$rs_rc)"
 
-# P2：deploy 鎖被他人持有時 restore 必須拒絕，不得送出任何 swap 指令（restore 與 deploy/restart/migrate 互斥）
+# 非法 bucket 名稱會被併入遠端指令字串：必須在任何 transport 呼叫前拒絕
 rs_reset_live
-RS_LOCK_HELD=1 rs_gate_tty 2026-10-09
-[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '另一個 deploy' <<< "$rs_out" \
-  && [[ "$(grep -c 'bash -s -- ' "$RS_TRACE")" -eq 0 ]] \
-  && ok "restore refuses while the deploy lock is held; no swap command reaches the transport" \
-  || fail_t "restore ran without the deploy lock (rc=$rs_rc): $(tr '\n' '|' < "$RS_TRACE")"
+export KG_BACKUP_BUCKET='bad;touch x'
+rs_gate 2026-10-09
+unset KG_BACKUP_BUCKET
+[[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 0 ]] && grep -q '合法的 S3 bucket' <<< "$rs_out" \
+  && ok "illegal KG_BACKUP_BUCKET is refused before any transport call" \
+  || fail_t "illegal bucket name was not refused (rc=$rs_rc)"
 
-# 正控：人類在 TTY 逐字輸入與日期、bucket 綁定的確認字串 → 取得鎖後，guarded 遠端呼叫恰好一次，
-# 參數與確認字串正確（transport 拒絕執行，kg-data 不動）
+# 正控：人類在 TTY 逐字輸入與日期、bucket 綁定的確認字串 → 恰好一次 guarded 遠端呼叫，參數含確認字串與鎖路徑；
+# 本機不取鎖（不得有 transport mkdir），鎖由遠端 payload 自持（transport 拒絕執行，kg-data 不動）
 rs_reset_live
 rs_gate_tty 2026-10-09
 [[ "$rs_rc" -ne 0 && "$(grep -c 'bash -s -- ' "$RS_TRACE")" -eq 1 && -f "$RS_HOME/kg-data/live-marker" ]] \
-  && grep -qF "bash -s -- 2026-10-09 $RS_BUCKET ~/kg-data ~/kg-prod/backend restore\ 2026-10-09\ $RS_BUCKET" "$RS_TRACE" \
-  && grep -q 'mkdir ' "$RS_TRACE" \
-  && ok "bound confirmation takes the deploy lock and reaches the guarded remote call exactly once (positive control; transport denies)" \
+  && grep -qF "bash -s -- 2026-10-09 $RS_BUCKET ~/kg-data ~/kg-prod/backend restore\ 2026-10-09\ $RS_BUCKET /tmp/kg-deploy.lock" "$RS_TRACE" \
+  && ! grep -q 'mkdir ' "$RS_TRACE" \
+  && ok "bound confirmation reaches the guarded remote call exactly once with the lock path; no local lock taken (positive control; transport denies)" \
   || fail_t "positive control failed: confirmed restore did not reach the guarded call (rc=$rs_rc): $(tr '\n' '|' < "$RS_TRACE")"
 
 # 被守門的 safe wrapper 不得把 restore 放行到 base
