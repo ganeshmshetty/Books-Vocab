@@ -257,21 +257,32 @@ enum AccountPreferenceNamespace {
         }
     }
 
+    /// 已領養判定：本機 flag，或傳入 iCloud KVS 時其中任一處有紀錄即算已領養。
+    /// KVS 紀錄讓同一 Apple ID 的其他裝置也不再把 KVS 內保留的 pre-account raw 值
+    /// 領養給後續帳號（#2434 cross-device re-adoption）。
+    static func isLegacyMigrated(feature: String, defaults: UserDefaults, cloud: CloudKeyValueStore?) -> Bool {
+        let marker = legacyMigrationMarker(feature: feature)
+        return defaults.bool(forKey: marker) || cloud?.string(forKey: marker) != nil
+    }
+
     /// Migrate the pre-account raw preference namespace exactly once per
-    /// preference family. The marker is deliberately global to the device/
-    /// Apple-ID store: legacy values describe the one existing local user and
-    /// must never be copied into every account that signs in afterwards.
+    /// preference family. The marker is deliberately global to the Apple-ID
+    /// store (UserDefaults plus, when `cloud` is passed, iCloud KVS): legacy
+    /// values describe the one existing local user and must never be copied
+    /// into every account that signs in afterwards.
     static func migrateLegacyIfNeeded(
         accountID: String?,
         defaults: UserDefaults,
+        cloud: CloudKeyValueStore? = nil,
         feature: String,
         migration: () -> Void
     ) {
         guard normalizedAccountID(accountID) != nil else { return }
-        let marker = legacyMigrationMarker(feature: feature)
-        guard !defaults.bool(forKey: marker) else { return }
+        guard !isLegacyMigrated(feature: feature, defaults: defaults, cloud: cloud) else { return }
         migration()
+        let marker = legacyMigrationMarker(feature: feature)
         defaults.set(true, forKey: marker)
+        cloud?.set("adopted", forKey: marker)
     }
 
     static func copyLegacyObject(
