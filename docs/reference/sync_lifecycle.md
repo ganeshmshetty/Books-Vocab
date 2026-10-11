@@ -111,7 +111,7 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 **分頁（`X-Next-Cursor`）**：`GET /api/vocab` 每頁最多 `limit`（預設 5,000）列，依 `(updated_at, id)` 升冪；還有下一頁時回 `X-Next-Cursor`。cursor 是 opaque token，綁定請求 scope（`notebook_id` + `since`），換 scope 重用會被 400 拒絕。iOS 一律經 `KGService.fetchAllVocabPages` 讀取：每頁原樣重送同一組 `notebook_id`／`since` 再加 `cursor`，直到 header 缺席；`X-Pipeline-Pending` 取最後一頁。
 
-- **不變式**：整批 drain 完才 merge；orphan cleanup、`SyncKeys.incrementalBoundary` 與 `payloadVersion` 只在全部頁成功後才寫；boundary 錨定在「pull 發出前的裝置時鐘」與「首頁 `Date` header」較早者、再減 60 秒（#2426，裝置超前伺服器時不會跳過伺服器變更）。任一頁 HTTP 失敗、無法解碼、cursor 不前進（重複）或頁數超過 `KGService.maxVocabPages`（200，擋住持續換發新 cursor 的伺服器故障，免得 sync 卡死、記憶體無界成長）即整輪 throw，什麼都不提交——截斷的讀取與「server 已沒有這些卡」無法區分。只讀第一頁時，超過 5,000 列的庫在 full sync 會把最新的卡當 orphan 刪掉，boundary 再越過沒讀到的列，那些卡就永遠拉不回來（#2101）。
+- **不變式**：整批 drain 完才 merge；orphan cleanup、`SyncKeys.incrementalBoundary` 與 `payloadVersion` 只在全部頁成功後才寫；boundary 錨定在「pull 發出前的裝置時鐘」與「首頁 `Date` header」較早者、再減 60 秒（#2426，裝置超前伺服器時不會跳過伺服器變更）。`payloadVersion` 升到 2 讓既有 v1 boundary（可能已超前）被丟棄、強制一次 full drain 重建。任一頁 HTTP 失敗、無法解碼、cursor 不前進（重複）或頁數超過 `KGService.maxVocabPages`（200，擋住持續換發新 cursor 的伺服器故障，免得 sync 卡死、記憶體無界成長）即整輪 throw，什麼都不提交——截斷的讀取與「server 已沒有這些卡」無法區分。只讀第一頁時，超過 5,000 列的庫在 full sync 會把最新的卡當 orphan 刪掉，boundary 再越過沒讀到的列，那些卡就永遠拉不回來（#2101）。
 
 ### 批次刪除 / 封存回應的三個 bucket：`*_words` / `not_found` / `failed`
 

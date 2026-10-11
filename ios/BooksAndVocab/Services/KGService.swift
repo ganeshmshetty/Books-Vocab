@@ -33,7 +33,10 @@ final class KGService: KGServing {
         static let incrementalBoundary = "kg_last_incremental_sync"
         static let reviewEventPullBoundary = "kg_review_events_since"
         static let payloadVersion = "kg_review_payload_version"
-        static let currentPayloadVersion = 1
+        /// 2: the incremental boundary is anchored to the server clock (#2426). A
+        /// v1 boundary may already run ahead of server time, so the bump forces
+        /// one full drain that rebuilds it.
+        static let currentPayloadVersion = 2
         /// Last successful device sync, persisted so Settings can still answer
         /// "when did this last sync?" after a cold start. Held in memory only,
         /// it read as "never synced" on every launch until the first sync of

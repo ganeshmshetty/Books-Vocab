@@ -148,7 +148,7 @@ struct KGServiceErrorTests {
 
     @Test func sync_payload_version_is_positive_int() {
         // If product bumps the schema, this test will break and force a deliberate review.
-        #expect(KGService.SyncKeys.currentPayloadVersion == 1)
+        #expect(KGService.SyncKeys.currentPayloadVersion == 2)
         #expect(KGService.SyncKeys.incrementalBoundary == "kg_last_incremental_sync")
         #expect(KGService.SyncKeys.payloadVersion == "kg_review_payload_version")
     }
