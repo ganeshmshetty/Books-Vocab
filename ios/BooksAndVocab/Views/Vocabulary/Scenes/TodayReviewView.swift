@@ -371,7 +371,8 @@ struct TodayReviewView: View {
                 container: container,
                 notebookSettingsSnapshot: notebookSettingsSnapshot,
                 onFinalize: {
-                    if completed { state.clearSnapshot() } else { state.persistSnapshot() }
+                    // Clears only when every answer reached the store (#3123).
+                    state.finalizeSnapshotAfterFlush(completed: completed)
                     guard loggedIn else { return }
                     Task { await kgService.pushReviewQuietly(container: container) }
                 },
