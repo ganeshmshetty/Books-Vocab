@@ -47,7 +47,10 @@ warning: StoreKit Configuration file for scheme "BooksAndVocab" can't be found a
 def test_json_output_is_stable(tmp_path, capsys):
     mod = _load_module()
     log = tmp_path / "build.log"
-    log.write_text("warning: StoreKit Configuration file missing\n** BUILD SUCCEEDED **\n", encoding="utf-8")
+    log.write_text(
+        "warning: StoreKit Configuration file missing\n** BUILD SUCCEEDED **\n",
+        encoding="utf-8",
+    )
 
     rc = mod.main(["--log", str(log), "--json"])
     assert rc == 0
@@ -65,7 +68,9 @@ def test_parse_xcresult_build_results_uses_official_counts():
         "errors": [],
         "warnings": [
             {"message": "StoreKit Configuration file for scheme missing"},
-            {"message": "Switch covers known cases; this is an error in the Swift 6 language mode"},
+            {
+                "message": "Switch covers known cases; this is an error in the Swift 6 language mode"
+            },
         ],
     }
 
@@ -107,6 +112,128 @@ def test_parse_xcresult_build_results_fails_on_nonzero_error_count_after_success
 
     assert summary["result"] == "fail"
     assert summary["counts"]["errors"] == 1
+
+
+def _xcresult_error_payload(source_url: str) -> dict:
+    return {
+        "status": "failed",
+        "errorCount": 1,
+        "warningCount": 0,
+        "errors": [
+            {
+                "message": "Cannot use mutating member on immutable value: '$0' is immutable",
+                "sourceURL": source_url,
+                "targetName": "BooksAndVocabTests",
+            }
+        ],
+        "warnings": [],
+    }
+
+
+def test_parse_xcresult_build_results_keeps_file_line_column_from_source_url():
+    mod = _load_module()
+    repo_root = SCRIPT.parents[1]
+    source_url = (
+        f"file://{repo_root}/ios/BooksAndVocabTests/X.swift"
+        "#EndingColumnNumber=40&EndingLineNumber=57&StartingColumnNumber=9&StartingLineNumber=57"
+    )
+
+    item = mod.parse_xcresult_build_results(_xcresult_error_payload(source_url))[
+        "diagnostics"
+    ][0]
+
+    assert item["file"] == "ios/BooksAndVocabTests/X.swift"
+    # xcresult fragments are 0-based (verified: swiftc 3:13 -> StartingLineNumber=2&StartingColumnNumber=12)
+    assert (item["line"], item["column"]) == (58, 10)
+    assert item["target"] == "BooksAndVocabTests"
+    assert (
+        item["message"]
+        == "Cannot use mutating member on immutable value: '$0' is immutable"
+    )
+
+
+def test_format_text_prints_path_and_line_for_xcresult_build_error():
+    mod = _load_module()
+    repo_root = SCRIPT.parents[1]
+    source_url = (
+        f"file://{repo_root}/ios/BooksAndVocabTests/X.swift"
+        "#EndingColumnNumber=40&EndingLineNumber=57&StartingColumnNumber=9&StartingLineNumber=57"
+    )
+    summary = mod.parse_xcresult_build_results(_xcresult_error_payload(source_url))
+
+    error_lines = [
+        line
+        for line in mod.format_text(summary).splitlines()
+        if line.startswith("[ios][error]")
+    ]
+
+    assert error_lines == [
+        "[ios][error] category=compiler target=BooksAndVocabTests ios/BooksAndVocabTests/X.swift:58 "
+        "Cannot use mutating member on immutable value: '$0' is immutable"
+    ]
+
+
+def test_parse_xcresult_build_results_reads_legacy_document_location_url():
+    mod = _load_module()
+    repo_root = SCRIPT.parents[1]
+    payload = {
+        "status": "failed",
+        "errorCount": 1,
+        "warningCount": 0,
+        "errors": [
+            {
+                "message": "cannot find 'missingSymbol' in scope",
+                "documentLocationInCreatingWorkspace": {
+                    "url": f"file://{repo_root}/ios/Foo.swift#StartingColumnNumber=11&StartingLineNumber=4",
+                    "concreteTypeName": "DVTTextDocumentLocation",
+                },
+            }
+        ],
+        "warnings": [],
+    }
+
+    item = mod.parse_xcresult_build_results(payload)["diagnostics"][0]
+
+    assert (item["file"], item["line"], item["column"]) == ("ios/Foo.swift", 5, 12)
+    assert item["message"] == "cannot find 'missingSymbol' in scope"
+
+
+def test_parse_xcresult_build_results_keeps_absolute_path_outside_checkout():
+    mod = _load_module()
+    payload = _xcresult_error_payload(
+        "file:///Users/runner/work/Other%20Repo/X.swift#StartingColumnNumber=0&StartingLineNumber=0"
+    )
+
+    item = mod.parse_xcresult_build_results(payload)["diagnostics"][0]
+
+    assert (item["file"], item["line"], item["column"]) == (
+        "/Users/runner/work/Other Repo/X.swift",
+        1,
+        1,
+    )
+
+
+def test_format_text_location_less_xcresult_error_renders_as_before():
+    mod = _load_module()
+    summary = mod.parse_xcresult_build_results(
+        {
+            "status": "failed",
+            "errorCount": 1,
+            "warningCount": 0,
+            "errors": [{"message": "compiler error preserved in xcresult"}],
+            "warnings": [],
+        }
+    )
+
+    error_lines = [
+        line
+        for line in mod.format_text(summary).splitlines()
+        if line.startswith("[ios][error]")
+    ]
+
+    assert error_lines == [
+        "[ios][error] category=compiler compiler error preserved in xcresult"
+    ]
 
 
 def test_result_override_handles_quiet_xcodebuild_logs(tmp_path, capsys):
@@ -195,7 +322,10 @@ def test_parse_xcresult_test_results_rejects_skipped_only_unknown_summary():
     assert parsed["counts"]["effectiveTests"] == 0
     assert parsed["counts"]["errors"] == 1
     assert parsed["diagnostics"][0]["category"] == "test-result-integrity"
-    assert "skipped/unknown tests are not a valid pass" in parsed["diagnostics"][0]["message"]
+    assert (
+        "skipped/unknown tests are not a valid pass"
+        in parsed["diagnostics"][0]["message"]
+    )
     assert parsed["diagnostics"][1]["category"] == "test-skipped"
     assert "player not reached" in parsed["diagnostics"][1]["message"]
 
