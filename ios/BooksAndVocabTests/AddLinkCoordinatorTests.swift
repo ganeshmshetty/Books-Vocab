@@ -246,22 +246,31 @@ struct AddLinkCoordinatorTests {
         )
     }
 
-    @Test("AddLink lookup evidence retains sense, example, and source provenance")
-    func lookupEvidence() {
+    @Test("collapsed row value names only the visible first sense and verdict, never hidden examples or provenance")
+    func collapsedRowValueOmitsHiddenDetail() {
         let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
         entry.translation = "偶然發生而幸運的"
-        entry.explanation = "Happening by chance, usually with a favorable result."
-        entry.reviewExamples = ["The fortuitous meeting changed the project’s direction."]
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance, usually with a favorable result.","partOfSpeech":"adj.","translation":"偶然發生而幸運的","examples":["The fortuitous meeting changed the project’s direction."]},{"definition":"Occurring unexpectedly.","partOfSpeech":"adj.","translation":"意外的","examples":["A fortuitous delay gave time to think."]}]}"#
+        entry.rootForm = "fortuitous"
+        entry.inflections = ["fortuitously", "fortuitousness"]
+        entry.bookTitle = "The Weight of Words"
         entry.chapterTitle = "Linked Cards"
+        entry.context = "A fortuitous delay gave time to think."
 
-        let evidence = AddLinkCoordinator.lookupEvidence(for: entry)
+        let collapsed = AddLinkCoordinator.candidateProjection(for: entry, isExpanded: false)
+        let value = AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: collapsed)
 
-        #expect(evidence.contains("word=fortuitous"))
-        #expect(evidence.contains("translation=偶然發生而幸運的"))
-        #expect(evidence.contains("sense=Happening by chance, usually with a favorable result."))
-        #expect(evidence.contains("example=The fortuitous meeting changed the project’s direction."))
-        #expect(evidence.contains("source=Book"))
-        #expect(evidence.contains("chapter=Linked Cards"))
+        #expect(value.contains("word=fortuitous"))
+        #expect(value.contains("translation=偶然發生而幸運的"))
+        #expect(value.contains("sense=Happening by chance, usually with a favorable result."))
+        #expect(value.contains("detail.state=ready-senses-2"))
+        #expect(!value.contains("example="))
+        #expect(!value.contains("The fortuitous meeting"))
+        #expect(!value.contains("Occurring unexpectedly"))
+        #expect(!value.contains("fortuitousness"))
+        #expect(!value.contains("The Weight of Words"))
+        #expect(!value.contains("Linked Cards"))
+        #expect(!value.contains("A fortuitous delay gave time to think."))
     }
 
     @Test("dictionary detail projection keeps every sense, example, form, and provenance level")
@@ -287,13 +296,58 @@ struct AddLinkCoordinatorTests {
         #expect(projection.provenance.chapter == "Linked Cards")
         #expect(projection.provenance.context == entry.context)
 
-        let evidence = AddLinkCoordinator.lookupEvidence(for: entry)
-        #expect(evidence.contains("detail.senses=2"))
-        #expect(evidence.contains("detail.sense[2]=Occurring unexpectedly"))
-        #expect(evidence.contains("detail.example[2,1]=A fortuitous delay"))
-        #expect(evidence.contains("detail.forms=fortuitous, fortuitously, fortuitousness"))
-        #expect(evidence.contains("detail.provenance.source=The Weight of Words"))
-        #expect(evidence.contains("detail.provenance.chapter=Linked Cards"))
+        #expect(projection.senses[1].examples == ["A fortuitous delay gave the researcher enough time to notice the pattern."])
+    }
+
+    @Test("compact candidate projection keeps only the first sense while the state still counts every sense")
+    func compactDetailProjectionKeepsFirstSenseOnly() {
+        let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
+        entry.translation = "偶然發生而幸運的"
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance.","partOfSpeech":"adj.","examples":["First example."]},{"definition":"Second sense.","partOfSpeech":"adj.","examples":["Second example."]}]}"#
+        entry.bookTitle = "The Weight of Words"
+
+        let compact = AddLinkCoordinator.compactDetailProjection(for: entry)
+        let full = AddLinkCoordinator.dictionaryDetailProjection(for: entry)
+
+        #expect(compact.senses.map(\.definition) == ["Happening by chance."])
+        #expect(compact.senses[0].examples == ["First example."])
+        #expect(compact.state == .ready(senseCount: 2))
+        #expect(full.senses.count == 2)
+        #expect(full.state == compact.state)
+        let value = AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: compact)
+        #expect(value.contains("sense=Happening by chance."))
+        #expect(!value.contains("First example."))
+        #expect(!value.contains("Second sense."))
+        #expect(!value.contains("Second example."))
+    }
+
+    @Test("compact evidence reports a missing example that sits beyond the first sense")
+    func compactEvidenceMissingExampleBeyondFirstSense() {
+        let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
+        entry.translation = "偶然發生而幸運的"
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance.","partOfSpeech":"adj.","examples":["First example."]},{"definition":"Second sense.","partOfSpeech":"adj.","examples":[]}]}"#
+
+        let compact = AddLinkCoordinator.compactDetailProjection(for: entry)
+        let value = AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: compact)
+
+        #expect(compact.state == .missingExample(senseCount: 2))
+        #expect(value.contains("detail.state=missing-example-senses-2"))
+        #expect(!value.contains("First example."))
+    }
+
+    @Test("collapsed candidate row projects only the compact first sense, expanded row the full projection")
+    func candidateProjectionSelectsCompactUntilExpanded() {
+        let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
+        entry.translation = "偶然發生而幸運的"
+        entry.explanation = #"kg.dictionary.detail.v1:{"provider":"free_dictionary","senses":[{"definition":"Happening by chance.","partOfSpeech":"adj.","examples":["First example."]},{"definition":"Second sense.","partOfSpeech":"adj.","examples":["Second example."]}]}"#
+
+        let collapsed = AddLinkCoordinator.candidateProjection(for: entry, isExpanded: false)
+        let expanded = AddLinkCoordinator.candidateProjection(for: entry, isExpanded: true)
+
+        #expect(collapsed == AddLinkCoordinator.compactDetailProjection(for: entry))
+        #expect(collapsed.senses.count == 1)
+        #expect(expanded == AddLinkCoordinator.dictionaryDetailProjection(for: entry))
+        #expect(expanded.senses.count == 2)
     }
 
     @Test("dictionary detail projection makes an absent explicit example observable")
@@ -309,8 +363,12 @@ struct AddLinkCoordinatorTests {
         #expect(projection.state == .missingExample(senseCount: 1))
         #expect(projection.senses.count == 1)
         #expect(projection.senses[0].examples.isEmpty)
-        #expect(!AddLinkCoordinator.lookupEvidence(for: entry).contains("example=It was fortunate"))
-        #expect(AddLinkCoordinator.lookupEvidence(for: entry).contains("detail.missing-example=true"))
+        let value = AddLinkCoordinator.rowAccessibilityValue(
+            for: entry,
+            detail: AddLinkCoordinator.candidateProjection(for: entry, isExpanded: false)
+        )
+        #expect(value.contains("detail.state=missing-example-senses-1"))
+        #expect(!value.contains("It was fortunate"))
     }
 
     @Test("provider decode error is retryable through a deterministic local recovery")

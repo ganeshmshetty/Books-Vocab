@@ -184,9 +184,16 @@ final class VocabularyLibraryFlowUITests: UITestCase {
 
         // Candidate rows only: the create entry (`addLink.create`) stays listed next
         // to partial matches and its sentence repeats the typed word (#2030/#2037).
+        // The per-row expand toggle (`<row id>.expand`, label "<word>, 展開") also
+        // carries the word, so it is excluded here: one row per word stays one match (#2407).
         func candidateQuery(for word: String) -> XCUIElementQuery {
             app.buttons.matching(
-                NSPredicate(format: "label CONTAINS[c] %@ AND identifier != %@", word, "addLink.create")
+                NSPredicate(
+                    format: "label CONTAINS[c] %@ AND identifier != %@ AND NOT (identifier ENDSWITH %@)",
+                    word,
+                    "addLink.create",
+                    ".expand"
+                )
             )
         }
 
@@ -197,6 +204,17 @@ final class VocabularyLibraryFlowUITests: UITestCase {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
             }
             return query.count == 0
+        }
+
+        // Collapsed candidates expose only the first sense; detail assertions below run
+        // after the row is expanded (#2407).
+        func expandCandidate(_ detailID: String, named: String) -> Bool {
+            guard let toggle = app.descendants(matching: .any)
+                .matching(identifier: "\(detailID).expand")
+                .exactlyOneElement(timeout: 5, named: named) else { return false }
+            toggle.scrollIntoView()
+            toggle.tapWhenReady()
+            return true
         }
 
         func openAddLinkSheet() -> Bool {
@@ -254,6 +272,11 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         captureStep("add-link-word-candidates", app: app)
 
         let fortuitousDetailID = "addLink.local.result.vocab-linked-fortuitous"
+        guard expandCandidate(fortuitousDetailID, named: "AddLink fortuitous expand") else {
+            captureStep("add-link-fortuitous-expand-missing", app: app)
+            XCTFail("AddLink fortuitous expand control must exist before its detail is asserted")
+            return
+        }
         guard let fortuitousState = app.descendants(matching: .any)
             .matching(identifier: "\(fortuitousDetailID).state")
             .exactlyOneElement(timeout: 5, named: "AddLink fortuitous detail state") else {
@@ -313,6 +336,11 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         )
 
         let fortunateDetailID = "addLink.local.result.vocab-linked-fortunate"
+        guard expandCandidate(fortunateDetailID, named: "AddLink fortunate expand") else {
+            captureStep("add-link-fortunate-expand-missing", app: app)
+            XCTFail("AddLink fortunate expand control must exist before its detail is asserted")
+            return
+        }
         guard let fortunateState = app.descendants(matching: .any)
             .matching(identifier: "\(fortunateDetailID).state")
             .exactlyOneElement(timeout: 5, named: "AddLink fortunate detail state"),
@@ -406,6 +434,11 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             "provider retry must recover to a deterministic local detail"
         )
         XCTAssertTrue(providerError.waitUntilGone(timeout: 5))
+        guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
+            captureStep("add-link-revelation-expand-missing", app: app)
+            XCTFail("AddLink revelation expand control must exist before its detail is asserted")
+            return
+        }
         guard let recoveredSense = app.descendants(matching: .any)
             .matching(identifier: "\(revelationDetailID).sense.1")
             .exactlyOneElement(timeout: 5, named: "AddLink recovered revelation sense"),
@@ -532,17 +565,26 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         searchField.typeText("fort")
         XCTAssertTrue(lookupState.firstMatch.waitUntilValueEquals("results-2", timeout: 5))
 
-        let fortuitous = app.buttons.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "fortuitous")
-        ).firstMatch
-        guard fortuitous.waitUntilExists(timeout: 5) else {
+        // Select the row by identifier: a word-label query would also match its expand toggle (#2407).
+        guard let fortuitous = app.descendants(matching: .any)
+            .matching(identifier: "addLink.local.result.vocab-linked-fortuitous")
+            .exactlyOneElement(timeout: 5, named: "AddLink fortuitous row") else {
             XCTFail("AddLink lookup 必須顯示 fortuitous candidate")
             return
         }
-        let evidence = fortuitous.value as? String ?? ""
-        XCTAssertTrue(evidence.contains("sense=Happening by chance"))
-        XCTAssertTrue(evidence.contains("example=The fortuitous meeting"))
-        XCTAssertTrue(evidence.contains("source=The Weight of Words"))
+        // Collapsed row: the visible first sense and the verdict only. The example and provenance
+        // stay hidden until the row is expanded, so the row value must not name them (#2407).
+        let rowSummary = fortuitous.value as? String ?? ""
+        XCTAssertTrue(rowSummary.contains("sense=Happening by chance"))
+        XCTAssertTrue(rowSummary.contains("detail.state=ready-senses-2"))
+        XCTAssertFalse(
+            rowSummary.contains("example=The fortuitous meeting"),
+            "collapsed row must not name the example hidden until expansion"
+        )
+        XCTAssertFalse(
+            rowSummary.contains("source=The Weight of Words"),
+            "collapsed row must not name provenance hidden until expansion"
+        )
         captureStep("add-link-lookup-results", app: app)
 
         let cancel = app.buttons.matching(identifier: "addLink.cancel")

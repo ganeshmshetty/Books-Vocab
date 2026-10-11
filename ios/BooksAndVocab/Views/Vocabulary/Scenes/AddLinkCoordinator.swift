@@ -240,68 +240,69 @@ final class AddLinkCoordinator {
         }
     }
 
-    nonisolated static func lookupEvidence(
+    /// Accessibility value of a candidate row, collapsed or expanded. It names only what the
+    /// collapsed row draws (word, translation, first sense) and the materialization verdict over
+    /// every sense. Examples, forms, provenance and further senses are exposed only through the
+    /// expanded hierarchy, never through the row value (#2407).
+    nonisolated static func rowAccessibilityValue(
         for entry: VocabularyEntry,
-        recoveringProviderError: Bool = false
+        detail: AddLinkDetailProjection
     ) -> String {
         func normalized(_ value: String?) -> String {
             guard let value else { return "" }
             return value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         }
 
-        let detail = dictionaryDetailProjection(
-            for: entry,
-            recoveringProviderError: recoveringProviderError
-        )
-        let primarySense = detail.senses.first?.definition
-        let primaryExample = detail.senses.first?.examples.first
-        var evidence = [
+        var summary = [
             "word=\(normalized(entry.word))",
             "translation=\(normalized(entry.translation))",
-            "sense=\(normalized(primarySense))",
-            "example=\(normalized(primaryExample))",
-            "source=\(normalized(entry.bookTitle))",
-            "chapter=\(normalized(entry.chapterTitle))",
-            "detail.state=\(detail.state.accessibilityValue)",
-            "detail.senses=\(detail.senses.count)"
+            "sense=\(normalized(detail.senses.first?.definition))",
+            "detail.state=\(detail.state.accessibilityValue)"
         ]
-
-        for (senseIndex, sense) in detail.senses.enumerated() {
-            evidence.append("detail.sense[\(senseIndex + 1)]=\(normalized(sense.definition))")
-            evidence.append(
-                "detail.sense[\(senseIndex + 1)].partOfSpeech=\(normalized(sense.partOfSpeech))"
-            )
-            evidence.append(
-                "detail.sense[\(senseIndex + 1)].translation=\(normalized(sense.translation))"
-            )
-            for (exampleIndex, example) in sense.examples.enumerated() {
-                evidence.append(
-                    "detail.example[\(senseIndex + 1),\(exampleIndex + 1)]=\(normalized(example))"
-                )
-            }
-        }
-
-        evidence.append("detail.missing-example=\(detail.hasMissingExample ? "true" : "false")")
-        evidence.append("detail.forms=\(detail.forms.map(normalized).joined(separator: ", "))")
-        evidence.append("detail.provenance.provider=\(normalized(detail.provenance.provider))")
-        evidence.append("detail.provenance.source=\(normalized(detail.provenance.source))")
-        evidence.append("detail.provenance.chapter=\(normalized(detail.provenance.chapter))")
-        evidence.append("detail.provenance.context=\(normalized(detail.provenance.context))")
         if case .providerDecodeError = detail.state {
-            evidence.append("detail.recovery=retryable")
+            summary.append("detail.recovery=retryable")
         }
-        return evidence.joined(separator: " | ")
+        return summary.joined(separator: " | ")
     }
 
+    /// Full projection: every sense, example, form and provenance level.
     nonisolated static func dictionaryDetailProjection(
         for entry: VocabularyEntry,
         recoveringProviderError: Bool = false
+    ) -> AddLinkDetailProjection {
+        detailProjection(for: entry, recoveringProviderError: recoveringProviderError, senseLimit: nil)
+    }
+
+    /// Collapsed candidate row: the first sense only. `state` still counts every sense,
+    /// so the row's materialization verdict matches the expanded view (#2407).
+    nonisolated static func compactDetailProjection(
+        for entry: VocabularyEntry,
+        recoveringProviderError: Bool = false
+    ) -> AddLinkDetailProjection {
+        detailProjection(for: entry, recoveringProviderError: recoveringProviderError, senseLimit: 1)
+    }
+
+    /// What a candidate row materializes: the first sense while collapsed, the full projection once expanded.
+    nonisolated static func candidateProjection(
+        for entry: VocabularyEntry,
+        isExpanded: Bool,
+        recoveringProviderError: Bool = false
+    ) -> AddLinkDetailProjection {
+        isExpanded
+            ? dictionaryDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
+            : compactDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
+    }
+
+    private nonisolated static func detailProjection(
+        for entry: VocabularyEntry,
+        recoveringProviderError: Bool,
+        senseLimit: Int?
     ) -> AddLinkDetailProjection {
         switch decodeDetailPayload(entry.explanation) {
         case .plain:
             return legacyDetailProjection(for: entry, state: nil)
         case .decoded(let payload):
-            return payloadDetailProjection(payload, for: entry)
+            return payloadDetailProjection(payload, for: entry, senseLimit: senseLimit)
         case .malformed:
             if recoveringProviderError {
                 return legacyDetailProjection(
@@ -356,6 +357,10 @@ final class AddLinkCoordinator {
         "\(detailIdentifier(for: entry)).provenance"
     }
 
+    nonisolated static func detailExpandIdentifier(for entry: VocabularyEntry) -> String {
+        "\(detailIdentifier(for: entry)).expand"
+    }
+
     nonisolated static func detailRetryIdentifier(for entry: VocabularyEntry) -> String {
         "\(detailIdentifier(for: entry)).provider.retry"
     }
@@ -381,9 +386,13 @@ final class AddLinkCoordinator {
 
     private nonisolated static func payloadDetailProjection(
         _ payload: AddLinkDetailPayload,
-        for entry: VocabularyEntry
+        for entry: VocabularyEntry,
+        senseLimit: Int?
     ) -> AddLinkDetailProjection {
-        let senses = payload.senses.enumerated().map { index, value in
+        // The verdict is taken over every sense; only the materialized list is limited.
+        let senseCount = payload.senses.count
+        let hasMissingExample = payload.senses.contains { cleanedValues($0.examples ?? []).isEmpty }
+        let senses = payload.senses.prefix(senseLimit ?? senseCount).enumerated().map { index, value in
             AddLinkDetailProjection.Sense(
                 id: cleaned(value.id) ?? "sense-\(index + 1)",
                 partOfSpeech: cleaned(value.partOfSpeech) ?? cleaned(entry.partOfSpeech),
@@ -392,9 +401,9 @@ final class AddLinkCoordinator {
                 examples: cleanedValues(value.examples ?? [])
             )
         }
-        let state: AddLinkDetailMaterializationState = senses.contains { $0.examples.isEmpty }
-            ? .missingExample(senseCount: senses.count)
-            : .ready(senseCount: senses.count)
+        let state: AddLinkDetailMaterializationState = hasMissingExample
+            ? .missingExample(senseCount: senseCount)
+            : .ready(senseCount: senseCount)
         return AddLinkDetailProjection(
             word: entry.word,
             translation: entry.translation,
