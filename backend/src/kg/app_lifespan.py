@@ -98,13 +98,36 @@ def build_app_lifespan_from_dependencies(
             yield
         finally:
             dependencies.logger.info("KG API shutting down")
+            retention_interrupt: asyncio.CancelledError | None = None
             if retention_task is not None:
                 # Stop background writers before the runtime root and worker lock go.
                 retention_task.cancel()
-                await asyncio.gather(retention_task, return_exceptions=True)
+                retention_interrupt = await _wait_until_done(retention_task)
             dependencies.release_runtime_data_root_fn(data_root)
             dependencies.release_worker_lock_fn()
             dependencies.reset_clients_fn()
             await dependencies.reset_async_clients_fn()
+            if retention_interrupt is not None:
+                raise retention_interrupt
 
     return lifespan
+
+
+async def _wait_until_done(task: asyncio.Task[None]) -> asyncio.CancelledError | None:
+    """Wait for ``task`` to finish, even if teardown is cancelled again while waiting.
+
+    The retention task returns only after its in-flight DELETE batch ends, and
+    the worker lock must not be released before that. A cancel that arrives
+    during the wait is returned to the caller, which re-raises it after the
+    release. ``asyncio.wait`` does not cancel ``task`` itself.
+    """
+    interrupted: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError as exc:
+            interrupted = exc
+    if not task.cancelled():
+        # Retrieve a crashed loop's exception so teardown does not log it as unretrieved.
+        task.exception()
+    return interrupted

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -379,6 +379,8 @@ def test_lifespan_waits_for_retention_worker_thread_before_releasing_lock(tmp_pa
         events.append("run_all_returned")
         return {}
 
+    taipei = timezone(timedelta(hours=8), "Asia/Taipei")
+    now = [datetime(2026, 10, 11, 4, 16, 0, tzinfo=taipei)]
     sleep_calls = 0
 
     async def _sleep(seconds: float) -> None:
@@ -386,10 +388,11 @@ def test_lifespan_waits_for_retention_worker_thread_before_releasing_lock(tmp_pa
         sleep_calls += 1
         if sleep_calls > 1:
             await asyncio.Event().wait()
+        now[0] += timedelta(seconds=seconds)
 
     scheduler = LogRetentionScheduler(
         run_all_fn=_run_all,
-        clock=lambda: datetime(2026, 10, 11, 4, 16, 0),
+        clock=lambda: now[0],
         sleep_fn=_sleep,
     )
     deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=scheduler.run_forever)
@@ -398,6 +401,52 @@ def test_lifespan_waits_for_retention_worker_thread_before_releasing_lock(tmp_pa
     with TestClient(app):
         assert started.wait(5)
         threading.Timer(0.3, gate.set).start()
+
+    assert "run_all_returned" in events
+    assert events.index("run_all_returned") < events.index("release_worker_lock")
+
+
+def test_second_cancel_during_teardown_still_waits_for_retention_thread(tmp_path):
+    """A second cancel while teardown waits must not release the lock under a live DELETE (#2091)."""
+    events: list[object] = []
+    started = threading.Event()
+    gate = threading.Event()
+
+    def _run_all(*, should_stop) -> dict[str, dict[str, int]]:
+        started.set()
+        gate.wait(5)
+        events.append("run_all_returned")
+        return {}
+
+    taipei = timezone(timedelta(hours=8), "Asia/Taipei")
+    now = [datetime(2026, 10, 11, 4, 16, 0, tzinfo=taipei)]
+    sleep_calls = 0
+
+    async def _sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            await asyncio.Event().wait()
+        now[0] += timedelta(seconds=seconds)
+
+    scheduler = LogRetentionScheduler(run_all_fn=_run_all, clock=lambda: now[0], sleep_fn=_sleep)
+    deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=scheduler.run_forever)
+    lifespan = build_app_lifespan_from_dependencies(dependencies=deps)
+
+    async def _drive() -> None:
+        context = lifespan(FastAPI())
+        await context.__aenter__()
+        assert await asyncio.to_thread(started.wait, 5)
+        teardown = asyncio.ensure_future(context.__aexit__(None, None, None))
+        await asyncio.sleep(0.05)
+        teardown.cancel()
+        await asyncio.sleep(0.05)
+        teardown.cancel()
+        threading.Timer(0.3, gate.set).start()
+        with pytest.raises(asyncio.CancelledError):
+            await teardown
+
+    asyncio.run(_drive())
 
     assert "run_all_returned" in events
     assert events.index("run_all_returned") < events.index("release_worker_lock")

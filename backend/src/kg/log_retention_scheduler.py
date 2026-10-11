@@ -13,24 +13,38 @@ import json
 import logging
 import threading
 from collections.abc import Callable
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from .log_retention import RetentionStopped, run_all
 
 _logger = logging.getLogger(__name__)
 
+# The SOP's "local 04:17" is Asia/Taipei. The container runs with TZ unset (UTC),
+# so the zone is pinned rather than read from the host. Taiwan has observed UTC+8
+# with no DST since 1979: a fixed offset is exact and needs no tz database in the
+# python:3.13-slim runtime image.
+RETENTION_TZ = timezone(timedelta(hours=8), "Asia/Taipei")
 RETENTION_RUN_AT = time(4, 17)
+# Longest single sleep. A host sleep or a clock step moves the wall clock relative
+# to a monotonic sleep, so the wait re-reads the wall clock after every slice.
+MAX_SLEEP_SECONDS = 300.0
+
+
+def taipei_now() -> datetime:
+    return datetime.now(RETENTION_TZ)
 
 
 def next_run_at(now: datetime) -> datetime:
-    """Return the next local wall-clock ``RETENTION_RUN_AT`` strictly after ``now``.
+    """Return the next Taipei wall-clock ``RETENTION_RUN_AT`` strictly after ``now``.
 
-    ``now`` is naive local time (``datetime.now()``), so the schedule follows
-    the host's local clock as the SOP describes.
+    ``now`` must be timezone-aware: a naive value would be read in the host's zone.
     """
-    target = datetime.combine(now.date(), RETENTION_RUN_AT)
-    if target <= now:
+    if now.tzinfo is None:
+        raise ValueError("next_run_at needs a timezone-aware datetime")
+    local = now.astimezone(RETENTION_TZ)
+    target = datetime.combine(local.date(), RETENTION_RUN_AT, tzinfo=RETENTION_TZ)
+    if target <= local:
         target += timedelta(days=1)
     return target
 
@@ -40,7 +54,7 @@ class LogRetentionScheduler:
         self,
         *,
         run_all_fn: Callable[..., dict[str, dict[str, int]]] = run_all,
-        clock: Callable[[], datetime] = datetime.now,
+        clock: Callable[[], datetime] = taipei_now,
         sleep_fn: Callable[[float], Any] = asyncio.sleep,
         logger: logging.Logger | Any = _logger,
     ) -> None:
@@ -52,11 +66,20 @@ class LogRetentionScheduler:
         self._stop = threading.Event()
 
     async def run_next(self) -> None:
-        """Sleep until the next scheduled slot, then run the pruners once."""
-        now = self._clock()
-        target = next_run_at(now)
-        await self._sleep_fn((target - now).total_seconds())
+        """Wait until the next scheduled slot, then run the pruners once."""
+        target = next_run_at(self._clock())
+        await self._wait_until(target)
         await self._run_once()
+
+    async def _wait_until(self, target: datetime) -> None:
+        # Sleep in bounded slices and re-read the wall clock after each one. A
+        # single sleep is computed once, so a host sleep or a clock step would
+        # leave the run off the Taipei 04:17 slot.
+        while True:
+            remaining = (target - self._clock()).total_seconds()
+            if remaining <= 0:
+                return
+            await self._sleep_fn(min(remaining, MAX_SLEEP_SECONDS))
 
     async def run_forever(self) -> None:
         while True:
