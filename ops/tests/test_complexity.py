@@ -448,3 +448,228 @@ def test_merge_group_head_is_charged_against_main_tip_headroom_not_the_pr_fork(
     argv = ["check", "--base", trunk]
     assert complexity.main(argv, repo=repo) == 0  # PR-style: B alone fits its fork
     assert complexity.main([*argv, "--no-fork-points"], repo=repo) == 1
+
+
+# ---- per-lane budget fragments (#3155): a raise is a file, so lanes never share a line ----
+
+FRAGMENTS = "ops/complexity_budget.d"
+
+
+def _base(repo: Path, ops: int = 1000, docs: int = 500, workflows: int = 100) -> None:
+    path = repo / complexity.BUDGET_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_budget(ops=ops, docs=docs, workflows=workflows)))
+
+
+def _payload(
+    raises: dict | None = None,
+    *,
+    schema: str = "kg.complexity-budget-raise.v1",
+    issue: object = 3155,
+    note: str = "why",
+) -> dict:
+    return {
+        "schema": schema,
+        "issue": issue,
+        "raise": {"ops": 1} if raises is None else raises,
+        "note": note,
+    }
+
+
+def _fragment(repo: Path, name: str, raises: dict, *, note: str = "why") -> Path:
+    path = repo / FRAGMENTS / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_payload(raises, note=note)))
+    return path
+
+
+def test_fragments_add_to_the_base_ceiling(tmp_path: Path) -> None:
+    repo = _git_repo(
+        tmp_path,
+        {"ops/a.py": "1\n" * 10, "docs/x.md": "1\n", ".github/workflows/w.yml": "1\n"},
+    )
+    _base(repo, ops=1000)
+    _fragment(repo, "lane-a", {"ops": 6})
+    _fragment(repo, "lane-b", {"ops": 4, "docs": 3})
+    budget = complexity.load_budget(repo / complexity.BUDGET_FILE)
+    assert budget["ceilings"] == {"ops": 1010, "docs": 503, "workflows": 100}
+
+
+def test_check_judges_against_the_effective_ceiling(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 1010, "ios/a.swift": "1\n"})
+    _base(repo, ops=1000)
+    _fragment(repo, "lane-a", {"ops": 10})
+    assert complexity.main(["check"], repo=repo) == 0
+    (repo / "ops" / "a.py").write_text("1\n" * 1011)
+    assert complexity.main(["check"], repo=repo) == 1
+
+
+def test_check_lists_the_fragments_it_applied(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 10, "ios/a.swift": "1\n"})
+    _base(repo, ops=5)
+    _fragment(repo, "lane-a", {"ops": 6})
+    assert complexity.main(["check"], repo=repo) == 0
+    out = capsys.readouterr().out
+    assert "lane-a" in out and "ops +6" in out
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _payload({"ios": 3}),  # unknown area
+        _payload({"ops": 0}),  # non-positive
+        _payload({"ops": -2}),
+        _payload({"ops": 2.5}),  # non-integer
+        _payload({"ops": "5"}),
+        _payload({"ops": True}),
+        _payload({}),  # names no area
+        _payload(schema="kg.complexity-budget-raise.v0"),  # wrong schema
+        _payload(issue="3155"),
+    ],
+)
+def test_a_malformed_fragment_is_a_usage_error_that_names_the_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], payload: dict
+) -> None:
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n", "ios/a.swift": "1\n"})
+    _base(repo)
+    path = repo / FRAGMENTS / "lane-bad.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload))
+    assert complexity.main(["check"], repo=repo) == 2
+    assert "lane-bad.json" in capsys.readouterr().err
+
+
+def test_raise_writes_a_fragment_for_the_failing_areas_only(tmp_path: Path) -> None:
+    repo = _git_repo(
+        tmp_path,
+        {
+            "ops/a.py": "1\n" * 1020,
+            "docs/x.md": "1\n",
+            ".github/workflows/w.yml": "1\n",
+        },
+    )
+    _base(repo, ops=1000)
+    argv = ["raise", "--issue", "3155", "--name", "lane-a", "--note", "ops grew"]
+    assert complexity.main(argv, repo=repo) == 0
+    assert json.loads((repo / FRAGMENTS / "lane-a.json").read_text()) == {
+        "schema": "kg.complexity-budget-raise.v1",
+        "issue": 3155,
+        "raise": {"ops": 25},  # measured 1020 - effective 1000 + LIFT_MARGIN 5
+        "note": "ops grew",
+    }
+    assert (
+        json.loads((repo / complexity.BUDGET_FILE).read_text())["ceilings"]["ops"]
+        == 1000
+    )
+    assert complexity.main(["check"], repo=repo) == 0
+
+
+def test_raise_tops_up_the_same_lane_fragment(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 1020, "ios/a.swift": "1\n"})
+    _base(repo, ops=1000)
+    argv = ["raise", "--issue", "3155", "--name", "lane-a", "--note", "x"]
+    assert complexity.main(argv, repo=repo) == 0
+    (repo / "ops" / "a.py").write_text("1\n" * 1030)
+    assert complexity.main(argv, repo=repo) == 0
+    raised = json.loads((repo / FRAGMENTS / "lane-a.json").read_text())["raise"]
+    assert raised == {"ops": 35}  # 25 + (1030 - 1025 + 5)
+    assert (
+        complexity.load_budget(repo / complexity.BUDGET_FILE)["ceilings"]["ops"] == 1035
+    )
+
+
+def test_raise_writes_nothing_when_no_area_is_over(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 10, "ios/a.swift": "1\n"})
+    _base(repo, ops=1000)
+    argv = ["raise", "--issue", "3155", "--name", "lane-a", "--note", "x"]
+    assert complexity.main(argv, repo=repo) == 0
+    assert not (repo / FRAGMENTS / "lane-a.json").exists()
+
+
+def test_raise_refuses_a_name_that_is_not_a_plain_file_name(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 1020, "ios/a.swift": "1\n"})
+    _base(repo, ops=1000)
+    argv = ["raise", "--issue", "3155", "--name", "../escape", "--note", "x"]
+    assert complexity.main(argv, repo=repo) == 2
+    assert not (repo / "ops" / "escape.json").exists()
+
+
+def test_fold_keeps_every_effective_ceiling_and_leaves_no_fragments(
+    tmp_path: Path,
+) -> None:
+    repo = _git_repo(
+        tmp_path,
+        {"ops/a.py": "1\n" * 10, "docs/x.md": "1\n", ".github/workflows/w.yml": "1\n"},
+    )
+    _base(repo, ops=1000)
+    _fragment(repo, "lane-a", {"ops": 6})
+    _fragment(repo, "lane-b", {"ops": 4, "docs": 3})
+    before = complexity.load_budget(repo / complexity.BUDGET_FILE)["ceilings"]
+    assert complexity.main(["fold"], repo=repo) == 0
+    assert list((repo / FRAGMENTS).glob("*.json")) == []
+    assert json.loads((repo / complexity.BUDGET_FILE).read_text())["ceilings"] == before
+    assert complexity.load_budget(repo / complexity.BUDGET_FILE)["ceilings"] == before
+
+
+def test_ratchet_folds_the_fragments_into_the_base_when_it_lowers(
+    tmp_path: Path,
+) -> None:
+    repo = _git_repo(
+        tmp_path,
+        {"ops/a.py": "1\n" * 100, "docs/x.md": "1\n", ".github/workflows/w.yml": "1\n"},
+    )
+    _base(repo, ops=1000)
+    _fragment(repo, "lane-a", {"ops": 50})
+    assert complexity.main(["ratchet"], repo=repo) == 0
+    base = json.loads((repo / complexity.BUDGET_FILE).read_text())
+    assert base["ceilings"] == {"ops": 150, "docs": 21, "workflows": 6}
+    assert list((repo / FRAGMENTS).glob("*.json")) == []
+
+
+def test_the_base_budget_carries_no_free_text_history() -> None:
+    base = json.loads((REPO / complexity.BUDGET_FILE).read_text())
+    assert set(base) == {"schema", "slack", "ceilings"}
+
+
+def _two_fragment_lanes(tmp_path: Path) -> tuple[Path, str]:
+    """Base ops 30 under ceiling 40 (headroom 10).  lane-a adds 20 and raises 15; lane-b adds 8 and raises 8."""
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 30, "ios/a.swift": "1\n"})
+    _base(repo, ops=40)
+    _git(repo, "add", "-A")
+    _commit(repo, "base")
+    trunk = _git(repo, "branch", "--show-current")
+    _git(repo, "checkout", "-q", "-b", "lane-a")
+    _add(repo, "ops/a_lane.py", 20)
+    _fragment(repo, "lane-a", {"ops": 15})
+    _git(repo, "add", "-A")
+    _commit(repo, "lane A")
+    _git(repo, "checkout", "-q", trunk)
+    _git(repo, "checkout", "-q", "-b", "lane-b")
+    _add(repo, "ops/b_lane.py", 8)
+    _fragment(repo, "lane-b", {"ops": 8})
+    _git(repo, "add", "-A")
+    _commit(repo, "lane B")
+    _git(repo, "checkout", "-q", trunk)
+    return repo, trunk
+
+
+@pytest.mark.parametrize("first, second", [("lane-a", "lane-b"), ("lane-b", "lane-a")])
+def test_two_lanes_each_adding_a_fragment_merge_in_either_order_without_a_conflict(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    repo, trunk = _two_fragment_lanes(tmp_path)
+    for lane in (first, second):  # each lane passes its own PR gate against the base
+        _git(repo, "checkout", "-q", lane)
+        assert complexity.main(["check", "--base", trunk], repo=repo) == 0, lane
+        _git(repo, "checkout", "-q", trunk)
+    _git(repo, "merge", "-q", "--no-ff", "-m", first, first)
+    before_second = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo, "merge", "-q", "--no-ff", "-m", second, second
+    )  # raises CalledProcessError on conflict
+    assert complexity.main(["check", "--base", before_second], repo=repo) == 0
+    assert (
+        complexity.main(["check", "--strict"], repo=repo) == 0
+    )  # 58 measured <= 63 effective
