@@ -475,15 +475,22 @@ def write_fragment(
     return path
 
 
-def _write_base_ceilings(budget_path: Path, ceilings: dict[str, int]) -> None:
-    base = load_base_budget(budget_path)
-    base["ceilings"] = ceilings
-    budget_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
-
-
 def _drop_fragments(budget_path: Path, fragments: list[dict[str, Any]]) -> None:
     for fragment in fragments:
         (fragment_dir(budget_path) / f"{fragment['name']}.json").unlink()
+
+
+def _fold_into_base(
+    budget_path: Path, ceilings: dict[str, int], fragments: list[dict[str, Any]]
+) -> None:
+    """Make ``ceilings`` the base and delete the ``fragments`` they absorb.  The base is validated before
+    anything is removed.  The fragments go first: a crash between the two writes leaves the base without
+    the raises (a lower ceiling, at worst a red check to rerun), never with them counted twice (a
+    silently wider ceiling)."""
+    base = load_base_budget(budget_path)
+    _drop_fragments(budget_path, fragments)
+    base["ceilings"] = ceilings
+    budget_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
 
 
 def fold(budget_path: Path) -> list[str]:
@@ -493,8 +500,9 @@ def fold(budget_path: Path) -> list[str]:
     if not fragments:
         return []
     base = load_base_budget(budget_path)
-    _write_base_ceilings(budget_path, effective_ceilings(base["ceilings"], fragments))
-    _drop_fragments(budget_path, fragments)
+    _fold_into_base(
+        budget_path, effective_ceilings(base["ceilings"], fragments), fragments
+    )
     return [fragment["name"] for fragment in fragments]
 
 
@@ -708,8 +716,7 @@ def main(argv: list[str] | None = None, repo: Path | None = None) -> int:
         }
         if lowered:
             # Absolute targets for every area: writing them absorbs the fragments, so drop them too.
-            _write_base_ceilings(budget_path, new)
-            _drop_fragments(budget_path, budget["fragments"])
+            _fold_into_base(budget_path, new, budget["fragments"])
         for area, (old, now) in lowered.items():
             print(f"ratchet: {area} ceiling {old:,} -> {now:,}")
         print(
@@ -745,8 +752,8 @@ def main(argv: list[str] | None = None, repo: Path | None = None) -> int:
         )
     if args.command == "check" and over:
         print(
-            f"complexity: over budget: {', '.join(over)}. Delete something, or raise the ceiling in "
-            f"{BUDGET_FILE} in this PR and say why.",
+            f"complexity: over budget: {', '.join(over)}. Delete something, or raise the ceiling for this "
+            f"lane: ./ops/complexity.py raise --note '<why>' writes its own fragment in {FRAGMENT_DIR}/.",
             file=sys.stderr,
         )
         return 1

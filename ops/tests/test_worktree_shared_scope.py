@@ -9,6 +9,7 @@ import pytest
 
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
+import complexity
 import worktree_registry as registry
 from lib import worktree_scope
 from lib.worktree_scope import SHARED_SCOPE_FILES
@@ -175,16 +176,22 @@ def test_overlap_paths_subtracts_only_exact_allowlisted_files() -> None:
     }
 
 
-def test_a_lane_raise_fragment_is_exclusive_to_its_lane() -> None:
-    # A raise is one file per lane, so two lanes never write the same fragment path, and a fragment
-    # is never on the allowlist: a shared fragment would bring back the single-line conflict (#3155).
-    mine = "ops/complexity_budget.d/lane-one.json"
+def test_a_lane_raise_fragment_is_exclusive_to_its_lane(tmp_path: Path) -> None:
+    # The fragment `raise` writes is the lane's own Scope entry (#3155): sibling lanes never share it,
+    # and it is never on the allowlist, which would bring back the single-line ceiling conflict.
+    budget = tmp_path / "ops" / "complexity_budget.json"
+    written = [
+        complexity.write_fragment(budget, name, 3155, "why", {"ops": 1})
+        for name in ("lane-one", "lane-two")
+    ]
+    mine, theirs = (p.relative_to(tmp_path).as_posix() for p in written)
+    assert mine == "ops/complexity_budget.d/lane-one.json"
     assert mine not in SHARED_SCOPE_FILES
-    assert worktree_scope.overlap_paths({mine}, {mine}) == {mine}
-    assert (
-        worktree_scope.overlap_paths({mine}, {"ops/complexity_budget.d/lane-two.json"})
-        == set()
-    )
+    state = {"schema": registry.SCHEMA, "records": []}
+    assert _register(state, "one", tmp_path, mine)[0] == registry.EXIT_OK
+    assert _register(state, "two", tmp_path, theirs)[0] == registry.EXIT_OK
+    # a third lane claiming the same fragment is refused: the fragment is exclusive
+    assert _register(state, "three", tmp_path, mine)[0] != registry.EXIT_OK
 
 
 def _scope_arg(*paths: str) -> str:
