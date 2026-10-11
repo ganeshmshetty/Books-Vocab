@@ -184,6 +184,15 @@ struct TodayReviewPresenter: View {
         TodayReviewDeckHeight.effectiveShell(shell: deckShellHeight, handoff: deckHandoffHeight)
     }
 
+    /// 卡片區過渡中（與 `deckSlotHeight` 的 active 釘高同一判定）。#3110：點一下展開 hint 在此期間隱藏。
+    var deckIsTransitioning: Bool {
+        TodayReviewDeckHeight.isTransitioning(
+            shell: deckEffectiveShell,
+            target: activeCardHeight,
+            inFlight: deckHeightInFlight
+        )
+    }
+
     /// 已 settle 的展開背面高度（同一張卡仍展開才有效；見 `RevealLatch`）。非 nil 時非 active
     /// slot 的 cap 取它（見 `TodayReviewDeckHeight.slotHeight` 的 `settledBack`）。
     var deckSettledBackHeight: CGFloat? {
@@ -321,14 +330,17 @@ struct TodayReviewPresenter: View {
                             // 的 _makeView）；改為常駐節點，front/answer 切換只是
                             // 高度/透明度/命中/a11y 的值 diff。
                             let zoneActive = state.revealStage == .front
+                            // #3110：卡片區飛行中隱藏（不沿彈簧上飄），settle 後 fade in。
+                            let zoneVisible = zoneActive && !deckIsTransitioning
                             revealExpandZone(
                                 title: L10n.string("點一下展開"),
                                 minHeight: viewport.revealZoneReserve,
                                 action: onAdvanceReveal
                             )
                             .frame(height: zoneActive ? nil : 0, alignment: .top)
-                            .opacity(zoneActive ? 1 : 0)
-                            .allowsHitTesting(zoneActive && isCardInteractive)
+                            .opacity(zoneVisible ? 1 : 0)
+                            .animation(zoneVisible ? AppMotion.contentFade : nil, value: zoneVisible)
+                            .allowsHitTesting(zoneVisible && isCardInteractive)
                             .accessibilityHidden(!zoneActive)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
