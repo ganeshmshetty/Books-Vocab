@@ -26,6 +26,26 @@ struct TodayReviewSnapshotRestoreTests {
         return entry
     }
 
+    /// 同一 kgCardId 的兩筆：dateAdded 明確且不同（first 較早），不依賴建立順序或 UUID 平手。
+    private func makeDuplicatePair() -> (first: VocabularyEntry, second: VocabularyEntry) {
+        let first = makeEntry("dup-first", kgCardId: "card-dup")
+        first.dateAdded = Date(timeIntervalSince1970: 1_000)
+        let second = makeEntry("dup-second", kgCardId: "card-dup")
+        second.dateAdded = Date(timeIntervalSince1970: 2_000)
+        return (first, second)
+    }
+
+    private func makeContainer() throws -> ModelContainer {
+        let schema = Schema([
+            VocabularyEntry.self, ReviewRecord.self, Notebook.self, Book.self,
+            PodcastSeries.self, PodcastEpisode.self, PodcastProgress.self,
+        ])
+        return try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)]
+        )
+    }
+
     private func answer(_ feedback: ReviewFeedback, at date: Date, flushed: Bool = false) -> TodayReviewState.SubmittedAnswer {
         TodayReviewState.SubmittedAnswer(
             feedback: feedback,
@@ -45,8 +65,7 @@ struct TodayReviewSnapshotRestoreTests {
     @Test func duplicatePersistenceIDsAreCollapsedToTheFirstEntry() {
         cleanUp()
         defer { cleanUp() }
-        let first = makeEntry("dup-first", kgCardId: "card-dup")
-        let second = makeEntry("dup-second", kgCardId: "card-dup")
+        let (first, second) = makeDuplicatePair()
         let other = makeEntry("other", kgCardId: "card-other")
         ReviewSessionPersistence.persistSnapshot(
             userId: userId,
@@ -113,8 +132,7 @@ struct TodayReviewSnapshotRestoreTests {
         let suite = "snapshot-restore-2484-order-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let first = makeEntry("dup-first", kgCardId: "card-dup")
-        let second = makeEntry("dup-second", kgCardId: "card-dup")
+        let (first, second) = makeDuplicatePair()
         let other = makeEntry("other", kgCardId: "card-other")
         ReviewSessionStore.saveOrder([first, second, other], userID: userId, defaults: defaults)
 
@@ -133,8 +151,7 @@ struct TodayReviewSnapshotRestoreTests {
     @Test func todayReviewStateCollapsesDuplicateKgCardIdIntoOneSlot() {
         cleanUp()
         defer { cleanUp() }
-        let first = makeEntry("dup-first", kgCardId: "card-dup")
-        let second = makeEntry("dup-second", kgCardId: "card-dup")
+        let (first, second) = makeDuplicatePair()
         let other = makeEntry("other", kgCardId: "card-other")
 
         let state = TodayReviewState(
@@ -160,6 +177,27 @@ struct TodayReviewSnapshotRestoreTests {
         // 勝者由 dateAdded 決定（最早者），與 fetch 順序無關；結果仍保持輸入的相對順序。
         #expect(forward.map(\.word) == ["dup-older", "other"])
         #expect(reversed.map(\.word) == ["other", "dup-older"])
+    }
+
+    @Test func flushLookupTargetsTheQueueRepresentativeWhenKgCardIdIsDuplicated() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let late = makeEntry("dup-late", kgCardId: "card-dup")
+        late.dateAdded = Date(timeIntervalSince1970: 2_000)
+        let early = makeEntry("dup-early", kgCardId: "card-dup")
+        early.dateAdded = Date(timeIntervalSince1970: 1_000)
+        // 較晚的一筆先插入：無排序、無 fetchLimit 的 fetch 會先回傳它，才能抓出舊的 fetchLimit=1 錯誤。
+        context.insert(late)
+        context.insert(early)
+        try context.save()
+
+        let queued = ReviewSessionPersistence.uniqueByPersistenceID([late, early])
+        let flushed = try ReviewSessionPersistence.fetchEntry(for: "kg:card-dup", in: context)
+
+        // 佇列代表是 dateAdded 最早者；flush 寫入必須落在同一筆，否則答案寫到非代表列。
+        #expect(queued.map(\.word) == ["dup-early"])
+        #expect(flushed?.word == "dup-early")
+        #expect(flushed?.id == early.id)
     }
 
     // MARK: - Missing queued card
