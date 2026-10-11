@@ -1,17 +1,26 @@
 import SwiftUI
 
-struct SettingsAccountSection: View {
-    /// Pending logout gate result (#2745). `unsynced` = rows logout would discard;
-    /// `unreadable` = the count itself failed, so logout is not allowed to proceed silently.
-    private enum LogoutPrompt {
-        case unsynced(Int)
-        case unreadable
-    }
+/// Logout gate decision (#2745). Logout deletes every local vocabulary row, so
+/// unsynced rows must never be discarded without an explicit confirmation.
+enum SettingsLogoutGate: Equatable {
+    case proceed
+    case confirmUnsynced(Int)
+    case confirmUnreadable
 
+    /// `unsyncedCount == nil` means the count itself failed, so logout must not
+    /// proceed silently.
+    static func decide(unsyncedCount: Int?) -> SettingsLogoutGate {
+        guard let unsyncedCount else { return .confirmUnreadable }
+        return unsyncedCount == 0 ? .proceed : .confirmUnsynced(unsyncedCount)
+    }
+}
+
+struct SettingsAccountSection: View {
     @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
     @Environment(\.modelContext) private var modelContext
-    @State private var logoutPrompt: LogoutPrompt?
+    /// Pending confirmation (#2745); nil while no prompt is shown.
+    @State private var logoutPrompt: SettingsLogoutGate?
     let state: SettingsPresenterState.AuthSection
     let subscription: SettingsPresenterState.SubscriptionSection?
     let manualLoginUserId: Binding<String>?
@@ -199,21 +208,22 @@ struct SettingsAccountSection: View {
     /// confirm the discard: logout deletes every local vocabulary row, so a
     /// pending/failed row must never disappear without an explicit choice (#2745).
     private func requestLogout() {
+        var count: Int?
         do {
-            let count = try BackgroundSyncActor.unsyncedEntryCount(in: modelContext)
-            if count == 0 {
-                actions.logout()
-            } else {
-                logoutPrompt = .unsynced(count)
-            }
+            count = try BackgroundSyncActor.unsyncedEntryCount(in: modelContext)
         } catch {
             AppLog.kg.error("Logout gate could not count unsynced rows: \(error.localizedDescription)")
-            logoutPrompt = .unreadable
+        }
+        let gate = SettingsLogoutGate.decide(unsyncedCount: count)
+        if gate == .proceed {
+            actions.logout()
+        } else {
+            logoutPrompt = gate
         }
     }
 
     private var logoutPromptMessage: String {
-        if case .unsynced(let count)? = logoutPrompt {
+        if case .confirmUnsynced(let count)? = logoutPrompt {
             return SettingsAccountCopy.unsyncedLogoutMessage(count: count)
         }
         return SettingsAccountCopy.unsyncedLogoutUnknownMessage
