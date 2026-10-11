@@ -67,7 +67,7 @@ enum SyncFailurePresentation {
     static func partialFailureSummary(
         _ failures: [(label: String, reason: String)],
         language: AppLanguage,
-        preferredLanguages: [String] = Locale.preferredLanguages
+        preferredLanguages: [String]? = nil
     ) -> String {
         // 字串與列表分隔符共用同一個解析結果（#2997）：.system 只解析一次，
         // 不讓字串（L10n）與分隔符（ListFormatter）各自解析而分歧。

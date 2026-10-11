@@ -334,9 +334,10 @@ struct KGServiceErrorTests {
     }
 
     // .system 的字串與列表分隔必須共用同一個解析結果，不跟隨裝置 locale（#2997）。
-    // "fr-FR" 是不支援的裝置語系 → 解析為 .english（英文字串配英文分隔）；
-    // "ja-JP" 是支援的非英文語系，讓修正前的 autoupdatingCurrent 分隔在英文模擬器上也會被判出來。
-    @Test(arguments: ["fr-FR", "ja-JP"])
+    // "fr-FR" 是不支援的裝置語系 → 解析為 .english，是 fallback 契約本身（issue 驗收要求保留）。
+    // 但它無法判別分隔洩漏：英文模擬器的裝置 locale 就是英文，修正前的 autoupdatingCurrent 分隔也相同。
+    // 能判別洩漏的是解析結果為非英文語系的案例（ja-JP、zh-Hant-TW）：修正前分隔退回模擬器英文，與期望不符。
+    @Test(arguments: ["fr-FR", "ja-JP", "zh-Hant-TW"])
     func sync_failure_summary_system_joins_groups_with_resolved_language_separator(devicePreference: String) {
         let resolvedLanguage = AppLanguage.resolvedSystemLanguage(preferredLanguages: [devicePreference])
         let timeoutError = KGError.networkError(underlying: URLError(.timedOut))
