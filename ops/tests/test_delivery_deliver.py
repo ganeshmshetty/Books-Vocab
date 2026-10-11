@@ -1390,7 +1390,9 @@ def _ios_pr_checks(build: str = "SUCCESS") -> list[dict[str, Any]]:
 def test_an_ios_pr_with_a_green_compile_and_skipped_tests_is_queued_not_held() -> None:
     # The PR hold must not wait on or refuse the iOS test jobs that run only in
     # the merge queue: a SKIPPED test job with a successful scope decision passes.
-    world = FakeWorld(checks=[_ios_pr_checks()], review_runs=[[_review(job=True), _review()]])
+    world = FakeWorld(
+        checks=[_ios_pr_checks()], review_runs=[[_review(job=True), _review()]]
+    )
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 0, result
     assert _calls_at(world, _is_queue)
