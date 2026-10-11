@@ -160,13 +160,16 @@ struct WordDetailPresenter: View {
                 CardSectionLabel(title: "知識連結".localized, systemImage: "link")
                 Spacer()
                 if let onAddLink {
-                    Button(action: onAddLink) {
+                    // 可點區外擴到 44pt、版面不變（#3117，同複習卡 add-link）。
+                    ReviewCardHitTargetButton(
+                        action: onAddLink,
+                        accessibilityIdentifier: "wordDetail.card.addLink",
+                        accessibilityLabel: L10n.string("vocab.card.addLink")
+                    ) {
                         Image(systemName: "plus")
                             .font(appSkin.typography.iconSmall)
                             .foregroundStyle(appSkin.palette.secondaryText)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(L10n.string("vocab.card.addLink"))
                 }
             }
 
