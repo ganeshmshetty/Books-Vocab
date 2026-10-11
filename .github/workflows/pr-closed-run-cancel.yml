@@ -5,9 +5,10 @@ name: pr-closed-run-cancel
 # macos-26 pool. Three guards are load-bearing:
 #   - a head that is still the head of ANY open PR is never cancelled (the
 #     old open-PR reaper cancelled 346 runs and let #2412 reach main);
-#   - only pull_request and pull_request_target runs are cancelled: after a
-#     fast-forward merge, main's push run carries the same SHA, and push runs
-#     must run to completion;
+#   - only pull_request runs are cancelled: after a fast-forward merge,
+#     main's push run carries the same SHA, and push runs must run to
+#     completion. The base-context PR trigger is not matched: whether its
+#     head_sha equals the PR head is unverified, so no cancel is claimed;
 #   - fork PRs are skipped, their GITHUB_TOKEN is read-only.
 # This workflow checks out the default branch only and executes no PR code.
 
@@ -36,6 +37,7 @@ jobs:
       - name: Checkout default branch (no PR code is executed)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       # Every workflow carries the repo's pinned Actions generation (contract);
       # the cancel step itself needs only gh.
@@ -58,7 +60,7 @@ jobs:
           fi
           run_ids="$(for status in queued in_progress waiting requested pending; do
             gh api --paginate "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&status=$status&per_page=100" \
-              --jq '.workflow_runs[] | select(.event == "pull_request" or .event == "pull_request_target") | .id'
+              --jq '.workflow_runs[] | select(.event == "pull_request") | .id'
           done | sort -u)"
           while read -r id; do
             [[ -n "$id" ]] || continue

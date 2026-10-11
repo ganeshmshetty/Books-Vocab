@@ -1485,7 +1485,9 @@ STUB
     mkdir -p "$dir"
     printf '[{"number": 7, "head": {"sha": "%s"}}]\n' "$2" >"$dir/open-pulls.json"
     printf '{"workflow_runs": [{"id": 11, "event": "pull_request", "head_sha": "%s"}, {"id": 12, "event": "push", "head_sha": "%s"}]}\n' "$closed_sha" "$closed_sha" >"$dir/runs-queued.json"
-    printf '{"workflow_runs": [{"id": 13, "event": "pull_request_target", "head_sha": "%s"}]}\n' "$closed_sha" >"$dir/runs-in_progress.json"
+    # Assumption under test: the in-progress PR run is a pull_request event. The
+    # base-context trigger is deliberately absent from the filter (its head_sha is unverified).
+    printf '{"workflow_runs": [{"id": 13, "event": "pull_request", "head_sha": "%s"}]}\n' "$closed_sha" >"$dir/runs-in_progress.json"
     printf '{"workflow_runs": []}\n' >"$dir/none.json"
     : >"$dir/posts.log"
     if ! env PATH="$cancel_bin:$PATH" GH_TOKEN=test REPO=owner/repo HEAD_SHA="$closed_sha" \
@@ -1501,6 +1503,22 @@ STUB
   got="$(cancel_case shared cafe0000)"
   [[ -z "$got" ]] \
     || fail "closed PR head is also an open PR's head, yet runs were cancelled: [$got]"
+fi
+
+# CR #2641 follow-up: an unpinned checkout of a pull_request event lands the PR
+# merge ref on a job holding actions:write; every checkout must pin the default
+# branch. The cancel filter must name only pull_request: the head_sha of
+# pull_request_target runs is unverified, so that claim is withdrawn.
+if [[ -f "$CANCEL_WF" ]]; then
+  ruby -ryaml -e 'bad = []; YAML.load_file(ARGV[0])["jobs"].each { |jn, job| (job["steps"] || []).each { |st| next unless st["uses"].to_s.start_with?("actions/checkout@"); bad << jn unless (st["with"] || {})["ref"] == "${{ github.event.repository.default_branch }}" } }; abort bad.join(" ") unless bad.empty?' "$CANCEL_WF" \
+    || fail "$CANCEL_WF checkout does not pin ref to github.event.repository.default_branch"
+  grep -Fq '.event == "pull_request") | .id' "$CANCEL_WF" \
+    || fail "$CANCEL_WF cancel filter must select pull_request runs only"
+  grep -Fq 'pull_request_target' "$CANCEL_WF" && fail "$CANCEL_WF still claims pull_request_target"
+  ruby -rjson -e 'e = JSON.parse(File.read(ARGV[0]))["entries"].find { |x| x["workflow"] == "pr-closed-run-cancel.yml" }; abort unless e; abort if e["reason"].include?("pull_request_target")' ops/tests/github_workflow_write_allowlist.json \
+    || fail "write allowlist reason for pr-closed-run-cancel still claims pull_request_target"
+  grep -E '^\| Closed-PR run cancel' docs/reference/tech_index.md | grep -q 'pull_request_target' \
+    && fail "tech_index Closed-PR row still claims pull_request_target"
 fi
 
 if (( failures > 0 )); then

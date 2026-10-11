@@ -24,7 +24,7 @@
       "workflow": "pr-closed-run-cancel.yml",
       "job": "cancel",
       "scope": "actions",
-      "reason": "Cancels queued or running pull_request and pull_request_target runs on the head of a closed or merged PR (Issue #2641 retro); never a head that is still an open PR's head, never a push or merge-queue run; checks out the default branch only and executes no PR code."
+      "reason": "Cancels queued or running pull_request runs on the head of a closed or merged PR (Issue #2641 retro); never a head that is still an open PR's head, never a push or merge-queue run; checks out the default branch explicitly (ref pinned to default_branch) and executes no PR code."
     }
   ]
 }
