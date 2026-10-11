@@ -61,7 +61,8 @@ struct AppToastItem: Identifiable, Equatable {
 
     /// 單行文案上限，以「欄」計：全形字（中日韓）2 欄、其餘 1 欄。40 欄 = 20 個全形字
     /// 或 40 個半形字元，約為 iPhone SE 寬度下 caption 字級單行可容納量。超過時 pill
-    /// 仍維持單行（先縮小、再尾端截斷），但較長的說明應改放面板。
+    /// 收合時仍維持單行（先縮小、再尾端截斷），截斷者可由使用者輕點展開（#2862）；
+    /// 失敗清單、原因、下一步等較長說明仍應改放面板。
     static let copyBudgetColumns = 40
 
     static func exceedsCopyBudget(_ message: String) -> Bool {

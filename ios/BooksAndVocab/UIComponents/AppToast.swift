@@ -25,14 +25,38 @@ struct AppToast: View {
 
     private var displayText: String { item.message.localized }
 
-    /// 單行文案縮到 `minimumTextScale` 仍放不下，即為截斷。
+    /// 單行文案縮到 `minimumTextScale` 仍放不下，即為截斷。未量測（任一寬度為 0）不算截斷，
+    /// 避免首幀閃出 chevron。無容差：邊界上多露出一個 chevron 無害（展開即完整文案），漏掉截斷不可接受。
     static func isTruncated(natural: CGFloat, visible: CGFloat) -> Bool {
-        natural * minimumTextScale > visible + 0.5
+        natural > 0 && visible > 0 && natural * minimumTextScale > visible
     }
 
-    /// 可點性與 chevron 同源：必須有 handler，且真的截斷或已展開（可收回）。
-    static func offersToggle(hasHandler: Bool, isExpanded: Bool, isTruncated: Bool) -> Bool {
-        hasHandler && (isExpanded || isTruncated)
+    /// 可點性與 chevron 同源，且只看截斷：沒有 handler 的呼叫點（preview／fixture）不露出；
+    /// 未截斷的 pill 不可點，即使同 key 取代時殘留了展開狀態。
+    static func offersToggle(hasHandler: Bool, isTruncated: Bool) -> Bool {
+        hasHandler && isTruncated
+    }
+
+    /// 展開外觀（多行、頂對齊、card 圓角）同樣以截斷為閘：未截斷的 pill 外觀必須與收合時相同。
+    static func showsExpandedLayout(isExpanded: Bool, isTruncated: Bool) -> Bool {
+        isExpanded && isTruncated
+    }
+
+    /// 展開／收合的動畫：Reduce Motion 只淡入淡出、不位移（規範見 ui-design.md「進出場」）。
+    enum ExpansionMotion: Equatable {
+        case panel
+        case fade
+
+        var animation: Animation {
+            switch self {
+            case .panel: AppMotion.panelState
+            case .fade: AppMotion.contentFade
+            }
+        }
+    }
+
+    static func expansionMotion(reduceMotion: Bool) -> ExpansionMotion {
+        reduceMotion ? .fade : .panel
     }
 
     private var textIsTruncated: Bool {
@@ -40,11 +64,11 @@ struct AppToast: View {
     }
 
     private var canToggle: Bool {
-        Self.offersToggle(
-            hasHandler: onToggleExpanded != nil,
-            isExpanded: isExpanded,
-            isTruncated: textIsTruncated
-        )
+        Self.offersToggle(hasHandler: onToggleExpanded != nil, isTruncated: textIsTruncated)
+    }
+
+    private var showsExpanded: Bool {
+        Self.showsExpandedLayout(isExpanded: isExpanded, isTruncated: textIsTruncated)
     }
 
     var body: some View {
@@ -74,7 +98,7 @@ struct AppToast: View {
             // .combine 會吞掉內層 Button 的語意，因此可點性要在合併後的元素上重新宣告。
             .modifier(ToggleAccessibility(
                 canToggle: canToggle,
-                isExpanded: isExpanded,
+                isExpanded: showsExpanded,
                 onToggle: onToggleExpanded
             ))
             // 長文案在 pill 內截斷，而不是讓 pill 貼齊螢幕邊緣。
@@ -96,7 +120,7 @@ struct AppToast: View {
     }
 
     private var pill: some View {
-        HStack(alignment: isExpanded ? .top : .center, spacing: 10) {
+        HStack(alignment: showsExpanded ? .top : .center, spacing: 10) {
             Image(systemName: item.systemImage)
                 .font(AppFonts.caption())
                 .foregroundStyle(tintColor)
@@ -105,9 +129,9 @@ struct AppToast: View {
             Text(displayText)
                 .font(AppFonts.caption(weight: .semibold))
                 .foregroundStyle(tintColor)
-                .lineLimit(isExpanded ? nil : 1)
-                .fixedSize(horizontal: false, vertical: isExpanded)
-                .minimumScaleFactor(isExpanded ? 1 : Self.minimumTextScale)
+                .lineLimit(showsExpanded ? nil : 1)
+                .fixedSize(horizontal: false, vertical: showsExpanded)
+                .minimumScaleFactor(showsExpanded ? 1 : Self.minimumTextScale)
                 .truncationMode(.tail)
                 // 同一事件就地取代時只換字，不重播整個進出場。
                 .contentTransition(.opacity)
@@ -128,7 +152,7 @@ struct AppToast: View {
                 }
 
             if canToggle {
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                Image(systemName: showsExpanded ? "chevron.up" : "chevron.down")
                     .font(AppFonts.caption(weight: .semibold))
                     .foregroundStyle(tintColor)
                     .accessibilityHidden(true)
@@ -136,13 +160,13 @@ struct AppToast: View {
         }
         .padding(.horizontal, AppSpacing.cardPadding)
         .padding(.vertical, AppSkin.baseSpacing.compactRowVerticalPadding)
-        .frame(maxWidth: isExpanded ? Self.expandedMaxWidth : nil)
+        .frame(maxWidth: showsExpanded ? Self.expandedMaxWidth : nil)
         // Toast is a single transient glass surface. The tint carries the
         // semantic tone; Liquid Glass owns the backdrop, edge highlight and
         // depth, so no second background, border or app elevation is layered on.
         .glassEffect(
             .regular.tint(tintColor.opacity(0.12)),
-            in: AppRoundedRect(roundness: isExpanded ? AppRoundness.card : AppRoundness.pill)
+            in: AppRoundedRect(roundness: showsExpanded ? AppRoundness.card : AppRoundness.pill)
         )
     }
 
@@ -206,7 +230,7 @@ private struct ToastOverlayModifier: ViewModifier {
                     isExpanded: toastCoordinator.isExpanded,
                     onToggleExpanded: {
                         toastCoordinator.toggleExpanded(
-                            animation: reduceMotion ? AppMotion.contentFade : AppMotion.panelState
+                            animation: AppToast.expansionMotion(reduceMotion: reduceMotion).animation
                         )
                     },
                     onDismiss: { toastCoordinator.dismiss() }
