@@ -169,6 +169,60 @@ struct TodayReviewDeckHeightTests {
         #expect(H.plan(displayed: shell, target: 200, revealed: false) == .animate(to: 200))
     }
 
+    // MARK: 展開背面離場的翻面當幀（previous / next / shuffle / autoplay 從展開卡離開）
+
+    /// SwiftUI frame 動畫模型（本測試的前提，裝置簽核實機確認）：固定值 → 固定值 從變更前的值
+    /// 開始插值；nil（自然高度）↔ 固定值 無法插值，該幀直接取變更後的值。卡片區高度 = 各 slot
+    /// frame 的最大值，所以動畫第一幀的卡片區高度必須等於翻面前的高度，否則即硬切。
+    private struct FlipSlot {
+        let natural: CGFloat
+        let before: CGFloat?
+        let after: CGFloat?
+    }
+
+    private func stackHeight(_ slots: [FlipSlot]) -> CGFloat {
+        slots.map { $0.before ?? $0.natural }.max() ?? 0
+    }
+
+    private func firstAnimatedFrame(_ slots: [FlipSlot]) -> CGFloat {
+        slots.map { slot -> CGFloat in
+            if let before = slot.before, slot.after != nil { return before }
+            return slot.after ?? slot.natural
+        }.max() ?? 0
+    }
+
+    /// 背面（back）→ 較矮的新卡（next）。翻面前預覽卡的 cap 必須已是展開背面高度，翻面當幀
+    /// 新 active 才能釘在同一值；否則預覽卡的 frame 由正面高度動畫到背面高度，動畫第一幀
+    /// 卡片區從 back 硬切到 front／next。新卡不矮於背面（next ≥ back）時 outgoing cap 本來
+    /// 就撐住 ZStack，故此處涵蓋 next < back 的情況。
+    @Test func revealedDepartureKeepsTheStackHeightOnTheFirstAnimatedFrame() {
+        let cases: [(back: CGFloat, front: CGFloat, next: CGFloat)] = [
+            (480, 200, 120), (480, 200, 200), (480, 200, 360), (480, 200, 470), (480, 200, 480), (480, 200, 600),
+            (300, 180, 120), (300, 180, 250), (300, 180, 420),
+            (600, 240, 180), (600, 240, 599), (600, 240, 700),
+        ]
+        for c in cases {
+            let latch = H.RevealLatch(cardKey: "a", measured: c.back)!
+            // 翻面前（展開中、同一張卡）：預覽卡 cap ＝ 已 settle 的背面高度。
+            let preflipCap = H.slotHeight(
+                isActive: false, shell: c.front, target: c.front,
+                inFlight: false, revealed: true, settledBack: latch.height
+            )
+            // 翻面當幀：接手值 = 離場卡背面高度；新 active 釘在它，舊卡 cap 到新目標。
+            let shell = H.effectiveShell(shell: c.front, handoff: latch.handoffHeight(currentCardKey: "b"))
+            let outgoing = H.slotHeight(isActive: false, shell: shell, target: c.next, inFlight: false, revealed: false)
+            let incoming = H.slotHeight(isActive: true, shell: shell, target: c.next, inFlight: false, revealed: false)
+            let slots = [
+                FlipSlot(natural: c.back, before: nil, after: outgoing),
+                FlipSlot(natural: c.next, before: preflipCap, after: incoming),
+                FlipSlot(natural: c.front, before: c.front, after: outgoing),
+            ]
+            #expect(preflipCap == c.back, "preflip cap back=\(c.back) next=\(c.next)")
+            #expect(stackHeight(slots) == c.back, "preflip stack back=\(c.back) next=\(c.next)")
+            #expect(firstAnimatedFrame(slots) == c.back, "first frame back=\(c.back) next=\(c.next)")
+        }
+    }
+
     // MARK: 轉場期間的裁切（leftover B：變高時內容溢出到展開區）
 
     @Test func nonActiveSlotsAlwaysHardClip() {

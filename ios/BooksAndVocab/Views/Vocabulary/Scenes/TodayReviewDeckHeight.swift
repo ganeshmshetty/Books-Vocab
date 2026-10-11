@@ -64,15 +64,24 @@ enum TodayReviewDeckHeight {
     /// 「過渡中」= 動畫進行中（`inFlight`）**或** 模型值尚未追上目標
     /// （|shell − target| > ε，亦即剛翻 role、onChange 還沒啟動動畫的那一幀）。
     /// 後者保證 role 翻面當幀新 active 取的就是舊高度 → 零跳變。
+    ///
+    /// `settledBack`（展開離場）：展開卡的自然高度是背面總高，但 `target` 是正面高度、`shell`
+    /// 停在正面。若預覽卡 cap 仍是正面高度，翻面當幀新 active 釘住背面高度時，其 frame 會由
+    /// 正面值動畫到背面值，動畫第一幀卡片區即從背面高度硬切。故展開中（同一張卡仍 settle 展開，
+    /// 由 `RevealLatch.survives` 決定）非 active cap 直接取背面總高，翻面前後 ZStack 高度一致。
     static func slotHeight(
         isActive: Bool,
         shell: CGFloat,
         target: CGFloat,
         inFlight: Bool,
-        revealed: Bool
+        revealed: Bool,
+        settledBack: CGFloat? = nil
     ) -> CGFloat? {
         let resolved = resolvedShell(shell: shell, target: target)
-        guard isActive else { return target > 0 ? min(resolved, target) : resolved }
+        guard isActive else {
+            if let settledBack, settledBack > 0 { return settledBack }
+            return target > 0 ? min(resolved, target) : resolved
+        }
         if revealed || shell <= 0 { return nil }
         let transitioning = inFlight || abs(shell - target) > epsilon
         return transitioning ? resolved : nil
