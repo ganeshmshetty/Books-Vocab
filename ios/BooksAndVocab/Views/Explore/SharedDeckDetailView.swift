@@ -28,11 +28,8 @@ struct SharedDeckDetailView: View {
     @State private var deck: SharedDeck?
     @State private var deckLoadState: DeckLoadState = .loading
     @State private var cardsState: CardsState = .loading
-    @State private var copyController = SharedDeckCopyController()
+    @State private var copyController: SharedDeckCopyController
     @State private var showCopySheet = false
-    /// 已確認的複製目標名稱 —— failure 態的「重試」沿用同一名稱（配合 controller 沿用
-    /// 同一把 idempotencyKey）。
-    @State private var confirmedCopyName: String?
 
     /// DEBUG catalog seam：直接注入預覽 sample cards，跳過網路 fetch。
     private let injectedCards: [SharedDeckCard]?
@@ -42,6 +39,7 @@ struct SharedDeckDetailView: View {
 
     init(deckId: String) {
         self.deckId = deckId
+        _copyController = State(initialValue: SharedDeckCopyController())
         self.injectedCards = nil
         self.previewCopyState = nil
     }
@@ -53,6 +51,7 @@ struct SharedDeckDetailView: View {
         previewCopyState: SharedDeckCopyController.CopyState? = nil
     ) {
         self.deckId = deckId
+        _copyController = State(initialValue: SharedDeckCopyController())
         self.injectedCards = previewCards
         self.previewCopyState = previewCopyState
     }
@@ -112,8 +111,44 @@ struct SharedDeckDetailView: View {
             )
             .appAppearanceScheme()
         }
-        .task(id: deckId) { await load() }
+        .task(id: deckId) {
+            await adoptCopyController()
+            await load()
+        }
+        .onChange(of: authManager.userId) { _, _ in
+            Task { await adoptCopyController() }
+        }
         .enableInjection()
+    }
+
+    /// init 讀不到 environment，故出現時與帳號切換時依當前 userId 向 registry 接回
+    /// controller；他人的失敗卡不會因 pop/reopen 或換帳號而顯示（#2748）。
+    /// 先同步接回既有 controller（suspend 期間 UI 仍是原 success 卡、不可再點複製），
+    /// 再由 registry 依生命週期決定是否結束已刪除目標的意圖。
+    @MainActor
+    private func adoptCopyController() async {
+        let owner = authManager.userId
+        let container = modelContext.container
+        copyController = SharedDeckCopyRegistry.shared.controller(for: deckId, owner: owner)
+        copyController = await SharedDeckCopyRegistry.shared.resolve(
+            deckId: deckId,
+            owner: owner,
+            destinationExists: { localNotebookExists(remoteId: $0) },
+            refreshDestination: { notebookId in
+                await kgService.pullCopiedDeck(container: container, notebookId: notebookId)
+            }
+        )
+    }
+
+    /// 目標 notebook 是否仍是本機可見的未刪除列。查詢失敗回 true：寧可誤顯示「已複製」，
+    /// 也不可在儲存錯誤時放行第二次複製（會產生重複 notebook）。
+    private func localNotebookExists(remoteId: String) -> Bool {
+        let target = remoteId
+        let descriptor = FetchDescriptor<Notebook>(
+            predicate: #Predicate { $0.remoteId == target && !$0.isSoftDeleted }
+        )
+        guard let count = try? modelContext.fetchCount(descriptor) else { return true }
+        return count > 0
     }
 
     // MARK: - Copy CTA
@@ -144,7 +179,6 @@ struct SharedDeckDetailView: View {
         switch state {
         case .idle:
             Button {
-                confirmedCopyName = nil
                 showCopySheet = true
             } label: {
                 Label(L10n.string("explore.copy.cta"), systemImage: "square.and.arrow.down.on.square")
@@ -236,7 +270,7 @@ struct SharedDeckDetailView: View {
             description: nil
         ) {
             Button(L10n.string("explore.retry")) {
-                Task { await performCopy(notebookName: confirmedCopyName) }
+                Task { await performCopy(notebookName: copyController.lastNotebookName) }
             }
             .font(AppFonts.caption(weight: .medium))
             .accessibilityIdentifier("explore.copy.retryButton")
@@ -248,7 +282,8 @@ struct SharedDeckDetailView: View {
 
     @MainActor
     private func performCopy(notebookName: String?) async {
-        confirmedCopyName = notebookName
+        // 複製開始才登記，pop/reopen 後的 view 才接得回 inflight／failure 態。
+        SharedDeckCopyRegistry.shared.track(copyController, for: deckId)
         let container = modelContext.container
         await copyController.copy(
             deckId: deckId,

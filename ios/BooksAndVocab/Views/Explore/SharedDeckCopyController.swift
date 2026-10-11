@@ -3,8 +3,9 @@
 //  Books & Vocab
 //
 //  Explore 複製流程狀態機（idle/inflight/success/failure）+ idempotencyKey 穩定性。
-//  唯一擁有者 = `SharedDeckDetailView`。純狀態 + 一支 async `copy`；網路只透過注入的
-//  `any DeckCopying`（窄協定），故可完整單元測試（無 SwiftData / 無真實網路）。
+//  擁有者 = `SharedDeckCopyRegistry`（依 deckId + 帳號 owner，跨 view pop/reopen；#2748）。
+//  純狀態 + 一支 async `copy`；網路只透過注入的 `any DeckCopying`（窄協定），
+//  故可完整單元測試（無 SwiftData / 無真實網路）。
 //
 
 import Foundation
@@ -38,11 +39,25 @@ final class SharedDeckCopyController {
     /// 自癒（server replay `alreadyCopied`）。
     private var idempotencyKey: String?
 
+    /// 當前意圖的目標 notebook 名稱；與 key 同生命週期（成功時一併清除），讓 pop/reopen
+    /// 後的「重試」沿用使用者當初確認的名稱，而非退回 deck 標題（#2748）。
+    private(set) var lastNotebookName: String?
+
+    /// 擁有此意圖的帳號（登入 userId；未登入為 nil）。registry 只把同帳號的 controller
+    /// 交回，避免帳號 B 看見帳號 A 的失敗卡與 notebook 名稱（#2748）。
+    let owner: String?
+
     /// Test seam：注入決定性的 key 產生器。
     private let makeKey: () -> String
 
-    init(makeKey: @escaping () -> String = { UUID().uuidString }) {
+    init(owner: String? = nil, makeKey: @escaping () -> String = { UUID().uuidString }) {
+        self.owner = owner
         self.makeKey = makeKey
+    }
+
+    var isSucceeded: Bool {
+        if case .success = state { return true }
+        return false
     }
 
     var isInflight: Bool {
@@ -71,6 +86,7 @@ final class SharedDeckCopyController {
         guard !isInflight else { return }
         let key = idempotencyKey ?? makeKey()
         idempotencyKey = key
+        lastNotebookName = notebookName
         state = .inflight
         let startedAt = Date()
         AppCrashReporting.addBreadcrumb(
@@ -84,6 +100,7 @@ final class SharedDeckCopyController {
             )
             await afterCopy(resp)
             idempotencyKey = nil   // 意圖已達成 → 下一次複製為新意圖
+            lastNotebookName = nil
             state = .success(Outcome(
                 notebookId: resp.notebookId,
                 notebookName: resp.notebookName,
@@ -155,5 +172,79 @@ final class SharedDeckCopyController {
             return offlineURLErrorCodes.contains(urlError.code)
         }
         return false
+    }
+}
+
+/// 以 (帳號 owner, deckId) 為鍵的 controller 註冊表（#2748）。`SharedDeckDetailView` 的 `@State`
+/// 在 pop 時被丟棄，但 `performCopy` 的 unstructured `Task` 仍在跑、idempotencyKey 也
+/// 需跨 reopen 保留；有進行中／失敗／已成功意圖的 controller 因此由行程級註冊表持有，view 只借用。
+/// 只有複製真的開始（`track`）才登記，故單純瀏覽 deck 不會累積條目。
+///
+/// **生命週期（reopen 時由 `resolve` 決定）**：
+/// - inflight／failure：原樣接回（續用同一把 key 與名稱，失敗卡可重試）。
+/// - success 且目標 notebook 仍在本機：原樣接回，顯示「已複製」、不給再複製鈕。
+/// - success 但目標 notebook 已不在本機：先重拉一次。只有**重拉完整成功且目標仍不在**才確證
+///   已刪除，條目清除、回傳新 idle controller；重拉失敗（離線等）無法分辨「已刪」與「未落地」，
+///   維持 success（不可重複複製，server 已有一本）。
+///   新複製必生新 key（server 的 key 永久冪等，沿用舊 key 只會回傳已刪的舊 notebook）。
+/// 條目以帳號 owner 隔離：登出後換帳號不會看見前一個帳號的失敗卡，且兩帳號對同一 deck 的
+/// 登記互不覆寫；前一帳號的條目保留，該帳號再登入時仍接得回自己的意圖、key 與成功態。
+@MainActor
+final class SharedDeckCopyRegistry {
+    static let shared = SharedDeckCopyRegistry()
+
+    private struct Key: Hashable {
+        let owner: String?
+        let deckId: String
+    }
+
+    private var controllers: [Key: SharedDeckCopyController] = [:]
+
+    /// 已登記（複製已開始）的 (帳號, deck) 數；供測試斷言不累積。
+    var trackedDeckCount: Int { controllers.count }
+
+    /// 同帳號已登記的 controller 原樣回傳；否則給一個**尚未登記**的新 controller。純查詢，不套生命週期。
+    func controller(for deckId: String, owner: String?) -> SharedDeckCopyController {
+        if let existing = controllers[Key(owner: owner, deckId: deckId)] {
+            return existing
+        }
+        return SharedDeckCopyController(owner: owner)
+    }
+
+    /// reopen／帳號切換時決定接回哪個 controller（見型別註解的生命週期）。
+    /// - Parameters:
+    ///   - destinationExists: 目標 notebook（server id）是否仍在本機可見。
+    ///   - refreshDestination: success 條目的目標不在本機時呼叫一次。回傳重拉是否**完整成功**
+    ///     （authoritative notebook 列表已對帳）；false 代表無法確證狀態，條目不得退場。
+    func resolve(
+        deckId: String,
+        owner: String?,
+        destinationExists: (String) -> Bool,
+        refreshDestination: (String) async -> Bool
+    ) async -> SharedDeckCopyController {
+        let key = Key(owner: owner, deckId: deckId)
+        guard let existing = controllers[key] else {
+            return SharedDeckCopyController(owner: owner)
+        }
+        guard case .success(let outcome) = existing.state else { return existing }
+        if destinationExists(outcome.notebookId) { return existing }
+        let refreshCompleted = await refreshDestination(outcome.notebookId)
+        // await 期間登記可能已被並行 adopt 換掉：以當前登記為準，絕不清除別人的條目。
+        guard controllers[key] === existing else {
+            return controllers[key] ?? SharedDeckCopyController(owner: owner)
+        }
+        if !refreshCompleted || destinationExists(outcome.notebookId) { return existing }
+        // 意圖已結束（重拉完整成功後使用者的 notebook 確實不在）：清除條目，新複製即新意圖。
+        controllers[key] = nil
+        return SharedDeckCopyController(owner: owner)
+    }
+
+    /// 複製開始時登記（以 controller 自身的 owner 定位），讓 pop/reopen 的 view 接回同一 controller。
+    func track(_ controller: SharedDeckCopyController, for deckId: String) {
+        controllers[Key(owner: controller.owner, deckId: deckId)] = controller
+    }
+
+    func removeAll() {
+        controllers.removeAll()
     }
 }

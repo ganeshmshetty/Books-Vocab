@@ -46,8 +46,14 @@ extension KGService {
     /// server-side incremental boundary). Reuses the existing sync infrastructure:
     /// `fetchNotebooks` + `NotebookReconciler` for the notebook row, and
     /// `BackgroundSyncActor.pullCardsToLocal` for the cards.
-    func pullCopiedDeck(container: ModelContainer, notebookId: String) async {
-        await landCopiedNotebook(container: container)
+    ///
+    /// Returns `true` iff the authoritative notebook reconcile completed. That is the only
+    /// evidence that a notebook absent locally is really gone on the server (#2748). The
+    /// card pull is excluded on purpose: a deleted notebook has no cards to fetch, so a
+    /// card-pull failure must not block retiring a genuinely deleted copy.
+    @discardableResult
+    func pullCopiedDeck(container: ModelContainer, notebookId: String) async -> Bool {
+        let reconciled = await landCopiedNotebook(container: container)
         do {
             let cards = try await fetchNotebookCards(notebookId: notebookId)
             try await Self.mergeNotebookScopedCards(cards, notebookId: notebookId, container: container)
@@ -55,6 +61,7 @@ extension KGService {
         } catch {
             AppLog.kg.warning("[Explore] post-copy card pull failed for \(notebookId): \(error.localizedDescription)")
         }
+        return reconciled
     }
 
     /// Land the freshly-copied notebook as a local `Notebook` row via an
@@ -62,8 +69,9 @@ extension KGService {
     /// on appear — `fetchNotebooks` is the complete list, so reconcile's tombstone
     /// pass is safe). This reuses `NotebookReconciler.reconcile`'s field mapping +
     /// provenance stamping rather than duplicating a bespoke upsert.
+    /// Returns whether the reconcile completed (false on fetch or store failure).
     @MainActor
-    private func landCopiedNotebook(container: ModelContainer) async {
+    private func landCopiedNotebook(container: ModelContainer) async -> Bool {
         do {
             let remote = try await fetchNotebooks()
             let context = container.mainContext
@@ -76,8 +84,10 @@ extension KGService {
                 ActiveNotebookStore.shared.clearStale()
             }
             context.safeSave()
+            return true
         } catch {
             AppLog.kg.warning("[Explore] post-copy notebook reconcile failed: \(error.localizedDescription)")
+            return false
         }
     }
 

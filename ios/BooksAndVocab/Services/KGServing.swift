@@ -257,6 +257,8 @@ protocol KGServing:
     var serverCardCount: Int { get }
     var sessionExpiredReason: String? { get set }
 
-    /// 複製成功後把新 notebook + 其卡片針對性拉回本地。
-    func pullCopiedDeck(container: ModelContainer, notebookId: String) async
+    /// 複製成功後把新 notebook + 其卡片針對性拉回本地。回傳 notebook 列表對帳是否完整成功
+    /// （`true` 才可據以確證「目標已不在 server」；見 `KGService.pullCopiedDeck`）。
+    @discardableResult
+    func pullCopiedDeck(container: ModelContainer, notebookId: String) async -> Bool
 }
