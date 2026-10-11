@@ -292,6 +292,7 @@ final class SyncCoordinator: SyncCoordinating {
     ///
     /// 後端 `rejected` 以提交陣列 `index` 指向原 entry（#2248），依 index 而非 word
     /// 標記（同字重複時 word 對不上）：直接 markSyncFailed，不留 pending 無限重送。
+    /// 例外：in-flight 期間被刪除的 add 由 `markRejected` 保留 pending delete（#2733），交下一輪 batchDelete 收斂。
     ///
     /// 回傳未收斂的 entries（rejected 與無 cardId 的異常項）供呼叫端判定失敗；
     /// 無 cardId 且未被拒收者維持 pending+add，下一輪自然重試。
