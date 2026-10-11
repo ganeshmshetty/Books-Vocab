@@ -13,6 +13,8 @@ import SwiftData
 import Testing
 @testable import BooksAndVocab
 
+private struct InjectedFetchError: Error {}
+
 @MainActor
 struct ReviewSessionFlushTests {
     private static let userID = "flush-finalize-user"
@@ -88,6 +90,80 @@ struct ReviewSessionFlushTests {
         #expect(state.hasUnflushedAnswers == false)
         let records = try context.fetch(FetchDescriptor<ReviewRecord>())
         #expect(records.count == 2)
+    }
+
+    /// #3123 re-key: BackgroundSyncActor can reassign a queued row's kgCardId mid-session. The row
+    /// still exists and still holds the answered card, so its grade must land on it (not be dropped
+    /// as deleted), and the completed session may then clear the snapshot.
+    @Test func completedSessionKeepsAnswerForRekeyedEntry() async throws {
+        TodayReviewSessionSnapshotStore.clear(for: Self.userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: Self.userID) }
+        let entries = makeEntries(2)
+        let (container, context) = try makeContainer(entries)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: Self.userID)
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.submit(.forgot, container: container, reviewSettings: .default)
+        #expect(state.currentEntry == nil)
+
+        // The queued persistence id of entry #1 is now stale: the same row lives on under a new card id.
+        let rekeyedCardID = "card-rekeyed-\(UUID().uuidString.prefix(8))"
+        entries[1].kgCardId = rekeyedCardID
+        #expect(context.safeSave())
+
+        await flushAndFinalize(state, container: container, completed: true)
+
+        #expect(TodayReviewSessionSnapshotStore.load(for: Self.userID) == nil)
+        #expect(state.hasUnflushedAnswers == false)
+        let records = try context.fetch(FetchDescriptor<ReviewRecord>())
+        #expect(records.count == 2)
+        let rekeyedRecords = records.filter { $0.kgCardId == rekeyedCardID }
+        #expect(rekeyedRecords.count == 1)
+        #expect(rekeyedRecords.first?.feedback == ReviewFeedback.forgot.rawValue)
+    }
+
+    /// #3123 fetch error: a row fetch that throws is not a deleted entry. That answer stays
+    /// un-settled (so the caller keeps its snapshot and restore retries it), while the other
+    /// answer still settles and is written.
+    @Test func fetchErrorLeavesAnswerUnsettledForRetry() async throws {
+        let entries = makeEntries(2)
+        let (container, context) = try makeContainer(entries)
+        let answeredAt = Date()
+        let answers: [Int: TodayReviewState.SubmittedAnswer] = [
+            0: TodayReviewState.SubmittedAnswer(feedback: .remembered, answeredAt: answeredAt, reviewRecordID: UUID()),
+            1: TodayReviewState.SubmittedAnswer(feedback: .forgot, answeredAt: answeredAt, reviewRecordID: UUID())
+        ]
+        let persistenceIDs = entries.map(ReviewSessionPersistence.persistenceID(for:))
+        let baselines = entries.map(ReviewSessionPersistence.makeBaseline(from:))
+        let failingID = persistenceIDs[0]
+        let snapshot = NotebookSettingsResolver(
+            globalReviewSettings: .default,
+            globalCardLayout: .default
+        ).snapshot(for: [])
+
+        let settled: [Int] = await withCheckedContinuation { (continuation: CheckedContinuation<[Int], Never>) in
+            ReviewSessionPersistence.flushPendingAnswers(
+                queuePersistenceIDs: persistenceIDs,
+                queueBaselines: baselines,
+                queueEntryIDs: entries.map(\.id),
+                submittedAnswers: answers,
+                container: container,
+                notebookSettingsSnapshot: snapshot,
+                onFlushed: { indices in continuation.resume(returning: indices) },
+                onFailure: { continuation.resume(returning: []) },
+                resolveEntry: { entryID, persistenceID, ctx in
+                    if persistenceID == failingID { throw InjectedFetchError() }
+                    return try ReviewSessionPersistence.fetchQueuedEntry(
+                        entryID: entryID,
+                        persistenceID: persistenceID,
+                        in: ctx
+                    )
+                }
+            )
+        }
+
+        #expect(settled == [1])
+        let records = try context.fetch(FetchDescriptor<ReviewRecord>())
+        #expect(records.count == 1)
     }
 
     /// #3123 (review P3): re-flushing restored answers must finalize like the dismiss path, so a
