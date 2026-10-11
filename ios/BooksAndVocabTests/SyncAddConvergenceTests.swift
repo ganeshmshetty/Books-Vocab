@@ -215,6 +215,70 @@ struct SyncAddConvergenceTests {
         #expect(entry.isPendingDelete)
     }
 
+    // MARK: - 撤銷待刪（SyncView「還原」，#2484）
+
+    @Test("未送出的 add 被刪除後撤銷 → 回到 pending add，絕不 markSynced（server 從未確認此卡）")
+    func undo_of_delete_on_unsent_add_restores_pending_add() {
+        let entry = makePendingAdd("unsent")
+        entry.isUploadInFlight = true
+        entry.queueDelete()
+        entry.isUploadInFlight = false
+        #expect(entry.kgCardId == nil)
+        #expect(entry.isPendingDelete)
+
+        entry.undoQueuedDelete()
+
+        #expect(entry.isPendingAdd)
+        #expect(!entry.isSynced)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("已確認 kgCardId 的待刪被撤銷 → synced，kgCardId 保留")
+    func undo_of_delete_on_confirmed_card_restores_synced() {
+        let entry = makePendingAdd("confirmed")
+        entry.kgCardId = "card-c"
+        entry.markSynced()
+        entry.queueDelete()
+        #expect(entry.isPendingDelete)
+
+        entry.undoQueuedDelete()
+
+        #expect(entry.isSynced)
+        #expect(entry.kgCardId == "card-c")
+        #expect(!entry.shouldUploadOnNextSync)
+    }
+
+    @Test("撤銷只作用於 delete 列；其他 action 為 no-op")
+    func undo_is_noop_for_non_delete_rows() {
+        let entry = makePendingAdd("plain")
+        entry.undoQueuedDelete()
+        #expect(entry.isPendingAdd)
+    }
+
+    @Test("撤銷後的列不被過期的 batchDelete 回應（not_found）硬刪，保留為 pending add")
+    func revived_row_survives_stale_batch_delete_response() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let entry = makePendingAdd("revived")
+        context.insert(entry)
+        entry.queueDelete()
+        entry.undoQueuedDelete()
+        #expect(entry.isPendingAdd)
+
+        let outcome = SyncCoordinator.applyBatchDeleteResponse(
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["revived"]),
+            entries: [entry],
+            modelContext: context
+        )
+
+        #expect(!entry.isDeleted)
+        #expect(entry.isPendingAdd)
+        #expect(outcome.deleted == 0)
+        #expect(outcome.failedWords.isEmpty)
+    }
+
     // MARK: - retry 路徑：failed+add 也能被收斂
 
     /// prepareForRetryAttempt 把 failed 轉回 pending 後才上傳，但防禦性釘住：

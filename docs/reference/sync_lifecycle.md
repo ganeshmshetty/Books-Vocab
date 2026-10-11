@@ -71,7 +71,7 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 ### 上傳中的新增被刪除
 
-1. 單字是 `pending + add` 且已被本輪 sync 擷取（`isUploadInFlight`：自擷取起至該 sync 返回為止，涵蓋 batch delete 往返、前一組 `batchAdd` 等待等 suspension）時，使用者刪除**不得硬刪**：`deleteLocally(in:)` 改呼叫 `queueDelete()`（`requiresServerDelete = isSynced || isUploadInFlight`）
+1. 單字是 `pending + add` 且已被本輪 sync 擷取（`isUploadInFlight`：自擷取起至該 sync 返回為止，涵蓋 batch delete 往返、前一組 `batchAdd` 等待等 suspension）時，使用者刪除**不得硬刪**：`deleteLocally(in:)` 改呼叫 `queueDelete()`（`requiresServerDelete = isSynced || isUploadInFlight || hasServerCard`）
 2. row 保留為 `pending + delete`：已送出者待上傳回填 `kgCardId` 後，下一輪 sync 送出 batch delete；尚未送出者（擷取後、送出前即被刪）送出前 revalidate 跳過、不上傳，下一輪 batch delete 以 `not_found` 本地移除（#2733）
 3. 理由：硬刪會讓 server 已建立的卡片在下次 pull 被重新插入（resurrection）
 4. 唯一入口：所有使用者刪除（閱讀器 `VocabularyContextStore.deleteEntry`、`SyncView` 待同步確認刪除、`WordDetailSheet`）都經 `VocabularyEntry.deleteLocally(in:)`，不得直接 `modelContext.delete(entry)`
@@ -82,6 +82,14 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 2. 使用者刪除時呼叫 `queueDelete()`
 3. 單字立刻從閱讀器與知識庫隱藏
 4. 等下一次同步把刪除請求送到 KG
+
+### 撤銷尚未送出的刪除（SyncView「還原」）
+
+1. `pending + delete` 列以 `VocabularyEntry.undoQueuedDelete()` 撤銷
+2. `kgCardId` 非空（server 已確認持有卡）→ `synced + add`
+3. `kgCardId` 為空（server 從未確認，例如上傳中的新增被刪）→ `pending + add`，下一輪 sync 上傳；**不得**變成 `synced`（synced 無 server 卡會在 full pull 的 orphan cleanup 被刪，#2484）
+4. 撤銷發生在 batch delete 往返期間時，回應不得硬刪或標 failed 已還原的列（`applyBatchDeleteResponse` 與 engine 逐卡 fallback 皆以 `syncAction == .delete` 守門）
+5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T11）
 
 ### 雲端資料拉回本地
 

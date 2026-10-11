@@ -115,6 +115,8 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                         // Batch failure is recoverable: retry each card individually.
                         for entry in entries {
                             if Task.isCancelled { return cancelledResult(since: start) }
+                            // Revived by `undoQueuedDelete` during an earlier await: the user's latest intent wins (T5).
+                            guard entry.syncAction == .delete else { continue }
                             do {
                                 try await service.deleteCard(word: entry.word, notebookId: entry.notebookId)
                                 modelContext.delete(entry)
