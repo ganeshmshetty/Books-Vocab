@@ -602,7 +602,8 @@ struct SharedDeckCardPreviewRow: View {
 
 /// 「複製到新單字本」目的地選擇 sheet。MVP：建立新單字本、名稱預填 deck title 可編輯。
 /// 純呈現 —— 名稱 draft sheet-local，confirm 才把最終名稱交回 owner 觸發複製。
-private struct SharedDeckCopySheet: View {
+struct SharedDeckCopySheet: View {
+    @ObserveInjection private var inject
     @Environment(\.appTheme) private var appTheme
     let defaultName: String
     let onCancel: () -> Void
@@ -610,10 +611,16 @@ private struct SharedDeckCopySheet: View {
     @State private var name: String
 
     init(defaultName: String, onCancel: @escaping () -> Void, onConfirm: @escaping (String) -> Void) {
-        self.defaultName = defaultName
+        let clampedDefault = Self.clampedDraft(defaultName)
+        self.defaultName = clampedDefault
         self.onCancel = onCancel
         self.onConfirm = onConfirm
-        _name = State(initialValue: defaultName)
+        _name = State(initialValue: clampedDefault)
+    }
+
+    /// 複製名稱的長度上限與編輯頁相同（backend `DeckCopyRequest.notebookName` ≤ 100）。
+    static func clampedDraft(_ raw: String) -> String {
+        NotebookEditCopy.clampedName(raw)
     }
 
     private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -627,6 +634,10 @@ private struct SharedDeckCopySheet: View {
                         .foregroundStyle(appTheme.palette.secondaryText)
                     TextField(L10n.string("explore.copy.sheet.nameLabel"), text: $name)
                         .textFieldStyle(.roundedBorder)
+                        .onChange(of: name) { _, new in
+                            let clamped = Self.clampedDraft(new)
+                            if clamped != new { name = clamped }
+                        }
                         .submitLabel(.done)
                         .onSubmit { if !trimmed.isEmpty { onConfirm(trimmed) } }
                         .accessibilityIdentifier("explore.copy.sheet.nameField")
@@ -652,5 +663,6 @@ private struct SharedDeckCopySheet: View {
             }
         }
         .presentationDetents([.medium])
+        .enableInjection()
     }
 }

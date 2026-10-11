@@ -41,6 +41,16 @@ struct NotebookEditCopyTests {
         #expect(NotebookEditCopy.clampedName(ascii99 + "e\u{301}") == ascii99)
     }
 
+    /// 共享牌組複製表單（#2794）與編輯頁用同一個 clamp：超長的預設名（deck 標題）與手動輸入
+    /// 都不得以 101+ scalar 送到 POST /api/decks/{id}/copy（server 回 422）。
+    @Test func sharedDeckCopyDraft_clampsDefaultAndEditedNameToLimit() {
+        let long = String(repeating: "a", count: 150)
+        #expect(SharedDeckCopySheet.clampedDraft(long).unicodeScalars.count == NotebookEditCopy.nameMaxLength)
+        let cjk = String(repeating: "字", count: 150)
+        #expect(SharedDeckCopySheet.clampedDraft(cjk).unicodeScalars.count == NotebookEditCopy.nameMaxLength)
+        #expect(SharedDeckCopySheet.clampedDraft("GRE 3000") == "GRE 3000")
+    }
+
     @Test func nameLimit_keepsExactlyLimitScalarsAndEmptyAndShortNames() {
         let exact = String(repeating: "a", count: 100)
         #expect(NotebookEditCopy.clampedName(exact) == exact)
