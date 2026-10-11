@@ -137,6 +137,7 @@ struct SettingsView: View {
         .subscriptionPaywallSheet(isPresented: $coordinator.showSubscriptionPaywall)
         .toastSheet(item: $exportURL) { url in
             PlatformShareView(url: url)
+                .onDisappear { VocabularyExporter.cleanup(url) }
         }
         .toastSheet(isPresented: $coordinator.showDeleteAccountConfirm) {
             SettingsDeleteAccountSheet(

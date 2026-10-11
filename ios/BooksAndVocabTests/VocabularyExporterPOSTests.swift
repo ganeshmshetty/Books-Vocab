@@ -161,4 +161,49 @@ struct VocabularyExporterPOSTests {
             #expect(text.contains("invoke"))
         }
     }
+
+    // #2552：匯出檔保留純檔名（分享時不帶 UUID 前綴），並放在可整包刪除的 per-export 目錄。
+
+    @Test func test_export_keeps_plain_filename_without_uuid_prefix() throws {
+        let expected = ["vocabulary.csv", "vocabulary.json", "vocabulary_anki.tsv"]
+        for (format, name) in zip(VocabularyExportFormat.allCases, expected) {
+            let url = try VocabularyExporter.export(entries: [makeEntry()], format: format).get()
+            defer { VocabularyExporter.cleanup(url) }
+            #expect(url.lastPathComponent == name)
+        }
+    }
+
+    @Test func test_cleanup_removes_export_directory_after_dismiss() throws {
+        let url = try VocabularyExporter.export(entries: [makeEntry()], format: .csv).get()
+        let dir = url.deletingLastPathComponent()
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        VocabularyExporter.cleanup(url)
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    @Test func test_cleanup_ignores_urls_outside_export_layout() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kg-cleanup-guard-\(UUID().uuidString)", isDirectory: true)
+        let dir = root.appendingPathComponent("notes", isDirectory: true)
+        let file = dir.appendingPathComponent("keep.csv")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: root) }
+        VocabularyExporter.cleanup(file)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func test_launch_purge_removes_stale_export_directories() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kg-purge-\(UUID().uuidString)", isDirectory: true)
+        let stale = tempRoot
+            .appendingPathComponent("exports", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        try "x".write(to: stale.appendingPathComponent("vocabulary.csv"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        VocabularyExporter.purgeStaleExports(in: tempRoot)
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(!FileManager.default.fileExists(atPath: tempRoot.appendingPathComponent("exports").path))
+    }
 }

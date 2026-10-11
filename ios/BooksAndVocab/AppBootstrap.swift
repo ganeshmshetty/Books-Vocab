@@ -54,6 +54,9 @@ enum AppBootstrap {
         // 造成的背景同步死鎖（必須早於任何 sync 觸發）。
         KGService.migrateReviewEventBoundaryIfNeeded()
 
+        // #2552：清掉上次 session 殘留的匯出暫存（含個人單字資料）；純 file I/O，不阻塞啟動。
+        Task.detached(priority: .utility) { VocabularyExporter.purgeStaleExports() }
+
         let localSchema = Schema([
             VocabularyEntry.self, ReviewRecord.self, Notebook.self,
             NotebookSettingsProjection.self,

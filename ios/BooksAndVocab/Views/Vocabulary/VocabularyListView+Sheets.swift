@@ -17,6 +17,7 @@ struct VocabularyListSheets: ViewModifier {
             .settingsSheet(isPresented: $coordinator.showSettings)
             .toastSheet(item: $coordinator.exportURL) { url in
                 PlatformShareView(url: url)
+                    .onDisappear { VocabularyExporter.cleanup(url) }
             }
     }
 }
