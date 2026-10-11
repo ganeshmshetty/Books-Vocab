@@ -150,11 +150,23 @@ actor BackgroundSyncActor {
             let mergeKey = mergeKey(card.content, notebookId: cardNotebookId)
             fetchedCardKeys.insert(mergeKey)
 
-            if let existingEntry = localByCardID[card.id] ?? localDict[mergeKey] {
+            // A tombstone resolves by card id only: a word-text match could name a
+            // different live card that merely shares the word and delete it (#2547).
+            let matchedEntry = card.isDeleted == true
+                ? localByCardID[card.id]
+                : (localByCardID[card.id] ?? localDict[mergeKey])
+
+            if let existingEntry = matchedEntry {
                 // Delete if marked as soft-deleted
                 if card.isDeleted == true {
                     AppLog.sync.info("Remote soft-delete received: \(existingEntry.word)")
                     modelContext.delete(existingEntry)
+                    // Evict the deleted row so later cards in this batch cannot resolve to it.
+                    localByCardID[card.id] = nil
+                    let deletedKey = self.mergeKey(existingEntry.word, notebookId: existingEntry.notebookId)
+                    if localDict[deletedKey] === existingEntry {
+                        localDict[deletedKey] = nil
+                    }
                     deletedCount += 1
                     continue
                 }
