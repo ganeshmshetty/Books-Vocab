@@ -79,7 +79,9 @@ private struct KGCardPreferencesUpdate: Encodable {
 
 struct KGVocabContentUpdate: Encodable, Equatable {
     let meaning: String
-    let explanation: String?
+    /// Always encoded. The backend treats an omitted or null `explanation` as "no change"
+    /// and "" as "clear the note", so a cleared note (nil locally) must be sent as "" (#2550).
+    let explanation: String
 }
 
 // MARK: - Vocabulary CRUD
@@ -141,7 +143,7 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
         translation: String,
         explanation: String?
     ) -> KGVocabContentUpdate {
-        KGVocabContentUpdate(meaning: translation, explanation: explanation)
+        KGVocabContentUpdate(meaning: translation, explanation: explanation ?? "")
     }
 
     func updateCardContent(
