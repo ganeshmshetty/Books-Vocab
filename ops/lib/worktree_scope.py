@@ -26,6 +26,10 @@ SCOPE_OPERATIONS = ("add", "modify", "delete")
 #     registration: each lane adds or drops one group line in its own case arm
 #     or list entry; a true textual conflict is resolved at rebase and the
 #     merge queue re-tests the combined tree.
+#   ios/BooksAndVocab/*.lproj/Localizable.strings - per-locale key catalogs.
+#     Lanes usually add different keys; a same-key or write-skew collision
+#     (duplicate key, key deleted while another lane uses it) is re-checked by
+#     the merge-group strict i18n lint on the combined tree (CM decision, 2026-10-11).
 SHARED_SCOPE_FILES = frozenset(
     {
         "docs/reference/tech_index.md",
@@ -33,6 +37,11 @@ SHARED_SCOPE_FILES = frozenset(
         "ops/complexity_budget.json",
         "ops/test_ops.sh",
         "ops/tests/test_ops_ci_coverage.sh",
+        "ios/BooksAndVocab/en.lproj/Localizable.strings",
+        "ios/BooksAndVocab/ja.lproj/Localizable.strings",
+        "ios/BooksAndVocab/ko.lproj/Localizable.strings",
+        "ios/BooksAndVocab/zh-Hans.lproj/Localizable.strings",
+        "ios/BooksAndVocab/zh-Hant.lproj/Localizable.strings",
     }
 )
 # Spellings agents reach for naturally; canonicalised on input, never stored.

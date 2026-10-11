@@ -14,6 +14,14 @@ from lib import worktree_scope
 from lib.worktree_scope import SHARED_SCOPE_FILES
 from worktree_registry_core import records as records_module
 
+ROOT = OPS.parent
+# Derived from disk, not hand-copied: a new locale must be added to
+# SHARED_SCOPE_FILES or the tests below fail.
+LOCALIZABLE_CATALOGS = frozenset(
+    p.relative_to(ROOT).as_posix()
+    for p in ROOT.glob("ios/BooksAndVocab/*.lproj/Localizable.strings")
+)
+
 
 def _register(state: dict, name: str, tmp_path: Path, *paths: str) -> tuple[int, dict]:
     return registry._register_record(
@@ -133,7 +141,20 @@ def test_allowlist_is_exact_existing_canonical_paths() -> None:
         "ops/complexity_budget.json",
         "ops/test_ops.sh",
         "ops/tests/test_ops_ci_coverage.sh",
+        *LOCALIZABLE_CATALOGS,
     }
+
+
+def test_localizable_catalogs_are_shared_and_other_ios_files_stay_exclusive() -> None:
+    assert LOCALIZABLE_CATALOGS, "glob found no Localizable.strings catalogs"
+    for catalog in sorted(LOCALIZABLE_CATALOGS):
+        assert catalog in SHARED_SCOPE_FILES, catalog
+        # Two lanes that only touch catalogs do not collide ...
+        assert worktree_scope.overlap_paths({catalog, "ops/a.py"}, {catalog}) == set()
+    # ... but a real overlap on any other iOS file still does.
+    other = "ios/BooksAndVocab/Views/Home.swift"
+    assert other not in SHARED_SCOPE_FILES
+    assert worktree_scope.overlap_paths({other}, {other}) == {other}
 
 
 def test_overlap_paths_subtracts_only_exact_allowlisted_files() -> None:
@@ -296,6 +317,21 @@ def test_exclusivity_rule_statements_name_the_shared_scope_allowlist(
     text = (root / name).read_text()
     assert _EXCLUSIVITY_RULE.search(text), f"{name} no longer states the rule"
     assert _unqualified_exclusivity_statements(text) == []
+
+
+@pytest.mark.parametrize("name", _RULE_FILES)
+def test_exclusivity_rule_statements_name_the_localizable_catalog_exception(
+    name: str,
+) -> None:
+    # CM decision (2026-10-11): per-locale Localizable.strings catalogs are a shared-Scope
+    # exception, so every written statement of the rule must carry it, not only the code.
+    rule_lines = [
+        line
+        for line in (OPS.parent / name).read_text().splitlines()
+        if _EXCLUSIVITY_RULE.search(line)
+    ]
+    assert rule_lines, f"{name} no longer states the rule"
+    assert all("Localizable.strings" in line for line in rule_lines), rule_lines
 
 
 def test_no_doc_states_exclusivity_without_the_allowlist() -> None:

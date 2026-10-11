@@ -126,8 +126,8 @@ repo_gate_block="$(awk '
   in_repo_gate && /^  [A-Za-z0-9_-]+:/ { exit }
   in_repo_gate { print }
 ' "$PR_GATE")"
-grep -q 'timeout-minutes: 3' <<<"$repo_gate_block" \
-  || fail "repo-gate is not hard-bounded to the short merge-gate budget"
+grep -q 'timeout-minutes: 15' <<<"$repo_gate_block" \
+  || fail "repo-gate is not hard-bounded to fifteen minutes (ripgrep installer worst case 515s + measured gate; see the pr-gate.yml comment)"
 grep -Fq './ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control' <<<"$repo_gate_block" \
   || fail "repo-gate does not execute the delivery-control regression group"
 grep -Fq '      - name: Check changed Python formatting' <<<"$repo_gate_block" \
@@ -150,6 +150,81 @@ grep -Fq 'if ((${#changed_python[@]} == 0)); then' <<<"$repo_gate_block" \
   || fail "changed-Python format step has no empty-set pass path"
 grep -Fq 'uv run --no-project --python 3.13 --with '\''ruff==0.16.3'\'' ruff format --check "${changed_python[@]}"' <<<"$repo_gate_block" \
   || fail "changed-Python format step does not invoke the pinned ruff formatter"
+# Issue #3028 (CR on #3062): hosted runners do not guarantee ripgrep, and the
+# github-workflows fixtures fail loudly without it.  Every job that runs that group
+# must install rg from an unmasked step before its first group run.  Jobs are found
+# by the command they run, not a hand-kept list, so a new job cannot skip the install.
+rg_contract_rows="$(ruby -ryaml -e '
+  Dir.glob(".github/workflows/*.yml").sort.each do |path|
+    (YAML.load_file(path)["jobs"] || {}).each do |job_id, job|
+      steps = job["steps"] || []
+      gate = steps.index { |s| s["run"].to_s.match?(/test_ops\.sh[^\n]*\bgithub-workflows\b/) }
+      next if gate.nil?
+      install = steps.index { |s| s["run"].to_s.match?(/ci_apt_install\.sh ripgrep|\[rg\]=ripgrep/) }
+      step = install && steps[install]
+      masked = step && (step.key?("if") || step.key?("continue-on-error") || step["run"].to_s.include?("||"))
+      puts [path, job_id, install.inspect, gate, masked ? "masked" : "clear"].join(" ")
+    end
+  end
+')" || { fail "cannot read workflow jobs for the ripgrep install contract"; rg_contract_rows=""; }
+rg_jobs=0
+while read -r rg_path rg_job rg_install rg_gate rg_mask; do
+  rg_jobs=$((rg_jobs + 1))
+  if [[ ! "$rg_install" =~ ^[0-9]+$ ]]; then
+    fail "$rg_path job $rg_job runs the github-workflows group without a ripgrep install step (ops/ci_apt_install.sh ripgrep before the group)"
+  elif (( rg_install >= rg_gate )); then
+    fail "$rg_path job $rg_job: ripgrep install (step $rg_install) does not precede the github-workflows group (step $rg_gate)"
+  fi
+  [[ "$rg_mask" != masked ]] \
+    || fail "$rg_path job $rg_job: ripgrep install step is conditional, continue-on-error or masked with ||"
+done <<<"$rg_contract_rows"
+(( rg_jobs >= 2 )) \
+  || fail "expected pr-gate repo-gate and merge-group required to run the github-workflows group, found $rg_jobs job(s)"
+# Issue #3028 (CR on #3063): the bounded ripgrep installer can spend its whole retry budget
+# before rg exists. A job that installs rg through it must time out only after that worst
+# case, or GitHub kills the required check mid-retry. The worst case is derived from the
+# installer's own constants (attempts, timeouts, backoff step), never hand-copied.
+installer_worst="$(ruby -e '
+  src = File.read("ops/ci_apt_install.sh", encoding: "UTF-8")
+  c =->(name) { Integer(src[/^#{name}=(\d+)$/, 1]) }
+  step = Integer(src[/sleep \$\(\( attempt \* (\d+) \)\)/, 1])
+  a = c.("attempts")
+  puts a * (c.("install_timeout") + c.("kill_after")) + (a - 1) * (c.("update_timeout") + c.("kill_after")) + step * (a - 1) * a / 2
+')" || { fail "cannot derive the ripgrep installer worst case from ops/ci_apt_install.sh"; installer_worst=""; }
+rg_timeout_rows="$(ruby -ryaml -e '
+  Dir.glob(".github/workflows/*.yml").sort.each do |path|
+    (YAML.load_file(path)["jobs"] || {}).each do |job_id, job|
+      installs = (job["steps"] || []).any? { |s| s["run"].to_s.match?(/ci_apt_install\.sh ripgrep|\[rg\]=ripgrep/) }
+      puts [path, job_id, job["timeout-minutes"].inspect].join(" ") if installs
+    end
+  end
+')" || { fail "cannot read workflow jobs that install ripgrep through the installer"; rg_timeout_rows=""; }
+rg_timeout_jobs=0
+while read -r t_path t_job t_minutes; do
+  [[ -n "$t_job" ]] || continue
+  rg_timeout_jobs=$((rg_timeout_jobs + 1))
+  if [[ ! "$t_minutes" =~ ^[0-9]+$ ]]; then
+    fail "$t_path job $t_job installs ripgrep through ops/ci_apt_install.sh but sets no explicit timeout-minutes"
+  elif [[ -z "$installer_worst" ]] || (( t_minutes * 60 <= installer_worst )); then
+    fail "$t_path job $t_job timeout ${t_minutes}m does not exceed the ripgrep installer worst case ${installer_worst:-unknown}s"
+  fi
+done <<<"$rg_timeout_rows"
+(( rg_timeout_jobs >= 3 )) \
+  || fail "expected repo-gate, merge-group required and ops-suite suite to install ripgrep through the installer, found $rg_timeout_jobs job(s)"
+# The Linux ops shard runs its groups from a discovered list, so the command scan above
+# cannot see it: its ripgrep install must precede the discovered-group run by name.
+suite_order="$(ruby -ryaml -e '
+  steps = YAML.load_file(ARGV[0])["jobs"]["suite"]["steps"]
+  verify = steps.index { |s| s["run"].to_s.include?("[rg]=ripgrep") }
+  run = steps.index { |s| s["run"].to_s.include?("./ops/test_ops.sh \"${selected[@]}\"") }
+  puts [verify.inspect, run.inspect].join(" ")
+' .github/workflows/ops-suite.yml)" || suite_order="nil nil"
+read -r suite_verify suite_run <<<"$suite_order" || true
+if [[ ! "$suite_verify" =~ ^[0-9]+$ || ! "$suite_run" =~ ^[0-9]+$ ]]; then
+  fail "ops-suite shard has no ripgrep install step before its Linux group run (step indices: $suite_order)"
+elif (( suite_verify >= suite_run )); then
+  fail "ops-suite ripgrep install (step $suite_verify) does not precede the Linux group run (step $suite_run)"
+fi
 delivery_control_group="$(awk '
   /delivery-control\)/ { in_group=1 }
   in_group { print }
@@ -249,6 +324,127 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     grep -Fq 'set -euo pipefail' <<<"$block" \
       || fail "merge-group ${label} step does not run with set -euo pipefail"
   }
+  # ripgrep must come from its own step before the short gate (its fixture runs the
+  # strict lint) and before the strict lint step; inside the lint step it comes too late.
+  rg_install_step="$(merge_group_step_containing 'ci_apt_install.sh ripgrep')"
+  if [[ -z "$rg_install_step" ]]; then
+    fail "merge-group required gate has no ripgrep install step (ops/ci_apt_install.sh ripgrep) before the short repository gate"
+  else
+    merge_group_assert_unmasked_step "ripgrep install" "$rg_install_step" no
+  fi
+  rg_order="$(ruby -ryaml -e '
+    steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+    find = lambda { |needle| steps.index { |s| s["run"].to_s.include?(needle) } }
+    positions = [
+      find.call("ci_apt_install.sh ripgrep"),
+      find.call("./ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control"),
+      find.call("ops/i18n_lint.sh --strict"),
+    ]
+    puts positions.map { |i| i.nil? ? "missing" : i.to_s }.join(" ")
+  ' "$MERGE_GROUP_REQUIRED")" || rg_order="missing missing missing"
+  read -r rg_step gate_step lint_step <<<"$rg_order" || true
+  if [[ ! "$rg_step" =~ ^[0-9]+$ || ! "$gate_step" =~ ^[0-9]+$ || ! "$lint_step" =~ ^[0-9]+$ ]]; then
+    fail "merge-group required gate lacks an ordered ripgrep install, short gate or strict lint step (step indices: $rg_order)"
+  else
+    (( rg_step < gate_step )) \
+      || fail "merge-group ripgrep install (step $rg_step) does not precede the short repository gate (step $gate_step)"
+    (( rg_step < lint_step )) \
+      || fail "merge-group ripgrep install (step $rg_step) does not precede the strict i18n lint (step $lint_step)"
+  fi
+  # Shared Localizable.strings catalogs leave the PR-time static.i18n check unserialised,
+  # so the merge queue re-runs the full strict lint on the merged tree.  Run the
+  # workflow's own step block against fixture catalogs (KG_I18N_SRC): a clean tree
+  # passes, a non-adjacent duplicate key fails, and a key used in Swift but absent
+  # from en.lproj (the write-skew of a deleted key) fails.  The uv shim answers only
+  # `python find`, so the lint's interpreter lookup is hermetic.
+  i18n_step="$(merge_group_step_containing 'ops/i18n_lint.sh --strict')"
+  if [[ -z "$i18n_step" ]]; then
+    fail "merge-group required gate has no strict i18n lint step (shared catalogs leave the merge queue as the only re-check)"
+  elif ! command -v rg >/dev/null 2>&1; then
+    # Without rg every fixture fails for that reason alone; name the cause instead.
+    fail "strict i18n lint fixtures need ripgrep (rg) on PATH; install it first with ops/ci_apt_install.sh ripgrep"
+  else
+    merge_group_assert_unmasked_step "strict i18n lint" "$i18n_step" no
+    # Fixtures live under the repo root (gitignored .cache): the key extractor
+    # reports paths relative to its root and fails closed on anything outside it.
+    mkdir -p "$ROOT/.cache"
+    i18n_tmp="$(mktemp -d "$ROOT/.cache/test-i18n-XXXXXX")"
+    i18n_run="$i18n_tmp/step.sh"
+    ruby -ryaml -e '
+      steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+      step = steps.find { |s| s["run"].to_s.include?("ops/i18n_lint.sh --strict") }
+      abort("no strict i18n lint step") unless step
+      File.write(ARGV[1], step["run"])
+    ' "$MERGE_GROUP_REQUIRED" "$i18n_run" \
+      || fail "cannot extract the strict i18n lint step run block"
+    mkdir -p "$i18n_tmp/bin"
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$(command -v python3)"' >"$i18n_tmp/bin/uv"
+    chmod +x "$i18n_tmp/bin/uv"
+    printf 'findings=0\nlocalized_calls=0\n' >"$i18n_tmp/baseline.txt"
+    i18n_fixture() {  # $1 = name, $2 = key used in Swift, $3 = extra en.lproj line (optional)
+      local root="$i18n_tmp/fx-$1" loc
+      for loc in en zh-Hans ja ko; do
+        mkdir -p "$root/$loc.lproj"
+        printf '%s\n' '"kept" = "Kept";' >"$root/$loc.lproj/Localizable.strings"
+      done
+      [[ -z "${3:-}" ]] || printf '%s\n' "$3" >>"$root/en.lproj/Localizable.strings"
+      printf 'let title = L10n.string("%s")\n' "$2" >"$root/Feature.swift"
+    }
+    run_i18n_step() {  # $1 = fixture name; the step's exit status is the result
+      (cd "$ROOT" && UV_BIN="$i18n_tmp/bin/uv" KG_I18N_SRC="$i18n_tmp/fx-$1" KG_I18N_BASELINE="$i18n_tmp/baseline.txt" bash "$i18n_run" 2>&1)
+    }
+    i18n_fixture clean kept
+    i18n_fixture dup kept '"kept" = "Again";'
+    i18n_fixture missing gone
+    run_i18n_step clean >/dev/null \
+      || fail "strict i18n lint step rejects a clean catalog tree"
+    if out="$(run_i18n_step dup)"; then
+      fail "strict i18n lint step passes a non-adjacent duplicate key (the merge queue must fail on it)"
+    fi
+    grep -Fq 'duplicate key "kept"' <<<"$out" \
+      || fail "strict i18n lint duplicate-key case does not name the duplicate"
+    if out="$(run_i18n_step missing)"; then
+      fail "strict i18n lint step passes a Swift key missing from en.lproj (write-skew of a deleted key)"
+    fi
+    grep -Fq 'missing_key: gone' <<<"$out" \
+      || fail "strict i18n lint missing-key case does not name the missing key"
+    rm -rf "$i18n_tmp"
+  fi
+  # Hidden-PATH proof: the install step's own block runs with PATH = bash/env/chmod only
+  # (rg absent by construction) and a stub installer; the second run must not reinstall.
+  mkdir -p "$ROOT/.cache"
+  rg_tmp="$(mktemp -d "$ROOT/.cache/test-rg-XXXXXX")"
+  ruby -ryaml -e '
+    steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+    step = steps.find { |s| s["run"].to_s.include?("ci_apt_install.sh ripgrep") }
+    abort("no ripgrep install step") unless step
+    File.write(ARGV[1], step["run"])
+  ' "$MERGE_GROUP_REQUIRED" "$rg_tmp/step.sh" \
+    || fail "cannot extract the ripgrep install step run block"
+  mkdir -p "$rg_tmp/root/ops" "$rg_tmp/tools" "$rg_tmp/stub-bin"
+  for tool in bash env chmod; do
+    ln -s "$(command -v "$tool")" "$rg_tmp/tools/$tool"
+  done
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\n" "$*" >>"$RG_INSTALL_LOG"' \
+    'printf "%s\n" "#!/usr/bin/env bash" "echo ripgrep-stub" >"$RG_STUB_BIN/rg"' \
+    'chmod +x "$RG_STUB_BIN/rg"' >"$rg_tmp/root/ops/ci_apt_install.sh"
+  chmod +x "$rg_tmp/root/ops/ci_apt_install.sh"
+  rg_step_run() {  # the step's combined output; its exit status is the result
+    (cd "$rg_tmp/root" && env -i PATH="$rg_tmp/tools:$rg_tmp/stub-bin" \
+      RG_INSTALL_LOG="$rg_tmp/install.log" RG_STUB_BIN="$rg_tmp/stub-bin" \
+      "$(command -v bash)" "$rg_tmp/step.sh" 2>&1)
+  }
+  if ! out="$(rg_step_run)"; then
+    fail "ripgrep install step fails on a PATH without rg: $out"
+  elif [[ ! -f "$rg_tmp/install.log" ]]; then
+    fail "ripgrep install step does not call the installer when rg is absent"
+  else
+    rm -f "$rg_tmp/install.log"
+    rg_step_run >/dev/null || fail "ripgrep install step fails when rg is already on PATH"
+    [[ ! -e "$rg_tmp/install.log" ]] || fail "ripgrep install step reinstalls although rg is already on PATH"
+  fi
+  rm -rf "$rg_tmp"
   scope_step_id="$(awk '
     /^      - name:/ { id="" }
     /^        id:/ { id=$2 }

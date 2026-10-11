@@ -32,7 +32,7 @@ GitHub 外部 ID 只作 opaque reference；Issue、PR 的生命週期與合併�
 
 1. 開始前先讀本檔與對應 SoT；涉及陌生 endpoint、schema、env、release 或安全邊界，先查 `docs/registry.yml` 指向的文件。
 2. 實作採 TDD：先紅、最小修復、再綠；每個獨立變更保持可 review、可回滾。
-3. 分支與 worktree 要有明確 Scope；同一檔案不可被兩個 active worktree 同時認領，唯一例外是 `ops/lib/worktree_scope.py` 的 `SHARED_SCOPE_FILES`（僅限註冊／索引檔，理由見 `docs/reference/delivery_model.md`）。跨 session 協調以 registry／GitHub PR 為準，不靠聊天紀憶。
+3. 分支與 worktree 要有明確 Scope；同一檔案不可被兩個 active worktree 同時認領，唯一例外是 `ops/lib/worktree_scope.py` 的 `SHARED_SCOPE_FILES`（註冊／索引檔與 per-locale 字串目錄 `Localizable.strings`〔重複 key、缺 key、locale parity 由 merge-group 的 strict i18n lint 在合併樹上重驗〕，理由見 `docs/reference/delivery_model.md`）。跨 session 協調以 registry／GitHub PR 為準，不靠聊天紀憶。
 4. PR 必須讓 CR 能回答：這是 direct assignment 還是 Issue work、改了什麼、為何改、如何驗證、是否有安全或文件影響。review、required checks 與 DS 的文件判斷留在 PR；不要把它們重新寫成 repo receipt。
 5. 遇到工具摩擦先修工具或記錄可重現 blocker，不以手工繞路掩蓋流程缺陷。
 
