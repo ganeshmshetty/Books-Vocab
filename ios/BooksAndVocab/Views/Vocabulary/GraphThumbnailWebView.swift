@@ -20,6 +20,7 @@ final class GraphThumbnailHolder {
         webView.scrollView.bounces = false
         webView.scrollView.backgroundColor = .clear
         coordinator.webView = webView
+        webView.navigationDelegate = coordinator
 
         self.webView = webView
         self.coordinator = coordinator
@@ -36,12 +37,49 @@ final class GraphThumbnailHolder {
 
 // MARK: - Coordinator (message handler + signature dedup)
 
-final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler {
+final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var graphBridgeReady = false
     var pendingPayload: String?
     var lastSignature: String?
+    /// Last payload handed to the page, replayed after the web content process dies or `recover()`.
+    private(set) var lastPayload: String?
+    /// True once graph.html reported that the thumbnail canvas is visible (#2860).
+    private(set) var hasPainted = false
+    var onPainted: (() -> Void)?
+    /// Fired when the page owes a fresh first paint (rebuilt, or lost after the
+    /// automatic recoveries ran out). The card re-arms its paint watchdog here.
+    var onRepaintExpected: (() -> Void)?
     weak var webView: WKWebView?
+    /// Web-content terminations since the last paint. Automatic recovery stops
+    /// once this reaches `maxAutomaticRecoveries`, so a page that crashes while
+    /// loading cannot reload forever.
+    private(set) var consecutiveTerminations = 0
+    /// True once automatic recovery is spent on a dead page. The next Retry
+    /// rebuilds it; a ready-handshake check alone would not, because a page lost
+    /// after `ready` still reports `graphBridgeReady`.
+    private(set) var pageLost = false
+    static let maxAutomaticRecoveries = 3
+
+    /// Routes this coordinator's paint events into a card's watchdog state.
+    /// Captures only the two bindings, never the card value: the card owns the
+    /// holder and the holder owns this coordinator, so a card capture closes a
+    /// retain cycle that keeps the web view and its WebContent process alive
+    /// after their owner is gone (#2860).
+    @MainActor
+    func bindPaintWatchdog(timedOut: Binding<Bool>, generation: Binding<Int>) {
+        onPainted = { timedOut.wrappedValue = false }
+        onRepaintExpected = {
+            timedOut.wrappedValue = false
+            generation.wrappedValue &+= 1
+        }
+    }
+
     func sendInitGraph(_ json: String, webView: WKWebView) {
+        lastPayload = json
+        // graph.html hides the canvas on every thumbnail init and reports `painted`
+        // again once the simulation converges, so a previous paint no longer covers
+        // this payload. The paint watchdog must see a fresh `painted`.
+        hasPainted = false
         guard graphBridgeReady else { pendingPayload = json; return }
         webView.evaluateJavaScript("initGraph('\(json.jsSingleQuoteEscaped)')", completionHandler: nil)
     }
@@ -49,13 +87,66 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler {
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "graphBridge",
               let body = message.body as? [String: Any],
-              let type = body["type"] as? String,
-              type == "ready" else { return }
+              let type = body["type"] as? String else { return }
+        receiveBridgeEvent(type)
+    }
+
+    /// Applies one graph.html bridge event. Split from the script-message entry
+    /// point so the bridge state machine is unit-testable without WebKit.
+    func receiveBridgeEvent(_ type: String) {
+        guard ["ready", "painted"].contains(type) else { return }
+        if type == "painted" {
+            hasPainted = true
+            consecutiveTerminations = 0
+            pageLost = false
+            onPainted?()
+            return
+        }
         graphBridgeReady = true
         if let pending = pendingPayload, let wv = webView {
             pendingPayload = nil
             sendInitGraph(pending, webView: wv)
         }
+    }
+
+    /// Whether Retry must reload the page. A page that never completed its `ready`
+    /// handshake, or one lost after automatic recovery ran out, is stuck. A page
+    /// that reported `ready` but has not painted is stuck only once the card's
+    /// watchdog fired (`paintTimedOut`): before that it is slow, and reloading it
+    /// would restart the layout. After the watchdog fires, a reload is the only
+    /// recovery, since re-arming the watchdog alone leaves the same page blank (#2860).
+    func needsRebuildOnRetry(paintTimedOut: Bool) -> Bool {
+        if pageLost { return true }
+        guard !hasPainted else { return false }
+        return !graphBridgeReady || paintTimedOut
+    }
+
+    /// Rebuilds the page and replays the last payload. Used when the web content
+    /// process was terminated or the thumbnail never painted; without it
+    /// `graphBridgeReady`/`lastSignature` would block any re-send forever.
+    func recover() {
+        graphBridgeReady = false
+        hasPainted = false
+        pageLost = false
+        pendingPayload = lastPayload
+        if let webView, let htmlURL = Bundle.main.url(forResource: "graph", withExtension: "html") {
+            webView.loadFileURL(htmlURL, allowingReadAccessTo: htmlURL.deletingLastPathComponent())
+        }
+        onRepaintExpected?()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard consecutiveTerminations < Self.maxAutomaticRecoveries else {
+            // Automatic recovery is spent. The dead page must not keep looking
+            // painted: clear the paint state so the watchdog shows the status row,
+            // and its Retry rebuilds the page (`needsRebuildOnRetry(paintTimedOut:)`).
+            pageLost = true
+            hasPainted = false
+            onRepaintExpected?()
+            return
+        }
+        consecutiveTerminations += 1
+        recover()
     }
 }
 
@@ -84,9 +175,10 @@ struct GraphThumbnailWebView: UIViewRepresentable {
 // MARK: - Shared update + payload
 
 extension GraphThumbnailWebView {
-    static func performUpdate(_ webView: WKWebView, coordinator: GraphThumbnailCoordinator,
-                               nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
-                               theme: KnowledgeGraphTheme, colorScheme: ColorScheme) {
+    /// Payload identity shared by `performUpdate` (re-init dedup) and the card
+    /// (paint watchdog re-arm), so both agree on when a new payload exists.
+    static func signature(nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
+                          colorScheme: ColorScheme) -> String {
         // Signature uses discrete visual features only. `n.ratio` is excluded
         // because it derives from `Date()` in KnowledgeGraphPresentation.nodes
         // and drifts on every body recomputation, causing spurious re-inits
@@ -95,7 +187,13 @@ extension GraphThumbnailWebView {
         // produces identical strings and visual meaning is preserved.
         // Reuses GraphWebView.dataSignature so thumbnail and full graph share one diff
         // (covers node word and edge id/from/to/kind, not just edge count).
-        let sig = GraphWebView.dataSignature(nodes: nodes, edges: edges) + (colorScheme == .dark ? "D" : "L")
+        GraphWebView.dataSignature(nodes: nodes, edges: edges) + (colorScheme == .dark ? "D" : "L")
+    }
+
+    static func performUpdate(_ webView: WKWebView, coordinator: GraphThumbnailCoordinator,
+                               nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
+                               theme: KnowledgeGraphTheme, colorScheme: ColorScheme) {
+        let sig = signature(nodes: nodes, edges: edges, colorScheme: colorScheme)
         guard coordinator.lastSignature != sig else { return }
         coordinator.lastSignature = sig
         coordinator.sendInitGraph(buildPayload(nodes: nodes, edges: edges, theme: theme, colorScheme: colorScheme), webView: webView)

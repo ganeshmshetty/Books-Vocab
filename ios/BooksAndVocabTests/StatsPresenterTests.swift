@@ -100,6 +100,25 @@ struct StatsPresenterTests {
         #expect(s.forecast.map(\.count).reduce(0, +) == 1)
     }
 
+    /// Pins the edge-day bucket the Overview UI oracle mirrors (#2920): at the
+    /// last forecast day only reviewed, non-excluded cards count; new cards
+    /// (reviewCount == 0) and excluded cards landing on the same day do not.
+    @Test func forecast_edgeDayBucketCountsOnlyReviewedCards() {
+        let reviewed = syncedEntry(dueOffset: 13)
+        let fresh = syncedEntry(dueOffset: 13)
+        fresh.reviewCount = 0
+        let excluded = syncedEntry(dueOffset: 13)
+        excluded.isReviewExcluded = true
+
+        let s = StatsPresentation.buildSummary(
+            from: [reviewed, fresh, excluded], reviewRecords: [], clock: Self.canonicalClock
+        )
+
+        let edge = s.forecast.first { $0.id == dayKey(13) }
+        #expect(edge?.count == 1)
+        #expect(s.dueToday == 0)
+    }
+
     private func review(dayOffset: Int) -> ReviewRecord {
         ReviewRecord(word: "x", entryID: nil, feedback: 1, reviewedAt: day(dayOffset))
     }
@@ -147,6 +166,115 @@ struct StatsPresenterTests {
     @Test func graphThumbnailBody_distinguishesLoadingEmptyAndGraph() {
         #expect(StatsPresentation.graphThumbnailBodyKind(linksLoaded: false, nodeCount: 0) == .loading)
         #expect(StatsPresentation.graphThumbnailBodyKind(linksLoaded: true, nodeCount: 1) == .graph)
+    }
+
+    // MARK: - Graph card state matrix (#2860)
+
+    @Test func graphCard_noCacheWithFailure_isErrorPanelWithReasonForEachFailureKind() {
+        let cases: [Error] = [
+            KGError.httpError(statusCode: 500, detail: "boom"),
+            KGError.offline,
+            URLError(.notConnectedToInternet),
+            KGError.httpError(statusCode: 404, detail: "nope"),
+            KGError.decodingError(underlying: URLError(.cannotParseResponse)),
+        ]
+        for error in cases {
+            let reason = SyncFailurePresentation.reason(for: error)
+            #expect(
+                StatsPresentation.graphCardState(
+                    linksLoaded: false, nodeCount: 0, failureReason: reason, paintTimedOut: false
+                ) == .failed(reason: reason),
+                "no cached links + \(error) must surface the error panel with its reason, never an endless spinner"
+            )
+            #expect(!reason.isEmpty)
+        }
+    }
+
+    @Test func graphCard_failureReasonsAreDistinguishable() {
+        let server = SyncFailurePresentation.reason(for: KGError.httpError(statusCode: 500, detail: ""))
+        let offline = SyncFailurePresentation.reason(for: URLError(.notConnectedToInternet))
+        let rejected = SyncFailurePresentation.reason(for: KGError.httpError(statusCode: 404, detail: ""))
+        #expect(Set([server, offline, rejected]).count == 3)
+    }
+
+    /// Pins the per-kind copy the error panel shows, not just that a reason exists.
+    @Test func graphCard_failureReasonCopyIsSpecificPerKind() {
+        let language = AppLanguage.english
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.httpError(statusCode: 500, detail: "boom"), language: language
+        ) == "Server temporarily unavailable")
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.offline, language: language
+        ) == "No internet connection")
+        #expect(SyncFailurePresentation.reason(
+            for: URLError(.notConnectedToInternet), language: language
+        ) == "No internet connection")
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.httpError(statusCode: 404, detail: "nope"), language: language
+        ) == "Server rejected the request (HTTP 404)")
+        #expect(SyncFailurePresentation.reason(
+            for: KGError.decodingError(underlying: URLError(.cannotParseResponse)), language: language
+        ) == "Data format mismatch")
+    }
+
+    @Test func graphCard_cachedLinksWithFailure_keepGraphAndAddStaleRow() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: "r", paintTimedOut: false
+            ) == .content(body: .graph, notice: .stale(reason: "r"))
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 0, failureReason: "r", paintTimedOut: false
+            ) == .content(body: .empty, notice: .stale(reason: "r"))
+        )
+    }
+
+    @Test func graphCard_successClearsNoticeAndPendingIsLoading() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: false
+            ) == .content(body: .graph, notice: nil)
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: false, nodeCount: 0, failureReason: nil, paintTimedOut: false
+            ) == .loading
+        )
+    }
+
+    /// A thumbnail that misses its first paint must not keep the blank web view
+    /// as the body: the body becomes the neutral `.unpainted` text and the
+    /// `.rendering` row carries the retry.
+    @Test func graphCard_paintTimeoutReplacesUnpaintedThumbnailBody() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: true
+            ) == .content(body: .unpainted, notice: .rendering),
+            "a thumbnail that never reported first paint must not remain as a blank square"
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: nil, paintTimedOut: false
+            ) == .content(body: .graph, notice: nil),
+            "before the watchdog fires the thumbnail keeps its normal body"
+        )
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 0, failureReason: nil, paintTimedOut: true
+            ) == .content(body: .empty, notice: nil),
+            "the empty body paints natively, so a paint timeout is irrelevant"
+        )
+    }
+
+    /// A failed pull over an unpainted cached graph keeps the stale reason and
+    /// also replaces the blank thumbnail; the stale row stays the only notice.
+    @Test func graphCard_paintTimeoutWithCachedFailureReplacesBodyAndKeepsStaleReason() {
+        #expect(
+            StatsPresentation.graphCardState(
+                linksLoaded: true, nodeCount: 3, failureReason: "r", paintTimedOut: true
+            ) == .content(body: .unpainted, notice: .stale(reason: "r"))
+        )
     }
 
     @Test func metricValueLayout_keepsNumericValueAndUnitOnOneLine() {

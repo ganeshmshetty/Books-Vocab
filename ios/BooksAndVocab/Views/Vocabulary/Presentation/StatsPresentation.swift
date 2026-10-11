@@ -131,11 +131,63 @@ enum StatsPresentation {
         case loading
         case empty
         case graph
+        /// The thumbnail missed its first-paint window. The web view is replaced
+        /// by this neutral body so the card never shows a blank square (#2860).
+        case unpainted
     }
 
     static func graphThumbnailBodyKind(linksLoaded: Bool, nodeCount: Int) -> GraphThumbnailBodyKind {
         guard linksLoaded else { return .loading }
         return nodeCount == 0 ? .empty : .graph
+    }
+
+    /// Status row shown inside the graph card's content area (#2860).
+    enum GraphCardNotice: Equatable {
+        /// The latest load failed; the cached graph stays visible with its reason.
+        case stale(reason: String)
+        /// The thumbnail has not reported its first paint within the watchdog
+        /// window. Neutral copy: a slow-converging graph is not stale data.
+        case rendering
+
+        var reason: String? {
+            if case .stale(let reason) = self { return reason }
+            return nil
+        }
+    }
+
+    enum GraphCardState: Equatable {
+        case loading
+        /// No cached links and the load failed: error panel with reason + retry.
+        case failed(reason: String)
+        /// Links present. `notice` is the visible stale/status row, if any.
+        case content(body: GraphThumbnailBodyKind, notice: GraphCardNotice?)
+    }
+
+    /// Pure state matrix for the Overview graph card. `failureReason` is the
+    /// `SyncFailurePresentation.reason(for:)` text of the latest failed load
+    /// (nil once a load succeeds). `paintTimedOut` means the web thumbnail did
+    /// not report its first paint within the bounded window; that replaces the
+    /// thumbnail body with `.unpainted` whether or not a load also failed.
+    static func graphCardState(
+        linksLoaded: Bool,
+        nodeCount: Int,
+        failureReason: String?,
+        paintTimedOut: Bool
+    ) -> GraphCardState {
+        guard linksLoaded else {
+            if let failureReason { return .failed(reason: failureReason) }
+            return .loading
+        }
+        let graphBody = graphThumbnailBodyKind(linksLoaded: true, nodeCount: nodeCount)
+        let unpainted = graphBody == .graph && paintTimedOut
+        let body: GraphThumbnailBodyKind = unpainted ? .unpainted : graphBody
+        if let failureReason {
+            return .content(body: body, notice: .stale(reason: failureReason))
+        }
+        if unpainted {
+            return .content(body: .unpainted, notice: .rendering)
+        }
+        return .content(body: body, notice: nil)
     }
 
     private static func compactDayLabel(for date: Date) -> String {

@@ -9,6 +9,8 @@ enum StatsCopy {
     static var retryTitle: String { L10n.string("重試") }
     static var graphTitle: String { L10n.string("關聯圖") }
     static var staleDataTitle: String { L10n.string("資料可能不是最新") }
+    static var renderingTitle: String { L10n.string("關聯圖繪製中") }
+    static var graphUnpaintedTitle: String { L10n.string("關聯圖尚未顯示") }
     static var graphEmptyTitle: String { L10n.string("探索單字建立連結") }
     static var currentStreakTitle: String { L10n.string("連續學習") }
     static var longestStreakTitle: String { L10n.string("最長紀錄") }
