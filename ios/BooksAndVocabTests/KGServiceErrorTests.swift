@@ -332,4 +332,46 @@ struct KGServiceErrorTests {
         )
         #expect(summary == expected)
     }
+
+    // .system 在不支援的裝置語系（fr）會 fallback 成英文文案；列表分隔符必須跟著
+    // 同一個解析結果走（English），不能跟隨裝置 locale（#2997）。
+    @Test func sync_failure_summary_system_unsupported_device_locale_uses_english_separator() {
+        let unsupportedDevice = ["fr-FR"]
+        let offline = SyncFailurePresentation.reason(for: KGError.offline, language: .system)
+        let timeout = SyncFailurePresentation.reason(
+            for: KGError.networkError(underlying: URLError(.timedOut)),
+            language: .system
+        )
+        let summary = SyncFailurePresentation.partialFailureSummary(
+            [("pull", offline), ("pullReviewEvents", timeout)],
+            language: .system,
+            preferredLanguages: unsupportedDevice
+        )
+
+        let groups = [
+            SyncFailurePresentation.message(
+                label: "pull",
+                error: KGError.offline,
+                language: .system
+            ),
+            SyncFailurePresentation.message(
+                label: "pullReviewEvents",
+                error: KGError.networkError(underlying: URLError(.timedOut)),
+                language: .system
+            ),
+        ]
+        let englishList = ListFormatter()
+        englishList.locale = Locale(identifier: "en")
+        let expected = L10n.format(
+            "背景同步部分失敗：%@",
+            language: .system,
+            englishList.string(from: groups) ?? ""
+        )
+        #expect(summary == expected, "fr 裝置下 .system 的分隔未回到英文 fallback：\(summary)")
+    }
+
+    @Test func resolved_system_language_falls_back_to_english_for_unsupported_device_locale() {
+        #expect(AppLanguage.resolvedSystemLanguage(preferredLanguages: ["fr-FR"]) == .english)
+        #expect(AppLanguageStore.shared.formatLocale(for: .system, preferredLanguages: ["fr-FR"]).language.languageCode?.identifier == "en")
+    }
 }
