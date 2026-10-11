@@ -90,10 +90,17 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     /// resource are told apart by the anchor the callback reports. A callback
     /// that reports no anchor keeps resource-level matching, so legitimate
     /// same-resource taps are not refused; one that reports an anchor must name
-    /// the active request's anchor.
+    /// the active request's anchor. Both sides are percent-decoded first, so an
+    /// encoded TOC href and a decoded callback fragment still match.
+    ///
+    /// Known residual (#3043): an anchorless active request accepts a callback
+    /// reporting an anchor, so a late callback of an earlier anchor of the same
+    /// resource can complete it. Refusing it would time out legitimate
+    /// anchorless taps whenever Readium reports incidental fragments.
     static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
         guard !expected.isEmpty, !reported.isEmpty else { return true }
-        return !Set(expected).isDisjoint(with: reported)
+        let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
+        return !Set(expected.map(normalized)).isDisjoint(with: reported.map(normalized))
     }
 
     @discardableResult
