@@ -9,6 +9,8 @@ struct AppToast: View {
     var isExpanded: Bool = false
     var onToggleExpanded: (() -> Void)?
     let onDismiss: () -> Void
+    /// 目前文案是否仍被截斷的量測結果；展開狀態據此在不再截斷時收合。`nil` 表示不回報。
+    var onTruncationChange: ((Bool) -> Void)?
 
     @State private var dragOffset: CGFloat = 0
     /// 單行、未縮放時的文案自然寬度（隱藏量測用）。
@@ -104,6 +106,13 @@ struct AppToast: View {
             // 長文案在 pill 內截斷，而不是讓 pill 貼齊螢幕邊緣。
             .padding(.horizontal, AppShellMetrics.pageHorizontalPadding)
             .padding(.top, AppSpacing.s2)
+            // 截斷量測變動才回報（不是每次佈局）；離開時回報「不截斷」，讓已無 overlay 顯示的展開失效。
+            .onChange(of: textIsTruncated, initial: true) { _, truncated in
+                onTruncationChange?(truncated)
+            }
+            .onDisappear {
+                onTruncationChange?(false)
+            }
     }
 
     @ViewBuilder
@@ -221,6 +230,8 @@ private struct ToggleAccessibility: ViewModifier {
 private struct ToastOverlayModifier: ViewModifier {
     @Environment(\.toastCoordinator) private var toastCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 本 overlay 的身分：root 與 sheet 各自一份，截斷回報以此區分。
+    @State private var overlayID = UUID()
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
@@ -233,7 +244,10 @@ private struct ToastOverlayModifier: ViewModifier {
                             animation: AppToast.expansionMotion(reduceMotion: reduceMotion).animation
                         )
                     },
-                    onDismiss: { toastCoordinator.dismiss() }
+                    onDismiss: { toastCoordinator.dismiss() },
+                    onTruncationChange: { truncated in
+                        toastCoordinator.reportTruncation(truncated, overlay: overlayID)
+                    }
                 )
                     // 進出場都由 coordinator 以 `AppMotion.panelState` 驅動；Reduce Motion
                     // 時只淡入淡出、不位移。
