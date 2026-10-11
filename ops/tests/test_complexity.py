@@ -541,35 +541,75 @@ def test_a_malformed_fragment_is_a_usage_error_that_names_the_file(
     assert "lane-bad.json" in capsys.readouterr().err
 
 
-def test_raise_writes_a_fragment_for_the_failing_areas_only(tmp_path: Path) -> None:
-    repo = _git_repo(
+def _lane_on_trunk(
+    tmp_path: Path,
+    trunk_files: dict[str, str],
+    lane_files: dict[str, str],
+    *,
+    ops: int = 1000,
+) -> tuple[Path, str]:
+    """A trunk commit, then a lane branch committing ``lane_files`` on top.  HEAD is the lane, so
+    ``raise --base <trunk>`` charges the lane's own growth.  Returns (repo, trunk branch name)."""
+    repo = _git_repo(tmp_path, trunk_files)
+    _base(repo, ops=ops)
+    _git(repo, "add", "-A")
+    _commit(repo, "trunk")
+    trunk = _git(repo, "branch", "--show-current")
+    _git(repo, "checkout", "-q", "-b", "lane-a")
+    for name, text in lane_files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    _git(repo, "add", "-A")
+    _commit(repo, "lane")
+    return repo, trunk
+
+
+def test_raise_writes_a_fragment_for_the_areas_the_lane_is_over_only(
+    tmp_path: Path,
+) -> None:
+    repo, trunk = _lane_on_trunk(
         tmp_path,
         {
-            "ops/a.py": "1\n" * 1020,
+            "ops/a.py": "1\n" * 1000,
             "docs/x.md": "1\n",
             ".github/workflows/w.yml": "1\n",
         },
+        {"ops/a.py": "1\n" * 1020},
     )
-    _base(repo, ops=1000)
-    argv = ["raise", "--issue", "3155", "--name", "lane-a", "--note", "ops grew"]
-    assert complexity.main(argv, repo=repo) == 0
+    argv = ["raise", "--base", trunk, "--issue", "3155", "--name", "lane-a"]
+    assert complexity.main([*argv, "--note", "ops grew"], repo=repo) == 0
     assert json.loads((repo / FRAGMENTS / "lane-a.json").read_text()) == {
         "schema": "kg.complexity-budget-raise.v1",
         "issue": 3155,
-        "raise": {"ops": 25},  # measured 1020 - effective 1000 + LIFT_MARGIN 5
+        "raise": {
+            "ops": 25
+        },  # measured 1020 - effective 1000 + LIFT_MARGIN 5; docs and workflows fit
         "note": "ops grew",
     }
     assert (
         json.loads((repo / complexity.BUDGET_FILE).read_text())["ceilings"]["ops"]
         == 1000
     )
-    assert complexity.main(["check"], repo=repo) == 0
+    assert complexity.main(["check", "--base", trunk], repo=repo) == 0
 
 
 def test_raise_tops_up_the_same_lane_fragment(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 1020, "ios/a.swift": "1\n"})
-    _base(repo, ops=1000)
-    argv = ["raise", "--issue", "3155", "--name", "lane-a", "--note", "x"]
+    repo, trunk = _lane_on_trunk(
+        tmp_path,
+        {"ops/a.py": "1\n" * 1000, "ios/a.swift": "1\n"},
+        {"ops/a.py": "1\n" * 1020},
+    )
+    argv = [
+        "raise",
+        "--base",
+        trunk,
+        "--issue",
+        "3155",
+        "--name",
+        "lane-a",
+        "--note",
+        "x",
+    ]
     assert complexity.main(argv, repo=repo) == 0
     (repo / "ops" / "a.py").write_text("1\n" * 1030)
     assert complexity.main(argv, repo=repo) == 0
@@ -580,18 +620,134 @@ def test_raise_tops_up_the_same_lane_fragment(tmp_path: Path) -> None:
     )
 
 
-def test_raise_writes_nothing_when_no_area_is_over(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 10, "ios/a.swift": "1\n"})
-    _base(repo, ops=1000)
-    argv = ["raise", "--issue", "3155", "--name", "lane-a", "--note", "x"]
+def test_raise_writes_nothing_when_the_lane_stays_within_its_headroom(
+    tmp_path: Path,
+) -> None:
+    repo, trunk = _lane_on_trunk(
+        tmp_path,
+        {"ops/a.py": "1\n" * 10, "ios/a.swift": "1\n"},
+        {"ops/b.py": "1\n" * 10},
+    )  # 10 new lines against 990 of headroom
+    argv = [
+        "raise",
+        "--base",
+        trunk,
+        "--issue",
+        "3155",
+        "--name",
+        "lane-a",
+        "--note",
+        "x",
+    ]
     assert complexity.main(argv, repo=repo) == 0
     assert not (repo / FRAGMENTS / "lane-a.json").exists()
 
 
-def test_raise_refuses_a_name_that_is_not_a_plain_file_name(tmp_path: Path) -> None:
+def test_a_lane_that_grows_nothing_never_absorbs_a_red_trunk(tmp_path: Path) -> None:
+    repo, trunk = _lane_on_trunk(
+        tmp_path,
+        {
+            "ops/a.py": "1\n" * 1020,
+            "ios/a.swift": "1\n",
+        },  # trunk is already 20 over its 1000 ceiling
+        {"ios/a.swift": "1\n" * 3},  # the lane adds no counted ops line
+    )
+    argv = [
+        "raise",
+        "--base",
+        trunk,
+        "--issue",
+        "3155",
+        "--name",
+        "lane-a",
+        "--note",
+        "x",
+    ]
+    assert complexity.main(argv, repo=repo) == 0
+    assert not (repo / FRAGMENTS / "lane-a.json").exists()
+    assert complexity.main(["check", "--base", trunk], repo=repo) == 0  # WARNING only
+
+
+def test_raise_is_refused_on_main_so_a_red_trunk_stays_visible(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 1020, "ios/a.swift": "1\n"})
     _base(repo, ops=1000)
-    argv = ["raise", "--issue", "3155", "--name", "../escape", "--note", "x"]
+    _git(repo, "add", "-A")
+    _commit(repo, "trunk")
+    argv = [
+        "raise",
+        "--base",
+        "HEAD",
+        "--issue",
+        "3155",
+        "--name",
+        "lane-a",
+        "--note",
+        "x",
+    ]
+    assert complexity.main(argv, repo=repo) == 2
+    assert "HEAD is the base" in capsys.readouterr().err
+    assert not (repo / FRAGMENTS).exists()
+    assert complexity.main(["check", "--strict"], repo=repo) == 1
+
+
+def test_raise_is_refused_without_a_readable_base(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _ = _lane_on_trunk(
+        tmp_path,
+        {"ops/a.py": "1\n" * 1000, "ios/a.swift": "1\n"},
+        {"ops/a.py": "1\n" * 1020},
+    )
+    argv = [
+        "raise",
+        "--base",
+        "no-such-ref",
+        "--issue",
+        "3155",
+        "--name",
+        "lane-a",
+        "--note",
+        "x",
+    ]
+    assert complexity.main(argv, repo=repo) == 2
+    assert "no readable base" in capsys.readouterr().err
+    assert not (repo / FRAGMENTS).exists()
+
+
+def test_raise_on_a_detached_head_needs_an_explicit_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, trunk = _lane_on_trunk(
+        tmp_path,
+        {"ops/a.py": "1\n" * 1000, "ios/a.swift": "1\n"},
+        {"ops/a.py": "1\n" * 1020},
+    )
+    _git(repo, "checkout", "-q", "--detach")
+    argv = ["raise", "--base", trunk, "--issue", "3155", "--note", "x"]
+    assert complexity.main(argv, repo=repo) == 2
+    assert "pass --name" in capsys.readouterr().err
+    assert not (repo / FRAGMENTS).exists()
+
+
+def test_raise_refuses_a_name_that_is_not_a_plain_file_name(tmp_path: Path) -> None:
+    repo, trunk = _lane_on_trunk(
+        tmp_path,
+        {"ops/a.py": "1\n" * 1000, "ios/a.swift": "1\n"},
+        {"ops/a.py": "1\n" * 1020},
+    )
+    argv = [
+        "raise",
+        "--base",
+        trunk,
+        "--issue",
+        "3155",
+        "--name",
+        "../escape",
+        "--note",
+        "x",
+    ]
     assert complexity.main(argv, repo=repo) == 2
     assert not (repo / "ops" / "escape.json").exists()
 
