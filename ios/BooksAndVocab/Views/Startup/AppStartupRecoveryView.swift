@@ -6,13 +6,16 @@ struct AppStartupFailure: Equatable {
     let recoverySteps: [String]
     let technicalDetails: String
 
+    /// #2743 — 恢復步驟必須先點名永久遺失風險，不能等使用者點了按鈕才發現。
+    static let clearCacheRecoveryStepKey = "如果重試無效，可以清除本機快取；所有尚未同步到雲端的本機資料會永久刪除，無法復原。"
+
     static func storageInitialization(error: Error) -> AppStartupFailure {
         AppStartupFailure(
             title: L10n.string("無法安全啟動資料庫"),
             message: L10n.string("App 已停止載入主要功能，避免在資料庫異常時覆寫或刪除既有資料。"),
             recoverySteps: [
                 L10n.string("先重新嘗試啟動，確認是不是一次性的 migration 或 iCloud 初始化失敗。"),
-                L10n.string("如果重試無效，可以清除本機快取（不刪除已備份到雲端的單字 / 筆記本）。"),
+                L10n.string(clearCacheRecoveryStepKey),
                 L10n.string("仍無法恢復時，請聯絡支援團隊，附上下方技術細節。")
             ],
             technicalDetails: error.localizedDescription
@@ -37,6 +40,81 @@ struct AppStartupRecoveryActions {
     )
 }
 
+/// #2743 — 清除本機快取會刪除 LocalStore 檔案（可能含尚未同步的資料）。所有決策收在這裡：
+/// 只有 `confirm()` 回傳 `.clearLocalCache`；`AppStartupClearCacheFlow` 只執行回傳的 Effect，
+/// 因此「按鈕永不直接清除」與「只有確認路徑會清除」由 flow 的計數 spy 測試直接守護。
+/// `confirm()` 刻意不以 `isPresented` 為前提：destructive 按鈕只存在於已呈現的對話框內，
+/// 且 SwiftUI 關閉 binding 與按鈕 action 的先後順序不保證，前提判斷會讓清除靜默失效。
+struct AppStartupClearCacheGate: Equatable {
+    static let titleKey = "要清除本機快取嗎？"
+    static let messageKey = "所有尚未同步到雲端的本機資料（單字、筆記本、複習紀錄、書籍與播客等）會永久遺失，無法復原。已備份到雲端的資料不受影響。"
+    static let confirmKey = "清除本機資料"
+
+    enum Effect: Equatable {
+        case none
+        case presentConfirmation
+        case clearLocalCache
+    }
+
+    private(set) var isPresented = false
+
+    /// 「清除本機快取」按鈕：只呈現確認對話框，永不回傳 `.clearLocalCache`。
+    mutating func tap() -> Effect {
+        isPresented = true
+        return .presentConfirmation
+    }
+
+    /// 對話框的 destructive 按鈕：唯一回傳清除 Effect 的路徑。
+    mutating func confirm() -> Effect {
+        isPresented = false
+        return .clearLocalCache
+    }
+
+    /// 對話框取消或被系統關閉：不清除。
+    mutating func cancel() -> Effect {
+        isPresented = false
+        return .none
+    }
+}
+
+/// #2743 — Layer 2（清除本機快取）的執行流程：按鈕 → 確認對話框 → 清除。
+/// View 只轉交按鈕與對話框事件；`clearLocalCache` 是唯一會刪檔的注入點，
+/// 且只能經由 `confirmDialog()`（gate 回傳 `.clearLocalCache` 的唯一路徑）呼叫。
+@MainActor
+@Observable
+final class AppStartupClearCacheFlow {
+    private var gate = AppStartupClearCacheGate()
+    private let clearLocalCache: () async -> Bool
+
+    init(clearLocalCache: @escaping () async -> Bool) {
+        self.clearLocalCache = clearLocalCache
+    }
+
+    /// 對話框是否呈現中（供 `.confirmationDialog(isPresented:)` 讀取）。
+    var isPresented: Bool { gate.isPresented }
+
+    /// 「清除本機快取」按鈕：只呈現確認，永不呼叫注入點。
+    func tapButton() {
+        _ = gate.tap()
+    }
+
+    /// 對話框取消或被系統關閉：不清除。
+    func dismissDialog() {
+        _ = gate.cancel()
+    }
+
+    /// 對話框 destructive 按鈕：唯一會呼叫 `clearLocalCache` 的路徑。
+    /// 回傳 `nil` 表示 gate 未授權（現行 gate 不可達），否則為清除結果。
+    func confirmDialog() async -> Bool? {
+        switch gate.confirm() {
+        case .clearLocalCache:
+            return await clearLocalCache()
+        case .none, .presentConfirmation:
+            return nil
+        }
+    }
+}
+
 struct AppStartupRecoveryView: View {
     @ObserveInjection private var inject
     @Environment(\.appTheme) private var appTheme
@@ -58,10 +136,12 @@ struct AppStartupRecoveryView: View {
     }
 
     @State private var phase: Phase = .idle
+    @State private var clearCacheFlow: AppStartupClearCacheFlow
 
     init(failure: AppStartupFailure, actions: AppStartupRecoveryActions) {
         self.failure = failure
         self.actions = actions
+        _clearCacheFlow = State(initialValue: AppStartupClearCacheFlow(clearLocalCache: actions.clearLocalCache))
     }
 
     var body: some View {
@@ -132,14 +212,29 @@ struct AppStartupRecoveryView: View {
             .buttonStyle(.appCompactAction(.primary))
             .disabled(isWorking || phase == .exhausted)
 
-            // Layer 2 — Clear local cache
+            // Layer 2 — Clear local cache（按鈕只呈現確認；清除只能由對話框 confirm 觸發）
             Button {
-                Task { await runClearCache() }
+                clearCacheFlow.tapButton()
             } label: {
                 Label(L10n.string("清除本機快取"), systemImage: "trash.slash")
             }
             .buttonStyle(.appCompactAction(.neutral))
             .disabled(isWorking)
+            .confirmationDialog(
+                L10n.string(AppStartupClearCacheGate.titleKey),
+                isPresented: Binding(
+                    get: { clearCacheFlow.isPresented },
+                    set: { if !$0 { clearCacheFlow.dismissDialog() } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(L10n.string(AppStartupClearCacheGate.confirmKey), role: .destructive) {
+                    Task { await confirmClearCache() }
+                }
+                Button(L10n.string("取消"), role: .cancel) { clearCacheFlow.dismissDialog() }
+            } message: {
+                Text(L10n.string(AppStartupClearCacheGate.messageKey))
+            }
 
             // Layer 3 — Contact support
             Button {
@@ -275,10 +370,14 @@ struct AppStartupRecoveryView: View {
         }
     }
 
-    private func runClearCache() async {
+    /// 只由對話框 destructive 按鈕呼叫；清除決策與執行都在 flow 內，view 只更新 banner。
+    private func confirmClearCache() async {
         phase = .working(.clearing)
-        let success = await actions.clearLocalCache()
-        phase = success ? .cacheCleared : .exhausted
+        guard let cleared = await clearCacheFlow.confirmDialog() else {
+            phase = .idle
+            return
+        }
+        phase = cleared ? .cacheCleared : .exhausted
     }
 
     private func openSupportMail() {
