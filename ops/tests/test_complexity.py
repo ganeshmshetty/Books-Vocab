@@ -790,7 +790,8 @@ def test_the_base_budget_carries_no_free_text_history() -> None:
 
 
 def _two_fragment_lanes(tmp_path: Path) -> tuple[Path, str]:
-    """Base ops 30 under ceiling 40 (headroom 10).  lane-a adds 20 and raises 15; lane-b adds 8 and raises 8."""
+    """Base ops 30 under ceiling 40 (headroom 10).  lane-a adds 20 and raises 15 (50 - 40 + 5); lane-b adds 12
+    and raises 7 (42 - 40 + 5), the exact amount ``raise`` would write for it: both lanes are over their own headroom."""
     repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 30, "ios/a.swift": "1\n"})
     _base(repo, ops=40)
     _git(repo, "add", "-A")
@@ -803,8 +804,8 @@ def _two_fragment_lanes(tmp_path: Path) -> tuple[Path, str]:
     _commit(repo, "lane A")
     _git(repo, "checkout", "-q", trunk)
     _git(repo, "checkout", "-q", "-b", "lane-b")
-    _add(repo, "ops/b_lane.py", 8)
-    _fragment(repo, "lane-b", {"ops": 8})
+    _add(repo, "ops/b_lane.py", 12)
+    _fragment(repo, "lane-b", {"ops": 7})
     _git(repo, "add", "-A")
     _commit(repo, "lane B")
     _git(repo, "checkout", "-q", trunk)
