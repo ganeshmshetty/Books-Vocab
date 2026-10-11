@@ -225,6 +225,8 @@ final class AppToastCoordinator {
     /// 顯示中那則是否展開成完整多行文案。狀態在 coordinator 上，root 與 sheet 內的
     /// 兩個 overlay 共用同一份，才不會各自展開。
     private(set) var isExpanded = false
+    /// 目前顯示那則仍被截斷的 overlay（只存回報為截斷者），見 `reportTruncation`。
+    @ObservationIgnored private var truncatingOverlays: Set<UUID> = []
 
     private var queue = AppToastQueue()
     private let scheduler: any AppToastScheduler
@@ -267,6 +269,21 @@ final class AppToastCoordinator {
         withAnimation(animation) {
             isExpanded.toggle()
         }
+        scheduleDismiss(for: visible)
+    }
+
+    /// overlay 回報目前顯示那則是否仍被截斷（以量測為準，見 `AppToast`）。所有回報都已是「不截斷」
+    /// 時展開即失效：同 key 取代成短文案後，之後的長文案不得在未點擊時自動展開。root 與 sheet 的
+    /// 寬度可能不同，只要其中一個仍截斷就保留展開，與兩者同步展開的規則一致。
+    func reportTruncation(_ truncated: Bool, overlay: UUID) {
+        if truncated {
+            truncatingOverlays.insert(overlay)
+        } else {
+            truncatingOverlays.remove(overlay)
+        }
+        guard isExpanded, truncatingOverlays.isEmpty, let visible = queue.current else { return }
+        isExpanded = false
+        // 收合即回到該則的正常時長，與 toggleExpanded 的收合路徑一致。
         scheduleDismiss(for: visible)
     }
 

@@ -559,6 +559,60 @@ struct ToastNotificationTests {
         #expect(coordinator.current == nil)
     }
 
+    /// 同 key 取代成不再截斷的短文案 → 收合，且收合後回到該則的正常時長（非殘留的 8 秒下限）。
+    /// 之後的長文案即使未點擊也不得自動展開（#2862 review：short→long 殘留展開）。
+    @Test func sameEventShortReplacementCollapsesSoLaterLongTextStaysCollapsed() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        let overlay = UUID()
+        coordinator.info("long message", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        coordinator.toggleExpanded()
+        #expect(coordinator.isExpanded)
+
+        clock.advance(by: .seconds(1))
+        coordinator.info("ok", key: "k")
+        coordinator.reportTruncation(false, overlay: overlay)
+        #expect(!coordinator.isExpanded)
+        // 收合於 t=1s，info 的正常時長 2.5s → t=3.5s 退場。
+        clock.advance(by: .milliseconds(2_499))
+        #expect(coordinator.current?.message == "ok")
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+
+        coordinator.info("long message again", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        #expect(!coordinator.isExpanded)
+    }
+
+    /// 同 key 取代但文案仍截斷：展開保留（同事件取代保留展開的規則）。
+    @Test func sameEventLongReplacementKeepsExpansionWhileStillTruncated() {
+        let coordinator = AppToastCoordinator(scheduler: ManualToastScheduler())
+        let overlay = UUID()
+        coordinator.info("long one", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        coordinator.toggleExpanded()
+        coordinator.info("long two", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        #expect(coordinator.isExpanded)
+    }
+
+    /// root 與 sheet 寬度可能不同：只要其中一個仍截斷就保留展開；全部回報不截斷才收合。
+    @Test func expansionSurvivesWhileAnyOverlayStillTruncates() {
+        let coordinator = AppToastCoordinator(scheduler: ManualToastScheduler())
+        let root = UUID()
+        let sheet = UUID()
+        coordinator.info("long", key: "k")
+        coordinator.reportTruncation(true, overlay: sheet)
+        coordinator.reportTruncation(false, overlay: root)
+        coordinator.toggleExpanded()
+        coordinator.info("long two", key: "k")
+        coordinator.reportTruncation(false, overlay: root)
+        #expect(coordinator.isExpanded)
+        coordinator.reportTruncation(false, overlay: sheet)
+        #expect(!coordinator.isExpanded)
+    }
+
     @Test func queuedNoticeWaitsBehindExpandedToastWithoutStarving() {
         let clock = ManualToastScheduler()
         let coordinator = AppToastCoordinator(scheduler: clock)
