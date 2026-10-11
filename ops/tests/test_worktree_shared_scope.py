@@ -39,7 +39,9 @@ def _register(state: dict, name: str, tmp_path: Path, *paths: str) -> tuple[int,
 
 
 def test_shared_allowlisted_files_do_not_serialize_lanes(tmp_path: Path) -> None:
-    assert "ops/complexity_budget.json" in SHARED_SCOPE_FILES
+    assert (
+        "ops/complexity_budget.json" in SHARED_SCOPE_FILES
+    )  # base ceilings: see the rationale
     state = {"schema": registry.SCHEMA, "records": []}
     first_rc, _ = _register(
         state, "one", tmp_path, "ops/complexity_budget.json", "ops/a.py"
@@ -171,6 +173,18 @@ def test_overlap_paths_subtracts_only_exact_allowlisted_files() -> None:
     assert worktree_scope.overlap_paths({"ops/other.json"}, {"ops/other.json"}) == {
         "ops/other.json"
     }
+
+
+def test_a_lane_raise_fragment_is_exclusive_to_its_lane() -> None:
+    # A raise is one file per lane, so two lanes never write the same fragment path, and a fragment
+    # is never on the allowlist: a shared fragment would bring back the single-line conflict (#3155).
+    mine = "ops/complexity_budget.d/lane-one.json"
+    assert mine not in SHARED_SCOPE_FILES
+    assert worktree_scope.overlap_paths({mine}, {mine}) == {mine}
+    assert (
+        worktree_scope.overlap_paths({mine}, {"ops/complexity_budget.d/lane-two.json"})
+        == set()
+    )
 
 
 def _scope_arg(*paths: str) -> str:
