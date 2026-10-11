@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import BooksAndVocab
 
@@ -16,9 +17,9 @@ import Testing
 ///   them, so they are deliberately left out rather than faked with tautologies.
 ///
 /// - `refresh(...)` / `resyncAfterManagement(...)` interleave a `KGServing` network
-///   call with StoreKit `queryWillAutoRenew()`. The network half has a protocol seam
-///   (`KGServing`) but the StoreKit half does not, so the full method cannot be
-///   exercised deterministically. The *pure model logic* it depends on
+///   call with StoreKit `queryWillAutoRenew()`. The network half is exercised through
+///   the `SubscriptionServing` seam (`refreshEntitlements`, see the #2800 tests below);
+///   the StoreKit half has no injection seam and is not covered. The *pure model logic* it depends on
 ///   (`KGSubscriptionStatus.isExpired` / `.isCancelledButActive` / `.parseExpiryDate`)
 ///   is what gates its branches — and that is fully covered below.
 ///
@@ -360,4 +361,134 @@ struct SubscriptionManagerTests {
         #expect(SubscriptionManager.proProductID == BrandIdentity.proProductID)
         #expect(SubscriptionManager.shared.proProductIdentifier == SubscriptionManager.proProductID)
     }
+
+    // MARK: - refresh response ordering (#2800)
+    //
+    // `source: "admin"` keeps the StoreKit `queryWillAutoRenew()` branch out of these
+    // tests; the response-ordering contract lives entirely in the network half.
+
+    @MainActor
+    @Test func refresh_discards_older_response_arriving_after_newer_request() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+        }
+        mgr.lastRefreshTime = nil
+
+        // 1 = 非強制 launch refresh，掛起；2 = 較晚發出的強制 refresh，立即回 active。
+        let service = GatedSubscriptionService(
+            responses: [
+                1: KGEntitlements(pro: status(status: "inactive")),
+                2: KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            ],
+            suspended: [1]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        let parked = await service.waitUntilParked(1)
+        #expect(parked)
+
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(mgr.entitlements.pro.is_active)
+
+        // 較早發出的 free 回應最後到達，必須被丟棄。
+        service.release(1)
+        await launch.value
+        #expect(mgr.entitlements.pro.is_active)
+    }
+
+    @MainActor
+    @Test func refresh_applies_response_when_no_newer_request_exists() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+        }
+        mgr.lastRefreshTime = nil
+        mgr.entitlements = KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
+
+        // 對照組：沒有更新的請求時，唯一的回應必須照常套用（證明守衛不是無條件丟棄）。
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: []
+        )
+        await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: false)
+        #expect(!mgr.entitlements.pro.is_active)
+    }
+}
+
+/// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
+@MainActor
+private final class GatedSubscriptionService: SubscriptionServing {
+    private let responses: [Int: KGEntitlements]
+    private let suspended: Set<Int>
+    private var calls = 0
+    private var parked: [Int: CheckedContinuation<KGEntitlements, Error>] = [:]
+
+    init(responses: [Int: KGEntitlements], suspended: Set<Int>) {
+        self.responses = responses
+        self.suspended = suspended
+    }
+
+    func fetchEntitlements() async throws -> KGEntitlements {
+        calls += 1
+        let call = calls
+        if suspended.contains(call) {
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<KGEntitlements, Error>) in
+                parked[call] = continuation
+            }
+        }
+        return try response(for: call)
+    }
+
+    func syncAppStoreSubscription(_ snapshot: KGAppStoreSubscriptionSyncRequest) async throws -> KGEntitlements {
+        throw UnexpectedSubscriptionCall()
+    }
+
+    func waitUntilParked(_ call: Int) async -> Bool {
+        for _ in 0..<10_000 {
+            if parked[call] != nil { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
+    func release(_ call: Int) {
+        guard let continuation = parked.removeValue(forKey: call) else { return }
+        continuation.resume(with: Result { try response(for: call) })
+    }
+
+    private func response(for call: Int) throws -> KGEntitlements {
+        guard let value = responses[call] else { throw UnexpectedSubscriptionCall() }
+        return value
+    }
+}
+
+private struct UnexpectedSubscriptionCall: Error {}
+
+private final class RefreshOrderAuthStub: AuthManaging {
+    var isLoggedIn: Bool = true
+    var userId: String? = "test_user"
+    var token: String? = "test_token"
+    var displayName: String?
+    var userEmail: String?
+    var avatarURL: URL?
+    var authError: String?
+    var isAuthenticating: Bool = false
+    var isDemoMode: Bool = false
+
+    func enterDemoMode(modelContainer: ModelContainer) {}
+    func exitDemoMode(modelContainer: ModelContainer) {}
+    func refreshSessionIfNeeded() {}
+    func login(userId: String, token: String) {}
+    func login(customToken: String) async {}
+    func logout(modelContainer: ModelContainer?, reason: String) {}
+    func loginWithGoogle(modelContainer: ModelContainer?) {}
+    func loginWithApple(modelContainer: ModelContainer?) {}
 }

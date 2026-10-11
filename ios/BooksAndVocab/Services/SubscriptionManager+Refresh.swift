@@ -2,6 +2,12 @@ import Foundation
 
 extension SubscriptionManager {
     func refresh(using kgService: any KGServing, authManager: any AuthManaging, force: Bool = false) async {
+        await refreshEntitlements(using: kgService, authManager: authManager, force: force)
+    }
+
+    /// 核心 refresh 只需要 `fetchEntitlements`，依窄能力協定 `SubscriptionServing` 實作，
+    /// 讓回應順序語義能以確定性替身測試（#2800）。
+    func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async {
         guard authManager.isLoggedIn else {
             entitlements = Self.defaultEntitlements
             lastError = nil
@@ -27,7 +33,7 @@ extension SubscriptionManager {
         defer { endLoading() }
 
         do {
-            var remote = try await kgService.fetchEntitlements()
+            var remote = try await service.fetchEntitlements()
 
             // async 返回後帳號可能已切換，丟棄過期回應
             guard authManager.userId == requestUserId else {
