@@ -471,6 +471,19 @@ struct VocabularySyncEngineTests {
         #expect(json["explanation"] as? String == "edited explanation")
     }
 
+    @Test("a cleared note is sent as an empty explanation, which the backend treats as clear")
+    func contentEditPayloadSendsEmptyForClearedExplanation() throws {
+        let payload = KGService.vocabContentPayload(
+            translation: "edited translation",
+            explanation: nil
+        )
+        let data = try JSONEncoder().encode(payload)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+        #expect(json["meaning"] as? String == "edited translation")
+        #expect(json["explanation"] as? String == "")
+    }
+
     @Test("trigger failure is partial and does not prevent the remaining sync stages")
     func partialFailureContinues() async throws {
         let container = try makeContainer()

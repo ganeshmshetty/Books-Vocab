@@ -103,6 +103,34 @@ def test_explicit_note_wins_over_explanation(isolated_api):
     assert r.json()["note"] == "real note"
 
 
+def test_empty_explanation_clears_note(isolated_api):
+    """Explicit "" clears the note; iOS sends it for a cleared note (#2550)."""
+    word = _seed_word(isolated_api)
+    isolated_api.client.patch(f"/api/vocab/{word}", json={"note": "to clear"}, headers=isolated_api.headers)
+    r = isolated_api.client.patch(f"/api/vocab/{word}", json={"explanation": ""}, headers=isolated_api.headers)
+    assert r.status_code == 200, r.text
+    assert not r.json()["note"]
+
+
+def test_null_explanation_is_no_change(isolated_api):
+    """Explicit null is treated like an omitted key, so iOS must send "" to clear (#2550)."""
+    word = _seed_word(isolated_api)
+    isolated_api.client.patch(f"/api/vocab/{word}", json={"note": "keep me"}, headers=isolated_api.headers)
+    r = isolated_api.client.patch(
+        f"/api/vocab/{word}", json={"meaning": "a fruit", "explanation": None}, headers=isolated_api.headers
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["note"] == "keep me"
+
+
+def test_omitted_explanation_keeps_note(isolated_api):
+    word = _seed_word(isolated_api)
+    isolated_api.client.patch(f"/api/vocab/{word}", json={"note": "keep me"}, headers=isolated_api.headers)
+    r = isolated_api.client.patch(f"/api/vocab/{word}", json={"meaning": "a fruit"}, headers=isolated_api.headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["note"] == "keep me"
+
+
 def test_update_multiple_fields(isolated_api):
     word = _seed_word(isolated_api)
     r = isolated_api.client.patch(
