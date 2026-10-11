@@ -5,15 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..ports.process import CommandResult, CommandRunnerPort
-from .github_client import _is_live_read_command, _is_read_only_json_query
+from .github_client import is_live_read_command, is_read_only_json_query
 from .github_quota import CallKind, GitHubQuotaGovernor
 
 
 def _call_kind(argv: tuple[str, ...]) -> CallKind:
     """Classify a gh argv; anything not provably a read counts as a mutation (fail safe)."""
-    if _is_read_only_json_query(argv):
+    if is_read_only_json_query(argv):
         return "cached-read"
-    if _is_live_read_command(argv):
+    if is_live_read_command(argv):
         return "live-read"
     return "mutation"
 

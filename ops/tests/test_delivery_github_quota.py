@@ -13,12 +13,11 @@ sys.path.insert(0, str(OPS))
 from delivery_control.adapters import github_commands, github_quota
 from delivery_control.adapters.errors import AdapterError
 from delivery_control.adapters.github_cli import GitHubCliAdapter
-from delivery_control.adapters.github_client import _is_read_only_json_query
+from delivery_control.adapters.github_client import is_read_only_json_query
 from delivery_control.adapters.github_governed_runner import _call_kind
 from delivery_control.adapters.github_quota import (
     MAX_RESET_WAITS,
     PROBE_TTL_SECONDS,
-    RATE_LIMIT_ARGV,
     STALE_CACHE_TTL_SECONDS,
     STALE_SERVE_BELOW,
     WAIT_BELOW,
@@ -34,33 +33,49 @@ CHECKS = ("gh", "pr", "checks", "7", "--required", "--json", "name,state")
 REPO = Path("/repo")
 
 
+def _header_block(*, remaining: int, reset: int, resource: str) -> str:
+    """Stdout of ``gh api -i``: status line, response headers, blank line, body."""
+    return (
+        "HTTP/2.0 200 OK\n"
+        "Content-Type: application/json; charset=utf-8\n"
+        "X-Ratelimit-Limit: 5000\n"
+        f"X-Ratelimit-Remaining: {remaining}\n"
+        f"X-Ratelimit-Reset: {reset}\n"
+        f"X-Ratelimit-Resource: {resource}\n"
+        "\n"
+        '{"data":{}}\n'
+    )
+
+
+def _is_budget_probe(argv: tuple[str, ...]) -> bool:
+    return argv[:3] == ("gh", "api", "-i")
+
+
 class FakeRunner:
-    """Answers the rate_limit probe from ``budget``; other calls get a numbered body."""
+    """Answers budget probes from response headers; other calls get a numbered body."""
 
     def __init__(self, *, remaining: int, reset: int = 9_999) -> None:
         self.remaining = remaining
         self.reset = reset
+        self.resource_remaining: dict[str, int] = {}
         self.probe_exit = 0
+        self.probe_error_headers = False
         self.probe_stdout: str | None = None
         self.calls: list[tuple[str, ...]] = []
 
     def run(self, argv: tuple[str, ...], *, cwd: Path | None = None) -> CommandResult:
         self.calls.append(argv)
-        if argv == RATE_LIMIT_ARGV:
-            if self.probe_exit:
+        if _is_budget_probe(argv):
+            resource = "graphql" if "graphql" in argv else "core"
+            if self.probe_exit and not self.probe_error_headers:
                 return CommandResult(argv, self.probe_exit, "", "HTTP 500")
             if self.probe_stdout is not None:
                 return CommandResult(argv, 0, self.probe_stdout, "")
-            resource = {
-                "limit": 5000,
-                "used": 0,
-                "remaining": self.remaining,
-                "reset": self.reset,
-            }
+            remaining = self.resource_remaining.get(resource, self.remaining)
             return CommandResult(
                 argv,
-                0,
-                json.dumps({"resources": {"core": resource, "graphql": resource}}),
+                self.probe_exit,
+                _header_block(remaining=remaining, reset=self.reset, resource=resource),
                 "",
             )
         if argv[:3] == ("gh", "repo", "view"):
@@ -219,23 +234,62 @@ def test_probe_failure_fails_open_without_waiting(tmp_path: Path) -> None:
     assert clock.slept == []
 
 
+def test_budget_comes_from_response_headers_never_from_rate_limit_endpoint(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(remaining=5_000)
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    _call(governor, runner, READ, read_only=True)
+    runner.remaining = STALE_SERVE_BELOW - 1
+    clock.t += PROBE_TTL_SECONDS + 1
+    _, executed = _call(governor, runner, READ, read_only=True)
+
+    assert executed is False
+    assert runner.count(READ) == 1
+    assert not any("rate_limit" in argv for argv in runner.calls)
+
+
+def test_core_budget_gates_calls_even_when_graphql_budget_is_full(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(remaining=5_000, reset=1_120)
+    runner.resource_remaining = {"core": WAIT_BELOW - 1, "graphql": 5_000}
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    with pytest.raises(GitHubQuotaExhausted):
+        _call(governor, runner, READ, read_only=True)
+
+    assert len(clock.slept) == MAX_RESET_WAITS
+    assert runner.count(READ) == 0
+
+
+def test_error_response_headers_still_gate_calls(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=0, reset=1_120)
+    runner.probe_exit = 1
+    runner.probe_error_headers = True
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    with pytest.raises(GitHubQuotaExhausted):
+        _call(governor, runner, READ, read_only=True)
+
+    assert len(clock.slept) == MAX_RESET_WAITS
+    assert runner.count(READ) == 0
+
+
 @pytest.mark.parametrize(
     "probe_stdout",
     [
-        "not json",
-        json.dumps(["not", "a", "mapping"]),
-        json.dumps({"resources": {"core": {"remaining": 0, "reset": 1_000}}}),
-        json.dumps(
-            {
-                "resources": {
-                    "core": {"remaining": "x", "reset": 1_000},
-                    "graphql": {"remaining": 0, "reset": 1},
-                }
-            }
-        ),
+        "not an http response",
+        "HTTP/2.0 200 OK\nX-Ratelimit-Remaining: many\nX-Ratelimit-Reset: 1000\n\n{}",
+        "HTTP/2.0 200 OK\nX-Ratelimit-Reset: 1000\n\n{}",
+        "HTTP/2.0 200 OK\nX-Ratelimit-Remaining: 0\n\n{}",
     ],
 )
-def test_malformed_rate_limit_payload_fails_open_without_waiting(
+def test_unparseable_budget_headers_fail_open_without_waiting(
     tmp_path: Path, probe_stdout: str
 ) -> None:
     runner = FakeRunner(remaining=0)
@@ -263,13 +317,19 @@ def test_every_governed_call_appends_one_spend_log_line(tmp_path: Path) -> None:
 
     rows = _spend_rows(spend_log)
     assert [row["endpoint"] for row in rows] == [
-        "api rate_limit",
+        "probe graphql",
+        "probe core",
         "issue list",
         "issue comment",
     ]
-    assert [row["outcome"] for row in rows] == ["probe", "network", "network"]
+    assert [row["outcome"] for row in rows] == [
+        "probe",
+        "probe",
+        "network",
+        "network",
+    ]
     assert all(row["ts"] for row in rows)
-    assert rows[1]["remaining"] == 5_000
+    assert rows[2]["remaining"] == 5_000
 
 
 def test_stale_cache_serve_is_logged_as_stale_cache_outcome(tmp_path: Path) -> None:
@@ -376,7 +436,7 @@ def test_adapter_without_injected_quota_leaves_fake_runner_ungoverned(
 
     adapter.queue._graphql("query DeliveryQueueRead { viewer { login } }")
 
-    assert RATE_LIMIT_ARGV not in runner.calls
+    assert not any(_is_budget_probe(argv) for argv in runner.calls)
     assert adapter.quota is None
 
 
@@ -619,9 +679,13 @@ def test_call_that_raises_still_appends_one_spend_log_row(tmp_path: Path) -> Non
         _call(governor, runner, READ, read_only=True)
 
     rows = _spend_rows(spend_log)
-    assert [row["endpoint"] for row in rows] == ["api rate_limit", "issue list"]
-    assert rows[1]["outcome"] == "network"
-    assert rows[1]["exit_code"] is None
+    assert [row["endpoint"] for row in rows] == [
+        "probe graphql",
+        "probe core",
+        "issue list",
+    ]
+    assert rows[2]["outcome"] == "network"
+    assert rows[2]["exit_code"] is None
 
 
 @pytest.mark.parametrize(
@@ -635,7 +699,7 @@ def test_call_that_raises_still_appends_one_spend_log_row(tmp_path: Path) -> Non
 def test_graphql_document_holding_a_mutation_is_never_a_cached_read(query: str) -> None:
     argv = ("gh", "api", "graphql", "-f", f"query={query}")
 
-    assert _is_read_only_json_query(argv) is False
+    assert is_read_only_json_query(argv) is False
     assert _call_kind(argv) == "mutation"
 
 
@@ -648,5 +712,5 @@ def test_graphql_document_of_only_queries_stays_a_cached_read() -> None:
         "query=query A { viewer { login } } query B { rateLimit { remaining } }",
     )
 
-    assert _is_read_only_json_query(argv) is True
+    assert is_read_only_json_query(argv) is True
     assert _call_kind(argv) == "cached-read"

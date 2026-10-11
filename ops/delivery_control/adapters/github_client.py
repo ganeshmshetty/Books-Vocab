@@ -158,7 +158,7 @@ def _graphql_query(argv: tuple[str, ...]) -> str | None:
     return query_values[0]
 
 
-def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
+def is_read_only_json_query(argv: tuple[str, ...]) -> bool:
     if (
         len(argv) >= 3
         and argv[0] == "gh"
@@ -186,7 +186,7 @@ def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
     return not _has_gh_api_input(argv)
 
 
-def _is_live_read_command(argv: tuple[str, ...]) -> bool:
+def is_live_read_command(argv: tuple[str, ...]) -> bool:
     return (
         len(argv) >= 3 and argv[0] == "gh" and (argv[1], argv[2]) in _LIVE_READ_COMMANDS
     )
@@ -216,7 +216,7 @@ class GitHubCliClient:
         attempts = [CommandAttempt(argv=argv, cwd=self.repo, result=result)]
         if (
             retry_read_only
-            and _is_read_only_json_query(argv)
+            and is_read_only_json_query(argv)
             and _is_transient_failure(result)
         ):
             result = self.runner.run(argv, cwd=self.repo)

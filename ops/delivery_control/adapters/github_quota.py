@@ -1,12 +1,13 @@
 """GitHub budget governor for the delivery control plane.
 
-Budget state comes from ``gh api rate_limit``. It reports the same core/graphql
-counters as the X-RateLimit headers, is not counted against the budget, and works
-for every gh subcommand (``gh pr view`` and friends are GraphQL-backed and emit no
-headers). This is a deliberate deviation from reading X-RateLimit headers: those
-headers are unavailable from GraphQL-backed gh subcommands. The probe is refreshed
-at most once per ``PROBE_TTL_SECONDS``, and one probe per process is an uncounted
-extra call per refresh; local decrements keep the estimate honest between probes.
+Budget state comes from the ``X-RateLimit-*`` response headers of two real probes:
+``gh api -i graphql`` (the graphql resource) and ``gh api -i user`` (the core resource).
+The governor takes the smaller ``remaining`` of the two. ``gh api rate_limit`` is never
+consulted: it reported 5000 while real calls returned 403 (#2647). ``gh pr view`` and
+friends emit no headers, so the probes sit beside them, not on them. The probe is
+refreshed at most once per ``PROBE_TTL_SECONDS``; each probe is a counted request that
+is logged as its own spend row, and local decrements keep the estimate honest between
+probes. A resource whose probe yields no parseable headers is unknown and fails open.
 
 Each call has one of three kinds. ``cached-read`` (gh JSON queries and GraphQL reads)
 is cached and, below ``STALE_SERVE_BELOW`` remaining, an already-fetched result is
@@ -58,8 +59,16 @@ PROBE_TTL_SECONDS = 60.0
 MAX_RESET_WAITS = 3
 SPEND_LOG_MAX_BYTES = 256 * 1024
 SPEND_LOG_KEEP_LINES = 1_000
-RATE_LIMIT_ARGV = ("gh", "api", "rate_limit")
-_BUDGET_RESOURCES = ("core", "graphql")
+# One real request per resource; ``-i`` prints the response headers on stdout. The
+# probes go straight to the raw runner, so they are never classified or governed.
+_BUDGET_PROBES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (
+        ("gh", "api", "-i", "graphql", "-f", "query={ viewer { login } }"),
+        "graphql",
+        "probe graphql",
+    ),
+    (("gh", "api", "-i", "user"), "core", "probe core"),
+)
 
 Outcome = Literal["probe", "network", "stale-cache", "waited"]
 CallKind = Literal["cached-read", "live-read", "mutation"]
@@ -75,17 +84,37 @@ class BudgetState:
     reset_epoch: int
 
 
-def _parse_rate_limit(stdout: str) -> BudgetState | None:
-    try:
-        resources = json.loads(stdout)["resources"]
-        pairs = [
-            (int(resources[name]["remaining"]), int(resources[name]["reset"]))
-            for name in _BUDGET_RESOURCES
-        ]
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+def _last_response_headers(stdout: str) -> dict[str, str]:
+    """Lower-cased headers of the last HTTP response in ``gh api -i`` stdout.
+
+    Error responses print their status line and headers too, so a rate-limited 403
+    still reports ``remaining: 0``; the body is never read.
+    """
+    lines = stdout.splitlines()
+    statuses = [index for index, line in enumerate(lines) if line.startswith("HTTP/")]
+    if not statuses:
+        return {}
+    headers: dict[str, str] = {}
+    for line in lines[statuses[-1] + 1 :]:
+        if not line.strip():
+            break
+        name, separator, value = line.partition(":")
+        if separator:
+            headers[name.strip().lower()] = value.strip()
+    return headers
+
+
+def _budget_from_headers(stdout: str, resource: str) -> BudgetState | None:
+    headers = _last_response_headers(stdout)
+    if headers.get("x-ratelimit-resource") != resource:
         return None
-    remaining, reset_epoch = min(pairs)
-    return BudgetState(remaining=remaining, reset_epoch=reset_epoch)
+    try:
+        return BudgetState(
+            remaining=int(headers["x-ratelimit-remaining"]),
+            reset_epoch=int(headers["x-ratelimit-reset"]),
+        )
+    except (KeyError, ValueError):
+        return None
 
 
 class GitHubQuotaGovernor:
@@ -192,16 +221,24 @@ class GitHubQuotaGovernor:
             self._probe()
 
     def _probe(self) -> None:
-        result = self._runner.run(RATE_LIMIT_ARGV, cwd=self._repo)
-        state = _parse_rate_limit(result.stdout) if result.exit_code == 0 else None
-        self._budget = state
-        self._probed_at = self._clock()
-        self._record(
-            RATE_LIMIT_ARGV,
-            None if state is None else state.remaining,
-            "probe",
-            result.exit_code,
+        states: list[BudgetState] = []
+        for argv, resource, endpoint in _BUDGET_PROBES:
+            result = self._runner.run(argv, cwd=self._repo)
+            state = _budget_from_headers(result.stdout, resource)
+            if state is not None:
+                states.append(state)
+            self._record(
+                argv,
+                None if state is None else state.remaining,
+                "probe",
+                result.exit_code,
+                endpoint=endpoint,
+            )
+        # Header values already include this probe's own request, so no decrement.
+        self._budget = min(
+            states, key=lambda state: (state.remaining, state.reset_epoch), default=None
         )
+        self._probed_at = self._clock()
 
     def _wait_for_reset(self, argv: tuple[str, ...]) -> None:
         waits = 0
@@ -226,12 +263,13 @@ class GitHubQuotaGovernor:
         exit_code: int | None,
         *,
         wait_seconds: float | None = None,
+        endpoint: str | None = None,
     ) -> None:
         row: dict[str, object] = {
             "ts": datetime.fromtimestamp(self._clock(), tz=UTC).isoformat(
                 timespec="seconds"
             ),
-            "endpoint": " ".join(argv[1:3]),
+            "endpoint": endpoint or " ".join(argv[1:3]),
             "remaining": remaining,
             "outcome": outcome,
             "exit_code": exit_code,
