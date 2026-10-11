@@ -2,6 +2,22 @@ import Foundation
 import Testing
 @testable import BooksAndVocab
 
+/// 計數 spy：`clearLocalCache` 注入點的呼叫次數即刪檔次數。
+@MainActor
+private final class ClearLocalCacheSpy {
+    private(set) var calls = 0
+    let result: Bool
+
+    init(result: Bool = true) {
+        self.result = result
+    }
+
+    func clear() async -> Bool {
+        calls += 1
+        return result
+    }
+}
+
 /// #2743 — clearing the local cache in startup recovery deletes LocalStore files that may hold
 /// unsynced rows, so the button must only present confirmation; the destructive action runs only
 /// from the confirmed dialog path.
@@ -32,6 +48,46 @@ struct AppStartupRecoveryViewTests {
         _ = gate.tap()
         #expect(gate.cancel() == AppStartupClearCacheGate.Effect.none)
         #expect(!gate.isPresented)
+    }
+
+    /// 按鈕行為守護：點按鈕只能呈現確認，注入的 clearLocalCache 必須 0 次呼叫。
+    /// 清除入口只有 `confirmDialog()` 一條（view 不再持有 clearLocalCache），因此「按鈕直接清除」
+    /// 的回歸必須經由 `confirmDialog()` 接線才可能發生；view 接線本身無單元測試可觀察。
+    @Test func tappingClearCacheButtonNeverInvokesClearLocalCache() {
+        let spy = ClearLocalCacheSpy()
+        let flow = AppStartupClearCacheFlow(clearLocalCache: { await spy.clear() })
+        flow.tapButton()
+        flow.tapButton()
+        #expect(flow.isPresented)
+        #expect(spy.calls == 0)
+    }
+
+    @Test func confirmingDialogInvokesClearLocalCacheExactlyOnce() async {
+        let spy = ClearLocalCacheSpy()
+        let flow = AppStartupClearCacheFlow(clearLocalCache: { await spy.clear() })
+        flow.tapButton()
+        let cleared = await flow.confirmDialog()
+        #expect(cleared == true)
+        #expect(spy.calls == 1)
+        #expect(!flow.isPresented)
+    }
+
+    @Test func dismissingDialogNeverInvokesClearLocalCache() {
+        let spy = ClearLocalCacheSpy()
+        let flow = AppStartupClearCacheFlow(clearLocalCache: { await spy.clear() })
+        flow.tapButton()
+        flow.dismissDialog()
+        #expect(!flow.isPresented)
+        #expect(spy.calls == 0)
+    }
+
+    @Test func failedClearIsReportedFromConfirmedPath() async {
+        let spy = ClearLocalCacheSpy(result: false)
+        let flow = AppStartupClearCacheFlow(clearLocalCache: { await spy.clear() })
+        flow.tapButton()
+        let cleared = await flow.confirmDialog()
+        #expect(cleared == false)
+        #expect(spy.calls == 1)
     }
 
     /// 每個 shipped locale 必須自己持有這些鍵。走 `L10n.string` 會回落到 en，缺譯的 ja/ko/zh-Hans
