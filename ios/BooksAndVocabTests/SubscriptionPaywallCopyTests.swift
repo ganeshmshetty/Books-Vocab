@@ -154,6 +154,19 @@ struct SubscriptionPaywallCopyTests {
         #expect(!admin.contains("·"))
     }
 
+    // MARK: - Post-purchase sync-pending message (#2746)
+
+    /// The message must name the control the inactive paywall renders (恢復購買,
+    /// localized label) and never the 重新同步 control that only the active layout shows.
+    @Test(arguments: [AppLanguage.english, .traditionalChinese, .simplifiedChinese, .japanese, .korean])
+    func purchaseSyncPendingMessage_pointsToRestoreNotResync(language: AppLanguage) {
+        let text = L10n.string(SubscriptionPurchaseCopy.backendSyncPendingKey, language: language)
+        let restoreLabel = L10n.string("恢復購買", language: language)
+        let resyncLabel = L10n.string("重新同步訂閱狀態", language: language)
+        #expect(text.contains(restoreLabel))
+        #expect(!text.contains(resyncLabel))
+    }
+
     // MARK: - SubscriptionPresentation has no backend-derived trial claim
 
     @Test func presentation_detailAndCtaMakeNoTrialClaim() {

@@ -1,5 +1,12 @@
 import StoreKit
 
+/// Copy for the post-purchase sync-pending state (#2746). The key names the
+/// control the inactive paywall actually renders (恢復購買 → restorePurchases →
+/// syncCurrentEntitlements), so the user is never sent to a missing 重新同步.
+enum SubscriptionPurchaseCopy {
+    static let backendSyncPendingKey = "Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。"
+}
+
 enum SubscriptionProductLoadState: Equatable {
     case loading
     case ready
@@ -120,7 +127,7 @@ extension SubscriptionManager {
                     purchaseStatusMessage = L10n.string("訂閱已啟用，感謝支持！")
                     scheduleClearPurchaseMessage()
                 } else {
-                    purchaseStatusMessage = L10n.string("Apple 購買成功，但後端同步尚未完成。請稍後點「重新同步」。")
+                    purchaseStatusMessage = L10n.string(SubscriptionPurchaseCopy.backendSyncPendingKey)
                 }
             case .userCancelled:
                 purchaseStatusMessage = L10n.string("已取消購買。")

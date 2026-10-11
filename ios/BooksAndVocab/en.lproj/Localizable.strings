@@ -521,7 +521,7 @@
 "%@m 後重置" = "%@m until reset";
 
 // ── Auto-generated: missing L10n keys ──
-"Apple 購買成功，但後端同步尚未完成。請稍後點「重新同步」。" = "Apple purchase succeeded, but backend sync is not yet complete. Tap \"Re-sync\" later.";
+"Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。" = "Apple purchase succeeded, but backend sync is not yet complete. Tap \"Restore Purchases\" later.";
 "Demo 模式" = "Demo Mode";
 "了解更多" = "Learn More";
 "先體驗看看" = "Try It First";
