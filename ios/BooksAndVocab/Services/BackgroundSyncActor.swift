@@ -132,8 +132,13 @@ actor BackgroundSyncActor {
             }
         }
 
-        // Keep track of fetched card keys to detect orphans later
+        // Keep track of LIVE fetched card keys to detect orphans later. Tombstones
+        // are excluded: a tombstone sharing a word key must not shield an unmatched
+        // local ghost from full-sync orphan cleanup.
         var fetchedCardKeys = Set<String>()
+        // Rows already deleted by a tombstone in this merge; orphan cleanup must
+        // not delete (and count) them a second time.
+        var deletedEntries = Set<ObjectIdentifier>()
 
         // What this merge actually changed — drives the "vocabulary updated" signal.
         var insertedCount = 0
@@ -148,13 +153,31 @@ actor BackgroundSyncActor {
             }
             let cardNotebookId = card.notebookId ?? notebookId
             let mergeKey = mergeKey(card.content, notebookId: cardNotebookId)
-            fetchedCardKeys.insert(mergeKey)
+            if card.isDeleted != true {
+                fetchedCardKeys.insert(mergeKey)
+            }
 
-            if let existingEntry = localByCardID[card.id] ?? localDict[mergeKey] {
+            // A tombstone resolves by card id only: a word-text match could name a
+            // different live card that merely shares the word and delete it (#2547).
+            let matchedEntry = card.isDeleted == true
+                ? localByCardID[card.id]
+                : (localByCardID[card.id] ?? localDict[mergeKey])
+
+            if let existingEntry = matchedEntry {
                 // Delete if marked as soft-deleted
                 if card.isDeleted == true {
-                    AppLog.sync.info("Remote soft-delete received: \(existingEntry.word)")
+                    // Read identity fields before delete: a deleted @Model must not be touched.
+                    let deletedWord = existingEntry.word
+                    let deletedNotebookId = existingEntry.notebookId
+                    AppLog.sync.info("Remote soft-delete received: \(deletedWord)")
                     modelContext.delete(existingEntry)
+                    deletedEntries.insert(ObjectIdentifier(existingEntry))
+                    // Evict the deleted row so later cards in this batch cannot resolve to it.
+                    localByCardID[card.id] = nil
+                    let deletedKey = self.mergeKey(deletedWord, notebookId: deletedNotebookId)
+                    if localDict[deletedKey] === existingEntry {
+                        localDict[deletedKey] = nil
+                    }
                     deletedCount += 1
                     continue
                 }
@@ -177,7 +200,14 @@ actor BackgroundSyncActor {
                     existingEntry.partOfSpeech = card.pos
                     existingEntry.explanation = card.note
                     existingEntry.difficultyTier = card.difficultyTier
+                    // Re-key the card-id index with the entry: a tombstone for the previous
+                    // id later in this batch must not resolve to a row that now holds another card (#2547).
+                    if let previousCardID = existingEntry.kgCardId, !previousCardID.isEmpty,
+                       localByCardID[previousCardID] === existingEntry {
+                        localByCardID[previousCardID] = nil
+                    }
                     existingEntry.kgCardId = card.id
+                    localByCardID[card.id] = existingEntry
                     existingEntry.inflections = card.inflections ?? []
                     existingEntry.collocations = card.collocations ?? []
                     existingEntry.reviewMode = VocabularyCardMode(rawValue: card.mode) ?? .recognition
@@ -259,6 +289,7 @@ actor BackgroundSyncActor {
                 progress(L10n.string("清理無效卡片..."), totalCards, totalCards)
                 var orphanedWords: [String] = []
                 for entry in localEntries {
+                    guard !deletedEntries.contains(ObjectIdentifier(entry)) else { continue }
                     guard entry.shouldAppearInKnowledgeList else { continue }
                     let orphanKey = mergeKey(entry.word, notebookId: entry.notebookId)
                     guard !fetchedCardKeys.contains(orphanKey) else { continue }

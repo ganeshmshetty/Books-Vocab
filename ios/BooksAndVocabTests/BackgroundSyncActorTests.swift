@@ -42,7 +42,8 @@ struct BackgroundSyncActorTests {
         meaning: String? = nil,
         lastReviewedAt: String? = nil,
         readerHidden: Bool? = nil,
-        reviewExcluded: Bool? = nil
+        reviewExcluded: Bool? = nil,
+        isDeleted: Bool = false
     ) throws -> KGCard {
         let sourceFragment = sourceJSON.map { ",\"source\":\($0)" } ?? ""
         let meaningValue = meaning ?? "meaning-\(content)"
@@ -53,7 +54,7 @@ struct BackgroundSyncActorTests {
         {"id":"\(id)","content":"\(content)","meaning":"\(meaningValue)",
          "pos":null,"difficulty":null,"difficultyTier":null,"note":null,
          "collocations":[],"examples":["an example"],"mode":"recognition",
-         "isDeleted":false,"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)}
+         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)}
         """.data(using: .utf8)!
         return try JSONDecoder().decode(KGCard.self, from: json)
     }
@@ -387,6 +388,176 @@ struct BackgroundSyncActorTests {
         #expect(entry?.translation == "local translation")
         #expect(entry?.explanation == "local note")
         #expect(entry?.isPendingDelete == true)
+    }
+
+    // MARK: - Tombstone resolution (#2547)
+
+    @Test func syncDown_tombstone_doesNotDeleteLiveCardWithSameWord() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let live = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        live.notebookId = "default"
+        live.kgCardId = "card-Y"
+        live.markSynced()
+        seedContext.insert(live)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+
+        try await actor.pullCardsToLocal(
+            fetchedCards: [tombstone],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let entry = try fetchEntry(container, word: "ephemeral")
+        #expect(entry?.kgCardId == "card-Y")
+    }
+
+    @Test func syncDown_tombstone_doesNotDeletePendingCardWithSameWord() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let pending = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        pending.notebookId = "default"
+        seedContext.insert(pending)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+
+        try await actor.pullCardsToLocal(
+            fetchedCards: [tombstone],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let entry = try fetchEntry(container, word: "ephemeral")
+        #expect(entry != nil)
+        #expect(entry?.syncStatus == 0)
+    }
+
+    @Test func syncDown_tombstone_matchingCardId_deletesCard() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let live = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        live.notebookId = "default"
+        live.kgCardId = "card-X"
+        live.markSynced()
+        seedContext.insert(live)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+
+        try await actor.pullCardsToLocal(
+            fetchedCards: [tombstone],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        #expect(try fetchEntry(container, word: "ephemeral") == nil)
+    }
+
+    @Test func syncDown_tombstoneThenLiveCardSameWord_insertsNewEntry() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let old = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        old.notebookId = "default"
+        old.kgCardId = "card-X"
+        old.markSynced()
+        seedContext.insert(old)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+        let fresh = try makeCard(id: "card-Y", content: "ephemeral", sourceJSON: nil)
+
+        try await actor.pullCardsToLocal(
+            fetchedCards: [tombstone, fresh],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let context = ModelContext(container)
+        let entries = try context.fetch(FetchDescriptor<VocabularyEntry>()).filter { $0.word == "ephemeral" }
+        #expect(entries.count == 1)
+        #expect(entries.first?.kgCardId == "card-Y")
+    }
+
+    @Test func syncDown_liveRekeyThenTombstoneForOldId_keepsRekeyedEntry() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let existing = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "card-X"
+        existing.markSynced()
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        // Batch order matters: the live card re-keys the entry from card-X to card-Y,
+        // then the tombstone for card-X arrives and must not delete the re-keyed row.
+        let rekeyed = try makeCard(id: "card-Y", content: "ephemeral", sourceJSON: nil)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+
+        try await actor.pullCardsToLocal(
+            fetchedCards: [rekeyed, tombstone],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let context = ModelContext(container)
+        let entries = try context.fetch(FetchDescriptor<VocabularyEntry>()).filter { $0.word == "ephemeral" }
+        #expect(entries.count == 1)
+        #expect(entries.first?.kgCardId == "card-Y")
+    }
+
+    @Test func fullSync_tombstoneDoesNotShieldUnmatchedSyncedGhost_reapsIt() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        // Row the tombstone (card-X) deletes; orphan cleanup must not count it again.
+        let deletedRow = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        deletedRow.notebookId = "default"
+        deletedRow.kgCardId = "card-X"
+        deletedRow.markSynced()
+        // Synced ghosts sharing the tombstone's word key: no kgCardId, and a different one.
+        let ghostNil = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        ghostNil.notebookId = "default"
+        ghostNil.markSynced()
+        let ghostOther = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example", bookTitle: "Book")
+        ghostOther.notebookId = "default"
+        ghostOther.kgCardId = "card-OTHER"
+        ghostOther.markSynced()
+        // Synced row whose kgCardId matches a live card: must survive cleanup.
+        let kept = VocabularyEntry(word: "lucid", translation: "meaning-lucid", context: "an example", bookTitle: "Book")
+        kept.notebookId = "default"
+        kept.kgCardId = "card-L"
+        kept.markSynced()
+        seedContext.insert(deletedRow)
+        seedContext.insert(ghostNil)
+        seedContext.insert(ghostOther)
+        seedContext.insert(kept)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+        let live = try makeCard(id: "card-L", content: "lucid", sourceJSON: nil)
+
+        // 4 local synced rows vs 2 server cards → ratio 0.5, diff 2: cleanup runs.
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: [tombstone, live],
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == false)
+        let context = ModelContext(container)
+        let remaining = try context.fetch(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining.filter { $0.word == "ephemeral" }.isEmpty)
+        #expect(remaining.contains { $0.word == "lucid" && $0.kgCardId == "card-L" })
+        // deletedRow is counted once (tombstone) plus the two ghosts: 3, not 4.
+        #expect(result.deleted == 3)
     }
 
     // MARK: - Orphan cleanup safety-valve signalling
