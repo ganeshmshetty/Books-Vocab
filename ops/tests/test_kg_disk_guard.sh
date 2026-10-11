@@ -816,6 +816,33 @@ grep -q '"blocking_reasons": \[\]' "$lane_state" && ok "unregistered checkout bl
 grep -q '"lane_usage_verdict":"warning"' "$state" && ok "guard state carries the unregistered warning" || bad "guard state missed unregistered warning"
 grep -q '"lane_usage_rc":0' "$state" && ok "guard state keeps exit 0 for an unregistered checkout" || bad "guard state changed exit for an unregistered checkout"
 
+echo "── lane usage: an unregistered checkout does not mask a registered terminal dirty block (issue #2905) ──"
+root="$TMP/unregistered-masks-dirty"; state="$root/guard.json"; registry="$root/registry.json"; lane_state="$root/lane-disk-usage.json"
+terminal_dirty="$TMP/terminal-dirty-worktree"; stray="$TMP/stray-unregistered-checkout"
+mkdir -p "$root"
+git -C "$root" init -b main >/dev/null 2>&1
+git -C "$root" config user.email disk-test@example.com
+git -C "$root" config user.name "Disk Test"
+printf 'main\n' > "$root/tracked.txt"
+git -C "$root" add tracked.txt >/dev/null 2>&1
+git -C "$root" commit -m initial >/dev/null 2>&1
+git -C "$root" worktree add -b terminal-dirty "$terminal_dirty" HEAD >/dev/null 2>&1
+printf 'dirty\n' > "$terminal_dirty/dirty.txt"
+git -C "$root" worktree add -b stray "$stray" HEAD >/dev/null 2>&1
+printf 'stray\n' > "$stray/stray.txt"
+printf '%s\n' '{"schema":"kg.worktree.registry.v2","records":[{"branch":"terminal-dirty","path":"'"$terminal_dirty"'","status":"merged","claim_generation":0,"external_ids":["DIRECT-DELIVERY-TERMINAL-DIRTY"]}]}' > "$registry"
+KG_DISK_GUARD_WORKSPACE="$root" KG_DISK_GUARD_STATE="$state" KG_DISK_GUARD_REGISTRY_STATE="$registry" \
+  KG_DISK_GUARD_LANE_USAGE_STATE="$lane_state" KG_DISK_GUARD_FREE_BYTES=$((30*1073741824)) \
+  KG_DISK_GUARD_ACTIVE_BUILD=0 "$SCRIPT" >/dev/null 2>&1
+jq -e '.policy.blocking_reasons | index("dirty-physical-worktree")' "$lane_state" >/dev/null \
+  && ok "the registered terminal dirty checkout still blocks" || bad_state "terminal dirty block masked" "$lane_state"
+jq -e '.policy.warning_reasons | any(startswith("unregistered-physical-worktree:") and endswith("/stray-unregistered-checkout"))' "$lane_state" >/dev/null \
+  && ok "the stray checkout still warns by path beside the block" || bad_state "stray warning lost beside the block" "$lane_state"
+jq -e '.policy.blocking_reasons | any(startswith("unregistered-physical-worktree:"))' "$lane_state" >/dev/null \
+  && bad "stray checkout became a blocking reason under budget" || ok "stray checkout is not a blocking reason"
+grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"action":"manual-review-lane-attribution"' "$state" \
+  && ok "guard names the lane block, not the stray checkout" || bad_state "guard reason/action wrong" "$state"
+
 echo "── lane usage: a tick run from a linked worktree copy is rooted at the canonical checkout ──"
 # Regression (2026-10-07): an agent ran ./ops/kg_disk_guard.sh from its own
 # linked worktree.  The tick rooted itself at that worktree, published into the
