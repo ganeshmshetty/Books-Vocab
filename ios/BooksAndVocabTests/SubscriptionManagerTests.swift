@@ -439,6 +439,45 @@ struct SubscriptionManagerTests {
     }
 
     @MainActor
+    @Test func refresh_superseded_failure_does_not_write_error_while_newer_request_pending() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = 較早發出的非強制 refresh，掛起後因不在 responses 內而失敗；
+        // 2 = 較晚發出的強制 refresh，同樣掛起，之後回 active。
+        let service = GatedSubscriptionService(
+            responses: [2: KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))],
+            suspended: [1, 2]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let older = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+        let newer = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: true) }
+        try #require(await service.waitUntilParked(2))
+
+        // 較早請求失敗時，較新請求仍在途中：該失敗已被取代，不得寫入 lastError（否則 paywall 會顯示重試）。
+        service.release(1)
+        await older.value
+        #expect(mgr.lastError == nil)
+
+        // 較新請求成功後照常套用，並維持無錯誤狀態。
+        service.release(2)
+        await newer.value
+        #expect(mgr.entitlements.pro.is_active)
+        #expect(mgr.lastError == nil)
+    }
+
+    @MainActor
     @Test func refresh_applies_response_when_no_newer_request_exists() async {
         let mgr = SubscriptionManager.shared
         let savedEntitlements = mgr.entitlements
