@@ -30,11 +30,14 @@ private struct OverviewFixtureProjection {
                 let actionType: String
                 let isArchived: Bool
                 let nextReviewAt: Date?
+                let reviewCount: Int?
+                let isReviewExcluded: Bool?
             }
 
             struct EntryOverride: Decodable {
                 let word: String
                 let nextReviewAt: Date
+                let reviewCount: Int?
             }
 
             struct Review: Decodable {
@@ -187,8 +190,20 @@ private struct OverviewFixtureProjection {
         let nextReviewAtOverrides = Dictionary(
             uniqueKeysWithValues: (seed.entryOverrides ?? []).map { ($0.word, $0.nextReviewAt) }
         )
+        let reviewCountOverrides = Dictionary(
+            uniqueKeysWithValues: (seed.entryOverrides ?? []).map { ($0.word, $0.reviewCount) }
+        )
+        // Production (StatsPresentation.project) forecasts and dueToday count
+        // only review-queue cards: shouldAppearInReview && reviewCount > 0.
+        // Never-reviewed placeholders carry a nextReviewAt but are not due.
+        func isForecastEligible(_ entry: Dataset.Vocabulary.Entry) -> Bool {
+            let overrideCount: Int? = reviewCountOverrides[entry.word] ?? nil
+            let reviewCount = overrideCount ?? entry.reviewCount ?? 0
+            return reviewCount > 0 && entry.isReviewExcluded != true
+        }
+        let forecastEntries = visibleEntries.filter(isForecastEligible)
         var forecastCounts: [String: Int] = [:]
-        for entry in visibleEntries {
+        for entry in forecastEntries {
             guard let nextReviewAt = nextReviewAtOverrides[entry.word] ?? entry.nextReviewAt else {
                 continue
             }
@@ -202,7 +217,9 @@ private struct OverviewFixtureProjection {
             }
             return dayKey(date)
         }
-        let dueToday = visibleEntries.filter {
+        // Matches production dueToday == forecastMap[todayKey]: overdue eligible
+        // cards fold into today, so the due count is the eligible subset <= today.
+        let dueToday = forecastEntries.filter {
             guard let nextReviewAt = nextReviewAtOverrides[$0.word] ?? $0.nextReviewAt else {
                 return false
             }
