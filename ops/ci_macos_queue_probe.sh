@@ -15,6 +15,14 @@ summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 warn() { printf 'macos-queue-probe: %s\n' "$1" >&2; }
 
+# A malformed budget would make the (( )) compare below fail or misreport: a whole
+# number of minutes only, so the starved verdict is never silently dropped (#2641).
+# No `set -e`: a failed summary write must not turn a healthy build red.
+if [[ ! "$max_min" =~ ^[1-9][0-9]{0,4}$ ]]; then
+  warn "KG_MACOS_QUEUE_MAX_MIN='$max_min' is not a whole number of minutes (1-99999); using 20"
+  max_min=20
+fi
+
 if [[ -z "$repo" || -z "$run_id" || -z "$runner" ]]; then
   warn "missing GITHUB_REPOSITORY/GITHUB_RUN_ID/RUNNER_NAME; not measured"
   exit 0

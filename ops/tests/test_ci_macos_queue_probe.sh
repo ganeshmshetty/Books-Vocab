@@ -64,4 +64,15 @@ if out="$(run_probe)" && grep -q '^::warning::macos-capacity starved' <<<"$out";
   pass "runner on job 115 (beyond the first 100) is found through pagination"
 else fail "runner on job 115 was not measured (pagination missing): $out"; fi
 
+# A malformed budget must not silently drop the verdict: bash arithmetic rejects "20min"
+# and "08", so without validation the starvation warning never fires (#2641, CR P3).
+# The probe must warn, name the fallback, and still exit 0.
+stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:45:00Z
+for bad_budget in 20min 08 -5 1e3; do
+  if out="$(export KG_MACOS_QUEUE_MAX_MIN="$bad_budget"; run_probe)" \
+    && grep -q '^::warning::macos-capacity starved' <<<"$out" && grep -q 'using 20' <<<"$out"; then
+    pass "malformed budget '$bad_budget' falls back to 20 min and still warns"
+  else fail "malformed budget '$bad_budget' must fall back to 20 and warn: $out"; fi
+done
+
 (( failures == 0 )) || exit 1
