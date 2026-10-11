@@ -17,7 +17,9 @@ class GovernedCommandRunner:
     so a probe cannot recurse into itself.
     """
 
-    def __init__(self, *, runner: CommandRunnerPort, governor: GitHubQuotaGovernor) -> None:
+    def __init__(
+        self, *, runner: CommandRunnerPort, governor: GitHubQuotaGovernor
+    ) -> None:
         self._runner = runner
         self._governor = governor
 
@@ -32,5 +34,11 @@ class GovernedCommandRunner:
         return result
 
 
-def govern_runner(runner: CommandRunnerPort, governor: GitHubQuotaGovernor | None) -> CommandRunnerPort:
-    return runner if governor is None else GovernedCommandRunner(runner=runner, governor=governor)
+def govern_runner(
+    runner: CommandRunnerPort, governor: GitHubQuotaGovernor | None
+) -> CommandRunnerPort:
+    return (
+        runner
+        if governor is None
+        else GovernedCommandRunner(runner=runner, governor=governor)
+    )
