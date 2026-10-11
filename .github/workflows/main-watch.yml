@@ -1,10 +1,11 @@
 name: main-watch
 
-# Watches `main` after every push (Issue #2642). When a push-triggered area suite
-# finishes red, ops/main_watch.py opens one P1 fix issue for that area (or links
-# the run to the area's open issue), so the first red push is noticed before the
-# next PR is gated.  The script runs from the default branch; this workflow never
-# checks out or executes PR code.  Run fields reach it as env vars only.
+# Watches `main` after every push and every scheduled run on main (Issue #2642).
+# When a push- or schedule-triggered area suite finishes red, ops/main_watch.py
+# opens one P1 fix issue for that area (or links the run to the area's open
+# issue), so main's first red run is noticed before the next PR is gated.  The
+# script runs from the default branch; this workflow never checks out or
+# executes PR code.  Run fields reach it as env vars only.
 
 on:
   workflow_run:
@@ -33,7 +34,7 @@ concurrency:
 jobs:
   watch:
     name: open or link main fix issue
-    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion != 'success' }}
+    if: ${{ (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule') && github.event.workflow_run.conclusion != 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
