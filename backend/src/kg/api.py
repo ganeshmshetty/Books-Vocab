@@ -44,6 +44,7 @@ from .app_lifespan import AppLifespanDependencies, build_app_lifespan_from_depen
 from .app_middleware import AppMiddlewareDependencies, install_app_middlewares_from_dependencies
 from .app_router_composition import AppRouterDependencies, build_app_routers_from_dependencies, include_app_routers
 from .app_runtime_state import RuntimeUserStateDependencies, install_runtime_user_state_from_dependencies
+from .log_retention_scheduler import LogRetentionScheduler
 from .rate_limit import api_limiter, login_limiter, translate_limiter
 from .service_factories import clear_store_cache
 from .settings import KGSettings, load_settings
@@ -91,6 +92,7 @@ def create_app(settings: KGSettings | None = None) -> FastAPI:
                 reap_stale_staged_copies_fn=partial(
                     reap_stale_staged_copies, shared_decks_path=settings.shared_decks_path
                 ),
+                log_retention_loop_fn=LogRetentionScheduler().run_forever,
             )
         ),
     )

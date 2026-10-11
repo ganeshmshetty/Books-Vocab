@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -335,3 +336,29 @@ def test_create_app_startup_reaps_orphaned_staged_copy_via_settings_catalog_path
         pass
 
     assert NotebookStore(user_dir / "notebooks.db").staged_ids() == [logged.id]
+
+
+def test_lifespan_cancels_log_retention_loop_before_releasing_lock(tmp_path):
+    """The daily retention loop is cancelled before the worker lock or runtime root is released (#2091)."""
+    events: list[object] = []
+
+    async def _log_retention_loop() -> None:
+        events.append("log_retention_loop_started")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("log_retention_loop_cancelled")
+            raise
+
+    deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=_log_retention_loop)
+    app = FastAPI(lifespan=build_app_lifespan_from_dependencies(dependencies=deps))
+
+    with TestClient(app):
+        pass
+
+    assert "log_retention_loop_started" in events
+    cancelled = events.index("log_retention_loop_cancelled")
+    assert cancelled < events.index(("release_runtime_data_root", tmp_path))
+    assert cancelled < events.index("release_worker_lock")
+    # The loop only starts once the worker lock is held and the runtime root is bound.
+    assert events.index(("bind_runtime_data_root", tmp_path)) < events.index("log_retention_loop_started")

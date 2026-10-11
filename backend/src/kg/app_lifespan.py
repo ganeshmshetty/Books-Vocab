@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -31,6 +32,9 @@ class AppLifespanDependencies:
     reset_async_clients_fn: Callable[[], Awaitable[None]]
     # Optional: compensates orphaned staged shared-deck copies (#2269).
     reap_stale_staged_copies_fn: Callable[[Path], int] | None = None
+    # Optional: the daily log-retention loop (#2091). Started once the worker
+    # lock is held and cancelled before that lock is released.
+    log_retention_loop_fn: Callable[[], Awaitable[None]] | None = None
 
 
 def build_app_lifespan_from_dependencies(
@@ -82,6 +86,11 @@ def build_app_lifespan_from_dependencies(
         if reaped_staged:
             dependencies.logger.info("Reaped %d orphaned staged shared-deck copy(ies)", reaped_staged)
         dependencies.bind_runtime_data_root_fn(data_root)
+        retention_task = (
+            asyncio.create_task(dependencies.log_retention_loop_fn())
+            if dependencies.log_retention_loop_fn is not None
+            else None
+        )
         # Teardown also runs when the server aborts instead of sending a clean
         # shutdown: a leaked binding would keep redirecting every runtime store
         # (quota ledger included) to a root this process no longer locks.
@@ -89,6 +98,10 @@ def build_app_lifespan_from_dependencies(
             yield
         finally:
             dependencies.logger.info("KG API shutting down")
+            if retention_task is not None:
+                # Stop background writers before the runtime root and worker lock go.
+                retention_task.cancel()
+                await asyncio.gather(retention_task, return_exceptions=True)
             dependencies.release_runtime_data_root_fn(data_root)
             dependencies.release_worker_lock_fn()
             dependencies.reset_clients_fn()
