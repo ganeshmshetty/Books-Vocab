@@ -2854,7 +2854,7 @@
       "color": "sunset",
       "coverPattern": "waves",
       "sortOrder": -10000,
-      "durationSec": 12.0,
+      "durationSec": 24.0,
       "episodes": [
         {
           "remoteId": "ui-auth-series_ep_01",

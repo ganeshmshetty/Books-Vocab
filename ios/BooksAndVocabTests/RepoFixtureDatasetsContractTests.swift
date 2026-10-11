@@ -30,6 +30,14 @@ struct RepoFixtureDatasetsContractTests {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    /// Every named UI World plus the generated demo dataset.
+    private static func allWorldAndGeneratedURLs() throws -> [URL] {
+        let fixturesRoot = Self.datasetsDirectory.deletingLastPathComponent().deletingLastPathComponent()
+        var urls = try Self.datasetURLs()
+        urls.append(fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"))
+        return urls
+    }
+
     private static func generatedDemoTopLevel() throws -> [String: Any] {
         let url = datasetsDirectory
             .deletingLastPathComponent() // ui_worlds
@@ -53,9 +61,7 @@ struct RepoFixtureDatasetsContractTests {
     /// `podcast_demo.mp3` = 12.000 s). Applies to every named UI World and to the
     /// generated demo, so a non-default world cannot ship a violated invariant.
     @Test func runtimePodcastEpisodeDurationsMatchClipsAndPreviewBounds() throws {
-        let fixturesRoot = Self.datasetsDirectory.deletingLastPathComponent().deletingLastPathComponent()
-        var urls = try Self.datasetURLs()
-        urls.append(fixturesRoot.appendingPathComponent("demo/generated/ios_fixture_dataset.json"))
+        let urls = try Self.allWorldAndGeneratedURLs()
         // Keyed by the audio file the episode actually plays (asset sourcePath basename), not by runtime key.
         let clipSecondsByFile: [String: Double] = [
             "podcast_demo.mp3": 12.0,
@@ -99,6 +105,31 @@ struct RepoFixtureDatasetsContractTests {
                                 "\(url.lastPathComponent) \(remoteID): durationSec \(durationSec) must match clip length \(clip)")
                     }
                 }
+            }
+        }
+    }
+
+    /// Series aggregate invariant (#2906 CR round 3): the series-level `durationSec`
+    /// seeds `PodcastSeries.totalDurationSec` (UITestFixtureSeed+Podcast.swift), and the
+    /// production catalog reports the sum of episode durations. Every named UI World and
+    /// the generated demo must therefore declare series length == sum of episode lengths.
+    @Test func runtimePodcastSeriesDurationEqualsEpisodeSum() throws {
+        for url in try Self.allWorldAndGeneratedURLs() {
+            let top = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            let runtime = try #require(top["runtimePodcast"] as? [String: Any], "\(url.lastPathComponent): runtimePodcast")
+            #expect(!runtime.isEmpty, "\(url.lastPathComponent): runtimePodcast must declare at least one series")
+            for (fixtureID, value) in runtime {
+                let series = try #require(value as? [String: Any], "\(url.lastPathComponent) \(fixtureID): series object")
+                let episodes = try #require(series["episodes"] as? [[String: Any]], "\(url.lastPathComponent) \(fixtureID): episodes")
+                #expect(!episodes.isEmpty, "\(url.lastPathComponent) \(fixtureID): series must have episodes")
+                let declaredSec = try #require(series["durationSec"] as? Double, "\(url.lastPathComponent) \(fixtureID): series durationSec")
+                var episodeSumSec = 0.0
+                for episode in episodes {
+                    let episodeSec = try #require(episode["durationSec"] as? Double, "\(url.lastPathComponent) \(fixtureID): episode durationSec")
+                    episodeSumSec += episodeSec
+                }
+                #expect(abs(declaredSec - episodeSumSec) < 0.05,
+                        "\(url.lastPathComponent) \(fixtureID): series durationSec \(declaredSec) must equal sum of episode durationSec \(episodeSumSec)")
             }
         }
     }
