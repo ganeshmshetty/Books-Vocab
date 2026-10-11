@@ -269,6 +269,9 @@ final class SyncCoordinator: SyncCoordinating {
         var deleted = 0
         var failedWords: [String] = []
         for entry in entries {
+            // I3（VocabularyEntry）：擷取後的列在往返期間不得被還原，回應到達時仍為 delete。此守門只擋已非 delete 的
+            // 陳舊列：不得硬刪（會丟掉從未上傳的 add），也不得標 failed（T5/T6）。
+            guard entry.syncAction == .delete else { continue }
             if resolvableSet.contains(entry.word) {
                 modelContext.delete(entry)
                 deleted += 1
@@ -292,6 +295,7 @@ final class SyncCoordinator: SyncCoordinating {
     ///
     /// 後端 `rejected` 以提交陣列 `index` 指向原 entry（#2248），依 index 而非 word
     /// 標記（同字重複時 word 對不上）：直接 markSyncFailed，不留 pending 無限重送。
+    /// 例外：in-flight 期間被刪除的 add 由 `markRejected` 保留 pending delete（#2733），交下一輪 batchDelete 收斂。
     ///
     /// 回傳未收斂的 entries（rejected 與無 cardId 的異常項）供呼叫端判定失敗；
     /// 無 cardId 且未被拒收者維持 pending+add，下一輪自然重試。
@@ -311,7 +315,10 @@ final class SyncCoordinator: SyncCoordinating {
                 unresolved.append(entry)
             } else if let cardId = response.cardIds[entry.word] {
                 entry.kgCardId = cardId
-                entry.markSynced()
+                // A delete queued while the add was in flight stays queued: the card now exists server-side (#2733).
+                if entry.syncAction != .delete {
+                    entry.markSynced()
+                }
             } else {
                 unresolved.append(entry)
             }

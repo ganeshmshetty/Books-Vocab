@@ -57,6 +57,10 @@ final class VocabularyEntry {
     var isArchived: Bool = false
     var isReaderHidden: Bool = false
     var isReviewExcluded: Bool = false
+    /// True from the moment the sync engine captures this entry until that sync returns. While true, a user
+    /// delete queues a server delete instead of hard-deleting a row the sync still holds (#2733), and undo or a
+    /// reader re-capture does not restore the row (I3, #2484). Transient: set only by the sync engine.
+    @Transient var isUploadInFlight = false
 
     // Local spaced-review state
     var reviewIntervalHours: Double = VocabularyReviewPolicy.initialIntervalHours
@@ -209,10 +213,67 @@ extension VocabularyEntry {
         return count > 0 ? candidate : "default"
     }
 
+    // MARK: Outbox 狀態機（sync lane 依賴的轉移；改任一轉移須同步檢查本段與 docs/reference/sync_lifecycle.md）
+    //
+    // 欄位：syncAction ∈ {add, edit, delete}、syncState ∈ {pending, synced, failed}、
+    // kgCardId（只在 server 確認卡片存在後寫入：pull 命中、batchAdd cardIds 命中、edit 成功）、
+    // isUploadInFlight（transient，自 sync 擷取起至 sync 返回為止）。
+    //
+    // I1  kgCardId 非空 ⇒ server 持有此卡。
+    // I2  markSynced() 只在 server 已確認卡片時呼叫。撤銷刪除時 kgCardId 為空不得 markSynced（#2484）。
+    // 推論：pending+delete 且 kgCardId 為空 ＝ 「server 可能沒有此卡」，不代表 server 有卡；
+    //       交下一輪 batchDelete 收斂（deleted／not_found 本地移除，其餘 failed 重試）。
+    // I3  isUploadInFlight 為真（sync 擷取起至返回）時，使用者的撤銷與閱讀器重新擷取不得改寫列的 syncAction；
+    //     唯一允許的使用者轉移是 → delete（T1）。擷取時為 delete 的列，回應到達時仍為 delete，
+    //     故 sync 的 post-await 只守 syncAction == .delete 與 in-flight，不需撤銷競態分支（#2484 r8）。
+    //
+    // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 → queueDelete（列保留）；其餘 → 硬刪。
+    // T2 batchAdd cardIds 命中：寫 kgCardId；action 為 add 才 markSynced，為 delete 則維持 pending delete。
+    // T3 batchAdd rejected：markRejected → add+failed（rejectedReason 終態）；action 為 delete 則維持 pending delete。
+    // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete）。
+    // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
+    // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
+    // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
+    // T8 edit 成功：action 仍為 edit 才 markSynced；成功前被刪者維持 delete。
+    // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
+    // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
+    //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
+    // T11 NotebookReconciler cascade 的 queueDelete 可作用於 kgCardId 為空的 add：delete+pending，交 T5 以 not_found 收斂。
+
     func queueDelete() {
         syncAction = .delete
         syncState = .pending
         rejectedReason = nil
+    }
+
+    /// A row whose server copy exists or is being created must not be hard-deleted locally:
+    /// the server card would be re-pulled and resurrected (#2733).
+    /// `hasServerCard`（kgCardId 非空）即代表 server 已有卡片；編輯 synced 卡會把 syncState 改為 pending+edit，
+    /// 但 kgCardId 保留，因此不能只靠 `isSynced` 判斷。
+    var hasServerCard: Bool { !(kgCardId ?? "").isEmpty }
+
+    var requiresServerDelete: Bool { isSynced || isUploadInFlight || hasServerCard }
+
+    /// Single local delete entry point for user-initiated deletes.
+    func deleteLocally(in modelContext: ModelContext) {
+        if requiresServerDelete {
+            queueDelete()
+        } else {
+            modelContext.delete(self)
+        }
+    }
+
+    /// 撤銷尚未送出的刪除（SyncView「還原」）。in-flight 時為 no-op（I3）：列的去留由進行中的 sync 回應決定，
+    /// 撤銷會與回應競態（#2484 r8）；sync 返回後仍存在的 delete 列才可撤銷。
+    /// 只有 server 確認持有卡片（`hasServerCard`）才能回到 synced；否則 server 從未確認此卡，必須重新排入 pending add，由下一輪 batchAdd 建立（T7）。
+    /// 無 kgCardId 卻 markSynced 會得到「synced 但 server 沒有」的列，full pull 的 orphan cleanup 會把它刪掉（#2484）。
+    func undoQueuedDelete() {
+        guard syncAction == .delete, !isUploadInFlight else { return }
+        if hasServerCard {
+            markSynced()
+        } else {
+            restorePendingEntry()
+        }
     }
 
     func restorePendingEntry() {
@@ -232,7 +293,15 @@ extension VocabularyEntry {
     }
 
     /// 後端確定性拒收的 add：進終態，不再納入 `shouldUploadOnNextSync`。
+    ///
+    /// 例外：add 在 in-flight 期間被使用者刪除（`queueDelete` 已覆寫 syncAction）時，刪除意圖必須保留。
+    /// server 從未建立該卡，下一輪 batchDelete 會回 not_found，由 `locallyResolvableDeletes` 本地移除（#2733）。
+    /// 若這裡改寫成 terminal rejected add，SyncView 會永久顯示一筆使用者已刪除的字。
     func markRejected(reason: String) {
+        guard syncAction != .delete else {
+            syncState = .pending
+            return
+        }
         syncAction = .add
         syncState = .failed
         rejectedReason = reason
@@ -275,12 +344,19 @@ extension VocabularyEntry {
 
     /// 在 context 純文字中為 word 加上 **markdown** 標記（模擬 server 的 _build_example 邏輯）
     private func markWordInContext(_ text: String) -> String {
-        let escaped = NSRegularExpression.escapedPattern(for: word)
-        if let regex = Self.cachedRegex(pattern: escaped),
-           let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
-            let ns = text as NSString
-            let matched = ns.substring(with: match.range)
-            return ns.replacingCharacters(in: match.range, with: "**\(matched)**")
+        // Whole-word boundaries, mirroring backend `_build_example` (#2725): try `[word, *inflections]`
+        // in order so that e.g. "run" still bolds "runs" when the base form is absent.
+        // 先 trim 再比對：未 trim 的 " runs " 會把前後空白一併加粗，且 (?<!\w)/(?!\w) 的詞界語意被破壞。
+        let terms = ([word] + inflections).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        for term in terms where !term.isEmpty {
+            let escaped = NSRegularExpression.escapedPattern(for: term)
+            let boundaryPat = "(?<!\\w)\(escaped)(?!\\w)"
+            if let regex = Self.cachedRegex(pattern: boundaryPat),
+               let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
+                let ns = text as NSString
+                let matched = ns.substring(with: match.range)
+                return ns.replacingCharacters(in: match.range, with: "**\(matched)**")
+            }
         }
         // stem fallback: 前 4-6 字元
         let firstWord = word.components(separatedBy: " ").first ?? word

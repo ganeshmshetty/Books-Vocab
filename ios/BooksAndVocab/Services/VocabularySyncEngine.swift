@@ -85,6 +85,15 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     && $0.shouldUploadOnNextSync
             }
 
+            // Mark everything captured here before the first suspension below. A user delete in
+            // any of those suspensions (delete round trip, an earlier add group, an earlier edit)
+            // then queues a server delete instead of hard-deleting a row this sync still holds (#2733).
+            // Undo and reader re-capture are refused for these rows until this sync returns (I3, #2484),
+            // so a captured delete is still a delete when its response or fallback request completes.
+            let captured = queuedDeletes + adds + edits
+            captured.forEach { $0.isUploadInFlight = true }
+            defer { captured.forEach { $0.isUploadInFlight = false } }
+
             if !queuedDeletes.isEmpty {
                 emit(.stepStarted("upload_delete"))
                 queuedDeletes.forEach { $0.prepareForRetryAttempt() }
@@ -110,6 +119,9 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                             if Task.isCancelled { return cancelledResult(since: start) }
                             do {
                                 try await service.deleteCard(word: entry.word, notebookId: entry.notebookId)
+                                // Defensive recheck after the suspension (I3 keeps the held delete a delete): never
+                                // hard-delete a row that is no longer a held delete (T5).
+                                guard entry.isUploadInFlight, entry.syncAction == .delete else { continue }
                                 modelContext.delete(entry)
                                 deleted += 1
                                 emit(.stepProgress("upload_delete", current: deleted, total: queuedDeletes.count, detail: ""))
@@ -146,10 +158,14 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                 var batchFailed = false
                 for (notebookId, entries) in groupedAdds {
                     if Task.isCancelled { return cancelledResult(since: start) }
+                    // Revalidate right before the wire: an add the user deleted during an earlier
+                    // suspension now carries a queued delete and must not be uploaded (#2733).
+                    let uploadable = entries.filter { $0.syncAction == .add && $0.shouldUploadOnNextSync }
+                    guard !uploadable.isEmpty else { continue }
                     do {
-                        entries.forEach { $0.prepareForRetryAttempt() }
-                        let response = try await service.batchAdd(entries: entries, notebookId: notebookId)
-                        SyncCoordinator.convergeAddedEntries(response: response, entries: entries)
+                        uploadable.forEach { $0.prepareForRetryAttempt() }
+                        let response = try await service.batchAdd(entries: uploadable, notebookId: notebookId)
+                        SyncCoordinator.convergeAddedEntries(response: response, entries: uploadable)
                         if !response.rejected.isEmpty {
                             batchFailed = true
                             encounteredFailure = true
@@ -159,7 +175,7 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     } catch is CancellationError {
                         return cancelledResult(since: start)
                     } catch {
-                        entries.forEach { $0.markSyncFailed() }
+                        uploadable.forEach { $0.markSyncFailed() }
                         encounteredFailure = true
                         batchFailed = true
                     }
@@ -181,6 +197,8 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
 
             for entry in edits {
                 if Task.isCancelled { return cancelledResult(since: start) }
+                // A delete queued during an earlier suspension supersedes this edit: do not send it.
+                guard entry.syncAction == .edit else { continue }
                 entry.prepareForRetryAttempt()
                 do {
                     try await service.updateCardContent(
@@ -190,7 +208,8 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                         notebookId: entry.notebookId
                     )
                     if Task.isCancelled { return cancelledResult(since: start) }
-                    entry.markSynced()
+                    // A delete queued while the update was on the wire must survive the edit's success (#2733).
+                    if entry.syncAction == .edit { entry.markSynced() }
                 } catch is CancellationError {
                     return cancelledResult(since: start)
                 } catch {

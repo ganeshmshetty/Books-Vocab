@@ -56,13 +56,10 @@ extension VocabularyContextStore {
         let entry = existingEntry(matching: word) ?? fetchEntryFromContext(matching: word)
         guard let entry else { return }
 
-        if entry.isSynced {
-            entry.queueDelete()
-            AppLog.reader.info("\(queuedDeleteLogPrefix): \(word)")
-        } else {
-            modelContext.delete(entry)
-            AppLog.reader.info("\(localDeleteLogPrefix): \(word)")
-        }
+        // Decide the log branch before deleteLocally mutates the sync state (#2733).
+        let queuesServerDelete = entry.requiresServerDelete
+        entry.deleteLocally(in: modelContext)
+        AppLog.reader.info("\(queuesServerDelete ? queuedDeleteLogPrefix : localDeleteLogPrefix): \(word)")
         modelContext.safeSaveWithToast(toastCoordinator)
     }
 
@@ -79,6 +76,10 @@ extension VocabularyContextStore {
             return nil
         }
         if existing.syncAction == .delete {
+            // I3（#2484 r8）：sync 持有的 delete 由其回應決定去留，此時還原會與回應競態。回 nil 讓呼叫端新增一筆 add：
+            // 原列若仍留存（刪除失敗），下一輪 sync 的 collapse（SyncCoordinator.collapseRecapturedDeletes）把兩列收斂回原列；
+            // 若已刪除，新增列單獨上傳。
+            guard !existing.isUploadInFlight else { return nil }
             existing.restorePendingEntry()
             existing.translation = translation
             if let rootForm { existing.rootForm = rootForm }

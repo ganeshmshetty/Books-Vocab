@@ -76,7 +76,9 @@ final class TodayReviewState {
         // decides whether killing the throwaway needs full ownership injection or just a
         // lazy `start()`. DispatchTime captures match the existing `_initStart` precedent.
         let _tLoad = DispatchTime.now()
-        let reviewEntries = entries.filter(\.shouldAppearInReview)
+        // 去重先於 loadOrder：之後的佇列、id、baseline 都保證 persistenceID 唯一。
+        // 先以 shouldAppearInReview 決定佇列成員，再由 representative(among:) 選代表（與 flush 同一規則）。
+        let reviewEntries = ReviewSessionPersistence.uniqueByPersistenceID(entries.filter(\.shouldAppearInReview))
         let ordered = ReviewSessionStore.loadOrder(
             availableEntries: reviewEntries,
             userID: currentUserID,
@@ -216,7 +218,7 @@ final class TodayReviewState {
     func navigateToLinkedCard(link: KGCardLinkSummary) {
         guard let target = linkedEntryLookup[link.cardId] else { return }
         tappedLink = nil
-        linkedCardStack.append(target)
+        linkedCardStack.pushLinkedCard(target)
     }
 
     /// `peer` is the link's other end resolved live by the caller (it also
@@ -279,7 +281,7 @@ final class TodayReviewState {
 
     func handleDetailTap() {
         guard let current = currentEntry else { return }
-        linkedCardStack.append(current)
+        linkedCardStack.pushLinkedCard(current)
     }
 
     /// #2041: the compact card's "show detailed for now" button (same button

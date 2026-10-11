@@ -110,7 +110,10 @@ struct SyncView: View {
     private func handlePendingActionTap(_ entryID: UUID) {
         guard let entry = pendingEntries.first(where: { $0.id == entryID }) else { return }
         if entry.syncAction == .delete {
-            entry.markSynced()
+            // I3（#2484 r8）：進行中的 sync 持有的列忽略還原，列保持原樣；sync 返回後才可撤銷。
+            guard !entry.isUploadInFlight else { return }
+            // 還原刪除：server 未確認的卡只能回到 pending add，見 `VocabularyEntry.undoQueuedDelete`（#2484）。
+            entry.undoQueuedDelete()
             modelContext.safeSaveWithToast(toastCoordinator)
         } else {
             // .add pending 是尚未上雲的 local-only 資料，硬刪後無法復原 → 先確認
@@ -122,7 +125,9 @@ struct SyncView: View {
         defer { pendingDeleteID = nil }
         guard let id = pendingDeleteID,
               let entry = pendingEntries.first(where: { $0.id == id }) else { return }
-        modelContext.delete(entry)
+        // Routed through the single delete entry point: an add whose upload is in
+        // flight must be queued as a server delete, not hard-deleted (#2733).
+        entry.deleteLocally(in: modelContext)
         modelContext.safeSaveWithToast(toastCoordinator)
     }
 

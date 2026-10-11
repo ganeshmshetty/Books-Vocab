@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import BooksAndVocab
 
@@ -34,6 +35,21 @@ struct SyncAddConvergenceTests {
             duplicates: [],
             cardIds: cardIds
         )
+    }
+
+    /// In-memory、無 CloudKit 的 VocabularyEntry 容器（與 VocabularySyncEngineTests 同款）。
+    /// 未設 `cloudKitDatabase: .none` 時 SwiftData 會落到磁碟 LocalStore，CI sandbox 拒寫（#2484）。
+    private func makeStore() throws -> ModelContainer {
+        try ModelContainer(
+            for: VocabularyEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+    }
+
+    /// 以 fetch 判定列是否已自 store 移除。`PersistentModel.isDeleted` 在 save 後不是可靠的生命週期契約
+    /// （見 BooksAndVocabTests `sanitizeOutbox_tombstonedOrphanDelete`），故斷言 store 內容。
+    private func isRemoved(_ id: UUID, from context: ModelContext) throws -> Bool {
+        try context.fetch(FetchDescriptor<VocabularyEntry>(predicate: #Predicate { $0.id == id })).isEmpty
     }
 
     // MARK: - 命中收斂（created 與 duplicate 同路徑）
@@ -124,6 +140,221 @@ struct SyncAddConvergenceTests {
         )
         #expect(unresolved.isEmpty)
     }
+
+    // MARK: - in-flight 期間被刪除（#2733）
+
+    @Test("in-flight 期間被使用者刪除 → 命中後保留 pending delete，不被改回 synced")
+    func delete_queued_during_flight_survives_convergence() {
+        let entry = makePendingAdd("doomed")
+        entry.isUploadInFlight = true
+        #expect(entry.requiresServerDelete)
+        entry.queueDelete()
+        let response = makeResponse(cardIds: ["doomed": "card-d"])
+
+        let unresolved = SyncCoordinator.convergeAddedEntries(response: response, entries: [entry])
+
+        #expect(entry.kgCardId == "card-d")
+        #expect(entry.isPendingDelete)
+        #expect(unresolved.isEmpty)
+    }
+
+    @Test("in-flight 期間被刪除後 server 拒收 add → 不成為 rejected add，保留 delete 並經 batchDelete 本地移除（#2733）")
+    func delete_queued_during_flight_survives_rejection() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let entry = makePendingAdd("ghost")
+        let entryId = entry.id
+        context.insert(entry)
+        entry.isUploadInFlight = true
+        entry.deleteLocally(in: context)
+        #expect(entry.isPendingDelete)
+        let response = KGAddResponse(
+            created: 0,
+            skipped: 0,
+            duplicates: [],
+            cardIds: [:],
+            rejected: [KGRejectedItem(index: 0, word: "ghost", reason: "word: bad")]
+        )
+
+        let unresolved = SyncCoordinator.convergeAddedEntries(response: response, entries: [entry])
+
+        #expect(!entry.isRejectedAdd)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.isPendingDelete)
+        #expect(entry.shouldUploadOnNextSync)
+        #expect(unresolved.map(\.word) == ["ghost"])
+
+        // 下一輪 batchDelete：server 從未建立該卡 → not_found → 本地移除，不殘留任何終態列。
+        _ = SyncCoordinator.applyBatchDeleteResponse(
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["ghost"]),
+            entries: [entry],
+            modelContext: context
+        )
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
+    }
+
+    @Test("非 in-flight 的 pending add 本地刪除 → 直接移除，不排 server delete")
+    func idle_pending_add_delete_is_local_only() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let entry = makePendingAdd("idle")
+        let entryId = entry.id
+        context.insert(entry)
+
+        #expect(!entry.requiresServerDelete)
+        entry.deleteLocally(in: context)
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
+    }
+
+    @Test("已同步卡片被編輯（syncState 落在 pending+edit、kgCardId 保留）後本地刪除 → 不硬刪，排 server delete")
+    func edited_synced_entry_delete_is_queued_not_hard_deleted() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let entry = makePendingAdd("edited")
+        context.insert(entry)
+        entry.markSynced()
+        entry.kgCardId = "card-edited"
+        // WordEditSheet 的編輯路徑：synced → pending+edit，但 server 卡片仍存在。
+        entry.syncAction = .edit
+        entry.syncState = .pending
+        #expect(!entry.isSynced)
+        #expect(entry.requiresServerDelete)
+
+        entry.deleteLocally(in: context)
+
+        #expect(!entry.isDeleted)
+        #expect(entry.isPendingDelete)
+    }
+
+    // MARK: - 撤銷待刪（SyncView「還原」，#2484）
+
+    @Test("未送出的 add 被刪除後撤銷 → 回到 pending add，絕不 markSynced（server 從未確認此卡）")
+    func undo_of_delete_on_unsent_add_restores_pending_add() {
+        let entry = makePendingAdd("unsent")
+        entry.isUploadInFlight = true
+        entry.queueDelete()
+        entry.isUploadInFlight = false
+        #expect(entry.kgCardId == nil)
+        #expect(entry.isPendingDelete)
+
+        entry.undoQueuedDelete()
+
+        #expect(entry.isPendingAdd)
+        #expect(!entry.isSynced)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("已確認 kgCardId 的待刪被撤銷 → synced，kgCardId 保留")
+    func undo_of_delete_on_confirmed_card_restores_synced() {
+        let entry = makePendingAdd("confirmed")
+        entry.kgCardId = "card-c"
+        entry.markSynced()
+        entry.queueDelete()
+        #expect(entry.isPendingDelete)
+
+        entry.undoQueuedDelete()
+
+        #expect(entry.isSynced)
+        #expect(entry.kgCardId == "card-c")
+        #expect(!entry.shouldUploadOnNextSync)
+    }
+
+    @Test("撤銷只作用於 delete 列；其他 action 為 no-op")
+    func undo_is_noop_for_non_delete_rows() {
+        let entry = makePendingAdd("plain")
+        entry.undoQueuedDelete()
+        #expect(entry.isPendingAdd)
+    }
+
+    @Test("in-flight 的待刪在 batchDelete 往返期間撤銷為 no-op，回應 not_found 直接硬刪（#2484 P1, I3）")
+    func undo_during_flight_is_noop_and_response_removes_row() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let entry = makePendingAdd("held")
+        let entryId = entry.id
+        context.insert(entry)
+        entry.queueDelete()
+        entry.isUploadInFlight = true
+
+        entry.undoQueuedDelete()
+        #expect(entry.isPendingDelete)
+
+        let outcome = SyncCoordinator.applyBatchDeleteResponse(
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["held"]),
+            entries: [entry],
+            modelContext: context
+        )
+
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
+        #expect(outcome.deleted == 1)
+        #expect(outcome.failedWords.isEmpty)
+    }
+
+    @Test("陳舊的 batchDelete 回應不硬刪已非 delete 的列（防禦性守門）")
+    func stale_batch_delete_response_skips_non_delete_row() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let entry = makePendingAdd("stale")
+        context.insert(entry)
+
+        let outcome = SyncCoordinator.applyBatchDeleteResponse(
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["stale"]),
+            entries: [entry],
+            modelContext: context
+        )
+
+        #expect(!entry.isDeleted)
+        #expect(entry.isPendingAdd)
+        #expect(outcome.deleted == 0)
+        #expect(outcome.failedWords.isEmpty)
+    }
+
+    #if os(iOS)
+    @Test("in-flight 的待刪被閱讀器重新擷取：不還原（I3），改新增一筆 pending add，原列保留待刪")
+    func recapture_of_in_flight_delete_saves_fresh_add() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, Book.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let ctx = ModelContext(container)
+        let held = makePendingAdd("held")
+        held.kgCardId = "card-held"
+        held.markSynced()
+        held.queueDelete()
+        held.isUploadInFlight = true
+        ctx.insert(held)
+        let book = Book(title: "B", author: "A", fileName: "f.epub")
+        ctx.insert(book)
+        let capture = ReaderVocabularyContext(
+            vocabulary: [],
+            modelContext: ctx,
+            book: book,
+            currentLocator: nil,
+            notebookId: "default",
+            toastCoordinator: AppToastCoordinator()
+        )
+
+        let saved = capture.saveEntry(
+            selection: WordSelection(word: "held", context: "ctx", position: .zero),
+            translation: "新譯文",
+            rootForm: nil
+        )
+        try ctx.save()
+
+        #expect(saved)
+        #expect(held.isPendingDelete)
+        #expect(held.kgCardId == "card-held")
+        let all = try ctx.fetch(FetchDescriptor<VocabularyEntry>())
+        #expect(all.count == 2)
+        #expect(all.contains { $0.isPendingAdd && $0.translation == "新譯文" })
+    }
+    #endif
 
     // MARK: - retry 路徑：failed+add 也能被收斂
 

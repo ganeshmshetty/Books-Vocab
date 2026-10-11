@@ -237,11 +237,7 @@ struct WordDetailSheet: View {
     /// 本檔的封存路徑已經對 `isSynced` 做過同一個判斷（`canArchive`），不可逆的這一半
     /// 沒有理由不做。
     private func handleDelete() {
-        if entry.isSynced {
-            entry.queueDelete()
-        } else {
-            modelContext.delete(entry)
-        }
+        entry.deleteLocally(in: modelContext)
         guard modelContext.safeSaveWithToast(toastCoordinator) else { return }
         toastCoordinator.success(WordDetailCopy.deleted)
         handleClose()
@@ -261,6 +257,6 @@ struct WordDetailSheet: View {
             detailRouter.showWordDetail(target, allEntries: allEntries)
             return
         }
-        linkedCardStack.wrappedValue.append(target)
+        linkedCardStack.wrappedValue.pushLinkedCard(target)
     }
 }

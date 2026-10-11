@@ -4,7 +4,9 @@ authority: SoT
 update_trigger: code-change
 scope:
   - ios/BooksAndVocab/Models/VocabularyEntry.swift
+  - ios/BooksAndVocab/Services/VocabularySyncEngine.swift
   - ios/BooksAndVocab/Views/Vocabulary/SyncView.swift
+  - ios/BooksAndVocab/Views/Vocabulary/VocabularyContextStore.swift
   - ios/BooksAndVocab/Views/Vocabulary/AutoSyncMonitor.swift
   - ios/BooksAndVocab/Views/Vocabulary/Scenes/SyncCoordinator.swift
   - ios/BooksAndVocab/Views/Vocabulary/Scenes/KGVocabCoordinator.swift
@@ -62,12 +64,22 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 ### 本地新增上傳成功（`pending + add` → `synced + add`）
 
-1. `SyncCoordinator` 批次上傳 → `POST /api/vocab` 回 `VocabAddResponse{ cardIds, duplicates, rejected, ... }`（逐筆驗證：無效項進 `rejected[{index, word, reason}]`，其餘照常建立，不再整批 422；非 list body 或超過 500 筆仍 422；iOS `KGAddResponse.rejected` 解碼（缺欄位視為空），依 `index` 指向原提交 entry 並 `markRejected(reason:)`：進 `failed + add` 且寫入 `rejectedReason` 終態，**不再納入 `shouldUploadOnNextSync`**（確定性拒收不自動重送，否則每次 sync 重報同一錯誤）；`markSynced`／`queueDelete` 清除該欄位，`restorePendingEntry` 亦清除但僅 queued delete 列會呼叫（`VocabularyContextStore` 與 `SyncCoordinator` 收斂皆以 `syncAction == .delete` 守門），failed add 列不會經此路徑復活；該步驟本次回報 error 並使 sync 為 partial）
+1. `SyncCoordinator` 批次上傳 → `POST /api/vocab` 回 `VocabAddResponse{ cardIds, duplicates, rejected, ... }`（逐筆驗證：無效項進 `rejected[{index, word, reason}]`，其餘照常建立，不再整批 422；非 list body 或超過 500 筆仍 422；iOS `KGAddResponse.rejected` 解碼（缺欄位視為空），依 `index` 指向原提交 entry 並 `markRejected(reason:)`：進 `failed + add` 且寫入 `rejectedReason` 終態，**不再納入 `shouldUploadOnNextSync`**（確定性拒收不自動重送，否則每次 sync 重報同一錯誤）；`markSynced`／`queueDelete` 清除該欄位，`restorePendingEntry` 亦清除但僅 queued delete 列會呼叫（`VocabularyContextStore` 與 `SyncCoordinator` 收斂皆以 `syncAction == .delete` 守門），failed add 列不會經此路徑復活；**例外**：add 於 in-flight 期間已被 `deleteLocally` 排成 delete 者，`markRejected` 不改寫為終態，保留 pending delete，下一輪 batchDelete 以 `not_found` 本地移除（#2733）；該步驟本次回報 error 並使 sync 為 partial）
 2. **`cardIds` 以 client 送出的『原始』word 為 key**（非後端清洗後的 word），`created` 與 `duplicate`（已存在）兩種情況都回填對應 card id
 3. 對每筆 entry：`response.cardIds[entry.word]` 命中即回填 `kgCardId` 並 `markSynced()` 直接出列
 4. **不變式**：收斂依據是回傳的 cardId（= 卡片確實存在 server，權威確認），**不**靠 pull-merge 用 content 字面比對——後端 `_clean_content` 會 strip 尾標點 / 首字小寫（如 `"chateau,"`→`"chateau"`），content 比對跨此邊界必然 miss，曾導致該類 entry 永久卡在 `pending + add` 重送（修復見 vocab_intake：response key 改回原始 word）
 5. 無 cardId 回傳（異常）的 entry 保持 `pending + add`，下次重試
 6. **不變式（contract）**：`cardIds` 的 key 必須是 client submitted word 的 **byte-exact echo**，後端**不得**對 key 做任何 normalization（NFC/大小寫/trim）——iOS 以 `entry.word` 逐字節查找，任何後端側轉換都會讓配對 silent miss。清洗只作用於**儲存的 content**，不作用於 response key
+
+### 上傳中的新增被刪除
+
+1. 單字是 `pending + add` 且已被本輪 sync 擷取（`isUploadInFlight`：自擷取起至該 sync 返回為止，涵蓋 batch delete 往返、前一組 `batchAdd` 等待等 suspension）時，使用者刪除**不得硬刪**：`deleteLocally(in:)` 改呼叫 `queueDelete()`（`requiresServerDelete = isSynced || isUploadInFlight || hasServerCard`）
+2. row 保留為 `pending + delete`：已送出者待上傳回填 `kgCardId` 後，下一輪 sync 送出 batch delete；尚未送出者（擷取後、送出前即被刪）送出前 revalidate 跳過、不上傳，下一輪 batch delete 以 `not_found` 本地移除（#2733）
+3. 理由：硬刪會讓 server 已建立的卡片在下次 pull 被重新插入（resurrection）
+4. 唯一入口：所有使用者刪除（閱讀器 `VocabularyContextStore.deleteEntry`、`SyncView` 待同步確認刪除、`WordDetailSheet`）都經 `VocabularyEntry.deleteLocally(in:)`，不得直接 `modelContext.delete(entry)`
+5. **I3（不變式）**：列被擷取（`isUploadInFlight`）期間，使用者的撤銷與閱讀器重新擷取都不得改寫其 `syncAction`。`undoQueuedDelete()` 為 no-op；`restoreExistingEntryForSave` 對 in-flight 的 delete 回 `nil`，由呼叫端新增一筆 `pending + add`；`SyncView` 忽略該列的「還原」點擊。唯一允許的使用者轉移是 → delete。因此擷取時為 delete 的列，在 batch 回應或逐卡 fallback 抵達時仍是 delete；post-await 只做防禦性重查（`syncAction == .delete` 且仍在 in-flight），不需撤銷競態分支。
+6. 反例（已修，#2484 撤銷競態）：撤銷發生在 batch delete 往返期間，曾把仍有 `kgCardId` 的列標成 synced；server 刪除成功後，回應被守門忽略，接著的 full pull 把它當 orphan 刪除，撤銷等於遺失卡片。逐卡 fallback 的 `deleteCard` 期間撤銷，曾在請求返回後無條件硬刪。兩者皆因 I3 不可達。
+7. **已知殘餘（無程式碼變更，另案）**：(a) `KGVocabCoordinator.retryPendingDeletes`（待刪 banner 的第二條 drain，#3059）在 engine 之外發送 batch delete、不設 `isUploadInFlight`、回應後直接 `modelContext.delete`，可能與進行中的 sync 重疊；(b) 編輯（`WordEditSheet.commitEdit`）不在 I3 守門內：對 in-flight 的 pending add 只改內容，該次 sync 不會上傳，pull 可能覆寫（不硬刪、不遺失卡片）；(c) 登出／重設的 `clearUserData` 可硬刪進行中的列，sync 的 post-await 會讀到已刪列（見下節「logout-cleanup gate」的 accepted residual）。
 
 ### 已同步單字被刪除
 
@@ -76,9 +88,17 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 3. 單字立刻從閱讀器與知識庫隱藏
 4. 等下一次同步把刪除請求送到 KG
 
+### 撤銷尚未送出的刪除（SyncView「還原」）
+
+1. `pending + delete` 列以 `VocabularyEntry.undoQueuedDelete()` 撤銷
+2. `kgCardId` 非空（server 已確認持有卡）→ `synced + add`
+3. `kgCardId` 為空（server 從未確認，例如上傳中的新增被刪）→ `pending + add`，下一輪 sync 上傳；**不得**變成 `synced`（synced 無 server 卡會在 full pull 的 orphan cleanup 被刪，#2484）
+4. 進行中（in-flight）的列不可撤銷（I3）：撤銷為 no-op、列保持 `pending + delete`，由回應決定去留（deleted／not_found 硬刪、failed 保留）；sync 返回後仍存在的 delete 列才可撤銷。`applyBatchDeleteResponse` 與逐卡 fallback 的 `syncAction == .delete` 守門保留作防禦
+5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T11）
+
 ### 雲端資料拉回本地
 
-1. 若本地是 `pending + delete`，保留本地刪除意圖，不被遠端覆寫
+1. 若本地是 `pending + delete`（含上節「上傳中的新增被刪除」排入的 delete），保留本地刪除意圖，不被遠端覆寫；convergence 不得把 delete-queued row 重設回 `add`
 2. 若遠端卡片存在且未刪除，合併內容後呼叫 `markSynced()`
 3. 若遠端回傳 soft delete，本地直接刪除
 
