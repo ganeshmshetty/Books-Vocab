@@ -56,6 +56,8 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 ## 主要轉移
 
+iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performChunked` 每請求至多 500 項分片（對齊後端 `MAX_BATCH_SIZE`），依序送出，遇失敗即停止後續分片；已落地的前片由下一輪 sync 以 duplicate／`not_found` 收斂。
+
 ### 本地新增單字
 
 1. 建立 `VocabularyEntry`
