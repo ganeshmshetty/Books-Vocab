@@ -296,11 +296,6 @@ struct TodayReviewPage {
 
     // MARK: - Toolbar
 
-    /// Hero speaker on the linked-card document (#3117 hit target).
-    var heroSpeakButton: XCUIElement {
-        element("cardDocument.hero.speak")
-    }
-
     /// Fold collapse chevron on the reveal surface (#3117 hit target).
     var foldCollapseButton: XCUIElement {
         element("todayReview.fold.collapse")
