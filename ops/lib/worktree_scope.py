@@ -33,6 +33,11 @@ SHARED_SCOPE_FILES = frozenset(
         "ops/complexity_budget.json",
         "ops/test_ops.sh",
         "ops/tests/test_ops_ci_coverage.sh",
+        "ios/BooksAndVocab/en.lproj/Localizable.strings",
+        "ios/BooksAndVocab/ja.lproj/Localizable.strings",
+        "ios/BooksAndVocab/ko.lproj/Localizable.strings",
+        "ios/BooksAndVocab/zh-Hans.lproj/Localizable.strings",
+        "ios/BooksAndVocab/zh-Hant.lproj/Localizable.strings",
     }
 )
 # Spellings agents reach for naturally; canonicalised on input, never stored.
