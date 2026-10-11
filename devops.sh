@@ -995,10 +995,13 @@ HELP
 #   4. 停容器 → 現況 rename 成 <data>.broken.<ts>（保留為快照，不 rm）→ 新資料就位 → 起容器
 # 任何一道失敗都在動到現況之前中止；swap 失敗會把現況搬回。
 # 確認閘門刻意不走 confirm()：restore 覆寫生產資料，DEVOPS_YES=1（agent 模式）一律拒絕，
-# 且必須是互動 TTY 上由人類輸入 yes（P1 2026-10-10，見 docs/sop/backup_restore.md §2.5）。
-restore_human_confirm() {
+# 且必須在互動 TTY 逐字輸入與本次日期與 bucket 綁定的確切字串（見 docs/sop/backup_restore.md §2.5）。
+# 這是防誤觸閘門，不是授權控制：script(1) 與管線都能偽造 TTY 與輸入。授權來自 ssh 權限與 owner 決策（#2923）。
+# 同一字串隨遠端呼叫送出，由 devops_restore_remote.sh 再驗一次，使確認無法套用到其他日期或 bucket。
+restore_confirm() {
+  local token="$1" prompt="$2" ans=""
   if [[ -n "${DEVOPS_YES:-}" ]]; then
-    echo "✗ restore 不接受 DEVOPS_YES：覆寫 kg-data 只能由人類在互動終端確認" >&2
+    echo "✗ restore 不接受 DEVOPS_YES：覆寫 kg-data 必須在互動終端逐字確認" >&2
     exit 1
   fi
   if [[ ! -t 0 ]]; then
@@ -1006,9 +1009,9 @@ restore_human_confirm() {
     exit 1
   fi
   echo ""
-  echo "⚠️  $1"
-  read -r -p "   輸入 yes 確認: " ans
-  [[ "$ans" == "yes" ]] || { echo "已取消。"; exit 0; }
+  echo "⚠️  ${prompt}"
+  read -r -p "   逐字輸入「${token}」確認（其他輸入一律取消）: " ans
+  [[ "$ans" == "$token" ]] || { echo "已取消。"; exit 0; }
 }
 
 cmd_restore() {
@@ -1019,10 +1022,13 @@ cmd_restore() {
     exit 2
   fi
   local bucket="${KG_BACKUP_BUCKET:-kg-backups-prod-967512079054}"
+  local token="restore ${date_arg} ${bucket}"
   [[ -f "$payload" ]] || err "缺少 restore 遠端腳本: $payload"
-  restore_human_confirm "restore：以 S3 data/${date_arg}.tar.gz 覆寫 ${REMOTE_DATA_DIR}（現況改名保留為 .broken.<ts>，不刪除），期間停止容器"
-  section "restore ${date_arg}（S3 $bucket）"
-  run_remote "bash -s -- ${date_arg} ${bucket} ${REMOTE_DATA_DIR} ${REMOTE_DIR}" < "$payload"
+  restore_confirm "$token" "restore：以 S3 data/${date_arg}.tar.gz 覆寫 ${REMOTE_DATA_DIR}（現況改名保留為 .broken.<ts>，不刪除），期間停止容器"
+  # 與 deploy／restart／migrate 互斥：swap 期間其他指令不得啟動容器；鎖由 EXIT trap 釋放
+  acquire_deploy_lock
+  section "restore ${date_arg}（S3 ${bucket}）"
+  run_remote "bash -s -- ${date_arg} ${bucket} ${REMOTE_DATA_DIR} ${REMOTE_DIR} $(printf '%q' "$token")" < "$payload"
 }
 
 # ── 指令：ssh ─────────────────────────────────────────────────────────────────

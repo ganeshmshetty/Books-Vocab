@@ -129,9 +129,9 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 ### 2.5 停容器、備份「壞掉的」現場、解壓覆蓋
 
-**唯一路徑：`./devops.sh restore <YYYY-MM-DD>`**（#2923；owner 決策 2026-10-11）。覆寫 kg-data 只能經此指令。agent 不得執行本節，也不得以 ssh、手動 `mv`／`tar`，或 `devops.sh run`／`container-run` 等任何其他方式寫入 kg-data；`devops_kg_safe.sh` 一律拒絕 `restore`。
+**唯一路徑（待 owner 決策，見 #2923）：`./devops.sh restore <YYYY-MM-DD>`**。覆寫 kg-data 只能經此指令。agent 不得執行本節，也不得以 ssh、手動 `mv`／`tar`，或 `devops.sh run`／`container-run` 等任何其他方式寫入 kg-data；`devops_kg_safe.sh` 一律拒絕 `restore`。
 
-**執行身份：人類，於本機互動終端（stdin 必須是 TTY）執行**，提示時親自輸入 `yes`。非 TTY、設定 `DEVOPS_YES`，或輸入 `yes` 以外的任何字，都會拒絕或取消，且不連到遠端。
+**執行身份：人類，於本機互動終端（stdin 必須是 TTY）執行**，提示時逐字輸入指令列出的確認字串 `restore <YYYY-MM-DD> <bucket>`。非 TTY、設定 `DEVOPS_YES`，或輸入任何不符的字，都會拒絕或取消，且不連到遠端。確認閘門是防誤觸，不是授權控制：`script(1)` 與管線能偽造 TTY。授權依 ssh 權限與 owner 決策。
 
 ```bash
 # 人類在本機互動終端執行
@@ -140,16 +140,17 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 指令內建下列步驟，任一道驗證失敗都在動到現況之前中止（exit 1）；swap 失敗會把現況搬回並重啟容器。遠端腳本為 `ops/lib/devops_restore_remote.sh`。
 
+0. **確認與互斥**：TTY 上的確認字串與遠端 payload 各驗一次（綁定日期與 bucket）；取得與 deploy／restart／migrate 相同的 deploy 鎖，鎖被持有即拒絕。
 1. **來源可信**：backup log 必須有該日 `exit=0` 紀錄，且 sha256 與 S3 物件一致。
 2. **archive 結構**：第一層必須 == `basename(DATA)`（standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`），且無絕對或上層路徑。
 3. **staging 完整性**：解壓到暫存目錄，每個 `*.db` 須 `PRAGMA quick_check = ok`。
-4. **swap**：`docker compose stop` → 現況改名成 `<DATA>.broken.<ts>`（保留為鑑識快照，不刪除）→ 新資料就位 → `docker compose up -d`。
+4. **swap**：`docker compose stop` → 現況改名成 `<DATA>.broken.<ts>`（保留為鑑識快照，不刪除）→ 確認 `DATA` 未重現 → 新資料就位 → `docker compose up -d`。
 
 archive 不含 `-wal`／`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（指令已內建）。
 
 結果判讀：
 - `✓ restore 完成`：進入 §2.6–§2.8 修正 owner、啟動與健康檢查、抽樣驗證。`.broken.<ts>` 保留，驗證通過後才另行清理。
-- `需人工介入`（exit 2）：資料已還原但容器未啟動，或回滾失敗。停止後續步驟，保留 `.broken.<ts>` 與 backup log，回報 owner。
+- `需人工介入`（exit 2）：資料已還原但容器未啟動、回滾失敗、swap 途中 `DATA` 重現，或 swap 途中被中斷。途中中斷或 `DATA` 重現時容器保持停止、不自動啟動（資料目錄狀態未知，起容器可能在空目錄重建資料庫）。停止後續步驟，保留 `.broken.<ts>` 與 backup log，回報 owner。
 
 #### 2.5a 受保護名稱與守門範圍
 

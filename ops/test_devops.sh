@@ -1228,9 +1228,9 @@ rm -rf "$LOCK_FIX"
 # 兩層證明，缺一不可；全程 hermetic，沒有任何指令會抵達真機：
 #   (a) 遠端 payload（ops/lib/devops_restore_remote.sh）以本地 bash 直接執行，HOME 指向 fixture，
 #       aws／docker 為 PATH 前置的 stub。此層不經任何 transport（沒有 ssh），驗證校驗、swap、回滾。
-#   (b) devops.sh restore 的閘門（參數、DEVOPS_YES、非 TTY、人類輸入 no／yes）以 KG_SSH_CMD=
-#       「只留痕、永不執行遠端字串」的 deny stub 執行。閘門拒絕時 transport 不得被呼叫；
-#       人類輸入 yes 時 transport 必須恰被呼叫一次（正控：證明閘門不是永遠拒絕）。
+#   (b) devops.sh restore 的閘門（參數、DEVOPS_YES、非 TTY、確認字串 no／yes／綁錯日期、deploy 鎖）以
+#       KG_SSH_CMD=「只留痕、永不執行遠端字串」的 deny stub 執行。閘門拒絕時 transport 不得被呼叫；
+#       TTY 逐字輸入與日期、bucket 綁定的確認字串時，取鎖後 transport 必須恰被呼叫一次（正控：證明閘門不是永遠拒絕）。
 section "restore is the guarded sole writer of kg-data (#2923)"
 RS_FIX="$(mktemp -d)"
 RS_HOME="$RS_FIX/home"
@@ -1243,7 +1243,12 @@ sqlite3 "$RS_FIX/src/kg-data/cards.db" 'CREATE TABLE t(a); INSERT INTO t VALUES 
 cat > "$RS_FIX/bin/kg-record-deny" <<'STUB'
 #!/usr/bin/env bash
 # transport deny stub：只記錄 argv，從不執行遠端字串、不連線。
+# 例外：deploy lock 的 mkdir／rmdir 回報成功（模擬鎖可取得）；RS_LOCK_HELD 模擬鎖已被他人持有。
 echo "ssh: $*" >> "$RS_TRACE"
+case "$*" in
+  *"mkdir "*) [[ -n "${RS_LOCK_HELD:-}" ]] && exit 1; exit 0 ;;
+  *"rmdir "*) exit 0 ;;
+esac
 exit 97
 STUB
 cat > "$RS_FIX/bin/aws" <<'STUB'
@@ -1262,6 +1267,8 @@ cat > "$RS_FIX/bin/mv" <<'STUB'
 #!/usr/bin/env bash
 # 注入 swap 失敗：只拒絕「staging 新資料 → kg-data」那一步（來源路徑以 /x/kg-data 結尾）
 if [[ -n "${RS_FAIL_SWAP:-}" && "$1" == */x/kg-data ]]; then echo "mv: injected swap failure" >&2; exit 1; fi
+# 注入並行寫入者：現況移開後 kg-data 立刻被重建（模擬 swap 途中有人寫入）
+if [[ -n "${RS_REAPPEAR:-}" && "$2" == *.broken.* ]]; then /bin/mv "$@" && mkdir -p "$HOME/kg-data"; exit $?; fi
 exec /bin/mv "$@"
 STUB
 chmod +x "$RS_FIX/bin/"*
@@ -1277,11 +1284,18 @@ rs_reset_live() {
   mkdir -p "$RS_HOME/kg-data" && printf 'live\n' > "$RS_HOME/kg-data/live-marker"
   rm -f "$RS_TRACE"; : > "$RS_TRACE"
 }
-rs_payload() {  # 以本地 bash 直接執行遠端 payload（參數與 cmd_restore 送出的相同）；不經任何 transport
+rs_payload() {  # 以本地 bash 直接執行遠端 payload（參數與 cmd_restore 送出的相同，含確認字串）；不經任何 transport
   : > "$RS_TRACE"; rs_rc=0
   rs_out=$(env HOME="$RS_HOME" PATH="$RS_FIX/bin:$PATH" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" \
-    RS_FAIL_SWAP="${RS_FAIL_SWAP:-}" RS_DOCKER_UP_FAIL="${RS_DOCKER_UP_FAIL:-}" RS_DOCKER_STOP_FAIL="${RS_DOCKER_STOP_FAIL:-}" \
-    bash "$RS_PAYLOAD" 2026-10-09 "$RS_BUCKET" '~/kg-data' '~/kg-prod/backend' 2>&1) || rs_rc=$?
+    RS_FAIL_SWAP="${RS_FAIL_SWAP:-}" RS_REAPPEAR="${RS_REAPPEAR:-}" RS_DOCKER_UP_FAIL="${RS_DOCKER_UP_FAIL:-}" RS_DOCKER_STOP_FAIL="${RS_DOCKER_STOP_FAIL:-}" \
+    bash "$RS_PAYLOAD" 2026-10-09 "$RS_BUCKET" '~/kg-data' '~/kg-prod/backend' "${RS_TOKEN:-restore 2026-10-09 $RS_BUCKET}" 2>&1) || rs_rc=$?
+}
+rs_pty() {  # 在真正的 pty 中執行「$@」；script(1) 語法依平台：BSD `script -q /dev/null cmd`，GNU `script -qec cmd /dev/null`
+  if [[ "$(uname -s)" == Darwin ]]; then
+    script -q /dev/null "$@"
+  else
+    script -qec "$(printf '%q ' "$@")" /dev/null
+  fi
 }
 rs_gate() {  # 執行 `devops.sh restore ...`，transport 為 kg-record-deny；stdin 非 TTY
   : > "$RS_TRACE"; rs_rc=0
@@ -1289,10 +1303,11 @@ rs_gate() {  # 執行 `devops.sh restore ...`，transport 為 kg-record-deny；s
     KG_SSH_CMD="$RS_FIX/bin/kg-record-deny" KG_REMOTE_DATA_DIR='~/kg-data' KG_REMOTE_DIR='~/kg-prod/backend' \
     bash "$KG" restore "$@" 2>&1 </dev/null) || rs_rc=$?
 }
-rs_gate_tty() {  # 同 rs_gate，但 stdin 為互動 pty，送入 ${RS_ANSWER:-yes}（restore 只接受人類在 TTY 確認）
+rs_gate_tty() {  # 同 rs_gate，但 stdin 為互動 pty，送入 ${RS_ANSWER:-與日期及 bucket 綁定的確認字串}
   : > "$RS_TRACE"; rs_rc=0
-  rs_out=$( (sleep 1; printf '%s\n' "${RS_ANSWER:-yes}"; sleep 2) | script -q /dev/null env HOME="$RS_HOME" \
-    PATH="$RS_FIX/bin:$PATH" DEVOPS_YES="${RS_DEVOPS_YES:-}" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" \
+  local ans="${RS_ANSWER:-restore $1 $RS_BUCKET}"
+  rs_out=$( (sleep 1; printf '%s\n' "$ans"; sleep 2) | rs_pty env HOME="$RS_HOME" \
+    PATH="$RS_FIX/bin:$PATH" DEVOPS_YES="${RS_DEVOPS_YES:-}" RS_FIX="$RS_FIX" RS_TRACE="$RS_TRACE" RS_LOCK_HELD="${RS_LOCK_HELD:-}" \
     KG_SSH_CMD="$RS_FIX/bin/kg-record-deny" KG_REMOTE_DATA_DIR='~/kg-data' KG_REMOTE_DIR='~/kg-prod/backend' \
     bash "$KG" restore "$@" 2>&1) || rs_rc=$?
 }
@@ -1383,6 +1398,22 @@ RS_DOCKER_STOP_FAIL=1 rs_payload
   && ok "failed container stop refuses before touching live data" \
   || fail_t "failed container stop did not refuse safely (rc=$rs_rc)"
 
+rs_reset_live; rs_make_archive kg-data
+RS_TOKEN="restore 2026-10-08 $RS_BUCKET" rs_payload
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '確認字串不符' <<< "$rs_out" \
+  && ! grep -q 'docker: compose stop' "$RS_TRACE" \
+  && ok "payload refuses a confirmation string bound to another date before any stop" \
+  || fail_t "payload accepted a confirmation bound to another date (rc=$rs_rc)"
+
+# P2：swap 途中 kg-data 被並行重建時，不得把新資料巢狀搬入且回報成功
+rs_reset_live; rs_make_archive kg-data
+RS_REAPPEAR=1 rs_payload
+[[ "$rs_rc" -ne 0 && ! -e "$RS_HOME/kg-data/kg-data" ]] && grep -q '重新出現' <<< "$rs_out" \
+  && ! grep -q '✓ restore 完成' <<< "$rs_out" \
+  && [[ -f "$(ls -d "$RS_HOME"/kg-data.broken.* 2>/dev/null | head -1)/live-marker" ]] \
+  && ok "data dir reappearing mid-swap is refused; restored archive is not nested into it" \
+  || fail_t "reappearing data dir was not refused safely (rc=$rs_rc): $(tr '\n' '|' <<< "$rs_out")"
+
 # (b) devops.sh restore 閘門：transport 為 kg-record-deny（只留痕、不執行）
 rs_reset_live
 rs_gate
@@ -1395,9 +1426,9 @@ rs_gate 2026/10/09
   && ok "restore rejects a malformed date before any transport call" \
   || fail_t "restore accepted a malformed date (rc=$rs_rc)"
 
-# P1：DEVOPS_YES 不得跳過人類確認，即使人類真的在 TTY 輸入 yes
+# P1：DEVOPS_YES 不得跳過確認，即使 TTY 上逐字輸入了與本次操作綁定的確認字串
 rs_reset_live
-RS_DEVOPS_YES=1 RS_ANSWER=yes rs_gate_tty 2026-10-09
+RS_DEVOPS_YES=1 rs_gate_tty 2026-10-09
 [[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q 'DEVOPS_YES' <<< "$rs_out" \
   && ok "DEVOPS_YES=1 cannot bypass restore confirmation; transport never called" \
   || fail_t "DEVOPS_YES=1 bypassed restore confirmation (rc=$rs_rc)"
@@ -1409,19 +1440,41 @@ rs_gate 2026-10-09
   && ok "non-interactive restore is refused before any transport call" \
   || fail_t "non-interactive restore was not refused (rc=$rs_rc)"
 
-# 人類在 TTY 輸入 no：取消，不觸及遠端
+# TTY 上輸入任何與本次操作不符的字（no、單純的 yes、綁到別的日期）：取消，不觸及遠端
 rs_reset_live
 RS_ANSWER=no rs_gate_tty 2026-10-09
 [[ "$rs_rc" -eq 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '已取消' <<< "$rs_out" \
-  && ok "typing anything but yes cancels restore before any transport call" \
+  && ok "typing anything but the bound confirmation cancels restore before any transport call" \
   || fail_t "restore did not cancel on 'no' (rc=$rs_rc)"
 
-# 正控：人類在 TTY 輸入 yes → 恰好一次、帶正確參數抵達 guarded 遠端呼叫（transport 拒絕執行，kg-data 不動）
 rs_reset_live
 RS_ANSWER=yes rs_gate_tty 2026-10-09
-[[ "$rs_rc" -ne 0 && "$(rs_ssh_calls)" -eq 1 && -f "$RS_HOME/kg-data/live-marker" ]] \
-  && grep -qF "bash -s -- 2026-10-09 $RS_BUCKET ~/kg-data ~/kg-prod/backend" "$RS_TRACE" \
-  && ok "typing yes reaches the guarded remote call exactly once (positive control; transport denies)" \
+[[ "$rs_rc" -eq 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '已取消' <<< "$rs_out" \
+  && ok "bare yes is not the bound confirmation; restore cancels before any transport call" \
+  || fail_t "bare yes was accepted as restore confirmation (rc=$rs_rc)"
+
+rs_reset_live
+RS_ANSWER="restore 2026-10-08 $RS_BUCKET" rs_gate_tty 2026-10-09
+[[ "$rs_rc" -eq 0 && "$(rs_ssh_calls)" -eq 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '已取消' <<< "$rs_out" \
+  && ok "a confirmation bound to another date is refused at the gate" \
+  || fail_t "confirmation for another date was accepted (rc=$rs_rc)"
+
+# P2：deploy 鎖被他人持有時 restore 必須拒絕，不得送出任何 swap 指令（restore 與 deploy/restart/migrate 互斥）
+rs_reset_live
+RS_LOCK_HELD=1 rs_gate_tty 2026-10-09
+[[ "$rs_rc" -ne 0 && -f "$RS_HOME/kg-data/live-marker" ]] && grep -q '另一個 deploy' <<< "$rs_out" \
+  && [[ "$(grep -c 'bash -s -- ' "$RS_TRACE")" -eq 0 ]] \
+  && ok "restore refuses while the deploy lock is held; no swap command reaches the transport" \
+  || fail_t "restore ran without the deploy lock (rc=$rs_rc): $(tr '\n' '|' < "$RS_TRACE")"
+
+# 正控：人類在 TTY 逐字輸入與日期、bucket 綁定的確認字串 → 取得鎖後，guarded 遠端呼叫恰好一次，
+# 參數與確認字串正確（transport 拒絕執行，kg-data 不動）
+rs_reset_live
+rs_gate_tty 2026-10-09
+[[ "$rs_rc" -ne 0 && "$(grep -c 'bash -s -- ' "$RS_TRACE")" -eq 1 && -f "$RS_HOME/kg-data/live-marker" ]] \
+  && grep -qF "bash -s -- 2026-10-09 $RS_BUCKET ~/kg-data ~/kg-prod/backend restore\ 2026-10-09\ $RS_BUCKET" "$RS_TRACE" \
+  && grep -q 'mkdir ' "$RS_TRACE" \
+  && ok "bound confirmation takes the deploy lock and reaches the guarded remote call exactly once (positive control; transport denies)" \
   || fail_t "positive control failed: confirmed restore did not reach the guarded call (rc=$rs_rc): $(tr '\n' '|' < "$RS_TRACE")"
 
 # 被守門的 safe wrapper 不得把 restore 放行到 base
