@@ -86,6 +86,8 @@ final class SubscriptionManager: SubscriptionManaging {
     }
 
     var lastRefreshTime: Date?
+    /// 每個真正發出的 refresh 遞增；async 返回時只有仍為最新世代者可寫入狀態（#2800）。
+    var refreshGeneration = 0
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?

@@ -25,6 +25,8 @@ extension SubscriptionManager {
         }
         let previousRefreshTime = lastRefreshTime
         lastRefreshTime = Date()
+        refreshGeneration += 1
+        let generation = refreshGeneration
 
         // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
         let requestUserId = authManager.userId
@@ -34,6 +36,12 @@ extension SubscriptionManager {
 
         do {
             var remote = try await service.fetchEntitlements()
+
+            // 回應到達前已有更新的 refresh 發出：無論到達順序，本回應都已過期
+            guard generation == refreshGeneration else {
+                AppLog.subscription.debug("Discarding superseded refresh #\(generation), latest is #\(refreshGeneration)")
+                return
+            }
 
             // async 返回後帳號可能已切換，丟棄過期回應
             guard authManager.userId == requestUserId else {
@@ -57,13 +65,18 @@ extension SubscriptionManager {
                     )
                 }
             }
+            // StoreKit 查詢也是 await 點，期間可能已有更新的 refresh 發出
+            guard generation == refreshGeneration else { return }
             entitlements = remote
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
         } catch is CancellationError {
-            // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh
-            lastRefreshTime = previousRefreshTime
+            // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh。
+            // 過期請求不得還原，否則會蓋掉較新請求寫入的冷卻時間。
+            if generation == refreshGeneration { lastRefreshTime = previousRefreshTime }
         } catch {
+            // 過期請求的錯誤不得蓋掉較新請求的狀態
+            guard generation == refreshGeneration else { return }
             lastError = error.localizedDescription
         }
     }
