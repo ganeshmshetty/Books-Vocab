@@ -284,7 +284,10 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
             let response = try await send(chunk, start)
             result = result.map { merge($0, response) } ?? response
         }
-        return result!
+        guard let folded = result else {
+            preconditionFailure("items.count > maxVocabBatchSize yields at least one chunk")
+        }
+        return folded
     }
 
     static func merged(_ a: KGAddResponse, _ b: KGAddResponse) -> KGAddResponse {
