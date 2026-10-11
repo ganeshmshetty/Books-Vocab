@@ -14,23 +14,34 @@ younger than ``STALE_CACHE_TTL_SECONDS``. Accepted staleness window: up to
 ``STALE_CACHE_TTL_SECONDS`` for any read served from cache. Pushes, external merges
 and state changes made by other processes, and git mutations made outside this
 governor's gh calls, are not observed within that window. Any gh mutation seen by
-this governor clears the cache. Below ``WAIT_BELOW`` the governor sleeps until the
-bottleneck resource resets (bounded by ``MAX_RESET_WAITS``), then fails closed with
-``GitHubQuotaExhausted``. Every governed call, including probes, appends one NDJSON
-spend-log line under a lock; a spend-log write failure fails open (the call proceeds
-and its row is lost).
+this governor clears the cache.
+
+Stale serve is never applied inside an ``authoritative_reads()`` scope. The adapter
+opens that scope around every mutation and its pre/post verification reads, because
+those reads decide whether a write is authorized or verified; a cached answer there
+would replay one stale head on every retry. Authoritative reads still pay the budget
+wait and the spend-log row.
+
+Below ``WAIT_BELOW`` the governor sleeps until the bottleneck resource resets (bounded
+by ``MAX_RESET_WAITS``), then fails closed with ``GitHubQuotaExhausted``. Every governed
+call, including probes, appends one NDJSON spend-log line under a lock; a spend-log
+write failure fails open (the call proceeds and its row is lost). The spend log is
+bounded: once it reaches ``SPEND_LOG_MAX_BYTES`` only the newest
+``SPEND_LOG_KEEP_LINES`` rows are kept.
 """
 
 from __future__ import annotations
 
 import fcntl
 import json
+import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import IO, Literal
 
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterError
@@ -40,6 +51,8 @@ STALE_CACHE_TTL_SECONDS = 300.0
 WAIT_BELOW = 50
 PROBE_TTL_SECONDS = 60.0
 MAX_RESET_WAITS = 3
+SPEND_LOG_MAX_BYTES = 256 * 1024
+SPEND_LOG_KEEP_LINES = 1_000
 RATE_LIMIT_ARGV = ("gh", "api", "rate_limit")
 _BUDGET_RESOURCES = ("core", "graphql")
 
@@ -59,7 +72,10 @@ class BudgetState:
 def _parse_rate_limit(stdout: str) -> BudgetState | None:
     try:
         resources = json.loads(stdout)["resources"]
-        pairs = [(int(resources[name]["remaining"]), int(resources[name]["reset"])) for name in _BUDGET_RESOURCES]
+        pairs = [
+            (int(resources[name]["remaining"]), int(resources[name]["reset"]))
+            for name in _BUDGET_RESOURCES
+        ]
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
     remaining, reset_epoch = min(pairs)
@@ -84,6 +100,16 @@ class GitHubQuotaGovernor:
         self._budget: BudgetState | None = None
         self._probed_at: float | None = None
         self._read_cache: dict[tuple[str, ...], tuple[CommandResult, float]] = {}
+        self._authoritative_depth = 0
+
+    @contextmanager
+    def authoritative_reads(self) -> Iterator[None]:
+        """Reads issued in this scope always reach the network; stale serve is disabled."""
+        self._authoritative_depth += 1
+        try:
+            yield
+        finally:
+            self._authoritative_depth -= 1
 
     def call(
         self,
@@ -100,6 +126,7 @@ class GitHubQuotaGovernor:
         cached = self._read_cache.get(argv)
         if (
             read_only
+            and self._authoritative_depth == 0
             and budget is not None
             and budget.remaining < STALE_SERVE_BELOW
             and cached is not None
@@ -114,12 +141,17 @@ class GitHubQuotaGovernor:
         elif result.exit_code == 0:
             self._read_cache[argv] = (result, self._clock())
         if self._budget is not None:
-            self._budget = replace(self._budget, remaining=max(0, self._budget.remaining - 1))
+            self._budget = replace(
+                self._budget, remaining=max(0, self._budget.remaining - 1)
+            )
         self._record(argv, remaining, "network", result.exit_code)
         return result, True
 
     def _refresh_if_stale(self) -> None:
-        if self._probed_at is None or self._clock() - self._probed_at >= PROBE_TTL_SECONDS:
+        if (
+            self._probed_at is None
+            or self._clock() - self._probed_at >= PROBE_TTL_SECONDS
+        ):
             self._probe()
 
     def _probe(self) -> None:
@@ -138,11 +170,15 @@ class GitHubQuotaGovernor:
         waits = 0
         while self._budget is not None and self._budget.remaining < WAIT_BELOW:
             if waits == MAX_RESET_WAITS:
-                raise GitHubQuotaExhausted(f"GitHub budget stayed below {WAIT_BELOW} after {waits} reset waits")
+                raise GitHubQuotaExhausted(
+                    f"GitHub budget stayed below {WAIT_BELOW} after {waits} reset waits"
+                )
             delay = max(0.0, self._budget.reset_epoch - self._clock())
             self._sleep(delay)
             waits += 1
-            self._record(argv, self._budget.remaining, "waited", None, wait_seconds=delay)
+            self._record(
+                argv, self._budget.remaining, "waited", None, wait_seconds=delay
+            )
             self._probe()
 
     def _record(
@@ -155,7 +191,9 @@ class GitHubQuotaGovernor:
         wait_seconds: float | None = None,
     ) -> None:
         row: dict[str, object] = {
-            "ts": datetime.fromtimestamp(self._clock(), tz=UTC).isoformat(timespec="seconds"),
+            "ts": datetime.fromtimestamp(self._clock(), tz=UTC).isoformat(
+                timespec="seconds"
+            ),
             "endpoint": " ".join(argv[1:3]),
             "remaining": remaining,
             "outcome": outcome,
@@ -166,9 +204,10 @@ class GitHubQuotaGovernor:
         line = json.dumps(row, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
             self._spend_log.parent.mkdir(parents=True, exist_ok=True)
-            with self._spend_log.open("a", encoding="utf-8") as stream:
+            with self._spend_log.open("a+", encoding="utf-8") as stream:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
                 try:
+                    _trim_spend_log(stream)
                     stream.write(line + "\n")
                     stream.flush()
                 finally:
@@ -176,3 +215,20 @@ class GitHubQuotaGovernor:
         except OSError:
             # Observability must not block delivery: a spend-log write failure fails open.
             return
+
+
+def _trim_spend_log(stream: IO[str]) -> None:
+    """Keep only the newest rows once the log reaches its cap; caller holds the flock.
+
+    Runs under the same lock as the append, so concurrent writers never interleave with
+    the rewrite. In append mode every write lands at end-of-file, so truncating to zero
+    and rewriting the kept tail leaves a well-formed NDJSON file.
+    """
+    if os.fstat(stream.fileno()).st_size < SPEND_LOG_MAX_BYTES:
+        return
+    stream.seek(0)
+    kept = stream.readlines()[-SPEND_LOG_KEEP_LINES:]
+    stream.seek(0)
+    stream.truncate()
+    stream.writelines(kept)
+    stream.flush()
