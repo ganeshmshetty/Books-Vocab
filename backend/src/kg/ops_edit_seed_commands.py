@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -267,6 +268,13 @@ class SeedSpec:
     review_anchor: datetime | None
 
 
+def _embedding_store(user_dir: Path, *, llm, notebook_id: str = "default"):
+    # function-level import(同 ops_edit_support._graph_store):embeddings 拉 numpy,seed 僅 meaning edit 時需要。
+    from kg.service_factories import create_embedding_store
+
+    return create_embedding_store(user_dir, llm=llm, notebook_id=notebook_id)
+
+
 def load_seed_spec(path: Path) -> SeedSpec:
     if not path.exists():
         raise EditError(f"spec not found: {path}")
@@ -506,6 +514,7 @@ def apply_seed(
     pre_ids = {c.id for c in card_store.all()}
     card_checks: list[dict[str, Any]] = []
     synth_states: list[CardReviewState] = []
+    meaning_changed_by_nb: dict[str, list[str]] = {}
     for c in spec.cards:
         nb_id = _resolve_nb(c.get("notebook", "default"))
         card = card_store.add(
@@ -582,8 +591,21 @@ def apply_seed(
                         review_interval_hours=counters.get("review_interval_hours", 12.0),
                     )
                 )
+        if updates["meaning"] != card.meaning:
+            meaning_changed_by_nb.setdefault(nb_id, []).append(card.id)
         card_store.update(card.id, **updates)
         card_checks.append({"content": c["content"].strip(), "nb_id": nb_id, "meaning": c.get("meaning", "")})
+    # 含義被 seed 覆寫的卡(含 dup)必須與 meaning edit 同一套副作用:丟棄舊向量 + 重回 judge 佇列(#2957)。
+    # 新卡的 card.meaning 已是 spec 值,不會進此分支。
+    if meaning_changed_by_nb:
+        from .vocab_crud import reembed_meaning_edits_best_effort
+
+        for nb_id, changed_ids in meaning_changed_by_nb.items():
+            reembed_meaning_edits_best_effort(
+                changed_ids,
+                open_embeddings=partial(_embedding_store, ctx.user_dir, llm=None, notebook_id=nb_id),
+                open_graph=partial(_graph_store, ctx.user_dir, nb_id),
+            )
     state["card_checks"] = card_checks
     post_ids = {c.id for c in card_store.all()}
     actually_new = len(post_ids - pre_ids)

@@ -476,16 +476,22 @@ def reembed_meaning_edits_best_effort(
 ) -> None:
     """Re-embed cards whose meaning was already committed. Opening a store is
     lazy and best-effort: the meaning write is durable, so a store that fails
-    to open must not fail the caller. Warn, report and skip this batch."""
+    to open must not fail the caller. Eviction depends only on the embedding
+    store (#2957): a graph that fails to open skips just the judge requeue."""
     if not card_ids:
         return
     try:
         embeddings = open_embeddings()
-        graph = open_graph()
     except Exception as exc:
         logger.warning("re-embed skipped for %d meaning edit(s): store unavailable: %s", len(card_ids), exc)
         capture_handled(exc, context="vocab.reembed_open")
         return
+    try:
+        graph = open_graph()
+    except Exception as exc:
+        logger.warning("judge requeue skipped for %d meaning edit(s): graph unavailable: %s", len(card_ids), exc)
+        capture_handled(exc, context="vocab.reembed_graph_open")
+        graph = None
     for card_id in card_ids:
         reembed_after_meaning_edit(embeddings, graph, card_id)
 

@@ -359,3 +359,37 @@ class TestSeedReplace:
         assert payload["verified"]["ok"] is False
         assert any("型別非法" in s for s in payload["verified"]["dangling_config"]), payload
         assert r.returncode == 1
+
+
+def test_seed_meaning_overwrite_on_dup_card_evicts_vector_and_requeues_judging(tmp_path, monkeypatch):
+    """#2957: a dup card whose meaning the seed overwrites must drop its vector and re-queue judging."""
+    import kg.ops_edit_seed_commands as seed_mod
+    from kg.ops_edit_shared import EditContext
+
+    uid = _mk_user(tmp_path)
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps({"cards": [{"content": "w", "meaning": "旧"}]}))
+    r0 = _edit(str(tmp_path), "seed", uid, str(spec_path), "--commit", "--json")
+    assert r0.returncode == 0, r0.stderr
+    card_id = _card_rows(tmp_path, uid)[0]["id"]
+
+    spec_path.write_text(json.dumps({"cards": [{"content": "w", "meaning": "新"}]}))
+    evicted: list[str] = []
+    queued: list[str] = []
+
+    class _Emb:
+        def remove(self, cid):
+            evicted.append(cid)
+
+    class _Graph:
+        def add_pending_judge(self, cid):
+            queued.append(cid)
+
+    monkeypatch.setattr(seed_mod, "_embedding_store", lambda *_a, **_k: _Emb())
+    monkeypatch.setattr(seed_mod, "_graph_store", lambda *_a, **_k: _Graph())
+    ctx = EditContext(data_dir=tmp_path, uid=uid, commit=True, json_mode=True)
+    seed_mod.apply_seed(seed_mod.load_seed_spec(spec_path), ctx, {}, replace=False)
+
+    assert [r["meaning"] for r in _card_rows(tmp_path, uid)] == ["新"]
+    assert evicted == [card_id]
+    assert queued == [card_id]

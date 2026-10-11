@@ -739,3 +739,18 @@ def test_pipeline_graph_store_failure_skips_reembed_and_keeps_batches(monkeypatc
 
 def _raising_store(*_args, **_kwargs):
     raise RuntimeError("store unavailable")
+
+
+def test_reembed_best_effort_evicts_even_when_graph_store_fails_to_open():
+    """#2957: evict must not depend on opening the graph; a failed graph only skips the judge requeue."""
+    from kg.vocab_crud import reembed_meaning_edits_best_effort
+
+    embeddings = _RecordingEmbeddings()
+
+    reembed_meaning_edits_best_effort(
+        ["c1"],
+        open_embeddings=lambda: embeddings,
+        open_graph=_raising_store,
+    )
+
+    assert embeddings.removed == ["c1"]
