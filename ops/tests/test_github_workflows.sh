@@ -249,6 +249,47 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     grep -Fq 'set -euo pipefail' <<<"$block" \
       || fail "merge-group ${label} step does not run with set -euo pipefail"
   }
+  # i18n duplicate keys: the five Localizable.strings catalogs are shared Scope, so
+  # the PR-time ui-quality-gate no longer serialises catalog lanes.  Two lanes that
+  # add the same key at non-adjacent positions can both pass their own PR checks
+  # and textually merge cleanly; only the merge queue sees the result.  The helper
+  # always exits 0 and reports on stdout, so the step must fail on any output.
+  # Run the workflow's own step block against fixture catalogs: a fallback value
+  # or a skipped step cannot satisfy these cases.
+  i18n_step="$(merge_group_step_containing '_i18n_duplicate_keys.py')"
+  if [[ -z "$i18n_step" ]]; then
+    fail "merge-group required gate has no i18n duplicate-key step (shared catalogs leave the merge queue as the only re-check)"
+  else
+    merge_group_assert_unmasked_step "i18n duplicate-key" "$i18n_step" no
+    i18n_tmp="$(mktemp -d)"
+    i18n_run="$i18n_tmp/step.sh"
+    ruby -ryaml -e '
+      steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+      step = steps.find { |s| s["run"].to_s.include?("_i18n_duplicate_keys.py") }
+      abort("no i18n duplicate-key step") unless step
+      File.write(ARGV[1], step["run"])
+    ' "$MERGE_GROUP_REQUIRED" "$i18n_run" \
+      || fail "cannot extract the i18n duplicate-key step run block"
+    # uv is a host tool; the shim runs the same stdlib-only helper with the system interpreter.
+    mkdir -p "$i18n_tmp/bin" "$i18n_tmp/repo/ops" "$i18n_tmp/repo/ios/BooksAndVocab/en.lproj"
+    printf '%s\n' '#!/usr/bin/env bash' 'shift 4' 'exec python3 -I "$@"' >"$i18n_tmp/bin/uv"
+    chmod +x "$i18n_tmp/bin/uv"
+    cp ops/_i18n_duplicate_keys.py "$i18n_tmp/repo/ops/"
+    i18n_catalog="$i18n_tmp/repo/ios/BooksAndVocab/en.lproj/Localizable.strings"
+    run_i18n_step() { (cd "$i18n_tmp/repo" && PATH="$i18n_tmp/bin:$PATH" bash "$i18n_run"); }
+    printf '%s\n' '"a" = "1";' '"b" = "2";' >"$i18n_catalog"
+    run_i18n_step >/dev/null 2>&1 \
+      || fail "i18n duplicate-key step rejects a clean catalog"
+    printf '%s\n' '"a" = "1";' '"b" = "2";' '"a" = "3";' >"$i18n_catalog"
+    if run_i18n_step >/dev/null 2>&1; then
+      fail "i18n duplicate-key step passes a non-adjacent duplicate key (helper exits 0 with output; the step must fail on it)"
+    fi
+    rm -f "$i18n_catalog"
+    if run_i18n_step >/dev/null 2>&1; then
+      fail "i18n duplicate-key step passes with no .strings catalogs at all (helper reports that as output; the gate must fail closed)"
+    fi
+    rm -rf "$i18n_tmp"
+  fi
   scope_step_id="$(awk '
     /^      - name:/ { id="" }
     /^        id:/ { id=$2 }
