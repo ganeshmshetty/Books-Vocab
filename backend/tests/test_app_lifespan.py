@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import replace
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from kg import worker_guard
 from kg.app_lifespan import AppLifespanDependencies, build_app_lifespan_from_dependencies
+from kg.log_retention_scheduler import LogRetentionScheduler
 from kg.settings import KGSettings
 
 
@@ -362,3 +365,56 @@ def test_lifespan_cancels_log_retention_loop_before_releasing_lock(tmp_path):
     assert cancelled < events.index("release_worker_lock")
     # The loop only starts once the worker lock is held and the runtime root is bound.
     assert events.index(("bind_runtime_data_root", tmp_path)) < events.index("log_retention_loop_started")
+
+
+def test_lifespan_waits_for_retention_worker_thread_before_releasing_lock(tmp_path):
+    """Shutdown must not release the lock while a retention DELETE still runs in its worker thread (#2091)."""
+    events: list[object] = []
+    started = threading.Event()
+    gate = threading.Event()
+
+    def _run_all() -> dict[str, dict[str, int]]:
+        started.set()
+        gate.wait(5)
+        events.append("run_all_returned")
+        return {}
+
+    sleep_calls = 0
+
+    async def _sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            await asyncio.Event().wait()
+
+    scheduler = LogRetentionScheduler(
+        run_all_fn=_run_all,
+        clock=lambda: datetime(2026, 10, 11, 4, 16, 0),
+        sleep_fn=_sleep,
+    )
+    deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=scheduler.run_forever)
+    app = FastAPI(lifespan=build_app_lifespan_from_dependencies(dependencies=deps))
+
+    with TestClient(app):
+        assert started.wait(5)
+        threading.Timer(0.3, gate.set).start()
+
+    assert "run_all_returned" in events
+    assert events.index("run_all_returned") < events.index("release_worker_lock")
+
+
+def test_create_app_starts_the_in_process_log_retention_loop(tmp_path, monkeypatch):
+    from kg.api import create_app
+
+    _clear_llm_env(monkeypatch)
+    started: list[object] = []
+
+    async def _fake_run_forever(self) -> None:
+        started.append(self)
+
+    monkeypatch.setattr(LogRetentionScheduler, "run_forever", _fake_run_forever)
+
+    with TestClient(create_app(_settings(tmp_path))):
+        pass
+
+    assert len(started) == 1
