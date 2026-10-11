@@ -57,9 +57,9 @@ final class VocabularyEntry {
     var isArchived: Bool = false
     var isReaderHidden: Bool = false
     var isReviewExcluded: Bool = false
-    /// True from the moment the sync engine captures this entry until that sync returns. A user delete while
-    /// true queues a server delete instead of hard-deleting a row the sync still holds (#2733).
-    /// Transient: set only by the sync engine.
+    /// True from the moment the sync engine captures this entry until that sync returns. While true, a user
+    /// delete queues a server delete instead of hard-deleting a row the sync still holds (#2733), and undo or a
+    /// reader re-capture does not restore the row (I3, #2484). Transient: set only by the sync engine.
     @Transient var isUploadInFlight = false
 
     // Local spaced-review state
@@ -223,17 +223,21 @@ extension VocabularyEntry {
     // I2  markSynced() 只在 server 已確認卡片時呼叫。撤銷刪除時 kgCardId 為空不得 markSynced（#2484）。
     // 推論：pending+delete 且 kgCardId 為空 ＝ 「server 可能沒有此卡」，不代表 server 有卡；
     //       交下一輪 batchDelete 收斂（deleted／not_found 本地移除，其餘 failed 重試）。
+    // I3  isUploadInFlight 為真（sync 擷取起至返回）時，使用者的撤銷與閱讀器重新擷取不得改寫列的 syncAction；
+    //     唯一允許的使用者轉移是 → delete（T1）。擷取時為 delete 的列，回應到達時仍為 delete，
+    //     故 sync 的 post-await 只守 syncAction == .delete 與 in-flight，不需撤銷競態分支（#2484 r8）。
     //
     // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 → queueDelete（列保留）；其餘 → 硬刪。
     // T2 batchAdd cardIds 命中：寫 kgCardId；action 為 add 才 markSynced，為 delete 則維持 pending delete。
     // T3 batchAdd rejected：markRejected → add+failed（rejectedReason 終態）；action 為 delete 則維持 pending delete。
     // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete）。
-    // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪；已被撤銷還原的列不動。
+    // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
-    // T7 undoQueuedDelete：kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
+    // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
     // T8 edit 成功：action 仍為 edit 才 markSynced；成功前被刪者維持 delete。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
-    // T10 restorePendingEntry（閱讀器重新擷取、sanitize 收斂）：add+pending，永不宣稱 synced。
+    // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
+    //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
     // T11 NotebookReconciler cascade 的 queueDelete 可作用於 kgCardId 為空的 add：delete+pending，交 T5 以 not_found 收斂。
 
     func queueDelete() {
@@ -259,11 +263,12 @@ extension VocabularyEntry {
         }
     }
 
-    /// 撤銷尚未送出的刪除（SyncView「還原」）。只有 server 確認持有卡片（`hasServerCard`）才能回到 synced；
-    /// 否則 server 從未確認此卡，必須重新排入 pending add，由下一輪 batchAdd 建立（T7）。
+    /// 撤銷尚未送出的刪除（SyncView「還原」）。in-flight 時為 no-op（I3）：列的去留由進行中的 sync 回應決定，
+    /// 撤銷會與回應競態（#2484 r8）；sync 返回後仍存在的 delete 列才可撤銷。
+    /// 只有 server 確認持有卡片（`hasServerCard`）才能回到 synced；否則 server 從未確認此卡，必須重新排入 pending add，由下一輪 batchAdd 建立（T7）。
     /// 無 kgCardId 卻 markSynced 會得到「synced 但 server 沒有」的列，full pull 的 orphan cleanup 會把它刪掉（#2484）。
     func undoQueuedDelete() {
-        guard syncAction == .delete else { return }
+        guard syncAction == .delete, !isUploadInFlight else { return }
         if hasServerCard {
             markSynced()
         } else {

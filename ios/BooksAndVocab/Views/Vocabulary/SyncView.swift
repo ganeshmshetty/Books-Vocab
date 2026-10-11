@@ -110,6 +110,8 @@ struct SyncView: View {
     private func handlePendingActionTap(_ entryID: UUID) {
         guard let entry = pendingEntries.first(where: { $0.id == entryID }) else { return }
         if entry.syncAction == .delete {
+            // I3（#2484 r8）：進行中的 sync 持有的列忽略還原，列保持原樣；sync 返回後才可撤銷。
+            guard !entry.isUploadInFlight else { return }
             // 還原刪除：server 未確認的卡只能回到 pending add，見 `VocabularyEntry.undoQueuedDelete`（#2484）。
             entry.undoQueuedDelete()
             modelContext.safeSaveWithToast(toastCoordinator)

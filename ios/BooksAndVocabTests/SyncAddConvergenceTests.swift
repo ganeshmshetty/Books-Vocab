@@ -255,20 +255,42 @@ struct SyncAddConvergenceTests {
         #expect(entry.isPendingAdd)
     }
 
-    @Test("撤銷後的列不被過期的 batchDelete 回應（not_found）硬刪，保留為 pending add")
-    func revived_row_survives_stale_batch_delete_response() throws {
+    @Test("in-flight 的待刪在 batchDelete 往返期間撤銷為 no-op，回應 not_found 直接硬刪（#2484 P1, I3）")
+    func undo_during_flight_is_noop_and_response_removes_row() throws {
         let container = try ModelContainer(
             for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         let context = ModelContext(container)
-        let entry = makePendingAdd("revived")
+        let entry = makePendingAdd("held")
         context.insert(entry)
         entry.queueDelete()
+        entry.isUploadInFlight = true
+
         entry.undoQueuedDelete()
-        #expect(entry.isPendingAdd)
+        #expect(entry.isPendingDelete)
 
         let outcome = SyncCoordinator.applyBatchDeleteResponse(
-            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["revived"]),
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["held"]),
+            entries: [entry],
+            modelContext: context
+        )
+
+        #expect(entry.isDeleted)
+        #expect(outcome.deleted == 1)
+        #expect(outcome.failedWords.isEmpty)
+    }
+
+    @Test("陳舊的 batchDelete 回應不硬刪已非 delete 的列（防禦性守門）")
+    func stale_batch_delete_response_skips_non_delete_row() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let entry = makePendingAdd("stale")
+        context.insert(entry)
+
+        let outcome = SyncCoordinator.applyBatchDeleteResponse(
+            response: KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["stale"]),
             entries: [entry],
             modelContext: context
         )
@@ -278,6 +300,47 @@ struct SyncAddConvergenceTests {
         #expect(outcome.deleted == 0)
         #expect(outcome.failedWords.isEmpty)
     }
+
+    #if os(iOS)
+    @Test("in-flight 的待刪被閱讀器重新擷取：不還原（I3），改新增一筆 pending add，原列保留待刪")
+    func recapture_of_in_flight_delete_saves_fresh_add() throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, Book.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let ctx = ModelContext(container)
+        let held = makePendingAdd("held")
+        held.kgCardId = "card-held"
+        held.markSynced()
+        held.queueDelete()
+        held.isUploadInFlight = true
+        ctx.insert(held)
+        let book = Book(title: "B", author: "A", fileName: "f.epub")
+        ctx.insert(book)
+        let capture = ReaderVocabularyContext(
+            vocabulary: [],
+            modelContext: ctx,
+            book: book,
+            currentLocator: nil,
+            notebookId: "default",
+            toastCoordinator: AppToastCoordinator()
+        )
+
+        let saved = capture.saveEntry(
+            selection: WordSelection(word: "held", context: "ctx", position: .zero),
+            translation: "新譯文",
+            rootForm: nil
+        )
+        try ctx.save()
+
+        #expect(saved)
+        #expect(held.isPendingDelete)
+        #expect(held.kgCardId == "card-held")
+        let all = try ctx.fetch(FetchDescriptor<VocabularyEntry>())
+        #expect(all.count == 2)
+        #expect(all.contains { $0.isPendingAdd && $0.translation == "新譯文" })
+    }
+    #endif
 
     // MARK: - retry 路徑：failed+add 也能被收斂
 
