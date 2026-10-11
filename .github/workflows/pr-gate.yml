@@ -73,6 +73,18 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
+      # ripgrep is a hard prerequisite of the github-workflows fixtures (the strict
+      # i18n lint fixtures fail loudly without it), and the runner image does not
+      # guarantee it.  Same bounded installer and guard as merge-group-required.yml,
+      # placed before the first gate step so no later step can meet a missing rg.
+      - name: Install ripgrep
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            ./ops/ci_apt_install.sh ripgrep
+          fi
+          rg --version
+
       # BASE_SHA is the base branch tip when the run started, not the PR's fork
       # point. Diffing it against HEAD would also contain the reverse of every
       # main commit merged after the fork, so only the merge base describes
