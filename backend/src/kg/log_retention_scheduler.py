@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime, time, timedelta
 from typing import Any
 
-from .log_retention import run_all
+from .log_retention import RetentionStopped, run_all
 
 _logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class LogRetentionScheduler:
     def __init__(
         self,
         *,
-        run_all_fn: Callable[[], dict[str, dict[str, int]]] = run_all,
+        run_all_fn: Callable[..., dict[str, dict[str, int]]] = run_all,
         clock: Callable[[], datetime] = datetime.now,
         sleep_fn: Callable[[float], Any] = asyncio.sleep,
         logger: logging.Logger | Any = _logger,
@@ -48,6 +48,8 @@ class LogRetentionScheduler:
         self._clock = clock
         self._sleep_fn = sleep_fn
         self._logger = logger
+        # Set on cancellation so an in-flight run stops at its next batch boundary.
+        self._stop = threading.Event()
 
     async def run_next(self) -> None:
         """Sleep until the next scheduled slot, then run the pruners once."""
@@ -63,10 +65,11 @@ class LogRetentionScheduler:
     async def _run_once(self) -> None:
         # run_all uses blocking sqlite connections; keep them off the event loop.
         # Cancelling the awaiting task does not stop a worker thread that already
-        # started, so on cancellation we wait for it to finish before propagating:
-        # the lifespan must not release the runtime root or worker lock under a
-        # live DELETE. A run cancelled before its thread started is skipped
-        # outright, so there is nothing to wait for and no hang on shutdown.
+        # started, so on cancellation we ask it to stop at the next batch boundary
+        # and wait for it to finish before propagating: the lifespan must not
+        # release the runtime root or worker lock under a live DELETE. Waiting
+        # costs one batch, not the whole backlog. A run cancelled before its
+        # thread started is skipped outright, so there is nothing to wait for.
         state_lock = threading.Lock()
         running = False
         cancelled = False
@@ -79,13 +82,17 @@ class LogRetentionScheduler:
                     return {}
                 running = True
             try:
-                return self._run_all_fn()
+                return self._run_all_fn(should_stop=self._stop.is_set)
+            except RetentionStopped:
+                # Shutdown interrupted the run; its partial report is not logged.
+                return {}
             finally:
                 finished.set()
 
         try:
             report = await asyncio.to_thread(_work)
         except asyncio.CancelledError:
+            self._stop.set()
             with state_lock:
                 thread_started = running
                 cancelled = not running
@@ -95,4 +102,12 @@ class LogRetentionScheduler:
         except Exception:
             self._logger.exception("log retention run failed; will retry at the next scheduled time")
             return
-        self._logger.info("log retention run: %s", json.dumps(report))
+        # The prune has already committed by now. A report that cannot be
+        # serialised must be logged, never raised: an exception here would end
+        # run_forever and silently stop all future pruning until the next restart.
+        try:
+            summary = json.dumps(report, default=str)
+        except Exception:
+            self._logger.exception("log retention ran but its report could not be serialised")
+            return
+        self._logger.info("log retention run: %s", summary)

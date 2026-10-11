@@ -5,7 +5,8 @@ log database and returns ``(deleted_count, remaining_count)``. The pruners
 go through the existing module-level connection singletons so they respect
 the test ``KG_DATA_DIR`` redirection and never bypass schema migrations.
 
-A CLI entry point exposes the same operations for cron usage:
+Scheduled pruning runs in the backend process (``log_retention_scheduler``);
+the CLI entry point below is for manual operator runs against the same code:
 
     uv run python -m kg.log_retention --all
     uv run python -m kg.log_retention --pipeline --days 30
@@ -19,6 +20,7 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from . import judge_log, llm_error_log, pipeline_log, token_tracker, translate_log
@@ -32,6 +34,15 @@ DEFAULT_DAYS_JUDGE = 60
 DEFAULT_DAYS_TRANSLATE = 14
 DEFAULT_DAYS_TOKEN = 90
 DEFAULT_DAYS_LLM_ERRORS = 30
+
+# Rows removed per DELETE statement (see _prune_table). Bounds how long a single
+# batch holds the log lock, so the first run on a large backlog stays well inside
+# docker stop's 10s grace period.
+DELETE_BATCH_SIZE = 5000
+
+
+class RetentionStopped(RuntimeError):
+    """A stop was requested between batches; rows already committed stay deleted."""
 
 
 def _env_days(var: str, fallback: int) -> int:
@@ -88,11 +99,38 @@ def _cutoff(days: int) -> str:
     return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
-def _delete_and_count(conn, table: str, column: str, cutoff: str) -> tuple[int, int]:
-    cur = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
-    deleted = cur.rowcount or 0
-    conn.commit()
-    remaining = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+def _prune_table(
+    log,
+    table: str,
+    column: str,
+    cutoff: str,
+    should_stop: Callable[[], bool] | None,
+) -> tuple[int, int]:
+    """Delete rows older than ``cutoff`` in bounded batches, then count what remains.
+
+    ``log`` is one of the log singletons. Each batch takes its ``_lock``, runs
+    one ``DELETE`` of at most ``DELETE_BATCH_SIZE`` rows, commits, and releases
+    the lock, so a large first-run backlog never holds the log lock for its
+    whole length and writers can interleave between batches. ``should_stop`` is
+    checked before every batch: shutdown ends a long backlog at a batch boundary.
+    """
+    deleted = 0
+    while True:
+        if should_stop is not None and should_stop():
+            raise RetentionStopped(f"{table}: stop requested after {deleted} rows")
+        with log._lock:
+            conn = log._get_conn()
+            cur = conn.execute(
+                f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {column} < ? LIMIT ?)",
+                (cutoff, DELETE_BATCH_SIZE),
+            )
+            batch = cur.rowcount or 0
+            conn.commit()
+        deleted += batch
+        if batch < DELETE_BATCH_SIZE:
+            break
+    with log._lock:
+        remaining = log._get_conn().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     return deleted, remaining
 
 
@@ -101,7 +139,7 @@ def _delete_and_count(conn, table: str, column: str, cutoff: str) -> tuple[int, 
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def prune_pipeline_log(days: int | None = None) -> tuple[int, int]:
+def prune_pipeline_log(days: int | None = None, *, should_stop: Callable[[], bool] | None = None) -> tuple[int, int]:
     """Delete pipeline_runs rows whose ``started_at`` is older than ``days``.
 
     When ``days`` is ``None``, falls back to ``PIPELINE_LOG_RETENTION_DAYS``
@@ -110,12 +148,10 @@ def prune_pipeline_log(days: int | None = None) -> tuple[int, int]:
     if days is None:
         days = _env_days("PIPELINE_LOG_RETENTION_DAYS", DEFAULT_DAYS_PIPELINE)
     cutoff = _cutoff(days)
-    with pipeline_log._lock:
-        conn = pipeline_log._get_conn()
-        return _delete_and_count(conn, "pipeline_runs", "started_at", cutoff)
+    return _prune_table(pipeline_log, "pipeline_runs", "started_at", cutoff, should_stop)
 
 
-def prune_judge_log(days: int | None = None) -> tuple[int, int]:
+def prune_judge_log(days: int | None = None, *, should_stop: Callable[[], bool] | None = None) -> tuple[int, int]:
     """Delete judge_log rows whose ``created_at`` is older than ``days``.
 
     When ``days`` is ``None``, falls back to ``JUDGE_LOG_RETENTION_DAYS``
@@ -124,12 +160,10 @@ def prune_judge_log(days: int | None = None) -> tuple[int, int]:
     if days is None:
         days = _env_days("JUDGE_LOG_RETENTION_DAYS", DEFAULT_DAYS_JUDGE)
     cutoff = _cutoff(days)
-    with judge_log._lock:
-        conn = judge_log._get_conn()
-        return _delete_and_count(conn, "judge_log", "created_at", cutoff)
+    return _prune_table(judge_log, "judge_log", "created_at", cutoff, should_stop)
 
 
-def prune_translate_log(days: int | None = None) -> tuple[int, int]:
+def prune_translate_log(days: int | None = None, *, should_stop: Callable[[], bool] | None = None) -> tuple[int, int]:
     """Delete translate_log rows whose ``created_at`` is older than ``days``.
 
     When ``days`` is ``None``, falls back to ``TRANSLATE_LOG_RETENTION_DAYS``
@@ -138,12 +172,12 @@ def prune_translate_log(days: int | None = None) -> tuple[int, int]:
     if days is None:
         days = _env_days("TRANSLATE_LOG_RETENTION_DAYS", DEFAULT_DAYS_TRANSLATE)
     cutoff = _cutoff(days)
-    with translate_log._lock:
-        conn = translate_log._get_conn()
-        return _delete_and_count(conn, "translate_log", "created_at", cutoff)
+    return _prune_table(translate_log, "translate_log", "created_at", cutoff, should_stop)
 
 
-def prune_translate_cache_hits(days: int | None = None) -> tuple[int, int]:
+def prune_translate_cache_hits(
+    days: int | None = None, *, should_stop: Callable[[], bool] | None = None
+) -> tuple[int, int]:
     """Delete translate_cache_hits rows whose ``created_at`` is older than ``days``.
 
     Reuses the translate-log retention window: when ``days`` is ``None``,
@@ -155,12 +189,10 @@ def prune_translate_cache_hits(days: int | None = None) -> tuple[int, int]:
     if days is None:
         days = _env_days("TRANSLATE_LOG_RETENTION_DAYS", DEFAULT_DAYS_TRANSLATE)
     cutoff = _cutoff(days)
-    with translate_log._lock:
-        conn = translate_log._get_conn()
-        return _delete_and_count(conn, "translate_cache_hits", "created_at", cutoff)
+    return _prune_table(translate_log, "translate_cache_hits", "created_at", cutoff, should_stop)
 
 
-def prune_token_usage(days: int | None = None) -> tuple[int, int]:
+def prune_token_usage(days: int | None = None, *, should_stop: Callable[[], bool] | None = None) -> tuple[int, int]:
     """Delete token_usage rows whose ``created_at`` is older than ``days``.
 
     When ``days`` is ``None``, falls back to ``TOKEN_USAGE_RETENTION_DAYS``
@@ -169,12 +201,10 @@ def prune_token_usage(days: int | None = None) -> tuple[int, int]:
     if days is None:
         days = _env_days("TOKEN_USAGE_RETENTION_DAYS", DEFAULT_DAYS_TOKEN)
     cutoff = _cutoff(days)
-    with token_tracker._lock:
-        conn = token_tracker._get_conn()
-        return _delete_and_count(conn, "token_usage", "created_at", cutoff)
+    return _prune_table(token_tracker, "token_usage", "created_at", cutoff, should_stop)
 
 
-def prune_llm_errors(days: int | None = None) -> tuple[int, int]:
+def prune_llm_errors(days: int | None = None, *, should_stop: Callable[[], bool] | None = None) -> tuple[int, int]:
     """Delete llm_errors rows whose ``created_at`` is older than ``days``.
 
     When ``days`` is ``None``, falls back to ``LLM_ERROR_LOG_RETENTION_DAYS``
@@ -183,9 +213,7 @@ def prune_llm_errors(days: int | None = None) -> tuple[int, int]:
     if days is None:
         days = _env_days("LLM_ERROR_LOG_RETENTION_DAYS", DEFAULT_DAYS_LLM_ERRORS)
     cutoff = _cutoff(days)
-    with llm_error_log._lock:
-        conn = llm_error_log._get_conn()
-        return _delete_and_count(conn, "llm_errors", "created_at", cutoff)
+    return _prune_table(llm_error_log, "llm_errors", "created_at", cutoff, should_stop)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,6 +228,7 @@ def run_all(
     translate_days: int | None = None,
     token_days: int | None = None,
     llm_error_days: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, dict[str, int]]:
     """Run every pruner and return a structured report.
 
@@ -207,21 +236,22 @@ def run_all(
     ``*_RETENTION_DAYS`` env override, falling back to ``DEFAULT_DAYS_*``.
     Pass an explicit int to force a window regardless of env. The admin
     endpoint and CLI ``--all`` both route through here, so ``None`` is what
-    makes those paths honour the env vars.
+    makes those paths honour the env vars. ``should_stop`` is polled between
+    batches; when it returns true the run raises ``RetentionStopped``.
     """
     report: dict[str, dict[str, int]] = {}
 
-    deleted, remaining = prune_pipeline_log(pipeline_days)
+    deleted, remaining = prune_pipeline_log(pipeline_days, should_stop=should_stop)
     report["pipeline_log"] = {
         "deleted": deleted,
         "remaining": remaining,
         "days": _effective_days("pipeline", pipeline_days),
     }
 
-    deleted, remaining = prune_judge_log(judge_days)
+    deleted, remaining = prune_judge_log(judge_days, should_stop=should_stop)
     report["judge_log"] = {"deleted": deleted, "remaining": remaining, "days": _effective_days("judge", judge_days)}
 
-    deleted, remaining = prune_translate_log(translate_days)
+    deleted, remaining = prune_translate_log(translate_days, should_stop=should_stop)
     report["translate_log"] = {
         "deleted": deleted,
         "remaining": remaining,
@@ -229,17 +259,17 @@ def run_all(
     }
 
     # Shares the translate-log retention window (TRANSLATE_LOG_RETENTION_DAYS).
-    deleted, remaining = prune_translate_cache_hits(translate_days)
+    deleted, remaining = prune_translate_cache_hits(translate_days, should_stop=should_stop)
     report["translate_cache_hits"] = {
         "deleted": deleted,
         "remaining": remaining,
         "days": _effective_days("translate", translate_days),
     }
 
-    deleted, remaining = prune_token_usage(token_days)
+    deleted, remaining = prune_token_usage(token_days, should_stop=should_stop)
     report["token_usage"] = {"deleted": deleted, "remaining": remaining, "days": _effective_days("token", token_days)}
 
-    deleted, remaining = prune_llm_errors(llm_error_days)
+    deleted, remaining = prune_llm_errors(llm_error_days, should_stop=should_stop)
     report["llm_errors"] = {
         "deleted": deleted,
         "remaining": remaining,

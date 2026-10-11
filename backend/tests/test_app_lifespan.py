@@ -373,7 +373,7 @@ def test_lifespan_waits_for_retention_worker_thread_before_releasing_lock(tmp_pa
     started = threading.Event()
     gate = threading.Event()
 
-    def _run_all() -> dict[str, dict[str, int]]:
+    def _run_all(*, should_stop) -> dict[str, dict[str, int]]:
         started.set()
         gate.wait(5)
         events.append("run_all_returned")
