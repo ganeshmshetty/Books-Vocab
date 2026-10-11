@@ -112,17 +112,43 @@ struct SharedDeckDetailView: View {
             .appAppearanceScheme()
         }
         .task(id: deckId) {
-            adoptCopyController()
+            await adoptCopyController()
             await load()
         }
-        .onChange(of: authManager.userId) { _, _ in adoptCopyController() }
+        .onChange(of: authManager.userId) { _, _ in
+            Task { await adoptCopyController() }
+        }
         .enableInjection()
     }
 
     /// init 讀不到 environment，故出現時與帳號切換時依當前 userId 向 registry 接回
     /// controller；他人的失敗卡不會因 pop/reopen 或換帳號而顯示（#2748）。
-    private func adoptCopyController() {
-        copyController = SharedDeckCopyRegistry.shared.controller(for: deckId, owner: authManager.userId)
+    /// 先同步接回既有 controller（suspend 期間 UI 仍是原 success 卡、不可再點複製），
+    /// 再由 registry 依生命週期決定是否結束已刪除目標的意圖。
+    @MainActor
+    private func adoptCopyController() async {
+        let owner = authManager.userId
+        let container = modelContext.container
+        copyController = SharedDeckCopyRegistry.shared.controller(for: deckId, owner: owner)
+        copyController = await SharedDeckCopyRegistry.shared.resolve(
+            deckId: deckId,
+            owner: owner,
+            destinationExists: { localNotebookExists(remoteId: $0) },
+            refreshDestination: { notebookId in
+                await kgService.pullCopiedDeck(container: container, notebookId: notebookId)
+            }
+        )
+    }
+
+    /// 目標 notebook 是否仍是本機可見的未刪除列。查詢失敗回 true：寧可誤顯示「已複製」，
+    /// 也不可在儲存錯誤時放行第二次複製（會產生重複 notebook）。
+    private func localNotebookExists(remoteId: String) -> Bool {
+        let target = remoteId
+        let descriptor = FetchDescriptor<Notebook>(
+            predicate: #Predicate { $0.remoteId == target && !$0.isSoftDeleted }
+        )
+        guard let count = try? modelContext.fetchCount(descriptor) else { return true }
+        return count > 0
     }
 
     // MARK: - Copy CTA

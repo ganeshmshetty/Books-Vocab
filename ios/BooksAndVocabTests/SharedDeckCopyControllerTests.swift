@@ -267,9 +267,103 @@ struct SharedDeckCopyControllerTests {
         let c1 = registry.controller(for: "d1", owner: "A")
         registry.track(c1, for: "d1")
         await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response())]))
-        let c2 = registry.controller(for: "d1", owner: "A")
+        let c2 = await registry.resolve(
+            deckId: "d1", owner: "A",
+            destinationExists: { _ in true },
+            refreshDestination: { _ in Issue.record("refresh must not run while destination is present") }
+        )
         #expect(c2 === c1, "reopen after success must reuse the success state")
         #expect(c2.isSucceeded)
+        #expect(registry.trackedDeckCount == 1)
+    }
+
+    // MARK: - Registry lifecycle on reopen (#2748 CR r2: success must not stick forever)
+
+    /// 複製成功後使用者在本機刪掉該 notebook：reopen 結束舊意圖（條目清除、回新 idle），
+    /// 再次複製為新意圖——使用新 key，server 建立新 notebook，而非回放舊的已刪 notebook。
+    @Test func registry_retires_success_when_destination_deleted_and_allows_new_copy() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1", owner: "A")
+        registry.track(c1, for: "d1")
+        let fake = FakeDeckCopier([.success(response("nb1")), .success(response("nb2"))])
+        await c1.copy(deckId: "d1", notebookName: nil, using: fake)
+        var refreshed = 0
+        let c2 = await registry.resolve(
+            deckId: "d1", owner: "A",
+            destinationExists: { _ in false },
+            refreshDestination: { _ in refreshed += 1 }
+        )
+        #expect(refreshed == 1, "absent destination gets one re-land attempt before retirement")
+        #expect(c2 !== c1, "deleted destination ends the intent")
+        #expect(c2.state == .idle, "reopened deck offers copy again, not stuck in success")
+        #expect(registry.trackedDeckCount == 0)
+
+        registry.track(c2, for: "d1")
+        await c2.copy(deckId: "d1", notebookName: nil, using: fake)
+        #expect(fake.receivedKeys.count == 2)
+        #expect(fake.receivedKeys[0] != fake.receivedKeys[1], "a copy after retirement is a new intent with a new key")
+        #expect(c2.isSucceeded, "the new copy reaches the server and lands as success")
+    }
+
+    /// pop 期間 pull 沒落地（notebook 暫時不在本機）：reopen 的重拉讓它落地，必須保留成功態，
+    /// 不得把「未落地」誤判為「已刪除」而允許第二次複製（server 已有一本）。
+    @Test func registry_keeps_success_when_refresh_lands_the_destination() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1", owner: "A")
+        registry.track(c1, for: "d1")
+        await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response("nb1"))]))
+        var landed = false
+        var refreshed = 0
+        let c2 = await registry.resolve(
+            deckId: "d1", owner: "A",
+            destinationExists: { _ in landed },
+            refreshDestination: { _ in refreshed += 1; landed = true }
+        )
+        #expect(refreshed == 1)
+        #expect(c2 === c1, "a destination that lands on re-pull keeps the success entry")
+        #expect(c2.isSucceeded)
+        #expect(registry.trackedDeckCount == 1)
+    }
+
+    /// 失敗條目不受目的地檢查影響：重試必須沿用同一把 key 與名稱，且不觸發重拉。
+    @Test func registry_failure_entry_is_resumed_untouched_by_destination_check() async {
+        let registry = SharedDeckCopyRegistry()
+        let c1 = registry.controller(for: "d1", owner: "A")
+        registry.track(c1, for: "d1")
+        await c1.copy(deckId: "d1", notebookName: "Named", using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+        let key = c1.currentIdempotencyKey
+        let c2 = await registry.resolve(
+            deckId: "d1", owner: "A",
+            destinationExists: { _ in false },
+            refreshDestination: { _ in Issue.record("failure entry has no destination to refresh") }
+        )
+        #expect(c2 === c1, "failure stays resumable on reopen")
+        #expect(c2.currentIdempotencyKey == key)
+        #expect(c2.lastNotebookName == "Named")
+        #expect(registry.trackedDeckCount == 1)
+    }
+
+    /// 帳號 A 的成功條目因目的地已刪而退場，不得影響帳號 B 對同一 deck 的條目。
+    @Test func registry_retiring_one_accounts_success_leaves_the_other_intact() async {
+        let registry = SharedDeckCopyRegistry()
+        let a = registry.controller(for: "d1", owner: "A")
+        registry.track(a, for: "d1")
+        await a.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response("nbA"))]))
+        let b = registry.controller(for: "d1", owner: "B")
+        registry.track(b, for: "d1")
+        await b.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response("nbB"))]))
+        let aAgain = await registry.resolve(
+            deckId: "d1", owner: "A",
+            destinationExists: { _ in false },
+            refreshDestination: { _ in }
+        )
+        #expect(aAgain !== a)
+        let bAgain = await registry.resolve(
+            deckId: "d1", owner: "B",
+            destinationExists: { _ in true },
+            refreshDestination: { _ in Issue.record("B's destination is present") }
+        )
+        #expect(bAgain === b, "B's success survives A's retirement")
         #expect(registry.trackedDeckCount == 1)
     }
 
