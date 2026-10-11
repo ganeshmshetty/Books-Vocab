@@ -14,7 +14,7 @@ import Testing
 ///   - HTTP status → retry/error classification (`RetryPolicy`, `KGError`)
 ///   - JSON decoding of every wire model (`authenticatedDecode`'s `JSONDecoder().decode`)
 ///   - exponential-backoff delay arithmetic used by the retry loop
-///   - auth-token pre-check (`JWTExpiry`, called by `currentAuthToken`)
+///   - local JWT expiry helper (`JWTExpiry`, used only by `authTokenWithoutInvalidation`; #2806)
 ///   - request-header assembly (`RequestObservation`, the `X-Request-ID` plumbing)
 ///
 /// This complements `KGServiceErrorTests` (error-predicate pinning) without overlap.
@@ -344,7 +344,7 @@ struct KGServiceTests {
         #expect(decoded.vocab_ui?.updated_at == 42)
     }
 
-    // MARK: - JWTExpiry — auth token pre-check (currentAuthToken)
+    // MARK: - JWTExpiry — local expiry helper (authTokenWithoutInvalidation; not a logout trigger, #2806)
 
     /// Helper: build an unsigned JWT whose payload carries the given `exp` claim.
     private func makeToken(exp: TimeInterval?) -> String {
@@ -359,13 +359,13 @@ struct KGServiceTests {
         return "\(header).\(payload).sig"
     }
 
-    /// A token expiring in the far future is not expired — `currentAuthToken` proceeds.
+    /// A token expiring in the far future is not expired — `authTokenWithoutInvalidation` returns it.
     @Test func jwt_far_future_token_is_not_expired() {
         let token = makeToken(exp: Date().addingTimeInterval(3600).timeIntervalSince1970)
         #expect(!JWTExpiry.isExpired(token))
     }
 
-    /// A token already past its `exp` is expired — `currentAuthToken` triggers logout.
+    /// A token already past its `exp` is expired — `authTokenWithoutInvalidation` returns nil (no logout, #2806).
     @Test func jwt_past_token_is_expired() {
         let token = makeToken(exp: Date().addingTimeInterval(-3600).timeIntervalSince1970)
         #expect(JWTExpiry.isExpired(token))
@@ -698,5 +698,76 @@ struct BackgroundSyncPendingTokenTests {
         #expect(outcome?.cancelled == true)
         #expect(outcome?.failures.isEmpty == true)
         #expect(invalidator.logoutReasons.isEmpty)
+    }
+}
+
+// MARK: - #2806 a locally expired JWT must not log out / wipe local data (only a real 401 may)
+
+@MainActor
+private final class LocallyExpiredAuthSession: AuthSessionProviding {
+    let isLoggedIn = true
+    // exp = 1000 (1970): expired by any device clock, so only the client precheck can judge it.
+    let token: String? = "header.eyJleHAiOjEwMDB9.signature"
+}
+
+@MainActor
+private final class RecordingLogoutInvalidator: SessionInvalidating {
+    private(set) var logoutReasons: [String] = []
+    func logout(modelContainer: ModelContainer?, reason: String) { logoutReasons.append(reason) }
+    func waitForPendingLocalDataCleanup() async {}
+}
+
+@MainActor
+struct LocalClockExpiryDoesNotWipeTests {
+    private static func makeService() -> (KGService, RecordingLogoutInvalidator) {
+        let invalidator = RecordingLogoutInvalidator()
+        let service = KGService(
+            authSession: LocallyExpiredAuthSession(),
+            sessionInvalidator: invalidator,
+            connectivityGate: FixedConnectivityGate(isConnected: true)
+        )
+        return (service, invalidator)
+    }
+
+    @Test func locallyExpiredTokenDoesNotInvokeLogout() async {
+        let (service, invalidator) = Self.makeService()
+        let token = try? await service.currentAuthToken()
+        #expect(token == "header.eyJleHAiOjEwMDB9.signature", "precheck must not block the request; the server decides")
+        #expect(invalidator.logoutReasons.isEmpty, "local clock alone must never trigger logout/wipe")
+    }
+
+    /// 真實 401 必須經 HTTP wiring（authenticatedRequest）登出；只直呼 handleUnauthorized
+    /// 抓不到「401 → 登出」接線的退化。
+    @Test func realUnauthorizedStillLogsOut() async {
+        let invalidator = RecordingLogoutInvalidator()
+        let service = KGService(
+            authSession: LocallyExpiredAuthSession(),
+            sessionInvalidator: invalidator,
+            transport: Status401Transport(),
+            connectivityGate: FixedConnectivityGate(isConnected: true)
+        )
+
+        do {
+            _ = try await service.authenticatedRequest(path: "/api/user/config", retryPolicy: .none)
+            Issue.record("a real 401 must throw KGError.unauthorized")
+        } catch KGError.unauthorized {
+            // expected
+        } catch {
+            Issue.record("expected KGError.unauthorized, got \(error)")
+        }
+        #expect(invalidator.logoutReasons == ["http_401"])
+    }
+}
+
+/// 固定回 401 的 transport：用來驗證 authenticatedRequest 的真實 401 分支。
+private final class Status401Transport: KGHTTPTransport, @unchecked Sendable {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://kg.test")!,
+            statusCode: 401,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (Data(), response)
     }
 }

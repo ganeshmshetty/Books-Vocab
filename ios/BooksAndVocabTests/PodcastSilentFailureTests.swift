@@ -116,23 +116,22 @@ struct PodcastSilentFailureTests {
             != PodcastEpisodeRow.downloadFailureMessage(for: KGError.unauthorized))
     }
 
-    @Test func required_download_expired_token_keeps_explicit_auth_failure() async {
+    /// #2806: 本地時鐘判斷過期不得登出／wipe；token 照常交給請求，由伺服器真實 401 決定。
+    @Test func required_download_local_expired_token_returns_token_without_logout() async throws {
         let invalidator = PodcastRecordingSessionInvalidator()
+        let authSession = PodcastFixedTokenSession(expiresIn: -3600)
         let service = KGService(
-            authSession: PodcastFixedTokenSession(expiresIn: -3600),
+            authSession: authSession,
             sessionInvalidator: invalidator,
             connectivityGate: FixedConnectivityGate(isConnected: true)
         )
 
-        do {
-            _ = try await PodcastEpisodeRow.downloadAuthToken(kgService: service)
-            Issue.record("expired download token must fail instead of becoming a guest request")
-        } catch {
-            // Required-auth operations keep currentAuthToken's login handling.
-        }
+        let token = try await PodcastEpisodeRow.downloadAuthToken(kgService: service)
+        let expectedToken = try #require(authSession.token)
 
-        #expect(invalidator.events == ["logout_token_expired_precheck"])
-        #expect(service.sessionExpiredReason != nil)
+        #expect(token == expectedToken)
+        #expect(invalidator.events.isEmpty)
+        #expect(service.sessionExpiredReason == nil)
     }
 
     @Test func required_download_valid_token_returns_current_token() async throws {
@@ -151,25 +150,25 @@ struct PodcastSilentFailureTests {
         #expect(invalidator.events.isEmpty)
     }
 
-    @Test func required_remote_audio_expired_token_keeps_explicit_auth_failure() async throws {
+    /// #2806: 本地時鐘判斷過期不得登出；仍附 Bearer，由伺服器真實 401 決定。
+    @Test func required_remote_audio_local_expired_token_keeps_bearer_without_logout() async throws {
         let invalidator = PodcastRecordingSessionInvalidator()
+        let authSession = PodcastFixedTokenSession(expiresIn: -3600)
         let service = KGService(
-            authSession: PodcastFixedTokenSession(expiresIn: -3600),
+            authSession: authSession,
             sessionInvalidator: invalidator,
             connectivityGate: FixedConnectivityGate(isConnected: true)
         )
 
-        do {
-            _ = try await PodcastPlayerLoader.resolveAudioHeaders(
-                for: makeRemoteLoadPlan(), kgService: service
-            )
-            Issue.record("expired remote audio token must fail instead of becoming guest audio")
-        } catch {
-            // Required-auth playback keeps currentAuthToken's login handling.
-        }
+        let headers = try await PodcastPlayerLoader.resolveAudioHeaders(
+            for: makeRemoteLoadPlan(), kgService: service
+        )
 
-        #expect(invalidator.events == ["logout_token_expired_precheck"])
-        #expect(service.sessionExpiredReason != nil)
+        let expectedToken = try #require(authSession.token)
+
+        #expect(headers["Authorization"] == "Bearer \(expectedToken)")
+        #expect(invalidator.events.isEmpty)
+        #expect(service.sessionExpiredReason == nil)
     }
 
     @Test func required_remote_audio_valid_token_preserves_bearer() async throws {
@@ -189,22 +188,33 @@ struct PodcastSilentFailureTests {
         #expect(invalidator.events.isEmpty)
     }
 
-    @Test func required_remote_subtitle_expired_token_surfaces_failure_and_login_handling() async {
+    /// #2806: 本地時鐘判斷過期不得登出；字幕請求仍帶 Bearer 送出（探針 200 → `.content`）。
+    @Test func required_remote_subtitle_local_expired_token_fetches_without_logout() async throws {
         let invalidator = PodcastRecordingSessionInvalidator()
+        let authSession = PodcastFixedTokenSession(expiresIn: -3600)
         let service = KGService(
-            authSession: PodcastFixedTokenSession(expiresIn: -3600),
+            authSession: authSession,
             sessionInvalidator: invalidator,
             connectivityGate: FixedConnectivityGate(isConnected: true)
         )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PodcastBrowseProbeURLProtocol.self]
+        let probeSession = URLSession(configuration: configuration)
 
         let subtitle = await PodcastPlayerLoader.resolveSubtitle(
-            from: .remote("https://podcast.test/subtitle.srt"),
-            kgService: service
+            from: .remote("https://podcast.test/subtitle.srt?probe=subtitle-expired"),
+            kgService: service,
+            fetchRemote: { url, provider in
+                await PodcastPlayerLoader.fetchSubtitle(urlString: url, kgService: provider, session: probeSession)
+            }
         )
 
-        #expect(subtitle == .failed)
-        #expect(invalidator.events == ["logout_token_expired_precheck"])
-        #expect(service.sessionExpiredReason != nil)
+        let sent = try #require(PodcastBrowseProbeURLProtocol.captured(marker: "subtitle-expired"))
+        let expectedToken = try #require(authSession.token)
+        #expect(sent.value(forHTTPHeaderField: "Authorization") == "Bearer \(expectedToken)")
+        #expect(subtitle != .failed)
+        #expect(invalidator.events.isEmpty)
+        #expect(service.sessionExpiredReason == nil)
     }
 
     private func browseCapturingRequest(

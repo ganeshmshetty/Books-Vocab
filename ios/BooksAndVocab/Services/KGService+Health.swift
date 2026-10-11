@@ -41,7 +41,7 @@ extension KGService {
         } catch KGError.unauthorized {
             AppLog.kg.error("Health check failed: 401 Unauthorized")
             AppCrashReporting.record(KGError.unauthorized, context: "kg.health.unauthorized")
-            await handleUnauthorized(modelContainer: nil, reason: "healthcheck_401")
+            // 登出已由 authenticatedRequest 的真實 401 觸發（#2806），此處只更新連線狀態。
             isConnected = false
         } catch {
             // 取消不是連線判決（換頁/timer 重啟）；保留現狀（#2719）。

@@ -9,6 +9,7 @@
 
 #if os(iOS)
 import Foundation
+import SwiftData
 import Testing
 @testable import BooksAndVocab
 
@@ -116,5 +117,6 @@ private final class SubtitleStatusURLProtocol: URLProtocol {
 private final class SubtitleStubTokenProvider: AuthTokenProviding {
     func currentAuthToken() async throws -> String { "token" }
     func authTokenWithoutInvalidation() async -> String? { "token" }
+    func handleUnauthorized(modelContainer: ModelContainer?, reason: String) async {}
 }
 #endif
