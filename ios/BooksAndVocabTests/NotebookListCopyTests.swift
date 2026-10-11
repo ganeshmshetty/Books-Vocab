@@ -22,6 +22,22 @@ struct NotebookListCopyTests {
         #expect(copy.actionSystemImage == "person.crop.circle")
     }
 
+    @Test func allWordsExportEmpty_isNotNotebookScoped() {
+        #expect(NotebookListCopy.allWordsExportEmpty == L10n.string("所有單字本沒有可匯出的單字"))
+        #expect(NotebookListCopy.allWordsExportEmpty != NotebookListCopy.exportEmpty)
+    }
+
+    @Test func allWordsExportFailure_emptyMapsToAllWordsCopy() {
+        let message = NotebookListCopy.allWordsExportFailureMessage(for: .empty)
+
+        #expect(message == NotebookListCopy.allWordsExportEmpty)
+        #expect(message != NotebookListCopy.exportEmpty)
+    }
+
+    @Test func allWordsExportFailure_writeFailedMapsToGenericFailure() {
+        #expect(NotebookListCopy.allWordsExportFailureMessage(for: .writeFailed) == NotebookListCopy.exportFailure)
+    }
+
     @Test func destructiveAndRetryCopy_stayStable() {
         #expect(NotebookListCopy.deleteTitle == L10n.string("確定要刪除此單字本？"))
         #expect(NotebookListCopy.deleteButtonTitle == L10n.string("刪除"))

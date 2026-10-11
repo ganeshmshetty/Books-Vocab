@@ -17,8 +17,17 @@ enum NotebookListCopy {
     static var sortAccessibilityLabel: String { L10n.string("排序") }
     static var exportFailure: String { L10n.string("匯出失敗") }
     static var exportEmpty: String { L10n.string("單字本沒有可匯出的單字") }
+    static var allWordsExportEmpty: String { L10n.string("所有單字本沒有可匯出的單字") }
     static var reconcileErrorTitle: String { L10n.string("單字本同步失敗") }
     static var retryTitle: String { L10n.string("重試") }
+
+    /// Settings 全部單字 CSV 匯出失敗的 toast 文案；空匯出必須用 all-words 範圍文案，不得沿用單本單字本的 exportEmpty。
+    static func allWordsExportFailureMessage(for error: VocabularyExportError) -> String {
+        switch error {
+        case .empty: return allWordsExportEmpty
+        case .writeFailed: return exportFailure
+        }
+    }
 
     static func emptyState(isLoggedIn: Bool) -> NotebookListEmptyStateCopy {
         if isLoggedIn {

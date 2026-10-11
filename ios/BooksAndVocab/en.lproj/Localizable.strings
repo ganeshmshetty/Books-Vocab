@@ -996,6 +996,7 @@
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */
 "匯出失敗" = "Export failed";
 "單字本沒有可匯出的單字" = "This notebook has no words to export.";
+"所有單字本沒有可匯出的單字" = "No words to export in any notebook.";
 "設定儲存失敗" = "Failed to save settings";
 "已刪除" = "Deleted";
 "刪除失敗，書籍檔案無法移除" = "Couldn't delete: the book file could not be removed";

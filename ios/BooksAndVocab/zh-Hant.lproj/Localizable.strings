@@ -985,6 +985,7 @@
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */
 "匯出失敗" = "匯出失敗";
 "單字本沒有可匯出的單字" = "單字本沒有可匯出的單字";
+"所有單字本沒有可匯出的單字" = "所有單字本沒有可匯出的單字";
 "設定儲存失敗" = "設定儲存失敗";
 "已刪除" = "已刪除";
 "刪除失敗，書籍檔案無法移除" = "刪除失敗，書籍檔案無法移除";
