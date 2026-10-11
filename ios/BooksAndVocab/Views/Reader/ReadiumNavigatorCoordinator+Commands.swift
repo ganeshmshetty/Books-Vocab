@@ -76,17 +76,10 @@ extension ReadiumNavigatorView.Coordinator {
     func apply(_ command: NavigatorCommand, in host: NavigatorHostViewController) {
         switch command {
         case .navigate(let locator, let requestID):
-            // A same-resource request still owes its delegate callback. Taking
-            // over the token here would let that callback complete this request
-            // (or vice versa), so refuse the sibling as retryable instead.
-            guard tocNavigationGate.tryBegin(requestID, expectedLocatorHref: locator.href.string) else {
-                AppLog.reader.debug("TOC navigation deferred: same-resource request in flight")
-                parent.onTOCNavigationEvent(.cancelled(requestID: requestID))
-                return
-            }
             activeTOCNavigationTask?.cancel()
             activeTOCTimeoutTask?.cancel()
             activeTOCTimeoutTask = nil
+            tocNavigationGate.begin(requestID, expectedLocatorHref: locator.href.string)
             let bridge = ReaderTOCNavigationBridge(
                 navigator: ReadiumNavigatorDriver(navigator: navigator),
                 timeoutNanoseconds: ReaderMetrics.tocNavigationTimeoutNanoseconds
