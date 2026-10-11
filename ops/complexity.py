@@ -7,7 +7,7 @@ fragment, one file in ``ops/complexity_budget.d/``, so two lanes never edit the 
 ceiling is the base plus the sum of every fragment's raise.
 
     ./ops/complexity.py check                 # exit 1 when an area is over its effective ceiling
-    ./ops/complexity.py raise --note WHY      # write this lane's fragment for each failing area
+    ./ops/complexity.py raise --note WHY      # write this lane's fragment for the areas it is over (never on main)
     ./ops/complexity.py fold                  # fold all fragments into the base (CM, occasionally)
     ./ops/complexity.py ratchet               # lower ceilings to current + slack; folds when it lowers
     ./ops/complexity.py show                  # numbers, headroom, fragments, and ops : ios ratio
@@ -18,9 +18,11 @@ moves it down, so deletions are banked and cannot be spent again silently.
 
 A lane gate charges a lane only for its own growth.  Per area, delta = lines now minus lines at the
 merge-base (``origin/main``, else ``main``), counted by the same ``count_lines`` rule on both sides.
-The lane passes when delta <= the headroom the area had at the merge-base (ceiling read from the
-budget file *at the base*), or when the lane itself raises the ceiling in the budget file (then the
-new ceiling is judged absolutely).  Two sibling lanes that each fit the base headroom therefore both
+The lane passes when delta <= the headroom the area had at the merge-base (effective ceiling read
+*at that base*, fragments included), or when the lane itself raises the ceiling with its fragment
+(then the new effective ceiling is judged absolutely).  ``raise`` writes a fragment only for the areas
+the lane is over by this same judgement, so a lane that grows nothing never absorbs a red trunk's
+overage, and it refuses on main or without a base.  Two sibling lanes that each fit the base headroom therefore both
 pass, also after a rebase onto each other (headroom = the larger of the current merge-base's and the
 lane's original fork point's: ``KG_COMPLEXITY_FORK_BASE``, else the branch's reflog creation commit,
 else the CI merge commit's PR fork); absolute overflow of the checked tree is then only a WARNING that main needs a rebaseline PR.
@@ -411,10 +413,13 @@ def _current_branch(repo: Path) -> str:
 
 
 def lane_name(repo: Path) -> str:
-    """This lane's fragment name: its branch, made path-safe (one branch, one file)."""
+    """This lane's fragment name: its branch, made path-safe (one branch, one file).  A detached HEAD has
+    no lane name, and a sha-named fragment would be a new file on every run: the caller must pass one."""
     branch = _current_branch(repo)
     if not branch:
-        return f"lane-{(head_sha(repo) or 'detached')[:12]}"
+        raise BudgetError(
+            "detached HEAD has no lane name; pass --name for this lane's fragment"
+        )
     return re.sub(r"[^A-Za-z0-9._-]+", "-", branch).strip("-.")
 
 
@@ -534,6 +539,54 @@ def lift(repo: Path, base: str | None = None) -> dict[str, tuple[int, int, int]]
     }
 
 
+def raise_lane(
+    repo: Path,
+    budget_path: Path,
+    budget: dict[str, Any],
+    measured: dict[str, int],
+    snapshot: dict[str, dict[str, int]] | None,
+    on_trunk: bool,
+    args: argparse.Namespace,
+) -> int:
+    """``raise``: this lane's fragment for each area the lane is over, by the judgement ``check`` makes.
+
+    Refused on main (a raise there would hide a red trunk) and without a base to charge the lane against.
+    An area the lane did not grow past its headroom gets nothing, so a lane never absorbs main's overage.
+    """
+    if not args.note:
+        print("complexity: raise needs --note (why the ceiling moves)", file=sys.stderr)
+        return 2
+    if on_trunk or snapshot is None:
+        print(
+            "complexity: raise refused: HEAD is the base; fix the red trunk, do not raise it"
+            if on_trunk
+            else "complexity: raise refused: no readable base to charge this lane against",
+            file=sys.stderr,
+        )
+        return 2
+    over = [row["area"] for row in evaluate(measured, budget, snapshot) if row["over"]]
+    add = plan_raise(measured, budget["ceilings"], over)
+    if not add:
+        print("raise: this lane is within its own headroom; no fragment written")
+        return 0
+    try:
+        path = write_fragment(
+            budget_path,
+            args.name or lane_name(repo),
+            lane_issue(repo) if args.issue is None else args.issue,
+            args.note,
+            add,
+        )
+    except BudgetError as exc:
+        print(f"complexity: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"raise: wrote {path.relative_to(repo)}: "
+        + ", ".join(f"{area} +{amount}" for area, amount in add.items())
+    )
+    return 0
+
+
 def ratio(measured: dict[str, int]) -> float | None:
     return (
         round(measured["ops"] / measured["reference"], 2)
@@ -622,42 +675,16 @@ def main(argv: list[str] | None = None, repo: Path | None = None) -> int:
             else "fold: no fragments; nothing to do"
         )
         return 0
-    if args.command == "raise":
-        if not args.note:
-            print(
-                "complexity: raise needs --note (why the ceiling moves)",
-                file=sys.stderr,
-            )
-            return 2
-        add = plan_raise(measured, budget["ceilings"])
-        if not add:
-            print("raise: nothing is over its effective ceiling; no fragment written")
-            return 0
-        try:
-            path = write_fragment(
-                budget_path,
-                args.name or lane_name(root),
-                lane_issue(root) if args.issue is None else args.issue,
-                args.note,
-                add,
-            )
-        except BudgetError as exc:
-            print(f"complexity: {exc}", file=sys.stderr)
-            return 2
-        print(
-            f"raise: wrote {path.relative_to(root)}: "
-            + ", ".join(f"{area} +{amount}" for area, amount in add.items())
-        )
-        return 0
     snapshot = None
+    base = None if args.strict else merge_base(root, args.base)
+    on_trunk = base is not None and base == head_sha(root)
     if not args.strict:
-        base = merge_base(root, args.base)
         if base is None:
             print(
                 "complexity: no merge-base (origin/main or main); judging absolute",
                 file=sys.stderr,
             )
-        elif args.base is None and base == head_sha(root):
+        elif args.base is None and on_trunk:
             pass  # on main itself: absolute, so a red trunk stays visible
         else:
             try:
@@ -668,6 +695,8 @@ def main(argv: list[str] | None = None, repo: Path | None = None) -> int:
                 print(f"complexity: base read failed ({exc})", file=sys.stderr)
             if snapshot is None:
                 print("complexity: base unreadable; judging absolute", file=sys.stderr)
+    if args.command == "raise":
+        return raise_lane(root, budget_path, budget, measured, snapshot, on_trunk, args)
     rows = evaluate(measured, budget, snapshot)
 
     if args.command == "ratchet":
