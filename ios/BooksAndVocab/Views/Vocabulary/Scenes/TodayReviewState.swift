@@ -52,6 +52,9 @@ final class TodayReviewState {
     // MARK: - Immutable Lookup
 
     let linkedEntryLookup: [String: VocabularyEntry]
+    /// #2535: card ids that a queued card links to. `peerChipFingerprint` watches only these
+    /// peers, so an unrelated card's archive does not re-derive the review chips.
+    private var queuePeerCardIDs: Set<String> = []
     let currentUserID: String?
 
     // MARK: - Diagnostics (throwaway-init detection)
@@ -103,6 +106,7 @@ final class TodayReviewState {
         sessionStartTime = restored?.sessionStartTime ?? Date()
         let _tLookup = DispatchTime.now()
         linkedEntryLookup = Self.buildLinkedEntryLookup(from: allEntries)
+        queuePeerCardIDs = Self.peerCardIDs(of: ordered)
         let _msLookup = PerfChannel.ms(since: _tLookup)
         if let restored {
             session = TodayReviewSessionState(
@@ -271,6 +275,7 @@ final class TodayReviewState {
     }
 
     func rebuildCacheForEntry(_ entry: VocabularyEntry) {
+        trackPeers(of: entry)
         cardCache.rebuild(for: entry, peers: linkedEntryLookup)
     }
 
@@ -283,11 +288,30 @@ final class TodayReviewState {
         prewarmCardWindow()
     }
 
+    /// Archive and delete-queue state of the peers the queue links to (#2535). The view
+    /// reads it in `body` and re-derives the chips when it changes, so a peer flip that
+    /// lands after the overlay closed (a failed archive rolled back) still restores its chip.
+    var peerChipFingerprint: Int {
+        var hasher = Hasher()
+        for cardID in queuePeerCardIDs.sorted() {
+            guard let peer = linkedEntryLookup[cardID] else { continue }
+            hasher.combine(cardID)
+            hasher.combine(peer.isArchived)
+            hasher.combine(peer.syncAction.rawValue)
+        }
+        return hasher.finalize()
+    }
+
+    private func trackPeers(of entry: VocabularyEntry) {
+        queuePeerCardIDs.formUnion(Self.peerCardIDs(of: [entry]))
+    }
+
     /// The card's link set changed (pending link created/failed/resolved, or AddLink
     /// succeeded): update its links in place and keep its measurements (see
     /// `TodayReviewCardCache.refreshLinks`). Use `rebuildCacheForEntry` only when the
     /// card content itself changed.
     func refreshLinksForEntry(_ entry: VocabularyEntry, pendingLinks: [KGCardLinkSummary]? = nil) {
+        trackPeers(of: entry)
         cardCache.refreshLinks(for: entry, pendingLinks: pendingLinks, peers: linkedEntryLookup)
     }
 
@@ -731,6 +755,10 @@ final class TodayReviewState {
             guard let cardID = entry.kgCardId else { return }
             lookup[cardID] = entry
         }
+    }
+
+    private static func peerCardIDs(of entries: [VocabularyEntry]) -> Set<String> {
+        Set(entries.flatMap { $0.graphLinksByKind.values.joined() }.map(\.cardId))
     }
 
     private func syncQueueMetadata(keepingBaselinesAt answeredSlots: Set<Int>) {

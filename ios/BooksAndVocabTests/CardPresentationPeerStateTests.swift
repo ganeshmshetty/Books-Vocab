@@ -134,6 +134,42 @@ struct CardPresentationPeerStateTests {
         #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
     }
 
+    /// #2535: an optimistic archive whose request fails is rolled back after the overlay
+    /// has already closed. Nothing touches the overlay stack then, so the fingerprint the
+    /// view watches is what brings the chip back.
+    @Test func archiveRolledBackAfterOverlayClosedRestoresChip() throws {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        let linked = state.peerChipFingerprint
+
+        b.isArchived = true
+        state.refreshPeerDependentCards()
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.isEmpty)
+        let archived = state.peerChipFingerprint
+        #expect(archived != linked)
+
+        b.isArchived = false
+        #expect(state.peerChipFingerprint != archived)
+        state.refreshPeerDependentCards()
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+    }
+
+    /// #2535: the fingerprint watches only the peers the queue links to, so an unrelated
+    /// card's archive does not trigger a chip rebuild.
+    @Test func peerChipFingerprintIgnoresUnlinkedEntries() {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let stranger = Self.entry("x", cardId: "x")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b, stranger], currentUserID: nil)
+        let before = state.peerChipFingerprint
+
+        stranger.isArchived = true
+        #expect(state.peerChipFingerprint == before)
+    }
+
     /// #2133 + #2535: a peer change re-derives the on-screen card's chips in place and
     /// keeps its measurement cache, so the card does not jump.
     @Test func peerRefreshKeepsPreparedCardMeasurements() throws {
