@@ -129,7 +129,7 @@ cd ~/kg-prod && KG_RECON_REPO=~/kg-prod ops/kg_reconcile.sh --dry-run
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kg.reconcile.plist
 launchctl bootout gui/$(id -u)/com.kg.reconcile
 ```
-（log 修剪不需 launchd 掛載：已由 backend 行程內的 `log_retention_scheduler` 每日 04:17 執行，見 host_topology.md。）
+（log 修剪不需 launchd 掛載：唯一觸發是 backend 行程內的 `log_retention_scheduler`，每日 04:17 執行；無 launchd manifest，見 host_topology.md。）
 單元測試：`bash ops/tests/test_kg_reconcile.sh`（全離線、mock git/compose/curl/infra_health）。
 
 ---
