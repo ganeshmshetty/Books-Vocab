@@ -165,7 +165,7 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 
 ## 複習進度覆寫（review-state push `override`）
 
-- `ReviewStateEntry.override = true`（`PATCH /api/vocab/review`）是進度重設指令：`review_count` / `lapse_count` 原樣寫入、`next_review_at` 取 client 值（now），**不受** `last_reviewed_at` 新舊影響，server 較新時仍套用（#2042）。兩分支（server 較新／client 較新）寫入的欄位一致：`review_count`、`lapse_count`、`review_interval_hours`、`review_streak`、`last_review_feedback`、`next_review_at`，排程結果與時鐘先後無關。
+- `ReviewStateEntry.override = true`（`PATCH /api/vocab/review`）是進度重設指令：`review_count` / `lapse_count` 原樣寫入、`next_review_at` 取 client 值（now），**不受** `last_reviewed_at` 新舊影響，server 較新時仍套用（#2042）。兩分支（server 較新／client 較新）寫入的 override 欄位一致：`review_count`、`lapse_count`、`review_interval_hours`、`review_streak`、`last_review_feedback`、`next_review_at`，排程結果與時鐘先後無關。`last_reviewed_at` 不在此一致集合內，見本節末條。
 - 非 override 仍走 LWW：server 較新只取 counts 的 max；覆寫不取 max，否則 reset 無法落地。
 - 同批次同卡多筆合併時，較新的 override 保留其 counts，不與較舊的一般 entry 取 max。
 - server 較新分支不改 `last_reviewed_at`（歷史不改寫）；client 較新分支依 LWW 接受 client 的 `last_reviewed_at`。`override` 不會被持久化或由 pull 回傳。
