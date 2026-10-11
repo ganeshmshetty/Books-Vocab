@@ -133,4 +133,23 @@ struct ReviewSessionFlushTests {
         let records = try context.fetch(FetchDescriptor<ReviewRecord>())
         #expect(records.count == 2)
     }
+
+    /// #3123 core branch: a completed session that still holds an unflushed answer keeps its
+    /// snapshot, because that answer exists only there until a flush confirms it. Clearing
+    /// unconditionally here would silently lose the answer on dismiss.
+    @Test func completedSessionWithUnflushedAnswerKeepsSnapshot() throws {
+        TodayReviewSessionSnapshotStore.clear(for: Self.userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: Self.userID) }
+        let entries = makeEntries(2)
+        let (container, _) = try makeContainer(entries)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: Self.userID)
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.submit(.forgot, container: container, reviewSettings: .default)
+        #expect(state.currentEntry == nil)
+        #expect(state.hasUnflushedAnswers)
+
+        state.finalizeSnapshotAfterFlush(completed: true)
+
+        #expect(TodayReviewSessionSnapshotStore.load(for: Self.userID) != nil)
+    }
 }
