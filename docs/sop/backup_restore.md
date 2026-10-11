@@ -172,7 +172,7 @@ ls -la "$DATA/users/" | head
 | run | `rm -rf .venv` | 允許 | 同上 |
 | run | `rm -rf __pycache__` | 允許 | 同上 |
 
-守門依「目標路徑是否落在受保護名稱」判定，不依動作種類：`cp .env.example .env` 在一般工作目錄放行，在 `~/kg-prod/backend` 內（cd 進受保護名稱）即被擋。
+守門只擋寫入／刪除類指令（`rm`、`mv`、`tar x`、`cp`／`ln` 的目的端、`tee`、`>` 重導、`find -delete`、`sqlite3` 寫入）且目標落在受保護名稱；對受保護目錄的讀取（`ls`、`du`、`tar czf`、`sqlite3` 查詢、`git log`）照常放行，見 `docs/policy/safety.md`。`cp .env.example .env` 在一般工作目錄放行，在 `~/kg-prod/backend` 內（cd 進受保護名稱）即被擋。
 
 ### 2.6 修正 owner
 
