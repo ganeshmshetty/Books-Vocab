@@ -293,10 +293,16 @@ struct TodayReviewDeckHeightTests {
         #expect(!H.isTransitioning(shell: 120 + H.epsilon, target: 120, inFlight: false))
     }
 
+    /// 啟動期 shell 尚未建立（0）：沒有待過渡的值，hint 不得因此永久隱藏（直到翻面）。
+    @Test func unsetShellIsNotTransitioning() {
+        #expect(!H.isTransitioning(shell: 0, target: 120, inFlight: false))
+    }
+
     /// 與 slotHeight 的 active 分支必須同一判定：過渡中釘高，穩態回自然高度。
     @Test func slotHeightPinsExactlyWhenTheTransitionPredicateHolds() {
         let cases: [(shell: CGFloat, target: CGFloat, inFlight: Bool)] = [
             (360, 120, false), (120, 120, false), (120, 120, true), (120, 120.2, false),
+            (0, 120, false),
         ]
         for c in cases {
             let pinned = H.slotHeight(
