@@ -383,6 +383,22 @@ struct TodayReviewAnswerReplacementTests {
         #expect(records.first?.feedback == ReviewFeedback.forgot.rawValue)
     }
 
+    /// #2482 (CR on #3167): an answered row re-keyed by sync mid-session changes its persistence id
+    /// but is still the same row. Its pre-review baseline must survive a reorder; re-deriving it from
+    /// the live, already-flushed (post-review) row double-counts `reviewCount` on the next replace.
+    @Test func syncQueueMetadataKeepsBaselineOfAnsweredRowReKeyedMidSession() {
+        let entries = makeEntries(3)
+        var controller = TodayReviewSessionPersistenceController(queue: entries, currentUserID: nil)
+        let original = controller.queueBaselines[0]
+
+        entries[0].reviewCount = original.reviewCount + 1
+        entries[0].kgCardId = "card-rekeyed-\(UUID().uuidString.prefix(8))"
+        controller.syncQueueMetadata(for: entries, keepingBaselinesAt: [0])
+
+        #expect(controller.queuePersistenceIDs[0] == ReviewSessionPersistence.persistenceID(for: entries[0]))
+        #expect(controller.queueBaselines[0].reviewCount == original.reviewCount)
+    }
+
     private struct FetchFailure: Error {}
 
     /// #2796: a failed `ReviewRecord` lookup must NOT be read as "no record yet" (would insert a

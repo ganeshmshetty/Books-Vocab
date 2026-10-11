@@ -30,9 +30,10 @@ struct TodayReviewSessionPersistenceController {
     }
 
     /// Re-derives the queue identity and baselines after a reorder. Answered slots keep their
-    /// existing baseline when the card in that slot is unchanged: a live entry for an already
+    /// existing baseline when the row in that slot is unchanged: a live entry for an already
     /// flushed answer already carries the post-review values, and re-deriving from it would make a
-    /// later replace re-apply the grade on top (#2482).
+    /// later replace re-apply the grade on top (#2482). "Unchanged" is the same persistence id or
+    /// the same row id, so a row re-keyed by sync mid-session keeps its baseline as well.
     mutating func syncQueueMetadata(for queue: [VocabularyEntry], keepingBaselinesAt answeredSlots: Set<Int>) {
         let newIDs = queue.map(ReviewSessionPersistence.persistenceID(for:))
         var newBaselines = queue.map(ReviewSessionPersistence.makeBaseline(from:))
@@ -40,12 +41,17 @@ struct TodayReviewSessionPersistenceController {
         where slot < newIDs.count
             && slot < queuePersistenceIDs.count
             && slot < queueBaselines.count
-            && newIDs[slot] == queuePersistenceIDs[slot] {
+            && isSameRow(at: slot, in: queue, newPersistenceIDs: newIDs) {
             newBaselines[slot] = queueBaselines[slot]
         }
         queuePersistenceIDs = newIDs
         queueBaselines = newBaselines
         queueEntryIDs = queue.map(\.id)
+    }
+
+    private func isSameRow(at slot: Int, in queue: [VocabularyEntry], newPersistenceIDs: [String]) -> Bool {
+        newPersistenceIDs[slot] == queuePersistenceIDs[slot]
+            || (slot < queueEntryIDs.count && queue[slot].id == queueEntryIDs[slot])
     }
 
     func flushPendingAnswers(
