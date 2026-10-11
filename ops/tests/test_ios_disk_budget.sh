@@ -466,7 +466,15 @@ unreg_script='source "$1"; rc=0; kg_ios_disk_budget_guard_state test || rc=$?; k
 unreg_out="$(KG_IOS_DISK_GUARD_STATE="$unreg_guard" KG_IOS_DISK_LANE_USAGE_STATE="$unreg_usage" \
   KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "$unreg_script" _ "$LIB" 2>&1)"
 grep -q 'worktree remove' <<<"$unreg_out" && ok "over-quota unregistered 75 prints the remove remedy" || bad "over-quota unregistered 75 lacks the remedy: $unreg_out"
-grep -q 'adopt' <<<"$unreg_out" && ok "over-quota unregistered 75 names adopt" || bad "over-quota unregistered 75 does not name adopt: $unreg_out"
+# The adopt remedy must be a runnable command: it carries every flag that
+# `adopt --help` marks required (no brackets), here --intent, with a placeholder.
+adopt_usage="$("$ROOT/ops/worktree_orchestrate.py" adopt --help 2>&1 | tr -s ' \n' '  ')"
+adopt_required_intent=0
+grep -q -- '\] --intent INTENT' <<<"$adopt_usage" && adopt_required_intent=1
+(( adopt_required_intent )) && ok "adopt --help marks --intent as required" || bad "adopt --help no longer requires --intent: $adopt_usage"
+grep -qF -- './ops/worktree_orchestrate.py adopt --worktree /x/stray\ checkout --intent <intent>' <<<"$unreg_out" \
+  && ok "adopt remedy is a complete command with --worktree and --intent" \
+  || bad "adopt remedy is not a complete runnable command: $unreg_out"
 grep -q "/x/stray checkout" <<<"$unreg_out" && ok "remedy names the exact unregistered path" || bad "remedy does not name the path: $unreg_out"
 grep -q 'clean rebuildable cache' <<<"$unreg_out" && bad "over-quota unregistered 75 still says only clean the cache" || ok "over-quota unregistered 75 does not say only clean the cache"
 # Negative control: a warning-only unregistered path (no lane-budget-exceeded line
@@ -488,6 +496,27 @@ prefix_out="$(KG_IOS_DISK_GUARD_STATE="$unreg_guard" KG_IOS_DISK_LANE_USAGE_STAT
   KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "$unreg_script" _ "$LIB" 2>&1)"
 grep -q 'path="/x/stray checkout"' <<<"$prefix_out" && bad "warning-only unregistered path named as over quota" || ok "warning-only unregistered path is not named as over quota"
 grep -q 'path="/x/stray"' <<<"$prefix_out" && ok "exact over-quota path is named" || bad "exact over-quota path not named: $prefix_out"
+# A registered lane over its own quota is a cache-cleanable cause, so the same 75
+# keeps the clean-cache advice and still names the unregistered remedy separately.
+cat > "$unreg_usage" <<'JSON'
+{
+  "policy": {
+    "blocking_reasons": [
+      "lane-budget-exceeded:/x/stray checkout",
+      "lane-budget-exceeded:/x/registered-lane"
+    ],
+    "unregistered_physical_worktrees": [
+      "/x/stray checkout"
+    ]
+  }
+}
+JSON
+mixed_out="$(KG_IOS_DISK_GUARD_STATE="$unreg_guard" KG_IOS_DISK_LANE_USAGE_STATE="$unreg_usage" \
+  KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "$unreg_script" _ "$LIB" 2>&1)"
+grep -q 'clean rebuildable cache' <<<"$mixed_out" && ok "mixed 75 keeps the clean-cache advice" || bad "mixed 75 dropped the clean-cache advice: $mixed_out"
+grep -q 'cache cleanup does not clear it' <<<"$mixed_out" && bad "mixed 75 wrongly says cache cleanup cannot clear it" || ok "mixed 75 does not claim cache cleanup is useless"
+grep -qF -- './ops/worktree_orchestrate.py adopt --worktree /x/stray\ checkout --intent <intent>' <<<"$mixed_out" \
+  && ok "mixed 75 still lists the unregistered adopt remedy" || bad "mixed 75 lost the unregistered remedy: $mixed_out"
 
 echo "── lane-usage-report-blocked: a stale report is never structural evidence ──"
 # Regression (2026-10-08): the tick's supervisor killed the scan and recorded
