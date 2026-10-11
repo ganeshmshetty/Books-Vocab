@@ -96,7 +96,10 @@ extension ReadiumNavigatorView.Coordinator {
                 if case .goAccepted = event {
                     // go() only acknowledges dispatch. Keep the request token
                     // alive until the navigator delegate reports the actual
-                    // locator, with a bounded callback deadline.
+                    // locator, with a bounded callback deadline. Arm the gate
+                    // only now: callbacks emitted before this point predate the
+                    // jump and must not complete the request.
+                    self.tocNavigationGate.markNavigationAccepted(requestID)
                     self.activeTOCNavigationTask = nil
                     beginTOCTimeout(for: requestID)
                 } else {
