@@ -249,6 +249,33 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     grep -Fq 'set -euo pipefail' <<<"$block" \
       || fail "merge-group ${label} step does not run with set -euo pipefail"
   }
+  # ripgrep must come from its own step before the short gate (its fixture runs the
+  # strict lint) and before the strict lint step; inside the lint step it comes too late.
+  rg_install_step="$(merge_group_step_containing 'ci_apt_install.sh ripgrep')"
+  if [[ -z "$rg_install_step" ]]; then
+    fail "merge-group required gate has no ripgrep install step (ops/ci_apt_install.sh ripgrep) before the short repository gate"
+  else
+    merge_group_assert_unmasked_step "ripgrep install" "$rg_install_step" no
+  fi
+  rg_order="$(ruby -ryaml -e '
+    steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+    find = lambda { |needle| steps.index { |s| s["run"].to_s.include?(needle) } }
+    positions = [
+      find.call("ci_apt_install.sh ripgrep"),
+      find.call("./ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control"),
+      find.call("ops/i18n_lint.sh --strict"),
+    ]
+    puts positions.map { |i| i.nil? ? "missing" : i.to_s }.join(" ")
+  ' "$MERGE_GROUP_REQUIRED")" || rg_order="missing missing missing"
+  read -r rg_step gate_step lint_step <<<"$rg_order" || true
+  if [[ ! "$rg_step" =~ ^[0-9]+$ || ! "$gate_step" =~ ^[0-9]+$ || ! "$lint_step" =~ ^[0-9]+$ ]]; then
+    fail "merge-group required gate lacks an ordered ripgrep install, short gate or strict lint step (step indices: $rg_order)"
+  else
+    (( rg_step < gate_step )) \
+      || fail "merge-group ripgrep install (step $rg_step) does not precede the short repository gate (step $gate_step)"
+    (( rg_step < lint_step )) \
+      || fail "merge-group ripgrep install (step $rg_step) does not precede the strict i18n lint (step $lint_step)"
+  fi
   # Shared Localizable.strings catalogs leave the PR-time static.i18n check unserialised,
   # so the merge queue re-runs the full strict lint on the merged tree.  Run the
   # workflow's own step block against fixture catalogs (KG_I18N_SRC): a clean tree
@@ -258,6 +285,9 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
   i18n_step="$(merge_group_step_containing 'ops/i18n_lint.sh --strict')"
   if [[ -z "$i18n_step" ]]; then
     fail "merge-group required gate has no strict i18n lint step (shared catalogs leave the merge queue as the only re-check)"
+  elif ! command -v rg >/dev/null 2>&1; then
+    # Without rg every fixture fails for that reason alone; name the cause instead.
+    fail "strict i18n lint fixtures need ripgrep (rg) on PATH; install it first with ops/ci_apt_install.sh ripgrep"
   else
     merge_group_assert_unmasked_step "strict i18n lint" "$i18n_step" no
     # Fixtures live under the repo root (gitignored .cache): the key extractor
@@ -305,6 +335,41 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
       || fail "strict i18n lint missing-key case does not name the missing key"
     rm -rf "$i18n_tmp"
   fi
+  # Hidden-PATH proof: the install step's own block runs with PATH = bash/env/chmod only
+  # (rg absent by construction) and a stub installer; the second run must not reinstall.
+  mkdir -p "$ROOT/.cache"
+  rg_tmp="$(mktemp -d "$ROOT/.cache/test-rg-XXXXXX")"
+  ruby -ryaml -e '
+    steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+    step = steps.find { |s| s["run"].to_s.include?("ci_apt_install.sh ripgrep") }
+    abort("no ripgrep install step") unless step
+    File.write(ARGV[1], step["run"])
+  ' "$MERGE_GROUP_REQUIRED" "$rg_tmp/step.sh" \
+    || fail "cannot extract the ripgrep install step run block"
+  mkdir -p "$rg_tmp/root/ops" "$rg_tmp/tools" "$rg_tmp/stub-bin"
+  for tool in bash env chmod; do
+    ln -s "$(command -v "$tool")" "$rg_tmp/tools/$tool"
+  done
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s\n" "$*" >>"$RG_INSTALL_LOG"' \
+    'printf "%s\n" "#!/usr/bin/env bash" "echo ripgrep-stub" >"$RG_STUB_BIN/rg"' \
+    'chmod +x "$RG_STUB_BIN/rg"' >"$rg_tmp/root/ops/ci_apt_install.sh"
+  chmod +x "$rg_tmp/root/ops/ci_apt_install.sh"
+  rg_step_run() {  # the step's combined output; its exit status is the result
+    (cd "$rg_tmp/root" && env -i PATH="$rg_tmp/tools:$rg_tmp/stub-bin" \
+      RG_INSTALL_LOG="$rg_tmp/install.log" RG_STUB_BIN="$rg_tmp/stub-bin" \
+      "$(command -v bash)" "$rg_tmp/step.sh" 2>&1)
+  }
+  if ! out="$(rg_step_run)"; then
+    fail "ripgrep install step fails on a PATH without rg: $out"
+  elif [[ ! -f "$rg_tmp/install.log" ]]; then
+    fail "ripgrep install step does not call the installer when rg is absent"
+  else
+    rm -f "$rg_tmp/install.log"
+    rg_step_run >/dev/null || fail "ripgrep install step fails when rg is already on PATH"
+    [[ ! -e "$rg_tmp/install.log" ]] || fail "ripgrep install step reinstalls although rg is already on PATH"
+  fi
+  rm -rf "$rg_tmp"
   scope_step_id="$(awk '
     /^      - name:/ { id="" }
     /^        id:/ { id=$2 }

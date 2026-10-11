@@ -35,6 +35,19 @@ jobs:
         with:
           version: '0.8.23'
 
+      # ripgrep is a hard prerequisite of the short gate (its github-workflows
+      # fixture runs the strict i18n lint) and of the strict lint step below, and
+      # the runner image does not guarantee it.  Install it first, with the same
+      # bounded installer the ops shards use, so no later step can meet a missing rg.
+      - name: Install ripgrep
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            ./ops/ci_apt_install.sh ripgrep
+          fi
+          rg --version
+
       # HEADGREEN gates the group on its head's `required` only, and for a
       # cumulative group (#8 behind #7) merge_group.base_sha is #7's merge, which
       # hides #7 from the diff check and scope router.  Use origin/main's fork
@@ -95,14 +108,11 @@ jobs:
       # merge textually clean yet the merged tree can fail: two lanes adding one key
       # at non-adjacent positions (duplicate), or one lane deleting a key that another
       # lane starts to use (missing key).  --strict re-runs every check on the merged
-      # tree and exits non-zero on any finding.  ripgrep is installed when missing,
-      # as the PR-time static check does.
+      # tree and exits non-zero on any finding.  ripgrep comes from the Install
+      # ripgrep step above.
       - name: Run strict i18n lint
         run: |
           set -euo pipefail
-          if ! command -v rg >/dev/null 2>&1; then
-            ./ops/ci_apt_install.sh ripgrep
-          fi
           ./ops/i18n_lint.sh --strict
 
       - name: Install ffmpeg and ffprobe
