@@ -1092,6 +1092,15 @@ grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"lane_usage_
   && ok "a lane report that exits 75 still overwrites the guard reason" || bad_state "lane report rc 75 reason" "$state"
 grep -q '"xctest_devices_time_limited":1' "$state" && grep -q '"xctest_devices_manual_review":0' "$state" \
   && ok "the time-limit survives the lane-report override" || bad_state "time-limit lost behind the lane-report override" "$state"
+# Follow-up of #2905 (CR): a supervisor kill (rc 124) of the lane scan is an
+# unmeasured tick, not a lane verdict.  The XCTestDevices time-limit measured in
+# the same tick is the precise, retryable cause and must reach the guard reason.
+export FAKE_UV_RC=124
+fake_report_case killed-report-after-time-limit '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'
+unset FAKE_UV_RC
+grep -q '"lane_usage_rc":124' "$state" && ok "the killed lane scan records rc 124" || bad_state "killed lane scan rc missing" "$state"
+grep -q '"reason":"xctest-devices-measurement-incomplete"' "$state" && grep -q '"action":"retry-next-tick"' "$state" \
+  && ok "a kill keeps the measured time-limit reason, retryable" || bad_state "kill replaced the measured time-limit reason" "$state"
 fake_report_case budget-exceeded '{"exists": true, "measurement_complete": true, "metadata_complete": true, "budget_exceeded": true, "measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "manual-review"}}'
 grep -q '"xctest_devices_manual_review":1' "$state" && ok "positive control: a real budget overrun is manual review" || bad_state "budget overrun lost manual review" "$state"
 fake_report_case unreadable '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["/x/dev: PermissionError"], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'

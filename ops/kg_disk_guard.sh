@@ -898,13 +898,20 @@ main() {
   # Existing lane evidence remains in the report; this only prevents new
   # work from being admitted on incomplete accounting.
   if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" || "$LANE_USAGE_VERDICT" == "unavailable" ]]; then
-    verdict="block"
-    if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" ]]; then
-      reason="lane-usage-report-blocked"
+    # A supervisor kill (rc 124) leaves lane attribution unmeasured, but it does
+    # not erase a precise, retryable cause measured in this same tick: an
+    # XCTestDevices walk that ran out of time keeps its own reason and action.
+    if (( LANE_USAGE_RC == LANE_USAGE_KILLED_RC )) && [[ "$reason" == "xctest-devices-measurement-incomplete" ]]; then
+      :
     else
-      reason="lane-usage-report-unavailable"
+      verdict="block"
+      if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" ]]; then
+        reason="lane-usage-report-blocked"
+      else
+        reason="lane-usage-report-unavailable"
+      fi
+      action="manual-review-lane-attribution"
     fi
-    action="manual-review-lane-attribution"
   fi
   write_state "$free" "$prev" "$growth" "$active" "$cache" "$docker_cache" "$docker_running" "$worktree_cache" "$worktree_keys" "$worktree_overflow" "$cache_overflow" "$cache_budget_kb" "$cache_budget_overflow" "$cache_headroom_kb" "$cache_writer_limit_kb" "$cache_headroom_overflow" "$cache_repair_remaining" "$cache_repair_status" "$verdict" "$reason" "$action" "$LANE_USAGE_VERDICT" "$LANE_USAGE_RC" "$LANE_USAGE_BUDGET_SECONDS" "$LANE_USAGE_EXCLUSIONS_JSON" "$CACHE_EVICTION_ATTEMPTED" "$CACHE_EVICTION_EVICTED" "$CACHE_EVICTION_FAILED" "$CACHE_BUDGET_REPAIRED" "$derived_data" "$DERIVED_DATA_BUDGET_KB" "$derived_data_overflow" "$XCTEST_DEVICES_KB" "$XCTEST_DEVICES_BUDGET_KB" "$XCTEST_DEVICES_OVERFLOW_KB" "$XCTEST_DEVICES_COUNT" "$XCTEST_DEVICES_VERDICT" "$XCTEST_DEVICES_RECLAIM_STATUS" "$XCTEST_DEVICES_MANUAL_REVIEW" "$SIMULATOR_RUNTIME_KB" "$SIMULATOR_RUNTIME_BUDGET_KB" "$SIMULATOR_RUNTIME_OVERFLOW_KB" "$SIMULATOR_RUNTIME_COUNT" "$SIMULATOR_RUNTIME_VERDICT" "$SIMULATOR_RUNTIME_RECLAIM_STATUS" "$SIMULATOR_RUNTIME_MANUAL_REVIEW" "$XCTEST_DEVICES_TIME_LIMITED"
   logger -t kg-disk-guard "verdict=$verdict freeGiB=$free_gib growthGiB=$growth_gib activeBuild=$active dockerCacheGiB=$docker_gib dockerActive=$docker_running cacheKB=$cache cacheBudgetKB=$cache_budget_kb cacheBudgetOverflowKB=$cache_budget_overflow cacheHeadroomKB=$cache_headroom_kb cacheWriterLimitKB=$cache_writer_limit_kb cacheHeadroomOverflowKB=$cache_headroom_overflow cacheRepairStatus=$cache_repair_status cacheRepairRemainingKB=$cache_repair_remaining derivedDataKB=$derived_data derivedDataBudgetKB=$DERIVED_DATA_BUDGET_KB derivedDataOverflowKB=$derived_data_overflow worktreeCacheKB=$worktree_cache worktreeKeys=$worktree_keys worktreeOverflowKeys=$worktree_overflow cacheOverflowKeys=$cache_overflow simulatorRuntimeKB=$SIMULATOR_RUNTIME_KB simulatorRuntimeBudgetKB=$SIMULATOR_RUNTIME_BUDGET_KB simulatorRuntimeOverflowKB=$SIMULATOR_RUNTIME_OVERFLOW_KB simulatorRuntimeCount=$SIMULATOR_RUNTIME_COUNT simulatorRuntimeVerdict=$SIMULATOR_RUNTIME_VERDICT action=$action" 2>/dev/null || true
