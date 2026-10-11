@@ -57,7 +57,9 @@ final class VocabularyEntry {
     var isArchived: Bool = false
     var isReaderHidden: Bool = false
     var isReviewExcluded: Bool = false
-    /// True while this entry's add request is on the wire. Transient: set only by the sync engine (#2733).
+    /// True from the moment the sync engine captures this entry until that sync returns. A user delete while
+    /// true queues a server delete instead of hard-deleting a row the sync still holds (#2733).
+    /// Transient: set only by the sync engine.
     @Transient var isUploadInFlight = false
 
     // Local spaced-review state

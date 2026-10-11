@@ -112,7 +112,7 @@ struct VocabularySyncEngineTests {
         service.addResponse = KGAddResponse(
             created: 1, skipped: 0, duplicates: [], cardIds: [entry.word: "card-9"]
         )
-        service.onAddInFlight = { entry.deleteLocally(in: context) }
+        service.onAddInFlight = { _ in entry.deleteLocally(in: context) }
 
         _ = await VocabularySyncEngine().execute(
             pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
@@ -131,6 +131,99 @@ struct VocabularySyncEngineTests {
 
         #expect(service.calls.contains("batchDelete"))
         #expect(entry.isDeleted)
+    }
+
+    @Test("a delete issued during the delete round trip keeps a captured add from being uploaded")
+    func deleteDuringDeleteRoundTripSkipsCapturedAdd() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let queuedDelete = makeEntry(word: "gone")
+        queuedDelete.kgCardId = "card-gone"
+        queuedDelete.markSynced()
+        queuedDelete.queueDelete()
+        let add = makeEntry(word: "ghost")
+        add.restorePendingEntry()
+        context.insert(queuedDelete)
+        context.insert(add)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        // Suspension point before the add group is reached: the add is captured but not yet on the wire.
+        service.onDeleteInFlight = { add.deleteLocally(in: context) }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [queuedDelete, add], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(service.calls.contains("batchDelete"))
+        #expect(!service.calls.contains("add"))
+        #expect(!service.uploadedWords.contains("ghost"))
+        #expect(add.kgCardId == nil)
+        // The delete stays queued; the next sync resolves it as not_found on the server.
+        #expect(add.isPendingDelete)
+        #expect(!add.isUploadInFlight)
+    }
+
+    @Test("a delete issued while another notebook's add group uploads keeps the unsent add from being uploaded")
+    func deleteDuringOtherGroupUploadSkipsAdd() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let alpha = makeEntry(word: "alpha")
+        alpha.notebookId = "nb-a"
+        alpha.restorePendingEntry()
+        let beta = makeEntry(word: "beta")
+        beta.notebookId = "nb-b"
+        beta.restorePendingEntry()
+        context.insert(alpha)
+        context.insert(beta)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.addResponse = KGAddResponse(
+            created: 1, skipped: 0, duplicates: [], cardIds: ["alpha": "card-alpha", "beta": "card-beta"]
+        )
+        // Group order comes from a dictionary, so delete whichever add the first upload has not sent.
+        var removed: VocabularyEntry?
+        service.onAddInFlight = { notebookId in
+            guard removed == nil else { return }
+            let other = notebookId == "nb-a" ? beta : alpha
+            removed = other
+            other.deleteLocally(in: context)
+        }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [alpha, beta], modelContext: context, service: service, emit: { _ in }
+        )
+
+        let deletedAdd = try #require(removed)
+        let sentAdd = deletedAdd === alpha ? beta : alpha
+        #expect(service.calls.filter { $0 == "add" }.count == 1)
+        #expect(service.uploadedWords == [sentAdd.word])
+        #expect(sentAdd.isSynced)
+        #expect(sentAdd.kgCardId != nil)
+        #expect(deletedAdd.isPendingDelete)
+        #expect(deletedAdd.kgCardId == nil)
+        #expect(!deletedAdd.isUploadInFlight)
+    }
+
+    @Test("a delete issued while an edit is on the wire stays queued instead of being overwritten by the edit's success")
+    func deleteDuringEditStaysQueued() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.onEditInFlight = { entry.deleteLocally(in: context) }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(entry.isPendingDelete)
+        #expect(entry.kgCardId == "card-1")
+        #expect(!entry.isUploadInFlight)
     }
 
     @Test("a failed edit stays retryable and makes sync partial")
@@ -444,25 +537,32 @@ private final class FakeVocabularySyncService: VocabularySyncEngineServing {
     var pullError: Error?
     var blockAdd = false
     var blockEdit = false
-    /// 在 batchAdd 送出後、回傳前執行，模擬 in-flight 期間的使用者操作（#2733）。
-    var onAddInFlight: (() -> Void)?
+    /// 在 batchAdd 送出後、回傳前執行，模擬 in-flight 期間的使用者操作（#2733）。參數為本批的 notebookId。
+    var onAddInFlight: ((String) -> Void)?
+    /// 在 batchDelete 往返期間執行（suspension 點），模擬使用者在 add 上傳前刪除。
+    var onDeleteInFlight: (() -> Void)?
+    /// 在 updateCardContent 送出後、回傳前執行，模擬 edit in-flight 期間的使用者刪除。
+    var onEditInFlight: (() -> Void)?
     private(set) var calls: [String] = []
+    private(set) var uploadedWords: [String] = []
     private(set) var editRequests: [EditRequest] = []
     private var addStarted = false
     private var editStarted = false
 
     func batchAdd(entries: [VocabularyEntry], notebookId: String) async throws -> KGAddResponse {
         calls.append("add")
+        uploadedWords.append(contentsOf: entries.map(\.word))
         addStarted = true
         if blockAdd {
             try await Task.sleep(for: .seconds(60))
         }
-        onAddInFlight?()
+        onAddInFlight?(notebookId)
         return addResponse
     }
 
     func batchDeleteCards(words: [String], notebookId: String) async throws -> KGBatchDeleteResponse {
         calls.append("batchDelete")
+        onDeleteInFlight?()
         if let batchDeleteError { throw batchDeleteError }
         return KGBatchDeleteResponse(deleted: words.count, deleted_words: words, not_found: [])
     }
@@ -487,6 +587,7 @@ private final class FakeVocabularySyncService: VocabularySyncEngineServing {
                 notebookId: notebookId
             )
         )
+        onEditInFlight?()
         if blockEdit {
             try await Task.sleep(for: .seconds(60))
         }
