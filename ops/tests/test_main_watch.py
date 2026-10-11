@@ -73,6 +73,31 @@ def test_an_unmapped_workflow_gets_no_guessed_area_label() -> None:
     assert decision["labels"] == ["P1", "needs-triage", "bug", main_watch.LABEL]
 
 
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "startup_failure"])
+def test_a_red_scheduled_main_run_opens_the_area_fix_issue(conclusion: str) -> None:
+    # ios-quality's daily run on main is the only main-branch signal for runner
+    # and Xcode drift now that pushes no longer run the iOS suite.
+    decision = main_watch.plan(
+        run(workflow="ios-quality", event="schedule", conclusion=conclusion), []
+    )
+    assert decision["action"] == "create"
+    assert decision["labels"] == [
+        "P1",
+        "needs-triage",
+        "area/ios",
+        "bug",
+        main_watch.LABEL,
+    ]
+    assert SHA[:9] in decision["title"] and URL in decision["body"]
+
+
+def test_a_green_scheduled_main_run_is_not_watched() -> None:
+    decision = main_watch.plan(
+        run(workflow="ios-quality", event="schedule", conclusion="success"), []
+    )
+    assert decision["action"] == "noop"
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -81,11 +106,14 @@ def test_an_unmapped_workflow_gets_no_guessed_area_label() -> None:
         {"conclusion": "skipped"},
         {"event": "pull_request"},
         {"event": "merge_group"},
+        {"event": "workflow_dispatch"},
         {"branch": "feature"},
         {"branch": "main-2"},
     ],
 )
-def test_only_red_pushes_to_main_are_watched(overrides: dict[str, str]) -> None:
+def test_only_red_pushes_and_scheduled_runs_on_main_are_watched(
+    overrides: dict[str, str],
+) -> None:
     assert main_watch.plan(run(**overrides), [])["action"] == "noop"
 
 
@@ -131,6 +159,22 @@ def test_dry_run_prints_the_decision_without_writing_to_github(
     monkeypatch.setattr(main_watch, "find_open_issues", lambda repo: [])
     monkeypatch.setattr(main_watch, "gh", lambda *a, **k: pytest.fail(f"gh {a}"))
     assert main_watch.main(["--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "create"
+
+
+def test_a_red_scheduled_main_run_is_read_for_open_issues_in_dry_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scheduled = {**ENV, "WATCH_EVENT": "schedule", "WATCH_WORKFLOW": "ios-quality"}
+    for key, value in scheduled.items():
+        monkeypatch.setenv(key, value)
+    read_for: list[str | None] = []
+    monkeypatch.setattr(
+        main_watch, "find_open_issues", lambda repo: read_for.append(repo) or []
+    )
+    monkeypatch.setattr(main_watch, "gh", lambda *a, **k: pytest.fail(f"gh {a}"))
+    assert main_watch.main(["--dry-run"]) == 0
+    assert read_for == [None]
     assert json.loads(capsys.readouterr().out)["action"] == "create"
 
 

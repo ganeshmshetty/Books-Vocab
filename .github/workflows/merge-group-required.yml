@@ -1,10 +1,13 @@
 name: merge-group-required
 
 # Merge queue's blocking contract is deliberately independent from the PR
-# confidence fan-out.  A merge group must receive the same short repository
-# gate, but it must not schedule LLM, UI, iOS, or confidence jobs.  The backend
+# confidence fan-out.  `short-gate` runs the repository checks.  The backend
 # pytest suite runs inline, only when the fail-closed scope router reports
-# backend=true (docs/ops-only groups stay on the short gate).
+# backend=true (docs/ops-only groups stay on the short gate).  When the router
+# reports iOS, the iOS quality suite runs here, once per change, behind
+# short-gate (owner decision 2026-10-11).  `required`, the only context branch
+# protection reads, aggregates both.  The group never runs LLM, UI-gate or
+# confidence jobs.
 on:
   merge_group:
     types: [checks_requested]
@@ -20,10 +23,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  required:
-    name: required
+  short-gate:
+    name: short-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      ios: ${{ steps.scope.outputs.ios }}
+      ios_mode: ${{ steps.scope.outputs.ios_mode }}
+      ios_selectors: ${{ steps.scope.outputs.ios_selectors }}
+      ui_smoke: ${{ steps.scope.outputs.ui_smoke }}
     steps:
       - name: Checkout merge group
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,6 +140,60 @@ jobs:
           set -euo pipefail
           uv sync --locked
           uv run python -m pytest -q -rs --skip-allowlist=tests/skip_allowlist.json
+
+  # The iOS quality suite, once per change, with the router's decision from
+  # short-gate. run_tests=true runs the simulator test jobs; PRs compile only.
+  ios-quality:
+    name: ios-quality
+    needs: short-gate
+    if: ${{ needs.short-gate.outputs.ios == 'true' }}
+    uses: ./.github/workflows/ios-quality.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      ios_mode: ${{ needs.short-gate.outputs.ios_mode }}
+      ios_selectors: ${{ needs.short-gate.outputs.ios_selectors }}
+      ui_smoke: ${{ needs.short-gate.outputs.ui_smoke }}
+      run_tests: 'true'
+
+  # The only context branch protection and the merge queue read. It passes only
+  # when short-gate succeeded and the iOS suite either succeeded or was not
+  # requested by the router. A skipped ios-quality with ios requested, or a
+  # missing or malformed router decision, fails closed.
+  required:
+    name: required
+    if: ${{ always() }}
+    needs: [short-gate, ios-quality]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Assert the short gate and the iOS suite passed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          short_result="$(jq -r '."short-gate".result // "missing"' <<<"$NEEDS_JSON")"
+          ios_result="$(jq -r '."ios-quality".result // "missing"' <<<"$NEEDS_JSON")"
+          ios_requested="$(jq -r '."short-gate".outputs.ios // "missing"' <<<"$NEEDS_JSON")"
+          if [[ "$short_result" != success ]]; then
+            echo "short-gate did not succeed: $short_result" >&2
+            exit 1
+          fi
+          if [[ "$ios_requested" != true && "$ios_requested" != false ]]; then
+            echo "router iOS decision is missing or malformed: $ios_requested" >&2
+            exit 1
+          fi
+          if [[ "$ios_result" == success ]]; then
+            exit 0
+          fi
+          if [[ "$ios_result" == skipped && "$ios_requested" == false ]]; then
+            exit 0
+          fi
+          echo "iOS quality suite result $ios_result with ios requested=$ios_requested" >&2
+          exit 1
 
   agent-review:
     name: agent-review

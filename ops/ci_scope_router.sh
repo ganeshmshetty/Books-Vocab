@@ -136,7 +136,7 @@ classify_path() {
   # does. Unit-test-only sources (ios/BooksAndVocabTests) do not.
   case "$path" in
     ios/BooksAndVocabTests/*) ;;
-    ios/*|ops/ios_*|ops/lib/ios_*|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py|.github/workflows/ios-quality.yml)
+    ios/*|ops/ios_*|ops/lib/ios_*|ops/lib/heavy_slots.sh|ops/lib/lock_wait.py|ops/lib/exit_codes.py|ops/lib/streaming_command.py|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py|.github/workflows/ios-quality.yml)
       ui_smoke=true
       ;;
   esac
@@ -211,13 +211,16 @@ classify_path() {
   esac
 
   # These files feed the real iOS build/test entrypoints or UI World fixture
-  # validation. Keep this closure aligned with ios-quality.yml push.paths.
+  # validation. ios-quality has no push trigger (the merge queue is the only gate
+  # that runs iOS on main, via merge-group-required), so this closure is the sole
+  # iOS trigger: it must stay a superset of every file an iOS entrypoint sources
+  # or runs. Lock, exit-code, stream and heavy-slot helpers are included for that reason.
   case "$path" in
     ios/*)
       ios=true
       return
       ;;
-    ops/ios_*.sh|ops/lib/ios_*.sh|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py)
+    ops/ios_*.sh|ops/ios_*.py|ops/lib/ios_*.sh|ops/lib/heavy_slots.sh|ops/lib/lock_wait.py|ops/lib/exit_codes.py|ops/lib/streaming_command.py|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py)
       ops=true
       ios=true
       return

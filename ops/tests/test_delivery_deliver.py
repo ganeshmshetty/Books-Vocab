@@ -1371,6 +1371,45 @@ def test_a_failed_area_job_refuses_at_once_even_with_a_sibling_still_running() -
     assert not _calls_at(world, _is_queue)
 
 
+def _ios_pr_checks(build: str = "SUCCESS") -> list[dict[str, Any]]:
+    # pr-gate's compile-only iOS run: ios-build is the only iOS job that ran; the
+    # test and targeted jobs are SKIPPED by design (run_tests=false).
+    return [
+        _REQUIRED_OK,
+        _check(SCOPE_CLASSIFIER, "SUCCESS"),
+        _check("ios-quality", "SUCCESS"),
+        _check("ios-quality / ios-plan", "SUCCESS"),
+        _check("ios-quality / ios-build", build),
+        _check("ios-quality / ios-verdict", "SUCCESS"),
+        # GitHub reports a skipped matrix job under its unexpanded template name
+        # (verified on PR #3090's rollup), not one entry per scope.
+        _check("ios-quality / ios-tests (${{ matrix.scope }})", "SKIPPED"),
+        _check("ios-quality / ios-targeted", "SKIPPED"),
+    ]
+
+
+def test_an_ios_pr_with_a_green_compile_and_skipped_tests_is_queued_not_held() -> None:
+    # The PR hold must not wait on or refuse the iOS test jobs that run only in
+    # the merge queue: a SKIPPED test job with a successful scope decision passes.
+    world = FakeWorld(
+        checks=[_ios_pr_checks()], review_runs=[[_review(job=True), _review()]]
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 0, result
+    assert _calls_at(world, _is_queue)
+
+
+def test_a_failed_ios_compile_refuses_even_when_the_tests_are_skipped() -> None:
+    world = FakeWorld(
+        checks=[_ios_pr_checks(build="FAILURE")],
+        review_runs=[[_review(job=True), _review()]],
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1
+    assert "ios-quality / ios-build" in result["error"]
+    assert not _calls_at(world, _is_queue)
+
+
 QUEUE_HEAD = "9" * 40
 
 

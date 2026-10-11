@@ -263,10 +263,14 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     || fail "merge-group required workflow has no merge_group trigger"
   grep -Fqx '    types: [checks_requested]' "$MERGE_GROUP_REQUIRED" \
     || fail "merge-group required workflow is not limited to checks_requested"
+  grep -q '^  short-gate:' "$MERGE_GROUP_REQUIRED" \
+    || fail "merge-group required workflow has no short-gate job"
   grep -q '^  required:' "$MERGE_GROUP_REQUIRED" \
-    || fail "merge-group required workflow has no required job"
+    || fail "merge-group required workflow has no required aggregator job"
+  # The short gate owns the repository checks; `required` (the context branch
+  # protection reads) is only an aggregator over it and the iOS suite.
   merge_group_required_block="$(awk '
-    /^  required:/ { in_required=1; next }
+    /^  short-gate:/ { in_required=1; next }
     in_required && /^  [A-Za-z0-9_-]+:/ { exit }
     in_required { print }
   ' "$MERGE_GROUP_REQUIRED")"
@@ -333,7 +337,7 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     merge_group_assert_unmasked_step "ripgrep install" "$rg_install_step" no
   fi
   rg_order="$(ruby -ryaml -e '
-    steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+    steps = YAML.load_file(ARGV[0])["jobs"]["short-gate"]["steps"]
     find = lambda { |needle| steps.index { |s| s["run"].to_s.include?(needle) } }
     positions = [
       find.call("ci_apt_install.sh ripgrep"),
@@ -371,7 +375,7 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     i18n_tmp="$(mktemp -d "$ROOT/.cache/test-i18n-XXXXXX")"
     i18n_run="$i18n_tmp/step.sh"
     ruby -ryaml -e '
-      steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+      steps = YAML.load_file(ARGV[0])["jobs"]["short-gate"]["steps"]
       step = steps.find { |s| s["run"].to_s.include?("ops/i18n_lint.sh --strict") }
       abort("no strict i18n lint step") unless step
       File.write(ARGV[1], step["run"])
@@ -415,7 +419,7 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
   mkdir -p "$ROOT/.cache"
   rg_tmp="$(mktemp -d "$ROOT/.cache/test-rg-XXXXXX")"
   ruby -ryaml -e '
-    steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
+    steps = YAML.load_file(ARGV[0])["jobs"]["short-gate"]["steps"]
     step = steps.find { |s| s["run"].to_s.include?("ci_apt_install.sh ripgrep") }
     abort("no ripgrep install step") unless step
     File.write(ARGV[1], step["run"])
@@ -513,7 +517,7 @@ require "yaml"
 require "tmpdir"
 require "open3"
 workflow, repo, group_base, group_head = ARGV
-steps = YAML.load_file(workflow)["jobs"]["required"]["steps"]
+steps = YAML.load_file(workflow)["jobs"]["short-gate"]["steps"]
 event = { "github.event.merge_group.base_sha" => group_base, "github.event.merge_group.head_sha" => group_head }
 outputs = {}
 Dir.mktmpdir do |tmp|
@@ -553,7 +557,7 @@ RUBY
   revert_base() { # src dst run-needle: point that step's BASE_SHA back at merge_group.base_sha
     ruby -e 'require "yaml"
       wf = YAML.load_file(ARGV[0])
-      step = wf["jobs"]["required"]["steps"].find { |s| s["run"].to_s.include?(ARGV[2]) } or abort("no step runs #{ARGV[2]}")
+      step = wf["jobs"]["short-gate"]["steps"].find { |s| s["run"].to_s.include?(ARGV[2]) } or abort("no step runs #{ARGV[2]}")
       step["env"]["BASE_SHA"] = "${{ github.event.merge_group.base_sha }}"
       File.write(ARGV[1], YAML.dump(wf))' "$1" "$2" "$3"
   }
@@ -735,11 +739,11 @@ RUBY
     [[ -n "$contract_failure" ]] && fail "$contract_failure"
   done < <(ruby -e 'require "yaml"
     jobs = (YAML.load_file(ARGV[0]) || {})["jobs"] || {}
-    required = jobs["required"].is_a?(Hash) ? jobs["required"] : {}
+    required = jobs["short-gate"].is_a?(Hash) ? jobs["short-gate"] : {}
     review = jobs["agent-review"].is_a?(Hash) ? jobs["agent-review"] : {}
     out = []
-    unless required["name"] == "required"
-      out << "merge-group required job name is #{required["name"].inspect}, not exactly required; branch protection and the merge queue read the job name, not the YAML key"
+    unless required["name"] == "short-gate"
+      out << "merge-group short-gate job name is #{required["name"].inspect}, not exactly short-gate; the required aggregator is checked separately"
     end
     if review.key?("if")
       out << "merge-group agent-review job sets a job-level if: and can be skipped (a skipped required check counts as passing)"
@@ -1059,8 +1063,10 @@ fi
 if awk '/^        run:/ { grab=1 } grab' "$MAIN_WATCH" | grep -q '\${{'; then
   fail "main-watch interpolates event data into a run script; pass it through env"
 fi
-grep -Fq 'github.event.workflow_run.event == '"'"'push'"'"'' "$MAIN_WATCH" \
-  || fail "main-watch does not restrict itself to push-triggered runs"
+grep -Fq "github.event.workflow_run.event == 'push'" "$MAIN_WATCH" \
+  || fail "main-watch does not watch push-triggered runs on main"
+grep -Fq "github.event.workflow_run.event == 'schedule'" "$MAIN_WATCH" \
+  || fail "main-watch does not watch scheduled runs on main; the daily iOS run could never open a fix issue"
 grep -Fq 'ops/main_watch.py' "$MAIN_WATCH" \
   || fail "main-watch does not run ops/main_watch.py"
 
@@ -1141,17 +1147,8 @@ fi
 grep -q "KG_IOS_SWIFTPM_CACHE_DIR=%s/kg-ios-swiftpm.*\\\$RUNNER_TEMP" "$IOS" \
   || fail "iOS workflow does not export an external SwiftPM cache root for shell steps"
 grep -q 'Package.resolved' "$IOS" || fail "iOS SwiftPM cache key is not lockfile-derived"
-grep -q "github.event_name == 'push' && github.ref == 'refs/heads/main'" "$IOS" \
-  || fail "iOS SwiftPM cache can be written outside trusted main pushes"
-for ios_dependency in \
-  ops/lib/project_python.sh \
-  ops/lib/fixture_dataset_env.sh \
-  ops/lib/userland_compat.sh \
-  ops/lib/provenance.py \
-  ops/review_calendar_clock.py; do
-  grep -q "'$ios_dependency'" "$IOS" \
-    || fail "iOS push trigger omits dependency: $ios_dependency"
-done
+grep -q "github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$IOS" \
+  || fail "iOS SwiftPM cache is not written only by the trusted scheduled run on main (merge-queue refs cannot seed PR restores)"
 
 # --- iOS selector-aware routing (Issue #1051) --------------------------------
 # The router decides; ios-quality re-validates and owns the full fallback. These
@@ -1173,12 +1170,16 @@ ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call
 grep -q '^  plan:' "$IOS" || fail "ios-quality has no fail-closed plan job"
 grep -q '^  ios-targeted:' "$IOS" || fail "ios-quality has no targeted job"
 # Full path is the default: both full jobs run unless a validated targeted run
-# accepted its own result, and a failed/skipped plan still means full.
-full_gate="if: \${{ always() && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}"
-[[ "$(grep -cF "$full_gate" "$IOS")" == 2 ]] \
-  || fail "ios-build and ios-tests are not both gated as full-unless-targeted-accepted"
-grep -Fq "if: \${{ needs.plan.outputs.mode == 'targeted' }}" "$IOS" \
-  || fail "targeted job is not gated on a validated targeted plan"
+# accepted its own result, and a failed/skipped plan still means full. The
+# compile check always runs on a PR (run_tests=false); the test jobs never do.
+build_gate="if: \${{ always() && (inputs.run_tests == 'false' || needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}"
+tests_gate="if: \${{ always() && inputs.run_tests != 'false' && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}"
+grep -Fq "$build_gate" "$IOS" \
+  || fail "ios-build is not gated as compile-on-PR or full-unless-targeted-accepted"
+grep -Fq "$tests_gate" "$IOS" \
+  || fail "ios-tests is not gated as tests-on-only or full-unless-targeted-accepted"
+grep -Fq "if: \${{ needs.plan.outputs.mode == 'targeted' && inputs.run_tests != 'false' }}" "$IOS" \
+  || fail "targeted job is not gated on a validated targeted plan with tests on"
 # The matrix is planned (Issue #2641): the full set stays unit + ui-smoke, and
 # ui-smoke is dropped only when the router reports ui_smoke=false.
 grep -Fq "matrix.scope" "$IOS" && grep -Fq 'scope: ${{ fromJSON(needs.plan.outputs.scopes) }}' "$IOS" \
@@ -1447,6 +1448,120 @@ while IFS=$'\t' read -r index workflow where scope; do
   grep -Fxq ".github/workflows/$workflow: $where permissions $scope: \"write\" is not read/none or an allowlisted write" <<<"$dropped_report" \
     || fail "dropping allowlist entry $index ($workflow $where $scope) left the live check green: [$dropped_report]"
 done < <(jq -r '.entries | to_entries[] | [.key, .value.workflow, (if .value.job then "job \(.value.job)" else "top-level" end), .value.scope] | @tsv' "$WRITE_ALLOWLIST")
+
+# --- iOS test suites run once per change, in the merge queue (2026-10-11) ---
+# PR heads compile only: pr-gate passes run_tests=false, so every iOS test job is
+# skipped by design and ios-build is the compile check. The merge queue runs the
+# full suite once on the exact tree it merges, behind the router, and `required`
+# aggregates it. main runs the suite on a daily schedule and has no push trigger.
+# Checked on parsed YAML, because a grep cannot tell a trigger from a comment.
+cat >"$wf_tmp/ios-suite-contract.rb" <<'RUBY'
+require "yaml"
+
+def triggers(workflow)
+  workflow[true] || workflow["on"] || {}
+end
+
+def hash_or_empty(value)
+  value.is_a?(Hash) ? value : {}
+end
+
+ios = YAML.load_file(ARGV[0]) || {}
+pr = YAML.load_file(ARGV[1]) || {}
+mg = YAML.load_file(ARGV[2]) || {}
+out = []
+
+on = triggers(ios)
+out << "ios-quality still has a push trigger; main is validated once, by the merge queue" if on.key?("push")
+unless Array(on["schedule"]).map { |s| s["cron"] } == ["17 19 * * *"]
+  out << "ios-quality has no daily schedule at '17 19 * * *' on main"
+end
+out << "ios-quality lost workflow_dispatch" unless on.key?("workflow_dispatch")
+call = hash_or_empty(on["workflow_call"])
+run_tests = hash_or_empty(call["inputs"])["run_tests"]
+unless hash_or_empty(run_tests)["type"] == "string" && run_tests["default"] == "true" && run_tests["required"] == false
+  out << "ios-quality run_tests is not an optional string input defaulting to 'true'"
+end
+%w[build_result tests_result targeted_result].each do |name|
+  value = hash_or_empty(hash_or_empty(call["outputs"])[name])["value"].to_s
+  unless value.start_with?("${{ jobs.ios-verdict.outputs.")
+    out << "ios-quality workflow_call output #{name} is not read from jobs.ios-verdict"
+  end
+end
+
+jobs = hash_or_empty(ios["jobs"])
+%w[ios-tests ios-targeted].each do |name|
+  unless hash_or_empty(jobs[name])["if"].to_s.include?("inputs.run_tests != 'false'")
+    out << "ios-quality #{name} is not skipped when run_tests is false (PRs must stay compile-only)"
+  end
+end
+unless hash_or_empty(jobs["ios-build"])["if"].to_s.include?("inputs.run_tests == 'false'")
+  out << "ios-build does not run on PRs (run_tests == 'false'), so a PR has no compile check"
+end
+if hash_or_empty(jobs["plan"]).key?("if")
+  out << "ios-plan is gated by a condition; it must always run"
+end
+verdict = hash_or_empty(jobs["ios-verdict"])
+unless Array(verdict["needs"]).sort == %w[ios-build ios-targeted ios-tests] && verdict["if"].to_s.include?("always()")
+  out << "ios-verdict must aggregate ios-build, ios-tests and ios-targeted under always()"
+end
+
+pr_ios = hash_or_empty(hash_or_empty(pr["jobs"])["ios-quality"])
+unless hash_or_empty(pr_ios["with"])["run_tests"] == "false"
+  out << "pr-gate ios-quality does not pass run_tests: 'false'; PRs would run the iOS test suite"
+end
+
+mg_jobs = hash_or_empty(mg["jobs"])
+short = hash_or_empty(mg_jobs["short-gate"])
+unless short["name"] == "short-gate"
+  out << "merge-group short-gate job is missing or not named short-gate"
+end
+%w[ios ios_mode ios_selectors ui_smoke].each do |key|
+  unless hash_or_empty(short["outputs"])[key].to_s == "${{ steps.scope.outputs.#{key} }}"
+    out << "merge-group short-gate output #{key} is not read from steps.scope"
+  end
+end
+
+ios_call = hash_or_empty(mg_jobs["ios-quality"])
+unless Array(ios_call["needs"]) == ["short-gate"]
+  out << "merge-group ios-quality does not need short-gate"
+end
+unless ios_call["if"].to_s.include?("needs.short-gate.outputs.ios == 'true'")
+  out << "merge-group ios-quality is not gated by the router output ios == 'true'"
+end
+unless ios_call["uses"] == "./.github/workflows/ios-quality.yml"
+  out << "merge-group ios-quality does not call ios-quality.yml"
+end
+call_with = hash_or_empty(ios_call["with"])
+unless call_with["run_tests"] == "true"
+  out << "merge-group ios-quality does not run the test suite (run_tests: 'true')"
+end
+%w[ios_mode ios_selectors ui_smoke].each do |key|
+  unless call_with[key].to_s == "${{ needs.short-gate.outputs.#{key} }}"
+    out << "merge-group ios-quality #{key} is not forwarded from short-gate"
+  end
+end
+unless ios_call["permissions"] == { "contents" => "read", "actions" => "read" }
+  out << "merge-group ios-quality permissions are not exactly contents and actions read"
+end
+
+agg = hash_or_empty(mg_jobs["required"])
+unless agg["name"] == "required"
+  out << "merge-group aggregator is missing or not named required (the context branch protection reads)"
+end
+out << "merge-group required must run under if: always()" unless agg["if"].to_s.include?("always()")
+unless Array(agg["needs"]).sort == %w[ios-quality short-gate]
+  out << "merge-group required must need exactly short-gate and ios-quality"
+end
+out << "merge-group required must be bounded to five minutes" unless agg["timeout-minutes"] == 5
+if Array(agg["needs"]).include?("agent-review")
+  out << "merge-group required must not depend on agent-review (it did not before)"
+end
+puts out
+RUBY
+while IFS= read -r contract_failure; do
+  [[ -n "$contract_failure" ]] && fail "$contract_failure"
+done < <(ruby "$wf_tmp/ios-suite-contract.rb" .github/workflows/ios-quality.yml .github/workflows/pr-gate.yml .github/workflows/merge-group-required.yml 2>&1 || echo "iOS suite contract check could not parse the workflows")
 
 # --- Push-to-main runs must never be cancelled by a newer push ----------------
 # Merges land every few minutes. A workflow that has a `push` trigger and an
