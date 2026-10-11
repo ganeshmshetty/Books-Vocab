@@ -15,6 +15,9 @@ class ReviewStateEntry(BaseModel):
     lapse_count: int = Field(ge=0, le=2_147_483_647)
     review_streak: int = Field(ge=0, le=2_147_483_647)
     last_review_feedback: int = Field(ge=-1, le=1)
+    # 進度覆寫(#2042):為 True 時 review_count/lapse_count 原樣寫入(不取 max),
+    # next_review_at 由 client 給定(now);即使 server 卡片較新也會套用。
+    override: bool = False
 
     @field_validator("review_count", "lapse_count", "review_streak", mode="before")
     @classmethod

@@ -35,6 +35,41 @@ def _clamp_next_review(value: datetime | None) -> datetime | None:
     return limit if value > limit else value
 
 
+def _client_next_review(
+    entry: ReviewStateEntry,
+    client_last: datetime,
+    *,
+    card_id: str,
+    logger: logging.Logger,
+) -> datetime | None:
+    """Resolve the client's ``next_review_at`` onto the server clock; every branch that takes it uses this.
+
+    ``client_last`` is the clamped ``last_reviewed_at``. When the raw value was clamped for
+    clock skew, the client derived ``next_review_at`` from the same skewed clock, so it is shifted
+    back by that identical offset to keep the interval intact. Missing or unparseable values
+    resolve to ``None`` (schedule reset).
+    """
+    parsed_next = parse_datetime(entry.next_review_at)
+    client_next = parsed_next
+    raw_last = parse_datetime(entry.last_reviewed_at)
+    if client_next is not None and raw_last is not None and raw_last > client_last:
+        try:
+            client_next -= raw_last - client_last
+        except OverflowError:  # absurd skew: the schedule is unrecoverable
+            client_next = None
+    # Observability: a present-but-unparseable next_review_at silently resets
+    # this card's schedule to None. Surface it so bad/stale client payloads
+    # are diagnosable. Skip whitespace-only / empty values, which mean "not
+    # meaningfully sent" rather than malformed.
+    if parsed_next is None and str(entry.next_review_at).strip():
+        logger.warning(
+            "push_review_states: card %s has unparseable next_review_at %r; schedule reset to None",
+            card_id,
+            entry.next_review_at,
+        )
+    return _clamp_next_review(client_next)
+
+
 def _merge_card_review_state(
     entry: ReviewStateEntry,
     card: Any,
@@ -46,6 +81,9 @@ def _merge_card_review_state(
 
     Returns ``None`` when nothing changed (caller counts it as skipped). Policy:
 
+    - ``entry.override`` → counts are written exactly and ``next_review_at``
+      comes from the client via ``_client_next_review`` on either branch, so the
+      schedule does not depend on which clock is newer (progress reset, #2042).
     - server newer-or-equal → only raise ``review_count`` / ``lapse_count`` to
       the client max (counts are monotonic and conflict-free).
     - client newer → accept the full client schedule.
@@ -54,6 +92,18 @@ def _merge_card_review_state(
     multiple entries in the same batch sees its already-bumped counts.
     """
     server_last = parse_datetime(card.last_reviewed_at)
+    if entry.override and server_last and server_last >= client_last:
+        patch: dict[str, Any] = dict(
+            review_count=entry.review_count,
+            lapse_count=entry.lapse_count,
+            review_interval_hours=entry.review_interval_hours,
+            review_streak=entry.review_streak,
+            last_review_feedback=entry.last_review_feedback,
+            next_review_at=_client_next_review(entry, client_last, card_id=card.id, logger=logger),
+        )
+        for name, value in patch.items():
+            setattr(card, name, value)
+        return patch
     if server_last and server_last >= client_last:
         changed = False
         if entry.review_count > card.review_count:
@@ -67,40 +117,22 @@ def _merge_card_review_state(
         return dict(review_count=card.review_count, lapse_count=card.lapse_count)
 
     # Client is newer — accept all fields.
-    parsed_next = client_next = parse_datetime(entry.next_review_at)
-    raw_last = parse_datetime(entry.last_reviewed_at)
-    if client_next is not None and raw_last is not None and raw_last > client_last:
-        # last_reviewed_at was clamped for clock skew; the client derived
-        # next_review_at from the same skewed clock, so shift it back by the
-        # identical offset to keep the interval intact.
-        try:
-            client_next -= raw_last - client_last
-        except OverflowError:  # absurd skew: the schedule is unrecoverable
-            client_next = None
-    client_next = _clamp_next_review(client_next)
-    # Observability: a present-but-unparseable next_review_at silently resets
-    # this card's schedule to None below. Surface it so bad/stale client payloads
-    # are diagnosable. Skip whitespace-only / empty values, which mean "not
-    # meaningfully sent" rather than malformed.
-    if parsed_next is None and str(entry.next_review_at).strip():
-        logger.warning(
-            "push_review_states: card %s has unparseable next_review_at %r; schedule reset to None",
-            card.id,
-            entry.next_review_at,
-        )
     return dict(
         review_interval_hours=entry.review_interval_hours,
-        next_review_at=client_next,
+        next_review_at=_client_next_review(entry, client_last, card_id=card.id, logger=logger),
         last_reviewed_at=client_last,
-        review_count=max(entry.review_count, card.review_count),
-        lapse_count=max(entry.lapse_count, card.lapse_count),
+        review_count=entry.review_count if entry.override else max(entry.review_count, card.review_count),
+        lapse_count=entry.lapse_count if entry.override else max(entry.lapse_count, card.lapse_count),
         review_streak=entry.review_streak,
         last_review_feedback=entry.last_review_feedback,
     )
 
 
 def _coalesce_entries(existing: ReviewStateEntry, entry: ReviewStateEntry) -> ReviewStateEntry:
-    """Combine two entries for one logical card: newest schedule, max counts."""
+    """Combine two entries for one logical card: newest schedule, max counts.
+
+    A newest ``override`` entry keeps its exact counts: max() would undo the reset.
+    """
     entry_last = _clamp_last_reviewed(parse_datetime(entry.last_reviewed_at))
     existing_last = _clamp_last_reviewed(parse_datetime(existing.last_reviewed_at))
     if entry_last is None:
@@ -108,6 +140,8 @@ def _coalesce_entries(existing: ReviewStateEntry, entry: ReviewStateEntry) -> Re
     if existing_last is None:
         return entry
     newest = entry if entry_last >= existing_last else existing
+    if newest.override:
+        return newest
     return newest.model_copy(
         update={
             "review_count": max(entry.review_count, existing.review_count),
