@@ -27,6 +27,7 @@ import Testing
 /// `stableUUID(for:)`, `purchaseOptions(for:)`, `merge(...)`, `inferredStatus(for:)`,
 /// and the `KGSubscriptionStatus` expiry/cancellation predicates that drive
 /// local downgrade and expiry-timer scheduling.
+@Suite(.serialized)
 struct SubscriptionManagerTests {
 
     // MARK: - Fixtures
@@ -368,7 +369,7 @@ struct SubscriptionManagerTests {
     // tests; the response-ordering contract lives entirely in the network half.
 
     @MainActor
-    @Test func refresh_discards_older_response_arriving_after_newer_request() async {
+    @Test func refresh_discards_older_response_arriving_after_newer_request() async throws {
         let mgr = SubscriptionManager.shared
         let savedEntitlements = mgr.entitlements
         let savedRefreshTime = mgr.lastRefreshTime
@@ -389,8 +390,7 @@ struct SubscriptionManagerTests {
         let auth = RefreshOrderAuthStub()
 
         let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
-        let parked = await service.waitUntilParked(1)
-        #expect(parked)
+        try #require(await service.waitUntilParked(1))
 
         await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
         #expect(mgr.entitlements.pro.is_active)
@@ -399,6 +399,41 @@ struct SubscriptionManagerTests {
         service.release(1)
         await launch.value
         #expect(mgr.entitlements.pro.is_active)
+    }
+
+    @MainActor
+    @Test func refresh_applies_older_valid_response_when_newer_request_fails() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = 非強制 launch refresh，掛起且回 active；2 = 較晚發出的強制 refresh，
+        // 不在 responses 內，因此 fetch 拋錯（模擬網路錯誤）。
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))],
+            suspended: [1]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(mgr.lastError != nil)
+
+        // 較早發出但有效的回應後到：尚未被套用過，必須套用並清除較新請求留下的錯誤。
+        service.release(1)
+        await launch.value
+        #expect(mgr.entitlements.pro.is_active)
+        #expect(mgr.lastError == nil)
     }
 
     @MainActor
