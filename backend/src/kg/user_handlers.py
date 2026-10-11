@@ -44,6 +44,7 @@ from .api_models import (
     VocabUIConfig,
 )
 from .ops_cli_shared import _normalize_persisted_bool
+from .sentry_init import capture_handled
 from .service_factories import evict_user_store_cache
 from .types import StoredUserRecord, UserRecord, UsersPayload
 from .users_lock import users_file_lock
@@ -456,11 +457,13 @@ def delete_user_account_response(
     # (#2702), but a presigned PUT minted earlier can still land after the
     # ledger-driven delete. Sweep the whole account prefix, outside the lock.
     # Best-effort: the client cannot retry (its token is revoked), so a failure
-    # is logged; a PUT completing after this sweep, inside the URL TTL, is
-    # bounded by the bucket lifecycle rule rather than by this request.
+    # is logged and reported to Sentry, which is the operator alert path. A PUT
+    # completing after this sweep, inside the URL TTL, is bounded by the bucket
+    # lifecycle rule rather than by this request.
     try:
         sweep_account_prefixes(ids_to_delete, library_bucket=library_bucket, library_s3_client=library_s3_client)
-    except Exception:
+    except Exception as exc:
+        capture_handled(exc, context="account_erasure.prefix_sweep")
         logger.exception("Library prefix sweep failed after account tombstone for %s", ids_to_delete)
 
     deleted_dirs: list[str] = []

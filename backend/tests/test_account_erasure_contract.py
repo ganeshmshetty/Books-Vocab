@@ -614,3 +614,63 @@ def test_asset_upload_after_tombstone_is_rejected_and_not_recorded(isolated_api,
 
     assert response.status_code == 401, response.text
     assert _asset_object_keys(isolated_api.data_dir, [isolated_api.user_id]) == ()
+
+
+def test_prefix_sweep_failure_is_reported_to_sentry_with_erasure_context(tmp_path, monkeypatch):
+    """A swallowed prefix-sweep failure must reach Sentry, not just the log: the
+    client cannot retry after the tombstone, so Sentry is the alert path."""
+    import kg.user_handlers as user_handlers
+
+    class _ListingDown(_BucketFake):
+        def list_objects_v2(self, **kwargs):
+            raise RuntimeError("listing unavailable")
+
+    reported: list[tuple[BaseException, str]] = []
+    monkeypatch.setattr(
+        user_handlers,
+        "capture_handled",
+        lambda exc, *, context, tags=None: reported.append((exc, context)) or True,
+    )
+    bucket = _ListingDown(keys={"library/canonical/x/asset.epub"})
+
+    _call_delete(tmp_path, {"canonical": {"linked_ids": [], "config": {}}}, bucket, user_id="canonical")
+
+    assert [context for _, context in reported] == ["account_erasure.prefix_sweep"]
+    assert isinstance(reported[0][0], RuntimeError)
+
+
+def test_local_only_asset_declaration_after_tombstone_is_rejected(isolated_api, monkeypatch):
+    """#2702 applies to the local_only branch too: an erased account must get 401
+    and must not flip the book's asset storage.
+
+    Only ``_terminated`` is written (no ``_revoked_before``), so the 401 can only
+    come from the local_only registration guard; the CurrentUser revocation check
+    would otherwise reject the request first and the guard would go untested."""
+    _swap_settings(KGSettings(data_dir=isolated_api.data_dir, jwt_secret=TEST_JWT_SECRET, library_bucket="b"))
+    monkeypatch.setattr(library_router, "_library_s3_client", lambda settings: _BucketFake())
+    created = isolated_api.client.post(
+        "/api/library/books",
+        json={"client_book_id": "erasure-local", "title": "Book", "format": "epub"},
+        headers=isolated_api.headers,
+    )
+    assert created.status_code == 201, created.text
+    book_id = created.json()["id"]
+
+    users = json.loads(isolated_api.users_file.read_text())
+    users["_terminated"] = [isolated_api.user_id]
+    isolated_api.users_file.write_text(json.dumps(users))
+
+    response = isolated_api.client.post(
+        f"/api/library/books/{book_id}/asset-upload",
+        json={"format": "epub", "byte_size": 10, "local_only": True},
+        headers=isolated_api.headers,
+    )
+
+    assert response.status_code == 401, response.text
+    store = LibraryStore(isolated_api.data_dir / "users" / isolated_api.user_id / "library.db")
+    try:
+        with Session(store.engine) as session:
+            book = session.get(LibraryBook, book_id)
+            assert book is not None and book.asset_storage is None
+    finally:
+        store.close()
