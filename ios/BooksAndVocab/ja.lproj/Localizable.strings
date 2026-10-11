@@ -1399,3 +1399,4 @@
 
 /* #2862: tap-to-expand hint for a truncated toast pill */
 "toast.expand.hint" = "タップして全文を表示";
+"翻譯需為 1 至 1000 字，教學筆記最多 5000 字" = "翻訳は 1 〜 1000 文字、学習メモは 5000 文字までです。";
