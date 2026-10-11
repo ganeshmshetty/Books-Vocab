@@ -517,6 +517,14 @@ grep -q 'clean rebuildable cache' <<<"$mixed_out" && ok "mixed 75 keeps the clea
 grep -q 'cache cleanup does not clear it' <<<"$mixed_out" && bad "mixed 75 wrongly says cache cleanup cannot clear it" || ok "mixed 75 does not claim cache cleanup is useless"
 grep -qF -- './ops/worktree_orchestrate.py adopt --worktree /x/stray\ checkout --intent <intent>' <<<"$mixed_out" \
   && ok "mixed 75 still lists the unregistered adopt remedy" || bad "mixed 75 lost the unregistered remedy: $mixed_out"
+# Over-quota matching is literal (#3001 CR P3): a bracket path must not be glob-expanded
+# onto an existing sibling (a1 here), and a star-looking path must not match a longer one.
+mkdir -p "$TMP/glob-quota" && : > "$TMP/glob-quota/a1"
+glob_path="$TMP/glob-quota/a[1]"
+glob_out="$(/bin/bash -c "source '$LIB'; kg_ios_disk_guard_unregistered_over_quota '$glob_path;/x/b*' 'lane-budget-exceeded:$glob_path;lane-budget-exceeded:/x/bee'" 2>&1)"
+[[ "$glob_out" == "$glob_path" ]] \
+  && ok "over-quota match is literal for bracket and star paths" \
+  || bad "over-quota match is not literal: got '$glob_out'"
 
 echo "── lane-usage-report-blocked: a stale report is never structural evidence ──"
 # Regression (2026-10-08): the tick's supervisor killed the scan and recorded
