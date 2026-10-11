@@ -47,8 +47,8 @@ struct IncrementalBoundaryClockSkewTests {
     /// Device clock 10 minutes behind the server: the boundary must still stay
     /// at or below the device's own clock minus the margin. Nothing it was
     /// sampled from may run ahead of the device.
-    /// Non-discriminating guard: it also passes on origin/main, so it is not
-    /// a regression proof for #2426 (the margin test below is).
+    /// Also red on origin/main: the bare device clock carries no 60 s margin, so
+    /// the boundary sits above `clientNowAfterPull - 60` unless the pull takes a minute.
     @Test func deviceBehindServer_boundaryStaysBelowClientNow() async throws {
         let container = try VocabPullHarness.makeContainer()
         let defaults = VocabPullHarness.makeDefaults()
