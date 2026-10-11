@@ -77,7 +77,7 @@ struct ReaderProgressSaverTests {
         sut.flush()
         #expect(saves.value == 1)   // immediate
 
-        // The previously-scheduled debounced save must have been cancelled.
+        // The fake keeps the scheduled action; flush() must have cleared latestSave so it is a no-op.
         debouncer.fire()
         #expect(saves.value == 1)
     }
@@ -133,8 +133,8 @@ struct ReaderProgressSaverTests {
         #expect(saves.value == 1)
     }
 
-    /// flush() cancels the pending debounce task; even if the original window
-    /// expires later, no late save fires because the task was cancelled.
+    /// flush() clears the pending save; even if the original window fires
+    /// later, no late save runs (the fake debouncer does not cancel on its own).
     @Test func flushCancelsPendingTaskSoNoLateSave() {
         let saves = Counter()
         let debouncer = TestReaderProgressDebouncer()
