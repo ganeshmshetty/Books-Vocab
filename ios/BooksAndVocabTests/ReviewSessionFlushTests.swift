@@ -49,7 +49,7 @@ struct ReviewSessionFlushTests {
         container: ModelContainer,
         completed: Bool
     ) async {
-        await withCheckedContinuation { continuation in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             state.flushPendingAnswers(
                 container: container,
                 reviewSettings: .default,
