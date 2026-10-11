@@ -65,6 +65,51 @@ struct ReaderTOCNavigationTests {
     }
 
     @Test
+    func lateCallbackForFirstSiblingFragmentCannotCompleteSecondRequest() {
+        let firstAnchor = UUID()
+        let secondAnchor = UUID()
+        let chapterA = "OEBPS/chapter-a.xhtml"
+        var gate = ReaderTOCNavigationRequestGate()
+
+        // Two TOC entries (#section-1, #section-2) share one resource href.
+        let firstStarted = gate.tryBegin(firstAnchor, expectedLocatorHref: chapterA)
+        #expect(firstStarted)
+
+        // The sibling is refused while the first request still owes its callback,
+        // so the token cannot move to the second entry.
+        let siblingStarted = gate.tryBegin(secondAnchor, expectedLocatorHref: chapterA)
+        #expect(!siblingStarted)
+        #expect(gate.isCurrent(firstAnchor))
+        #expect(!gate.isCurrent(secondAnchor))
+
+        // A late callback matching the resource completes only the first request.
+        let lateCallbackCompletedSecond = gate.finish(secondAnchor, ifMatchingLocatorHref: chapterA)
+        #expect(!lateCallbackCompletedSecond)
+        let firstCompleted = gate.finish(firstAnchor, ifMatchingLocatorHref: chapterA)
+        #expect(firstCompleted)
+
+        // After the first request resolves, the sibling may start normally.
+        let siblingRetried = gate.tryBegin(secondAnchor, expectedLocatorHref: chapterA)
+        #expect(siblingRetried)
+        #expect(gate.isCurrent(secondAnchor))
+    }
+
+    @Test
+    func differentResourceRequestStillSupersedesInFlightRequest() {
+        let firstRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        let firstStarted = gate.tryBegin(firstRequest, expectedLocatorHref: "OEBPS/chapter-a.xhtml")
+        #expect(firstStarted)
+        let replacementStarted = gate.tryBegin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-b.xhtml")
+        #expect(replacementStarted)
+
+        #expect(!gate.isCurrent(firstRequest))
+        #expect(gate.isCurrent(replacementRequest))
+    }
+
+    @Test
     func invalidatingNavigationGateRejectsLateTeardownCompletion() {
         let requestID = UUID()
         var gate = ReaderTOCNavigationRequestGate()
