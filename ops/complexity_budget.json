@@ -1,14 +1,14 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/issue-2641-r5 (#2641, re-laned onto origin/main; conflicts in ops/complexity_budget.json resolved by taking main's ceilings): the closed-PR run-cancel workflow (.github/workflows/pr-closed-run-cancel.yml) pushes workflows over the main ceiling. Measured on this lane head via ops/complexity.py check: workflows 2,204; workflows ceiling = measured + 5 = 2,209 (+69 over main, within the 150-line cap). ops measured 211,582 stays under main's ceiling 211,653, so ops is not raised. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
+  "note": "2026-10-11 lane debug/issue-3028-wave (#3028, CR P1 fix): the merge-group duplicate-key step adds 14 lines to .github/workflows/merge-group-required.yml (workflows 2,204 -> 2,218) and the shared-catalog and merge-group fixture tests add 67 lines under ops/ (ops 211,646 -> 211,713). Ceilings are measured + 5 (workflows 2,223, ops 211,718); ratchet reclaims the slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 211653,
+    "ops": 211718,
     "docs": 16077,
-    "workflows": 2209
+    "workflows": 2223
   }
 }

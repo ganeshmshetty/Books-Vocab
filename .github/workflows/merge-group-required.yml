@@ -90,6 +90,20 @@ jobs:
       - name: Run short repository gate
         run: ./ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control
 
+      # Localizable.strings catalogs are shared Scope, so the PR-time copy of this
+      # guard (static.i18n in the PR fan-out) no longer serialises catalog lanes and
+      # is not the last check: two lanes adding one key at non-adjacent positions
+      # merge textually clean and only the merged result exposes the duplicate.
+      # The helper always exits 0 and reports on stdout, so any output fails here.
+      - name: Check i18n duplicate keys
+        run: |
+          set -euo pipefail
+          out="$(uv run --python 3.13 python ops/_i18n_duplicate_keys.py ios/BooksAndVocab)"
+          if [ -n "$out" ]; then
+            echo "$out"
+            exit 1
+          fi
+
       - name: Install ffmpeg and ffprobe
         if: steps.scope.outputs.backend == 'true'
         timeout-minutes: 5
