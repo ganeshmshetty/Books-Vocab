@@ -161,7 +161,14 @@ require_grep 'VACUUM INTO' "$TMP/sop_25a.txt"
 require_grep 'find \. -name __pycache__ -exec rm' "$TMP/sop_25a.txt"
 # shellcheck source=../lib/devops_run_guard.sh
 source ops/lib/devops_run_guard.sh
+awk '/^路徑級受保護名稱：/' "$TMP/sop_25a.txt" >"$TMP/protected_names.txt"
+require_grep '路徑級受保護名稱' "$TMP/protected_names.txt"
+if grep -q 'docker volumes' "$TMP/protected_names.txt"; then
+  echo "backup_restore.md §2.5a lists docker volumes as a path-level protected name; the guard only blocks docker volume commands (#2923)" >&2
+  exit 1
+fi
 for name in kg-data kg-prod /app/data knowledge_graph_api knowledge-graph-api_data; do
+  require_grep "\`$name\`" "$TMP/protected_names.txt"
   devops_run_is_blocked run "rm -rf $name" || {
     echo "protected name '$name' is listed in backup_restore.md §2.5a but the run guard does not block it (#2923)" >&2
     exit 1
