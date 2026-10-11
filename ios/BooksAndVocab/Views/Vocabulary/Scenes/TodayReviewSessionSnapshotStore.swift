@@ -8,6 +8,10 @@ struct TodayReviewSessionSnapshotStore {
         struct QueueItem: Codable {
             let persistenceID: String
             let baseline: ReviewBaseline
+            /// The queued row's own id. Restore resolves it before `persistenceID`, so a row that sync
+            /// re-keyed after this snapshot was written is still found after a relaunch (#2482).
+            /// Nil in snapshots written before the id was recorded; those fall back to `persistenceID`.
+            let entryID: UUID?
         }
 
         struct SubmittedAnswer: Codable {
