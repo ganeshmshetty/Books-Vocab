@@ -526,6 +526,28 @@ glob_out="$(/bin/bash -c "source '$LIB'; kg_ios_disk_guard_unregistered_over_quo
   && ok "over-quota match is literal for bracket and star paths" \
   || bad "over-quota match is not literal: got '$glob_out'"
 
+# Regression (#3001 CR P3): the diagnose reason loop word-split its list with an
+# unquoted expansion, so a bracket path in a reason was pathname-expanded against the
+# cwd. A cwd entry that the bracket pattern matches must not flip the over-quota verdict.
+mkdir -p "$TMP/glob-cwd/lane-budget-exceeded:/x" && : > "$TMP/glob-cwd/lane-budget-exceeded:/x/over1"
+glob_usage="$TMP/glob-usage.json"
+cat > "$glob_usage" <<'JSON'
+{
+  "policy": {
+    "blocking_reasons": [
+      "lane-budget-exceeded:/x/over[1]"
+    ],
+    "unregistered_physical_worktrees": [
+      "/x/over[1]"
+    ]
+  }
+}
+JSON
+glob_out="$(cd "$TMP/glob-cwd" && KG_IOS_DISK_GUARD_STATE="$unreg_guard" KG_IOS_DISK_LANE_USAGE_STATE="$glob_usage" \
+  KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "$unreg_script" _ "$LIB" 2>&1)"
+grep -q 'worktree remove' <<<"$glob_out" && ok "bracket over-quota reason keeps its remove remedy in a matching cwd" || bad "bracket over-quota reason lost its remedy: $glob_out"
+grep -q 'clean rebuildable cache' <<<"$glob_out" && bad "bracket over-quota reason was pathname-expanded into cache advice" || ok "bracket over-quota reason is not pathname-expanded"
+
 echo "── lane-usage-report-blocked: a stale report is never structural evidence ──"
 # Regression (2026-10-08): the tick's supervisor killed the scan and recorded
 # lane_usage_rc=75, which the consumer reads as "a complete report was written".
