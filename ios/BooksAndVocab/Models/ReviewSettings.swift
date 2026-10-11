@@ -248,11 +248,11 @@ enum AccountPreferenceNamespace {
         cloud: CloudKeyValueStore
     ) {
         guard let normalizedAccountID = normalizedAccountID(accountID) else { return }
-        let accountPrefix = accountPrefix(normalizedAccountID)
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(accountPrefix) {
+        let digestPrefix = accountPrefix(normalizedAccountID)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(digestPrefix) {
             defaults.removeObject(forKey: key)
         }
-        for key in cloud.allKeys() where key.hasPrefix(accountPrefix) {
+        for key in cloud.allKeys() where key.hasPrefix(digestPrefix) {
             cloud.removeObject(forKey: key)
         }
     }
