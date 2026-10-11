@@ -22,9 +22,22 @@ struct TodayReviewSessionPersistenceController {
         self.currentUserID = currentUserID
     }
 
-    mutating func syncQueueMetadata(for queue: [VocabularyEntry]) {
-        queuePersistenceIDs = queue.map(ReviewSessionPersistence.persistenceID(for:))
-        queueBaselines = queue.map(ReviewSessionPersistence.makeBaseline(from:))
+    /// Re-derives the queue identity and baselines after a reorder. Answered slots keep their
+    /// existing baseline when the card in that slot is unchanged: a live entry for an already
+    /// flushed answer already carries the post-review values, and re-deriving from it would make a
+    /// later replace re-apply the grade on top (#2482).
+    mutating func syncQueueMetadata(for queue: [VocabularyEntry], keepingBaselinesAt answeredSlots: Set<Int>) {
+        let newIDs = queue.map(ReviewSessionPersistence.persistenceID(for:))
+        var newBaselines = queue.map(ReviewSessionPersistence.makeBaseline(from:))
+        for slot in answeredSlots
+        where slot < newIDs.count
+            && slot < queuePersistenceIDs.count
+            && slot < queueBaselines.count
+            && newIDs[slot] == queuePersistenceIDs[slot] {
+            newBaselines[slot] = queueBaselines[slot]
+        }
+        queuePersistenceIDs = newIDs
+        queueBaselines = newBaselines
     }
 
     func flushPendingAnswers(

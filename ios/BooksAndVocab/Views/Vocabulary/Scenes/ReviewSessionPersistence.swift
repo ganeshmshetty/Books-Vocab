@@ -213,7 +213,7 @@ enum ReviewSessionPersistence {
     /// covered by the per-flip UserDefaults snapshot + restore reflush.
     ///
     /// Idempotent: skips answers whose `ReviewRecord` already exists. Reports the
-    /// flushed indices on success so the caller can mark them + finalize the snapshot
+    /// settled indices on success (flushed, or dropped because the entry was deleted) so the caller can mark them + finalize the snapshot
     /// ONLY after the store actually has the data. The empty-pending case still calls
     /// `onFlushed([])` so callers can finalize without special-casing a no-op.
     static func flushPendingAnswers(
@@ -232,14 +232,23 @@ enum ReviewSessionPersistence {
         }
         Task.detached(priority: .utility) {
             let ctx = ModelContext(container)
-            var staged: [Int] = []
+            var settled: [Int] = []
             for (index, answer) in pending {
                 guard index < queuePersistenceIDs.count, index < queueBaselines.count else { continue }
-                guard let entry = try? fetchEntry(for: queuePersistenceIDs[index], in: ctx) else {
-                    // Entry fetch failed (DB error) or entry missing — this answer
-                    // can't be persisted; leave it un-flushed so the snapshot + restore
-                    // reflush gets another chance instead of silently dropping it.
-                    AppLog.data.error("flushPendingAnswers: entry not found for \(queuePersistenceIDs[index]), result not saved")
+                let entry: VocabularyEntry?
+                do {
+                    entry = try fetchEntry(for: queuePersistenceIDs[index], in: ctx)
+                } catch {
+                    // DB error: this answer can't be read back, so keep it un-flushed; the
+                    // snapshot + restore reflush gets another chance instead of dropping it.
+                    AppLog.data.error("flushPendingAnswers: entry fetch failed for \(queuePersistenceIDs[index]), answer kept un-flushed: \(error)")
+                    continue
+                }
+                guard let entry else {
+                    // The entry is gone from the store (deleted): there is no row left to
+                    // write, so the answer is dropped and settled rather than retried forever.
+                    AppLog.data.info("flushPendingAnswers: entry no longer exists for \(queuePersistenceIDs[index]), dropping its answer")
+                    settled.append(index)
                     continue
                 }
                 guard stageAnswer(
@@ -249,11 +258,11 @@ enum ReviewSessionPersistence {
                     notebookSettingsSnapshot: notebookSettingsSnapshot,
                     in: ctx
                 ) else { continue }
-                staged.append(index)
+                settled.append(index)
             }
-            let saved = PerfLog.review.measure("flush.dbSaveBatch", "n=\(staged.count)") { ctx.safeSave() }.value
+            let saved = PerfLog.review.measure("flush.dbSaveBatch", "n=\(settled.count)") { ctx.safeSave() }.value
             if saved {
-                let confirmed = staged
+                let confirmed = settled
                 if let onFlushed { await onFlushed(confirmed) }
             } else {
                 AppLog.data.error("flushPendingAnswers: batch save failed for \(staged.count) answers")
