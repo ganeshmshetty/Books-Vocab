@@ -326,7 +326,7 @@ final class TodayReviewState {
             _ = session.shuffleRemaining(pinned: answeredSlots)
         }
         syncCurrentEntryDerivedState()
-        syncQueueMetadata()
+        syncQueueMetadata(keepingBaselinesAt: answeredSlots)
         prewarmCardWindow()
         ReviewSessionStore.saveOrder(queue, userID: currentUserID)
         persistSnapshot()
@@ -660,7 +660,9 @@ final class TodayReviewState {
         flushPendingAnswers(
             container: container,
             notebookSettingsSnapshot: notebookSettingsSnapshot,
-            onFinalize: { [weak self] in self?.persistSnapshot() },
+            onFinalize: { [weak self] in
+                self?.finalizeSnapshotAfterFlush(completed: self?.session.isComplete ?? false)
+            },
             onFailure: onSaveFailure
         )
     }
@@ -731,8 +733,8 @@ final class TodayReviewState {
         }
     }
 
-    private func syncQueueMetadata() {
-        persistence.syncQueueMetadata(for: queue)
+    private func syncQueueMetadata(keepingBaselinesAt answeredSlots: Set<Int>) {
+        persistence.syncQueueMetadata(for: queue, keepingBaselinesAt: answeredSlots)
     }
 
     private func advancePastAlreadyScoredCard() {
