@@ -147,6 +147,21 @@ struct TodayReviewSnapshotRestoreTests {
         #expect(state.queue.first === first)
     }
 
+    @Test func uniqueByPersistenceIDWinnerIsIndependentOfInputOrder() {
+        let older = makeEntry("dup-older", kgCardId: "card-dup")
+        let newer = makeEntry("dup-newer", kgCardId: "card-dup")
+        older.dateAdded = Date(timeIntervalSince1970: 1_000)
+        newer.dateAdded = Date(timeIntervalSince1970: 2_000)
+        let other = makeEntry("other", kgCardId: "card-other")
+
+        let forward = ReviewSessionPersistence.uniqueByPersistenceID([older, newer, other])
+        let reversed = ReviewSessionPersistence.uniqueByPersistenceID([other, newer, older])
+
+        // 勝者由 dateAdded 決定（最早者），與 fetch 順序無關；結果仍保持輸入的相對順序。
+        #expect(forward.map(\.word) == ["dup-older", "other"])
+        #expect(reversed.map(\.word) == ["other", "dup-older"])
+    }
+
     // MARK: - Missing queued card
 
     @Test func missingQueuedCardKeepsSurvivingAnswersAndRemapsIndices() {
