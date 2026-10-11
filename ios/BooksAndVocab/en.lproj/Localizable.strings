@@ -1397,6 +1397,9 @@
 "確定要重設本機資料？" = "Reset local data?";
 "尚有 %@ 未同步，重設後將永久遺失。" = "%@ not yet synced will be permanently lost after reset.";
 "放棄未同步並重設" = "Discard unsynced and reset";
+"尚有 %@ 未同步，登出後將永久遺失。" = "%@ not yet synced will be permanently lost after sign-out.";
+"無法確認未同步資料，登出後可能永久遺失。" = "Unable to check for unsynced data. It may be permanently lost after sign-out.";
+"登出並捨棄未同步資料" = "Sign out and discard unsynced data";
 "未同步資料" = "Unsynced data";
 "尚有 %@ 未同步，已停止重設。請先同步，或確認放棄未同步資料。" = "%@ not yet synced, so the reset was stopped. Sync first, or confirm discarding the unsynced data.";
 "無法將預設設定同步到伺服器，請確認網路連線；本機資料未變動，請重試。" = "Could not sync the default settings to the server. Check your connection; local data is unchanged, please try again.";

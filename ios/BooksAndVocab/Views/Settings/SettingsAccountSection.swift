@@ -1,8 +1,17 @@
 import SwiftUI
 
 struct SettingsAccountSection: View {
+    /// Pending logout gate result (#2745). `unsynced` = rows logout would discard;
+    /// `unreadable` = the count itself failed, so logout is not allowed to proceed silently.
+    private enum LogoutPrompt {
+        case unsynced(Int)
+        case unreadable
+    }
+
     @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
+    @Environment(\.modelContext) private var modelContext
+    @State private var logoutPrompt: LogoutPrompt?
     let state: SettingsPresenterState.AuthSection
     let subscription: SettingsPresenterState.SubscriptionSection?
     let manualLoginUserId: Binding<String>?
@@ -158,7 +167,7 @@ struct SettingsAccountSection: View {
             SettingsDivider(leadingInset: 0)
 
             // Logout button
-            Button(role: .destructive, action: actions.logout) {
+            Button(role: .destructive, action: { requestLogout() }) {
                 Text(SettingsAccountCopy.logoutTitle)
                     .font(appSkin.typography.body)
                     .foregroundStyle(appSkin.palette.destructive)
@@ -167,7 +176,47 @@ struct SettingsAccountSection: View {
             .padding(appSkin.spacing.cardPadding)
             .accessibilityLabel(SettingsAccountCopy.logoutTitle)
             .accessibilityIdentifier("settings.account.logoutButton")
+            .confirmationDialog(
+                SettingsAccountCopy.unsyncedLogoutTitle,
+                isPresented: Binding(
+                    get: { logoutPrompt != nil },
+                    set: { if !$0 { logoutPrompt = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(SettingsAccountCopy.unsyncedLogoutConfirmTitle, role: .destructive) {
+                    actions.logout()
+                }
+                .accessibilityIdentifier("settings.account.logoutConfirmButton")
+                Button(SettingsAccountCopy.unsyncedLogoutCancelTitle, role: .cancel) {}
+            } message: {
+                Text(logoutPromptMessage)
+            }
         }
+    }
+
+    /// Logout with no unsynced rows proceeds directly. Otherwise the user must
+    /// confirm the discard: logout deletes every local vocabulary row, so a
+    /// pending/failed row must never disappear without an explicit choice (#2745).
+    private func requestLogout() {
+        do {
+            let count = try BackgroundSyncActor.unsyncedEntryCount(in: modelContext)
+            if count == 0 {
+                actions.logout()
+            } else {
+                logoutPrompt = .unsynced(count)
+            }
+        } catch {
+            AppLog.kg.error("Logout gate could not count unsynced rows: \(error.localizedDescription)")
+            logoutPrompt = .unreadable
+        }
+    }
+
+    private var logoutPromptMessage: String {
+        if case .unsynced(let count)? = logoutPrompt {
+            return SettingsAccountCopy.unsyncedLogoutMessage(count: count)
+        }
+        return SettingsAccountCopy.unsyncedLogoutUnknownMessage
     }
 
     private func accountSummaryRow() -> some View {

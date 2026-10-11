@@ -405,6 +405,16 @@ actor BackgroundSyncActor {
         return try modelContext.fetchCount(descriptor)
     }
 
+    /// Counts vocabulary rows the server has not confirmed: pending (0) or
+    /// failed (2). `clearUserData` deletes every row, so these are what a logout
+    /// would discard. Static and synchronous so the MainActor logout gate can
+    /// read it on the caller's context without an actor hop.
+    static func unsyncedEntryCount(in context: ModelContext) throws -> Int {
+        try context.fetchCount(
+            FetchDescriptor<VocabularyEntry>(predicate: #Predicate { $0.syncStatus != 1 })
+        )
+    }
+
     /// Deletes only server-synced entries (syncStatus == 1).
     /// Used on startup when not logged in to remove stale KG data
     /// while preserving locally-created pending words (syncStatus == 0).
