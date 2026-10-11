@@ -47,17 +47,33 @@ enum ReaderTOCNavigationEvent: Equatable, Sendable {
 /// finish inside Readium, so its completion must never mutate a replacement
 /// request.
 struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
+    /// A superseded live jump that still owes its anchorless report to its
+    /// resource. Keyed by the request that owes it, so that request's refusal
+    /// releases exactly its own report.
+    private struct OwedSupersededJump: Equatable, Sendable {
+        let requestID: UUID
+        let resourceHref: String
+    }
+
     private(set) var activeRequestID: UUID?
     private(set) var activeExpectedLocatorHref: String?
     private(set) var activeExpectedFragments: [String] = []
     /// Set once Readium's `go(to:)` returned true for the active request.
     private(set) var isNavigationAccepted = false
-    /// Resource hrefs of live jumps this request superseded. Readium delivers
-    /// one anchorless location report per jump it performs, naming neither its
-    /// request nor its anchor, so each superseded jump owes one report to its
-    /// resource. Until that report is consumed it cannot be told apart from
-    /// this request's own report, so it is consumed first.
-    private(set) var owedSupersededHrefs: [String] = []
+    /// Set once Readium refused the active request, or it never reached Readium.
+    /// Such a request performs no jump, so it owes no report when superseded.
+    private(set) var isActiveJumpRefused = false
+    /// Superseded live jumps whose anchorless reports are still owed. Readium
+    /// delivers one anchorless location report per jump it performs, naming
+    /// neither its request nor its anchor, so an owed report cannot be told
+    /// apart from the report of the request that replaced its jump. It is
+    /// consumed first.
+    private var owedSupersededJumps: [OwedSupersededJump] = []
+
+    /// Resource hrefs of the owed superseded reports, in supersession order.
+    var owedSupersededHrefs: [String] {
+        owedSupersededJumps.map(\.resourceHref)
+    }
 
     /// `expectedFragments` are the anchors the TOC entry targets inside
     /// `expectedLocatorHref`. Empty means resource-level expectation only.
@@ -68,15 +84,20 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     ) {
         // The superseded jump owes its report whether or not Readium has
         // accepted it yet: an accepted jump delivers one, and an unaccepted
-        // one may still be performed. A stale entry costs one report, so the
-        // request ends at its timeout instead of completing early.
-        if let activeRequestID, activeRequestID != requestID, let activeExpectedLocatorHref {
-            owedSupersededHrefs.append(activeExpectedLocatorHref)
+        // one may still be performed. A refused jump performed nothing and owes
+        // none. A stale entry costs one report, so the request ends at its
+        // timeout instead of completing early.
+        if let activeRequestID, activeRequestID != requestID, !isActiveJumpRefused,
+           let activeExpectedLocatorHref {
+            owedSupersededJumps.append(
+                OwedSupersededJump(requestID: activeRequestID, resourceHref: activeExpectedLocatorHref)
+            )
         }
         activeRequestID = requestID
         activeExpectedLocatorHref = expectedLocatorHref
         activeExpectedFragments = expectedFragments
         isNavigationAccepted = false
+        isActiveJumpRefused = false
     }
 
     mutating func invalidate() {
@@ -84,7 +105,8 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         activeExpectedLocatorHref = nil
         activeExpectedFragments = []
         isNavigationAccepted = false
-        owedSupersededHrefs = []
+        isActiveJumpRefused = false
+        owedSupersededJumps = []
     }
 
     func isCurrent(_ requestID: UUID) -> Bool {
@@ -102,6 +124,17 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         return true
     }
 
+    /// Readium performed no jump for `requestID`: `go(to:)` refused it, no
+    /// navigator was available, or it was cancelled before `go(to:)` ran. Its
+    /// owed report, if it was superseded, is released; a live request that is
+    /// later superseded owes nothing either.
+    mutating func jumpRefused(_ requestID: UUID) {
+        owedSupersededJumps.removeAll { $0.requestID == requestID }
+        if isCurrent(requestID) {
+            isActiveJumpRefused = true
+        }
+    }
+
     func matchesCurrent(
         _ requestID: UUID,
         locatorHref: String,
@@ -117,19 +150,20 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
             )
     }
 
-    /// The owed superseded report an anchorless report for an anchored request
-    /// is, if one is owed for its resource. Named reports are never owed, and a
-    /// resource-level request owes nothing: its anchorless completion is
-    /// unchanged.
+    /// The owed superseded report an anchorless report for `locatorHref` is, if
+    /// one is owed for its resource. Named reports are never owed. Anchored and
+    /// resource-level requests alike consume it first: an anchorless report
+    /// cannot be told apart from the superseded jump's report, and the
+    /// replacement's own report comes after it.
     private func owedSupersededIndex(locatorHref: String, locatorFragments: [String]) -> Int? {
-        guard !activeExpectedFragments.isEmpty, locatorFragments.isEmpty else { return nil }
-        return owedSupersededHrefs.firstIndex(of: locatorHref)
+        guard locatorFragments.isEmpty else { return nil }
+        return owedSupersededJumps.firstIndex { $0.resourceHref == locatorHref }
     }
 
     /// Readium 3.11 idle location callbacks carry empty `locations.fragments`,
     /// and no callback is guaranteed to name a jump's anchor. An accepted
     /// anchored request therefore completes on an anchorless report for its
-    /// resource once no superseded report is owed (see `owedSupersededHrefs`);
+    /// resource once no superseded report is owed (see `owedSupersededJumps`);
     /// requiring the anchor would time out every fragment TOC tap. A report that
     /// names only other anchors is a late callback of a superseded jump and is
     /// refused. A resource-level request has no anchor of its own, so it refuses
@@ -168,7 +202,7 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     ) -> Bool {
         guard isCurrent(requestID) else { return false }
         if let owedIndex = owedSupersededIndex(locatorHref: locatorHref, locatorFragments: locatorFragments) {
-            owedSupersededHrefs.remove(at: owedIndex)
+            owedSupersededJumps.remove(at: owedIndex)
             return false
         }
         guard matchesCurrent(
@@ -232,10 +266,15 @@ final class ReaderTOCNavigationBridge {
     /// reports acceptance, before the caller resumes. A location callback that
     /// Readium delivers right after acceptance is therefore already attributable
     /// to the request, instead of being dropped and timing out.
+    /// `onRefused` runs in the turn Readium refuses the jump, or when the jump
+    /// never reaches Readium. It is reported whatever the race outcome: a
+    /// superseded jump cancelled while `go(to:)` was in flight still settles
+    /// here, so the report it owed is released.
     func navigate(
         requestID: UUID,
         locator: Locator,
-        onAccepted: (@MainActor () -> Void)? = nil
+        onAccepted: (@MainActor () -> Void)? = nil,
+        onRefused: (@MainActor () -> Void)? = nil
     ) async -> ReaderTOCNavigationEvent {
         let race = ReaderTOCNavigationRace(requestID: requestID)
         let navigator = self.navigator
@@ -248,18 +287,26 @@ final class ReaderTOCNavigationBridge {
 
                 let navigationTask: Task<Void, Never> = Task { @MainActor in
                     guard let navigator else {
+                        onRefused?()
                         race.finish(.navigatorUnavailable(requestID: requestID))
                         return
                     }
                     guard !Task.isCancelled else {
+                        // Cancelled before go(to:) ran: Readium never sees the jump.
+                        onRefused?()
                         race.finish(.cancelled(requestID: requestID))
                         return
                     }
                     guard let accepted = await navigator.go(to: locator) else {
+                        onRefused?()
                         race.finish(.navigatorUnavailable(requestID: requestID))
                         return
                     }
-                    if accepted { onAccepted?() }
+                    if accepted {
+                        onAccepted?()
+                    } else {
+                        onRefused?()
+                    }
                     race.finish(
                         accepted
                             ? .goAccepted(requestID: requestID, locatorHref: locator.href.string)
