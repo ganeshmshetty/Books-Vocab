@@ -79,7 +79,8 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 4. 唯一入口：所有使用者刪除（閱讀器 `VocabularyContextStore.deleteEntry`、`SyncView` 待同步確認刪除、`WordDetailSheet`）都經 `VocabularyEntry.deleteLocally(in:)`，不得直接 `modelContext.delete(entry)`
 5. **I3（不變式）**：列被擷取（`isUploadInFlight`）期間，使用者的撤銷與閱讀器重新擷取都不得改寫其 `syncAction`。`undoQueuedDelete()` 為 no-op；`restoreExistingEntryForSave` 對 in-flight 的 delete 回 `nil`，由呼叫端新增一筆 `pending + add`；`SyncView` 忽略該列的「還原」點擊。唯一允許的使用者轉移是 → delete。因此擷取時為 delete 的列，在 batch 回應或逐卡 fallback 抵達時仍是 delete；post-await 只做防禦性重查（`syncAction == .delete` 且仍在 in-flight），不需撤銷競態分支。
 6. 反例（已修，#2484 撤銷競態）：撤銷發生在 batch delete 往返期間，曾把仍有 `kgCardId` 的列標成 synced；server 刪除成功後，回應被守門忽略，接著的 full pull 把它當 orphan 刪除，撤銷等於遺失卡片。逐卡 fallback 的 `deleteCard` 期間撤銷，曾在請求返回後無條件硬刪。兩者皆因 I3 不可達。
-7. **已知殘餘（無程式碼變更，另案）**：(a) `KGVocabCoordinator.retryPendingDeletes`（待刪 banner 的第二條 drain，#3059）在 engine 之外發送 batch delete、不設 `isUploadInFlight`、回應後直接 `modelContext.delete`，可能與進行中的 sync 重疊；(b) 編輯（`WordEditSheet.commitEdit`）不在 I3 守門內：對 in-flight 的 pending add 只改內容，該次 sync 不會上傳，pull 可能覆寫（不硬刪、不遺失卡片）；(c) 登出／重設的 `clearUserData` 可硬刪進行中的列，sync 的 post-await 會讀到已刪列（見下節「logout-cleanup gate」的 accepted residual）。
+7. **retryPendingDeletes 守門（#2733、#3059）**：待刪 banner 的第二條 drain（`KGVocabCoordinator.retryPendingDeletes`）在 engine 之外發送 batch／逐卡 delete。本地硬刪一律經 `hardDeleteResolvedDelete`：`isUploadInFlight` 的列保留給進行中 sync 的回應收斂（I3）；await 之後重驗 `syncAction == .delete`，撤銷過的列（已回到 add）保留。
+8. **已知殘餘（另案）**：(b) 編輯（`WordEditSheet.commitEdit`）不在 I3 守門內：對 in-flight 的 pending add 只改內容，該次 sync 不會上傳，pull 可能覆寫（不硬刪、不遺失卡片）；(c) 登出／重設的 `clearUserData` 可硬刪進行中的列，sync 的 post-await 會讀到已刪列（見下節「logout-cleanup gate」的 accepted residual）。
 
 ### 已同步單字被刪除
 
