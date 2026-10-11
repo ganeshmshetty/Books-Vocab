@@ -208,18 +208,22 @@ class GitHubCliAdapter:
         return self._queries.get_pull_request(number)
 
     def required_check_snapshot(self, number: int) -> CheckSnapshot:
-        if self._required_observation_numbers:
-            numbers = self._required_observation_numbers
-            self._required_observation_numbers = ()
-            prime = getattr(self._checks, "prime_required_snapshots", None)
-            if callable(prime):
-                try:
-                    prime(numbers)
-                except (AdapterCommandError, AdapterPayloadError):
-                    # The singular exact-head read remains the compatibility
-                    # fallback when batch observation is unavailable or fails.
-                    pass
-        return self._checks.required_snapshot(number)
+        # Required checks gate merges, and the head reads around them bind the
+        # observation to a PR head: both are authoritative, so no cached pr view or
+        # batch can pin the checks to an old head.
+        with self._authoritative():
+            if self._required_observation_numbers:
+                numbers = self._required_observation_numbers
+                self._required_observation_numbers = ()
+                prime = getattr(self._checks, "prime_required_snapshots", None)
+                if callable(prime):
+                    try:
+                        prime(numbers)
+                    except (AdapterCommandError, AdapterPayloadError):
+                        # The singular exact-head read remains the compatibility
+                        # fallback when batch observation is unavailable or fails.
+                        pass
+            return self._checks.required_snapshot(number)
 
     def changed_paths(self, number: int) -> tuple[str, ...]:
         return self._queries.changed_paths(number)
