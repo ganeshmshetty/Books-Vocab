@@ -332,4 +332,43 @@ struct KGServiceErrorTests {
         )
         #expect(summary == expected)
     }
+
+    // .system 的字串與列表分隔必須共用同一個解析結果，不跟隨裝置 locale（#2997）。
+    // "fr-FR" 是不支援的裝置語系 → 解析為 .english，是 fallback 契約本身（issue 驗收要求保留）。
+    // 但它無法判別分隔洩漏：英文模擬器的裝置 locale 就是英文，修正前的 autoupdatingCurrent 分隔也相同。
+    // 能判別洩漏的是解析結果為非英文語系的案例（ja-JP、zh-Hant-TW）：修正前分隔退回模擬器英文，與期望不符。
+    @Test(arguments: ["fr-FR", "ja-JP", "zh-Hant-TW"])
+    func sync_failure_summary_system_joins_groups_with_resolved_language_separator(devicePreference: String) {
+        let resolvedLanguage = AppLanguage.resolvedSystemLanguage(preferredLanguages: [devicePreference])
+        let timeoutError = KGError.networkError(underlying: URLError(.timedOut))
+        let summary = SyncFailurePresentation.partialFailureSummary(
+            [
+                ("pull", SyncFailurePresentation.reason(for: KGError.offline, language: resolvedLanguage)),
+                ("pullReviewEvents", SyncFailurePresentation.reason(for: timeoutError, language: resolvedLanguage)),
+            ],
+            language: .system,
+            preferredLanguages: [devicePreference]
+        )
+
+        let listFormatter = ListFormatter()
+        listFormatter.locale = resolvedLanguage.locale
+        let groups = [
+            SyncFailurePresentation.message(label: "pull", error: KGError.offline, language: resolvedLanguage),
+            SyncFailurePresentation.message(label: "pullReviewEvents", error: timeoutError, language: resolvedLanguage),
+        ]
+        let expected = L10n.format(
+            "背景同步部分失敗：%@",
+            language: resolvedLanguage,
+            listFormatter.string(from: groups) ?? ""
+        )
+        #expect(summary == expected, "裝置偏好 \(devicePreference) 的 .system 未依解析結果 \(resolvedLanguage) 組裝：\(summary)")
+    }
+
+    @Test func resolved_system_language_falls_back_to_english_for_unsupported_device_locale() {
+        #expect(AppLanguage.resolvedSystemLanguage(preferredLanguages: ["fr-FR"]) == .english)
+        #expect(AppLanguage.system.resolved(preferredLanguages: ["fr-FR"]) == .english)
+        #expect(AppLanguage.japanese.resolved(preferredLanguages: ["fr-FR"]) == .japanese)
+        let formatLocale = AppLanguageStore.shared.formatLocale(for: .system, preferredLanguages: ["fr-FR"])
+        #expect(formatLocale.language.languageCode?.identifier == "en")
+    }
 }

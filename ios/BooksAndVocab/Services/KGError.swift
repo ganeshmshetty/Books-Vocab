@@ -66,8 +66,12 @@ enum SyncFailurePresentation {
     /// 不寫死 ASCII ", "。
     static func partialFailureSummary(
         _ failures: [(label: String, reason: String)],
-        language: AppLanguage
+        language: AppLanguage,
+        preferredLanguages: [String]? = nil
     ) -> String {
+        // 字串與列表分隔符共用同一個解析結果（#2997）：.system 只解析一次，
+        // 不讓字串（L10n）與分隔符（ListFormatter）各自解析而分歧。
+        let language = language.resolved(preferredLanguages: preferredLanguages)
         var reasonOrder: [String] = []
         var labelsByReason: [String: [String]] = [:]
         for failure in failures {
@@ -96,7 +100,9 @@ enum SyncFailurePresentation {
 
     private static func localizedList(_ items: [String], language: AppLanguage) -> String {
         let formatter = ListFormatter()
-        formatter.locale = language.locale
+        // language 已在 partialFailureSummary 解析為具體語系；格式化仍經 formatLocale(for:)，
+        // 與 L10n.format(language:) 走同一條路徑（#2997）。
+        formatter.locale = AppLanguageStore.shared.formatLocale(for: language)
         // ListFormatter.string(from:) 對非空陣列不會回 nil；callers 保證 items 非空。
         // 這裡不寫回寫死的 ASCII 分隔符，unreachable fallback 只保留不會把標點硬編在內的形式。
         return formatter.string(from: items) ?? items.joined()
