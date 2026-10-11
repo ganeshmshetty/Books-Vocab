@@ -194,10 +194,8 @@ extension SettingsView {
                 switch VocabularyExporter.export(entries: allEntries, format: .csv) {
                 case .success(let url):
                     exportURL = url
-                case .failure(.empty):
-                    toastCoordinator.error(NotebookListCopy.allWordsExportEmpty)
-                case .failure(.writeFailed):
-                    toastCoordinator.error("匯出失敗".localized)
+                case .failure(let error):
+                    toastCoordinator.error(NotebookListCopy.allWordsExportFailureMessage(for: error))
                 }
             },
             toggleAutoLink: { enabled in
