@@ -9,9 +9,17 @@ struct WordEditSheet: View {
     @Bindable var entry: VocabularyEntry
     var onSaved: (() -> Void)? = nil
 
-    @State private var draftTranslation = ""
-    @State private var draftExplanation = ""
+    @State private var draftTranslation: String
+    @State private var draftExplanation: String
     @State private var isSaving = false
+
+    /// 草稿在 init 直接取自 entry：首幀即為真實值，不會以空白草稿渲染出「儲存」停用與驗證提示的閃爍。
+    init(entry: VocabularyEntry, onSaved: (() -> Void)? = nil) {
+        _entry = Bindable(wrappedValue: entry)
+        self.onSaved = onSaved
+        _draftTranslation = State(initialValue: entry.translation)
+        _draftExplanation = State(initialValue: entry.explanation ?? "")
+    }
 
     var body: some View {
         NavigationStack {
@@ -57,10 +65,6 @@ struct WordEditSheet: View {
                     }
                 }
             }
-        }
-        .onAppear {
-            draftTranslation = entry.translation
-            draftExplanation = entry.explanation ?? ""
         }
         .enableInjection()
     }
@@ -129,10 +133,18 @@ struct WordEditSheet: View {
         case noteLength
     }
 
+    /// 與後端 Python `str.strip()` 的空白集合一致：`whitespacesAndNewlines` 再加 U+001C–U+001F
+    /// （Python `isspace()` 為真、Swift 不含）。缺這四個 scalar 時，僅含分隔符的輸入會通過客端、被後端 422 拒收（#2548）。
+    private static var backendStripCharacters: CharacterSet {
+        var set = CharacterSet.whitespacesAndNewlines
+        set.formUnion(CharacterSet(charactersIn: "\u{1C}\u{1D}\u{1E}\u{1F}"))
+        return set
+    }
+
     /// 以 trim 後的值驗證；與 `commitEdit` 送進 entry 的值完全相同。
     static func validate(translation: String, explanation: String) throws -> (translation: String, explanation: String?) {
-        let trimmedTranslation = translation.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedExplanation = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTranslation = translation.trimmingCharacters(in: backendStripCharacters)
+        let trimmedExplanation = explanation.trimmingCharacters(in: backendStripCharacters)
 
         let translationLength = trimmedTranslation.unicodeScalars.count
         guard (1...translationMaxLength).contains(translationLength) else {
