@@ -142,12 +142,16 @@ kg_ios_disk_lane_report_is_fresh() {
 # blocked; the rest only warn.  Inputs are ';'-joined lists, as kg_ios_disk_json_array
 # prints them; a stale or unknown report yields nothing.
 kg_ios_disk_guard_unregistered_over_quota() {
-  local unregistered="$1" reasons="$2" path
-  local IFS=';'
+  local unregistered="$1" reasons="$2" path needle
   [[ "$unregistered" == none || "$unregistered" == unknown ]] && return 0
-  for path in $unregistered; do
-    [[ ";$reasons;" == *";lane-budget-exceeded:$path;"* ]] && printf '%s\n' "$path"
-  done
+  # Literal matching only: the list is split without pathname expansion and the
+  # reason needle is quoted, so a bracket or star in a worktree path can neither
+  # glob onto a sibling nor match a different path (#3001 CR P3).
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    needle=";lane-budget-exceeded:$path;"
+    [[ ";$reasons;" == *"$needle"* ]] && printf '%s\n' "$path"
+  done <<< "${unregistered//;/$'\n'}"
   return 0
 }
 
