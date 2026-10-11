@@ -510,6 +510,16 @@ struct ReaderTOCNavigationTests {
 
         gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: [])
+
+        // The superseded anchored jump owes its anchorless report to the resource
+        // until the replacement is accepted; that report is consumed first.
+        let supersededReport = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!supersededReport)
+        #expect(gate.isCurrent(replacementRequest))
         #expect(gate.markNavigationAccepted(replacementRequest))
 
         let lateFirstFinished = gate.finish(
@@ -520,14 +530,7 @@ struct ReaderTOCNavigationTests {
         #expect(!lateFirstFinished)
         #expect(gate.isCurrent(replacementRequest))
 
-        // The superseded anchored jump owes its anchorless report to the resource;
-        // only the report after it completes the resource-level replacement.
-        let supersededReport = gate.finish(
-            replacementRequest,
-            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
-            locatorFragments: []
-        )
-        #expect(!supersededReport)
+        // After acceptance the replacement's own anchorless report completes it.
         let resourceFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
