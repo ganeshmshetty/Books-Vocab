@@ -312,4 +312,22 @@ struct TodayReviewDeckHeightTests {
             #expect(pinned == H.isTransitioning(shell: c.shell, target: c.target, inFlight: c.inFlight))
         }
     }
+
+    // MARK: 點一下展開 hint 的動效選擇（#3110，與 main 的翻面彈簧對齊）
+
+    /// 答案揭示／收合走 reviewRevealSpring：zone 離開 front 時必須用彈簧淡出，不可 snap。
+    @Test func revealHideKeepsTheRevealSpring() {
+        #expect(H.expandZoneMotion(zoneActive: false, deckIsTransitioning: false) == .revealSpring)
+        #expect(H.expandZoneMotion(zoneActive: false, deckIsTransitioning: true) == .revealSpring)
+    }
+
+    /// 卡片區飛行中（zone 仍 active）隱藏：瞬間 snap，不沿彈簧上飄。
+    @Test func deckFlightHideSnaps() {
+        #expect(H.expandZoneMotion(zoneActive: true, deckIsTransitioning: true) == .snap)
+    }
+
+    /// 飛行結束後的淡入走 contentFade。
+    @Test func settledFrontFadesIn() {
+        #expect(H.expandZoneMotion(zoneActive: true, deckIsTransitioning: false) == .contentFade)
+    }
 }

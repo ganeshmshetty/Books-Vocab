@@ -193,6 +193,17 @@ struct TodayReviewPresenter: View {
         )
     }
 
+    /// 點一下展開 hint 的 `.animation` 值（#3110）；種類判定見 `TodayReviewDeckHeight.expandZoneMotion`。
+    func expandZoneAnimation(zoneActive: Bool) -> Animation? {
+        switch TodayReviewDeckHeight.expandZoneMotion(
+            zoneActive: zoneActive, deckIsTransitioning: deckIsTransitioning
+        ) {
+        case .snap: return nil
+        case .contentFade: return AppMotion.contentFade
+        case .revealSpring: return AppMotion.reviewRevealSpring
+        }
+    }
+
     /// 已 settle 的展開背面高度（同一張卡仍展開才有效；見 `RevealLatch`）。非 nil 時非 active
     /// slot 的 cap 取它（見 `TodayReviewDeckHeight.slotHeight` 的 `settledBack`）。
     var deckSettledBackHeight: CGFloat? {
@@ -339,7 +350,7 @@ struct TodayReviewPresenter: View {
                             )
                             .frame(height: zoneActive ? nil : 0, alignment: .top)
                             .opacity(zoneVisible ? 1 : 0)
-                            .animation(zoneVisible ? AppMotion.contentFade : nil, value: zoneVisible)
+                            .animation(expandZoneAnimation(zoneActive: zoneActive), value: zoneVisible)
                             .allowsHitTesting(zoneVisible && isCardInteractive)
                             .accessibilityHidden(!zoneActive)
                         }

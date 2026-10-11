@@ -96,6 +96,23 @@ enum TodayReviewDeckHeight {
         shell > 0 && (inFlight || abs(shell - target) > epsilon)
     }
 
+    /// 點一下展開 hint 的動效種類（#3110）。
+    enum ExpandZoneMotion: Equatable {
+        /// 瞬間切換（卡片區飛行中隱藏，不沿彈簧上飄）。
+        case snap
+        /// 飛行結束後淡入。
+        case contentFade
+        /// 答案揭示／收合：沿 ambient reviewRevealSpring（與 main 的 withAnimation 翻面一致）。
+        case revealSpring
+    }
+
+    /// zone 離開 front（揭示）時一律用翻面彈簧，避免 `.animation(nil)` 把淡出 snap 掉；
+    /// front 中僅飛行期間 snap、飛行結束才 contentFade。
+    static func expandZoneMotion(zoneActive: Bool, deckIsTransitioning: Bool) -> ExpandZoneMotion {
+        guard zoneActive else { return .revealSpring }
+        return deckIsTransitioning ? .snap : .contentFade
+    }
+
     // MARK: 背面離場接手（previous / shuffle / autoplay 不經 fling 的縫）
 
     /// 背面展開 settle 後記下的「卡片區總高」。fling 路徑有 `pinDeckHeight` 在推進前
