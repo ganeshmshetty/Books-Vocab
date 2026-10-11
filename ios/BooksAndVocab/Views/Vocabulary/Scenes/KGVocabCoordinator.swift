@@ -207,10 +207,12 @@ final class KGVocabCoordinator: KGVocabCoordinating {
         await kgService.healthCheck()
     }
 
-    /// 本地收斂的硬刪守門（#2733）。`isUploadInFlight` 的列仍由進行中的 sync 持有：
-    /// 它的刪除由該輪 sync 回應收斂（I3 / T5），retry 不得搶先移除，否則 server 稍後建立的卡會被 pull 復活。
+    /// 本地收斂的硬刪守門（#2733、#3059 (4)）。
+    /// - `isUploadInFlight` 的列仍由進行中的 sync 持有：刪除由該輪 sync 回應收斂（I3 / T5），retry 不得搶先移除，
+    ///   否則 server 稍後建立的卡會被 pull 復活（#2733）。
+    /// - await 期間被撤銷的列已不是 delete（T7），收斂結果不再適用於它，必須保留；守門在 await 之後重驗，不信快照。
     private func hardDeleteResolvedDelete(_ entry: VocabularyEntry, in modelContext: ModelContext) {
-        guard !entry.isUploadInFlight else { return }
+        guard entry.syncAction == .delete, !entry.isUploadInFlight else { return }
         modelContext.delete(entry)
     }
 

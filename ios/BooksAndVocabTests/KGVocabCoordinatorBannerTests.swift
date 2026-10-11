@@ -11,10 +11,15 @@ struct KGVocabCoordinatorBannerTests {
         var batchError: (any Error)?
         var batchResponse: KGBatchDeleteResponse?
         var deleteError: (any Error)?
+        /// 模擬使用者在請求 await 期間撤銷刪除（#3059 (4)）。
+        var beforeBatchReply: (@MainActor () -> Void)?
+        var beforeDeleteCardReply: (@MainActor () -> Void)?
         func deleteCard(word: String, notebookId: String) async throws {
+            if let beforeDeleteCardReply { await beforeDeleteCardReply() }
             if let deleteError { throw deleteError }
         }
         func batchDeleteCards(words: [String], notebookId: String) async throws -> KGBatchDeleteResponse {
+            if let beforeBatchReply { await beforeBatchReply() }
             if let batchError { throw batchError }
             if let batchResponse { return batchResponse }
             return KGBatchDeleteResponse(deleted: words.count, deleted_words: words, not_found: [])
@@ -121,6 +126,50 @@ struct KGVocabCoordinatorBannerTests {
 
         #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
         #expect(entry.syncAction == .delete)
+    }
+
+    /// #3059 (4): batch 回應到達前使用者已撤銷刪除（列回到 add）→ 不得硬刪。
+    /// 守門需在 await 之後重驗 `syncAction == .delete`，而非信任 await 前的快照。
+    @Test func retryPendingDeletesKeepsRowUndoneDuringBatchAwait() async throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "undone", translation: "t", context: "c", bookTitle: "b")
+        entry.queueDelete()
+        context.insert(entry)
+        let stub = StubDeleter()
+        stub.batchResponse = KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["undone"])
+        stub.beforeBatchReply = { entry.undoQueuedDelete() }
+        let coordinator = KGVocabCoordinator()
+
+        await coordinator.retryPendingDeletes(pendingDeletes: [entry], kgService: stub, modelContext: context)
+
+        #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
+        #expect(entry.syncAction == .add)
+    }
+
+    /// #3059 (4): 同上，per-word fallback 的 404 回應到達前被撤銷。
+    @Test func retryPendingDeletesKeepsRowUndoneDuringFallbackAwait() async throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "undone", translation: "t", context: "c", bookTitle: "b")
+        entry.queueDelete()
+        context.insert(entry)
+        let stub = StubDeleter()
+        stub.batchError = KGError.httpError(statusCode: 500, detail: "boom")
+        stub.deleteError = KGError.httpError(statusCode: 404, detail: "not found")
+        stub.beforeDeleteCardReply = { entry.undoQueuedDelete() }
+        let coordinator = KGVocabCoordinator()
+
+        await coordinator.retryPendingDeletes(pendingDeletes: [entry], kgService: stub, modelContext: context)
+
+        #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
+        #expect(entry.syncAction == .add)
     }
 
     @Test func dismissingTheStateDoesNotEmitANotice() {
