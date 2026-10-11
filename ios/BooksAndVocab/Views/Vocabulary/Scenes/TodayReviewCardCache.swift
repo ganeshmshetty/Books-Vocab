@@ -21,8 +21,12 @@ struct TodayReviewCardCache {
         return nil
     }
 
-    mutating func rebuild(for entry: VocabularyEntry, peers: [String: VocabularyEntry] = [:]) {
-        let card = CardPresentation(entry: entry, peerLookup: peers)
+    mutating func rebuild(
+        for entry: VocabularyEntry,
+        pendingLinks: [KGCardLinkSummary]? = nil,
+        peers: [String: VocabularyEntry] = [:]
+    ) {
+        let card = CardPresentation(entry: entry, pendingLinks: pendingLinks, peerLookup: peers)
         let linkGroups = card.activeLinkGroups.map { Self.reviewLinkGroup($0.pendingFirst()) }
         let backDocument = card.document.reviewBackSubset()
         storage[entry.id] = .init(
@@ -41,8 +45,8 @@ struct TodayReviewCardCache {
     /// and only when the set of link items changed (a creating -> failed flip keeps
     /// the same ids, hence the same strip), so just that section is re-measured.
     /// Existing items keep their on-screen order; new ones follow `pendingFirst`.
-    /// A card that is not cached is left to the next prewarm / render-miss build,
-    /// which reads the same projection.
+    /// A card that is not cached falls back to `rebuild`: dropping the update would
+    /// leave the card stale until the next prewarm (the old rebuild self-healed).
     /// - Parameter pendingLinks: `nil` reads the app-wide `PendingLinkProjection`;
     ///   tests pass an explicit list to stay deterministic.
     mutating func refreshLinks(
@@ -50,7 +54,10 @@ struct TodayReviewCardCache {
         pendingLinks: [KGCardLinkSummary]? = nil,
         peers: [String: VocabularyEntry] = [:]
     ) {
-        guard let existing = storage[entry.id] else { return }
+        guard let existing = storage[entry.id] else {
+            rebuild(for: entry, pendingLinks: pendingLinks, peers: peers)
+            return
+        }
         let card = CardPresentation(entry: entry, pendingLinks: pendingLinks, peerLookup: peers)
         let previousOrder = existing.linkGroups
             .flatMap(\.items)

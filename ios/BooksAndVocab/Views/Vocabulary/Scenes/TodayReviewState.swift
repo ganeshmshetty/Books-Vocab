@@ -273,8 +273,8 @@ final class TodayReviewState {
     /// succeeded): update its links in place and keep its measurements (see
     /// `TodayReviewCardCache.refreshLinks`). Use `rebuildCacheForEntry` only when the
     /// card content itself changed.
-    func refreshLinksForEntry(_ entry: VocabularyEntry) {
-        cardCache.refreshLinks(for: entry)
+    func refreshLinksForEntry(_ entry: VocabularyEntry, pendingLinks: [KGCardLinkSummary]? = nil) {
+        cardCache.refreshLinks(for: entry, pendingLinks: pendingLinks)
     }
 
     func handleDetailTap() {
