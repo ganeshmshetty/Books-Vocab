@@ -32,6 +32,13 @@ stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:45:00Z
 if out="$(run_probe)" && grep -q '^::warning::macos-capacity starved' <<<"$out" && grep -q '2700s' "$tmp/summary"; then pass "starved wait warns and exits 0"; \
 else fail "starved wait must exit 0 with the warning annotation: $out"; fi
 
+# The named verdict must reach the step summary, not only the annotation: the summary
+# is the PR-readiness evidence (#2641, CR P3). Fresh summary, so only this run counts.
+rm -f "$tmp/summary"
+stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:45:00Z
+run_probe >/dev/null && grep -q 'macos-capacity starved' "$tmp/summary" \
+  && pass "starved verdict is written to the step summary" || fail "starved verdict must be written to GITHUB_STEP_SUMMARY"
+
 stub_gh 2026-01-01T00:00:00Z ''
 run_probe >/dev/null && pass "API failure only warns" || fail "API failure must not fail the job"
 stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:45:00Z
