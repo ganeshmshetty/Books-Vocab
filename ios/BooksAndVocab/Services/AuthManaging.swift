@@ -43,6 +43,8 @@ protocol AuthManaging: AnyObject {
     func login(userId: String, token: String)
     func login(customToken: String) async
     func logout(modelContainer: ModelContainer?, reason: String)
+    /// delete_account 登出；`deletedAccountID` 須於 `await` 前擷取，見 `AuthManager.logoutAfterAccountDeletion`。
+    func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?)
     func loginWithGoogle(modelContainer: ModelContainer?)
     func loginWithApple(modelContainer: ModelContainer?)
 }

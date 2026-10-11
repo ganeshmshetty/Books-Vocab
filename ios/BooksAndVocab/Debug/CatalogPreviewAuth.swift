@@ -79,6 +79,7 @@ final class CatalogPreviewAuth: AuthManaging {
     func login(userId: String, token: String) {}
     func login(customToken: String) async {}
     func logout(modelContainer: ModelContainer?, reason: String) {}
+    func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?) {}
     func loginWithGoogle(modelContainer: ModelContainer?) {}
     func loginWithApple(modelContainer: ModelContainer?) {}
 }
