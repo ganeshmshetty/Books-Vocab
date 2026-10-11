@@ -131,6 +131,8 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
 
+**執行方式：本節指令必須經 direct ssh 在 standby 主機上執行**（`ssh chenliangyu@100.118.39.104`）。經 `devops_kg_safe.sh run`／`devops.sh run` 執行時，守門會擋下下方 `mv "$DATA"` 與 `tar xzf -C` 寫入 kg-data 的指令；受保護名稱與被擋的維運指令見 §2.5a。
+
 ```bash
 set -e
 DATE=2026-05-31  # 同 §2.3
@@ -152,6 +154,27 @@ TS=$(date +%Y%m%d-%H%M%S)
 tar xzf "$ARCHIVE" -C "$(dirname "$DATA")"
 ls -la "$DATA/users/" | head
 ```
+
+#### 2.5a 受保護名稱與守門範圍
+
+`devops_kg_safe.sh run`、`devops.sh run`、`container-run`、`migrate-run` 共用 `ops/lib/devops_run_guard.sh` 的 `devops_run_is_blocked` 守門。本節只為排查維運指令「為何被擋」而寫，不是替代路徑；被擋的操作若確有需要，須另立 issue 由 owner 決策，本 SOP 不新增替代路徑。
+
+受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app` 本身、home／root 目錄（`~`、`$HOME`、`/home/ubuntu`、`/Users/<x>`、`/root`）、docker volumes、`knowledge_graph_api`、`knowledge-graph-api_data`。
+
+下表為 §2.5 相關維運指令經 `run` 守門的結果；`ops/tests/test_docs_lint.sh` 逐列以 `devops_run_is_blocked` 核對，表與守門不一致即紅燈。
+
+| 子命令 | 指令 | 結果 | 原因 |
+|---|---|---|---|
+| run | `rm -rf ~/kg-prod/backend/.venv` | 擋 | 受保護名稱 `kg-prod` |
+| run | `cd ~/kg-prod/backend && cp .env.example .env` | 擋 | cd 進受保護名稱後，相對路徑即落在其中 |
+| run | `sqlite3 /app/data/x.db "VACUUM INTO '/tmp/y'"` | 擋 | 含受保護路徑的 sqlite 寫入 |
+| run | `find . -name __pycache__ -exec rm -rf {} +` | 擋 | `find -exec rm` 落在受保護根（cwd 為 home） |
+| run | `rm -rf kg-data/tmp` | 擋 | 受保護名稱 `kg-data` |
+| run | `cp .env.example .env` | 允許 | 目標在一般工作目錄，不落在受保護名稱 |
+| run | `rm -rf .venv` | 允許 | 同上 |
+| run | `rm -rf __pycache__` | 允許 | 同上 |
+
+守門依「目標路徑是否落在受保護名稱」判定，不依動作種類：`cp .env.example .env` 在一般工作目錄放行，在 `~/kg-prod/backend` 內（cd 進受保護名稱）即被擋。
 
 ### 2.6 修正 owner
 
