@@ -44,6 +44,7 @@ from .api_models import (
     VocabUIConfig,
 )
 from .ops_cli_shared import _normalize_persisted_bool
+from .sentry_init import capture_handled
 from .service_factories import evict_user_store_cache
 from .types import StoredUserRecord, UserRecord, UsersPayload
 from .users_lock import users_file_lock
@@ -460,7 +461,8 @@ def delete_user_account_response(
     # bounded by the bucket lifecycle rule rather than by this request.
     try:
         sweep_account_prefixes(ids_to_delete, library_bucket=library_bucket, library_s3_client=library_s3_client)
-    except Exception:
+    except Exception as exc:
+        capture_handled(exc, context="account_erasure.prefix_sweep")
         logger.exception("Library prefix sweep failed after account tombstone for %s", ids_to_delete)
 
     deleted_dirs: list[str] = []
