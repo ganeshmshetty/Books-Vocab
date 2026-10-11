@@ -213,17 +213,22 @@ enum ReviewSessionPersistence {
     /// covered by the per-flip UserDefaults snapshot + restore reflush.
     ///
     /// Idempotent: skips answers whose `ReviewRecord` already exists. Reports the
-    /// settled indices on success (flushed, or dropped because the entry was deleted) so the caller can mark them + finalize the snapshot
+    /// settled indices on success (flushed, or dropped because the queued row no longer
+    /// exists) so the caller can mark them + finalize the snapshot
     /// ONLY after the store actually has the data. The empty-pending case still calls
     /// `onFlushed([])` so callers can finalize without special-casing a no-op.
+    /// `queueEntryIDs` (same index space as `queuePersistenceIDs`) lets a re-keyed row still
+    /// receive its grade; see `fetchQueuedEntry`.
     static func flushPendingAnswers(
         queuePersistenceIDs: [String],
         queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline],
+        queueEntryIDs: [UUID] = [],
         submittedAnswers: [Int: TodayReviewState.SubmittedAnswer],
         container: ModelContainer,
         notebookSettingsSnapshot: NotebookSettingsSnapshot,
         onFlushed: (@MainActor @Sendable (_ indices: [Int]) -> Void)? = nil,
-        onFailure: (@MainActor @Sendable () -> Void)? = nil
+        onFailure: (@MainActor @Sendable () -> Void)? = nil,
+        resolveEntry: @escaping @Sendable (UUID?, String, ModelContext) throws -> VocabularyEntry? = fetchQueuedEntry
     ) {
         let pending = submittedAnswers.filter { !$0.value.flushed }
         guard !pending.isEmpty else {
@@ -237,7 +242,11 @@ enum ReviewSessionPersistence {
                 guard index < queuePersistenceIDs.count, index < queueBaselines.count else { continue }
                 let entry: VocabularyEntry?
                 do {
-                    entry = try fetchEntry(for: queuePersistenceIDs[index], in: ctx)
+                    entry = try resolveEntry(
+                        index < queueEntryIDs.count ? queueEntryIDs[index] : nil,
+                        queuePersistenceIDs[index],
+                        ctx
+                    )
                 } catch {
                     // DB error: this answer can't be read back, so keep it un-flushed; the
                     // snapshot + restore reflush gets another chance instead of dropping it.
@@ -277,6 +286,7 @@ enum ReviewSessionPersistence {
     static func flushPendingAnswers(
         queuePersistenceIDs: [String],
         queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline],
+        queueEntryIDs: [UUID] = [],
         submittedAnswers: [Int: TodayReviewState.SubmittedAnswer],
         container: ModelContainer,
         reviewSettings: ReviewSettings,
@@ -290,6 +300,7 @@ enum ReviewSessionPersistence {
         flushPendingAnswers(
             queuePersistenceIDs: queuePersistenceIDs,
             queueBaselines: queueBaselines,
+            queueEntryIDs: queueEntryIDs,
             submittedAnswers: submittedAnswers,
             container: container,
             notebookSettingsSnapshot: snapshot,
@@ -367,6 +378,27 @@ enum ReviewSessionPersistence {
     }
 
     // MARK: - Private DB helpers
+
+    /// Resolves the row a queued answer grades. The queue's own row (`VocabularyEntry.id`) is
+    /// tried first: `BackgroundSyncActor` can re-key a queued row's `kgCardId` mid-session, which
+    /// makes the persistence id stale while the row still holds the answered card (#3123). The
+    /// persistence-id lookup is the fallback for sessions restored from a snapshot (no UUID kept)
+    /// and for a row recreated under the same card id. Only when neither resolves is the entry
+    /// deleted.
+    static func fetchQueuedEntry(
+        entryID: UUID?,
+        persistenceID: String,
+        in context: ModelContext
+    ) throws -> VocabularyEntry? {
+        if let entryID {
+            var descriptor = FetchDescriptor<VocabularyEntry>(
+                predicate: #Predicate<VocabularyEntry> { $0.id == entryID }
+            )
+            descriptor.fetchLimit = 1
+            if let row = try context.fetch(descriptor).first { return row }
+        }
+        return try fetchEntry(for: persistenceID, in: context)
+    }
 
     static func fetchEntry(
         for persistenceID: String,

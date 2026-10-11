@@ -4,21 +4,28 @@ import SwiftData
 struct TodayReviewSessionPersistenceController {
     private(set) var queuePersistenceIDs: [String]
     private(set) var queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline]
+    /// The queued rows' own ids, in queue order. Unlike `queuePersistenceIDs` they survive a
+    /// mid-session kgCardId re-key, so the deferred flush can still find the row (#3123).
+    /// Empty when restored from a snapshot without row ids; the flush then uses persistence ids.
+    private(set) var queueEntryIDs: [UUID]
     private let currentUserID: String?
 
     init(queue: [VocabularyEntry], currentUserID: String?) {
         self.queuePersistenceIDs = queue.map(ReviewSessionPersistence.persistenceID(for:))
         self.queueBaselines = queue.map(ReviewSessionPersistence.makeBaseline(from:))
+        self.queueEntryIDs = queue.map(\.id)
         self.currentUserID = currentUserID
     }
 
     init(
         queuePersistenceIDs: [String],
         queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline],
+        queueEntryIDs: [UUID] = [],
         currentUserID: String?
     ) {
         self.queuePersistenceIDs = queuePersistenceIDs
         self.queueBaselines = queueBaselines
+        self.queueEntryIDs = queueEntryIDs
         self.currentUserID = currentUserID
     }
 
@@ -38,6 +45,7 @@ struct TodayReviewSessionPersistenceController {
         }
         queuePersistenceIDs = newIDs
         queueBaselines = newBaselines
+        queueEntryIDs = queue.map(\.id)
     }
 
     func flushPendingAnswers(
@@ -51,6 +59,7 @@ struct TodayReviewSessionPersistenceController {
         ReviewSessionPersistence.flushPendingAnswers(
             queuePersistenceIDs: queuePersistenceIDs,
             queueBaselines: queueBaselines,
+            queueEntryIDs: queueEntryIDs,
             submittedAnswers: submittedAnswers,
             container: container,
             notebookSettingsSnapshot: notebookSettingsSnapshot,

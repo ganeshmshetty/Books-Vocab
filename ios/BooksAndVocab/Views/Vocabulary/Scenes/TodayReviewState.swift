@@ -116,6 +116,7 @@ final class TodayReviewState {
             persistence = TodayReviewSessionPersistenceController(
                 queuePersistenceIDs: restored.persistenceIDs,
                 queueBaselines: restored.baselines,
+                queueEntryIDs: restored.queue.map(\.id),
                 currentUserID: currentUserID
             )
             scoring.restore(
