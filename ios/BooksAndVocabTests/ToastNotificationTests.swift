@@ -444,28 +444,42 @@ struct ToastNotificationTests {
 
     // MARK: - Tap-to-expand affordance (#2862)
 
-    /// chevron 與可點性必須同源：沒有 handler 的呼叫點（preview／fixture）不得露出 chevron。
-    @Test func toggleAffordanceRequiresHandlerAndTruncationOrExpansion() {
-        #expect(!AppToast.offersToggle(hasHandler: false, isExpanded: false, isTruncated: true))
-        #expect(!AppToast.offersToggle(hasHandler: false, isExpanded: true, isTruncated: false))
-        #expect(!AppToast.offersToggle(hasHandler: true, isExpanded: false, isTruncated: false))
-        #expect(AppToast.offersToggle(hasHandler: true, isExpanded: false, isTruncated: true))
-        #expect(AppToast.offersToggle(hasHandler: true, isExpanded: true, isTruncated: false))
+    /// chevron 與可點性必須同源且只看截斷：沒有 handler 的呼叫點（preview／fixture）不得露出；
+    /// 未截斷的 pill 即使殘留展開狀態（同 key 取代成短文案）也不可點。
+    @Test func toggleAffordanceRequiresHandlerAndTruncation() {
+        #expect(!AppToast.offersToggle(hasHandler: false, isTruncated: true))
+        #expect(!AppToast.offersToggle(hasHandler: true, isTruncated: false))
+        #expect(AppToast.offersToggle(hasHandler: true, isTruncated: true))
     }
 
-    /// 截斷 = 自然寬度乘以最小縮放比仍放不下；容差 0.5pt 吸收量測取整。
-    @Test func truncationBoundaryAtMinimumScaleWithHalfPointTolerance() {
-        // 100 * 0.8 = 80：剛好放得下（80 <= 80 + 0.5）。
+    /// 展開外觀同樣只在截斷時成立：未截斷的 pill 外觀與收合時相同。
+    @Test func expandedLayoutOnlyAppliesWhileTruncated() {
+        #expect(!AppToast.showsExpandedLayout(isExpanded: true, isTruncated: false))
+        #expect(!AppToast.showsExpandedLayout(isExpanded: false, isTruncated: true))
+        #expect(!AppToast.showsExpandedLayout(isExpanded: false, isTruncated: false))
+        #expect(AppToast.showsExpandedLayout(isExpanded: true, isTruncated: true))
+    }
+
+    /// 截斷 = 自然寬度乘以最小縮放比仍放不下。無容差：邊界上的誤報只多露一個 chevron，
+    /// 漏報則是末端被截卻沒有任何提示。
+    @Test func truncationBoundaryAtMinimumScaleHasNoTolerance() {
+        // 100 * 0.8 = 80：剛好放得下。
         #expect(!AppToast.isTruncated(natural: 100, visible: 80))
-        // 差 1pt：80 > 79 + 0.5，截斷。
+        // 差 0.5pt 即截斷（不再有容差吸收）。
+        #expect(AppToast.isTruncated(natural: 100, visible: 79.5))
         #expect(AppToast.isTruncated(natural: 100, visible: 79))
-        // 差 0.5pt 落在容差內：80 > 79.5 + 0.5 不成立，不截斷。
-        #expect(!AppToast.isTruncated(natural: 100, visible: 79.5))
-        // 超過容差：80 > 79.4 + 0.5，截斷。
-        #expect(AppToast.isTruncated(natural: 100, visible: 79.4))
-        // 自然寬度小於可用寬度：不截斷；未量測（0, 0）也不截斷。
+        // 自然寬度小於可用寬度：不截斷。
         #expect(!AppToast.isTruncated(natural: 50, visible: 200))
+        // 未量測（任一為 0）：不截斷，避免首幀閃 chevron。
         #expect(!AppToast.isTruncated(natural: 0, visible: 0))
+        #expect(!AppToast.isTruncated(natural: 100, visible: 0))
+        #expect(!AppToast.isTruncated(natural: 0, visible: 80))
+    }
+
+    /// Reduce Motion 的展開／收合只淡入淡出，不得走位移的 panel 動畫。
+    @Test func reduceMotionExpansionUsesFadeInsteadOfPanelSlide() {
+        #expect(AppToast.expansionMotion(reduceMotion: true) == .fade)
+        #expect(AppToast.expansionMotion(reduceMotion: false) == .panel)
     }
 
     // MARK: - Coordinator: tap-to-expand (#2862)
