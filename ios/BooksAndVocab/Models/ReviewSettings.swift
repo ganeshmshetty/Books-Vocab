@@ -265,6 +265,16 @@ enum AccountPreferenceNamespace {
         return defaults.bool(forKey: marker) || cloud?.string(forKey: marker) != nil
     }
 
+    /// Adoption recorded before the iCloud marker existed lives only in UserDefaults. Publish it
+    /// to KVS (idempotent, run on every launch) so a never-adopted device on the same Apple ID
+    /// treats the kept KVS raw value as adopted and does not copy it into a later account (#2434).
+    static func publishLocalAdoptionToCloud(feature: String, defaults: UserDefaults, cloud: CloudKeyValueStore?) {
+        guard let cloud else { return }
+        let marker = legacyMigrationMarker(feature: feature)
+        guard defaults.bool(forKey: marker), cloud.string(forKey: marker) == nil else { return }
+        cloud.set("adopted", forKey: marker)
+    }
+
     /// Migrate the pre-account raw preference namespace exactly once per
     /// preference family. The marker is deliberately global to the Apple-ID
     /// store (UserDefaults plus, when `cloud` is passed, iCloud KVS): legacy
@@ -277,6 +287,7 @@ enum AccountPreferenceNamespace {
         feature: String,
         migration: () -> Void
     ) {
+        publishLocalAdoptionToCloud(feature: feature, defaults: defaults, cloud: cloud)
         guard normalizedAccountID(accountID) != nil else { return }
         guard !isLegacyMigrated(feature: feature, defaults: defaults, cloud: cloud) else { return }
         migration()
