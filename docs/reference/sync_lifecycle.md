@@ -106,11 +106,12 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 - `updated` 只計**使用者可見內容**真的不同的詞條，判準集中在純函式 `BackgroundSyncActor.contentDiffers(card:from:)`（translation / pos / note / difficultyTier / inflections / collocations / examples / mode / graphLinks / isArchived / notebookId / book source）。
 - **複習狀態刻意不算變動**（`lastReviewedAt` / `reviewCount` / `nextReviewAt` / `streak` / `lapse`）。它每次複習都由本機推上去、下一輪 incremental pull 再原樣拉回；若計入，任何一次複習後的同步都會被判為「單字庫有變化」——這正是要避免的假陽性。
+- **複習狀態 push（#2483）**：每筆 entry 以送出時的 `lastReviewedAt` 瞬時值 ack（不用牆鐘），請求中才 flush 的複習因此維持 dirty、下輪再送；超過 1,000 筆分批送出，每批回應後各自 ack，後續批失敗不回收前面已 ack 的批次。
 - SwiftData 對屬性是「指派即髒」，所以判準必須在覆寫欄位**之前**取樣，事後問 `hasChanges` 得不到答案。
 
 **分頁（`X-Next-Cursor`）**：`GET /api/vocab` 每頁最多 `limit`（預設 5,000）列，依 `(updated_at, id)` 升冪；還有下一頁時回 `X-Next-Cursor`。cursor 是 opaque token，綁定請求 scope（`notebook_id` + `since`），換 scope 重用會被 400 拒絕。iOS 一律經 `KGService.fetchAllVocabPages` 讀取：每頁原樣重送同一組 `notebook_id`／`since` 再加 `cursor`，直到 header 缺席；`X-Pipeline-Pending` 取最後一頁。
 
-- **不變式**：整批 drain 完才 merge；orphan cleanup、`SyncKeys.incrementalBoundary` 與 `payloadVersion` 只在全部頁成功後才寫。任一頁 HTTP 失敗、無法解碼、cursor 不前進（重複）或頁數超過 `KGService.maxVocabPages`（200，擋住持續換發新 cursor 的伺服器故障，免得 sync 卡死、記憶體無界成長）即整輪 throw，什麼都不提交——截斷的讀取與「server 已沒有這些卡」無法區分。只讀第一頁時，超過 5,000 列的庫在 full sync 會把最新的卡當 orphan 刪掉，boundary 再越過沒讀到的列，那些卡就永遠拉不回來（#2101）。
+- **不變式**：整批 drain 完才 merge；orphan cleanup、`SyncKeys.incrementalBoundary` 與 `payloadVersion` 只在全部頁成功後才寫；boundary 錨定在「pull 發出前的裝置時鐘」與「首頁 `Date` header」較早者、再減 60 秒（#2426，裝置超前伺服器時不會跳過伺服器變更）。任一頁 HTTP 失敗、無法解碼、cursor 不前進（重複）或頁數超過 `KGService.maxVocabPages`（200，擋住持續換發新 cursor 的伺服器故障，免得 sync 卡死、記憶體無界成長）即整輪 throw，什麼都不提交——截斷的讀取與「server 已沒有這些卡」無法區分。只讀第一頁時，超過 5,000 列的庫在 full sync 會把最新的卡當 orphan 刪掉，boundary 再越過沒讀到的列，那些卡就永遠拉不回來（#2101）。
 
 ### 批次刪除 / 封存回應的三個 bucket：`*_words` / `not_found` / `failed`
 

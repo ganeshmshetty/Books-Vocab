@@ -260,8 +260,11 @@ extension KGService {
             AppLog.kg.info("Performing full sync")
         }
 
-        // Bug A fix: 記錄邊界在發起請求前，避免 pull 期間新增的卡片被跳過
-        let pullBoundary = Date().timeIntervalSince1970
+        // Bug A fix: 記錄邊界在發起請求前，避免 pull 期間新增的卡片被跳過。
+        // The device clock is only a reference: the boundary is later compared with the
+        // server's `updated_at`, so it is anchored to the earlier of this sample and the
+        // server's own `Date` header (see `incrementalBoundary`).
+        let pullStart = Date().timeIntervalSince1970
 
         // Drain every page before touching the store: the merge's orphan
         // cleanup and the boundary below are only sound against the server's
@@ -293,7 +296,8 @@ extension KGService {
             defaults.removeObject(forKey: SyncKeys.incrementalBoundary)
             AppLog.kg.warning("Incremental boundary NOT advanced: orphan cleanup was blocked — next sync will retry full sync")
         } else {
-            defaults.set(pullBoundary, forKey: SyncKeys.incrementalBoundary)
+            let boundary = Self.incrementalBoundary(clientStart: pullStart, serverDate: pages.serverDate)
+            defaults.set(boundary, forKey: SyncKeys.incrementalBoundary)
         }
         defaults.set(SyncKeys.currentPayloadVersion, forKey: SyncKeys.payloadVersion)
 
@@ -310,6 +314,34 @@ extension KGService {
         var cards: [KGCard] = []
         /// `X-Pipeline-Pending` of the last page — the freshest observation.
         var pipelinePending = false
+        /// The `Date` header of the first page: the server's clock when the drain began.
+        var serverDate: Date?
+    }
+
+    /// Safety margin under the pull's clock reference. Rows the server stamps just
+    /// before the read can commit behind the cursor, so the next incremental pull
+    /// re-reads that window. The merge is idempotent, so the overlap is harmless.
+    static let incrementalBoundaryMargin: TimeInterval = 60
+
+    /// Boundary for the next incremental pull, in seconds since 1970.
+    ///
+    /// The cursor is compared with the server's `updated_at`, so it must not run
+    /// ahead of server time. Anchoring to the earlier of the device clock and the
+    /// server `Date` covers both skews: a device ahead of the server (boundary
+    /// follows the server) and a device behind it (boundary follows the device).
+    static func incrementalBoundary(clientStart: TimeInterval, serverDate: Date?) -> TimeInterval {
+        let reference = min(clientStart, serverDate?.timeIntervalSince1970 ?? clientStart)
+        return reference - incrementalBoundaryMargin
+    }
+
+    /// Parses an RFC 7231 `Date` header (IMF-fixdate). Pinned to GMT and a POSIX
+    /// locale so device region or calendar settings cannot shift the result.
+    static func parseHTTPDate(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter.date(from: value)
     }
 
     /// Upper bound on pages one drain may follow (see `fetchAllVocabPages`).
@@ -349,6 +381,9 @@ extension KGService {
             } catch {
                 AppLog.kg.error("Failed to decode KG cards: \(error.localizedDescription)")
                 throw KGError.serverError("Parse error: \(error.localizedDescription)")
+            }
+            if pages.serverDate == nil, let header = httpResponse.value(forHTTPHeaderField: "Date") {
+                pages.serverDate = Self.parseHTTPDate(header)
             }
             pages.pipelinePending = httpResponse.value(forHTTPHeaderField: "X-Pipeline-Pending") == "true"
             cursor = httpResponse.value(forHTTPHeaderField: "X-Next-Cursor").flatMap { $0.isEmpty ? nil : $0 }
