@@ -42,6 +42,11 @@ final class VocabularyEntry {
     // KG Integration
     var syncStatus: Int = 0         // 0=pending, 1=synced, 2=failed
     var kgCardId: String?           // KG 卡片 ID（同步後回填）
+    /// 後端對 add 的確定性拒收原因（`rejected[].reason`，#2793）。非 nil 代表終態：
+    /// `failed + add` 不再自動重送（否則每次 sync 都被同一原因拒收並重報錯誤）。
+    /// 任何重新排入 add 的路徑（`restorePendingEntry`）或同步成功（`markSynced`）都清除。
+    /// Optional，SwiftData lightweight migration 時既有 row 為 nil。
+    var rejectedReason: String?
     var difficultyTier: String?     // "core" / "intermediate" / "advanced" / "rare"
     var actionType: String = "add"  // "add" | "delete" | "edit"
     var reviewModeRaw: String = VocabularyCardMode.recognition.rawValue
@@ -117,9 +122,11 @@ final class VocabularyEntry {
     var isFailedAdd: Bool { syncState == .failed && syncAction == .add }
     var isFailedDelete: Bool { syncState == .failed && syncAction == .delete }
     var isFailedEdit: Bool { syncState == .failed && syncAction == .edit }
+    /// 後端拒收的 add（終態，見 `rejectedReason`）。
+    var isRejectedAdd: Bool { isFailedAdd && rejectedReason != nil }
     var shouldUploadOnNextSync: Bool {
         isPendingAdd || isPendingDelete || isPendingEdit
-            || isFailedAdd || isFailedDelete || isFailedEdit
+            || (isFailedAdd && !isRejectedAdd) || isFailedDelete || isFailedEdit
     }
     var shouldAppearInReader: Bool { syncAction != .delete && !isArchived && !isReaderHidden }
     var shouldAppearInReview: Bool { shouldAppearInKnowledgeList && !isReviewExcluded }
@@ -205,24 +212,34 @@ extension VocabularyEntry {
     func queueDelete() {
         syncAction = .delete
         syncState = .pending
+        rejectedReason = nil
     }
 
     func restorePendingEntry() {
         syncAction = .add
         syncState = .pending
+        rejectedReason = nil
     }
 
     func markSynced() {
         syncAction = .add
         syncState = .synced
+        rejectedReason = nil
     }
 
     func markSyncFailed() {
         syncState = .failed
     }
 
+    /// 後端確定性拒收的 add：進終態，不再納入 `shouldUploadOnNextSync`。
+    func markRejected(reason: String) {
+        syncAction = .add
+        syncState = .failed
+        rejectedReason = reason
+    }
+
     func prepareForRetryAttempt() {
-        if isFailed {
+        if isFailed && !isRejectedAdd {
             syncState = .pending
         }
     }

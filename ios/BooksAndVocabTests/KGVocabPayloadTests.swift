@@ -163,6 +163,27 @@ extension TranslationLanguageTests {
         }
     }
 
+    /// 後端 `VocabSource.title/chapter` max_length=500 以 code point 計；超長會整筆 rejected。
+    @Test func title_and_chapter_are_clamped_to_500_scalars() {
+        let long = String(repeating: "a", count: 600)
+        let payload = KGService.vocabPayload(
+            for: [makeEntry(bookTitle: long, chapterTitle: long)],
+            langPayloadEnabled: false
+        )
+        #expect(payload[0].source?.title?.unicodeScalars.count == 500)
+        #expect(payload[0].source?.chapter?.unicodeScalars.count == 500)
+    }
+
+    /// 組合字元：grapheme 數遠小於 code point 數，clamp 必須以 unicodeScalars 對齊後端 len()。
+    @Test func clamp_counts_unicode_scalars_not_graphemes() {
+        let combining = String(repeating: "e\u{301}", count: 300)  // 300 graphemes, 600 scalars
+        let payload = KGService.vocabPayload(
+            for: [makeEntry(bookTitle: combining)],
+            langPayloadEnabled: false
+        )
+        #expect(payload[0].source?.title?.unicodeScalars.count == 500)
+    }
+
     // MARK: - 批次保序
 
     /// batchAdd 的 cardIds 回填以 word 為 key，但 payload 仍須維持輸入順序

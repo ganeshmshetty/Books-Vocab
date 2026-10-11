@@ -150,6 +150,10 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                         entries.forEach { $0.prepareForRetryAttempt() }
                         let response = try await service.batchAdd(entries: entries, notebookId: notebookId)
                         SyncCoordinator.convergeAddedEntries(response: response, entries: entries)
+                        if !response.rejected.isEmpty {
+                            batchFailed = true
+                            encounteredFailure = true
+                        }
                         totalCreated += response.created
                         totalSkipped += response.skipped
                     } catch is CancellationError {
