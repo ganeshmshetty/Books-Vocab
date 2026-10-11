@@ -236,36 +236,36 @@ struct SharedDeckCopyControllerTests {
 
     @Test func registry_returns_same_controller_for_same_deck_while_key_held() async {
         let registry = SharedDeckCopyRegistry()
-        let c1 = registry.controller(for: "d1")
+        let c1 = registry.controller(for: "d1", owner: "A")
         registry.track(c1, for: "d1")
         let fake = FakeDeckCopier([.failure(URLError(.timedOut))])
         await c1.copy(deckId: "d1", notebookName: nil, using: fake)
         let key = c1.currentIdempotencyKey
         #expect(key != nil)
-        let c2 = registry.controller(for: "d1")
+        let c2 = registry.controller(for: "d1", owner: "A")
         #expect(c2 === c1, "reopen after failure must reuse the controller (and its idempotency key)")
         #expect(c2.currentIdempotencyKey == key)
-        #expect(registry.controller(for: "d2") !== c1)
+        #expect(registry.controller(for: "d2", owner: "A") !== c1)
     }
 
     @Test func registry_returns_same_controller_while_inflight() async {
         let registry = SharedDeckCopyRegistry()
-        let c1 = registry.controller(for: "d1")
+        let c1 = registry.controller(for: "d1", owner: "A")
         registry.track(c1, for: "d1")
         let gate = GatedCopier()
         let task = Task { await c1.copy(deckId: "d1", notebookName: nil, using: gate) }
         while !gate.hasStarted { await Task.yield() }
-        #expect(registry.controller(for: "d1") === c1)
+        #expect(registry.controller(for: "d1", owner: "A") === c1)
         gate.release(response())
         await task.value
     }
 
     @Test func registry_hands_out_fresh_controller_after_success() async {
         let registry = SharedDeckCopyRegistry()
-        let c1 = registry.controller(for: "d1")
+        let c1 = registry.controller(for: "d1", owner: "A")
         registry.track(c1, for: "d1")
         await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response())]))
-        let c2 = registry.controller(for: "d1")
+        let c2 = registry.controller(for: "d1", owner: "A")
         #expect(c2 !== c1)
         #expect(c2.state == .idle)
         #expect(registry.trackedDeckCount == 0, "succeeded entries are pruned on lookup")
@@ -273,20 +273,23 @@ struct SharedDeckCopyControllerTests {
 
     @Test func registry_does_not_retain_controllers_that_never_started_a_copy() {
         let registry = SharedDeckCopyRegistry()
-        _ = registry.controller(for: "d1")
-        _ = registry.controller(for: "d2")
+        _ = registry.controller(for: "d1", owner: "A")
+        _ = registry.controller(for: "d2", owner: "A")
         #expect(registry.trackedDeckCount == 0)
     }
 
-    @Test func registry_removeAll_drops_failure_state_on_logout() async {
+    /// 失敗卡與待確認的 notebook 名稱屬於帳號 A；帳號 B 看同一 deck 時不得看見，
+    /// A 回來時仍接得回自己的意圖（key 不被別人的查詢清掉）。
+    @Test func registry_does_not_hand_one_accounts_pending_copy_to_another() async {
         let registry = SharedDeckCopyRegistry()
-        let c1 = registry.controller(for: "d1")
-        registry.track(c1, for: "d1")
-        await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.failure(URLError(.timedOut))]))
-        registry.removeAll()
-        let c2 = registry.controller(for: "d1")
-        #expect(c2 !== c1)
-        #expect(c2.state == .idle)
+        let a = registry.controller(for: "d1", owner: "A")
+        registry.track(a, for: "d1")
+        await a.copy(deckId: "d1", notebookName: "A private name", using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+        let b = registry.controller(for: "d1", owner: "B")
+        #expect(b !== a)
+        #expect(b.state == .idle)
+        #expect(b.lastNotebookName == nil)
+        #expect(registry.controller(for: "d1", owner: "A") === a, "A's own pending intent survives B's lookup")
     }
 
     /// `@MainActor` (nested types don't inherit the suite's isolation) so
