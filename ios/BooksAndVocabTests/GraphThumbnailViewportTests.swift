@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import SwiftUI
 import Testing
 import WebKit
 @testable import BooksAndVocab
