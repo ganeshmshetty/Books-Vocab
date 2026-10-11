@@ -126,8 +126,8 @@ repo_gate_block="$(awk '
   in_repo_gate && /^  [A-Za-z0-9_-]+:/ { exit }
   in_repo_gate { print }
 ' "$PR_GATE")"
-grep -q 'timeout-minutes: 3' <<<"$repo_gate_block" \
-  || fail "repo-gate is not hard-bounded to the short merge-gate budget"
+grep -q 'timeout-minutes: 15' <<<"$repo_gate_block" \
+  || fail "repo-gate is not hard-bounded to fifteen minutes (ripgrep installer worst case 515s + measured gate; see the pr-gate.yml comment)"
 grep -Fq './ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control' <<<"$repo_gate_block" \
   || fail "repo-gate does not execute the delivery-control regression group"
 grep -Fq '      - name: Check changed Python formatting' <<<"$repo_gate_block" \
@@ -180,6 +180,37 @@ while read -r rg_path rg_job rg_install rg_gate rg_mask; do
 done <<<"$rg_contract_rows"
 (( rg_jobs >= 2 )) \
   || fail "expected pr-gate repo-gate and merge-group required to run the github-workflows group, found $rg_jobs job(s)"
+# Issue #3028 (CR on #3063): the bounded ripgrep installer can spend its whole retry budget
+# before rg exists. A job that installs rg through it must time out only after that worst
+# case, or GitHub kills the required check mid-retry. The worst case is derived from the
+# installer's own constants (attempts, timeouts, backoff step), never hand-copied.
+installer_worst="$(ruby -e '
+  src = File.read("ops/ci_apt_install.sh", encoding: "UTF-8")
+  c =->(name) { Integer(src[/^#{name}=(\d+)$/, 1]) }
+  step = Integer(src[/sleep \$\(\( attempt \* (\d+) \)\)/, 1])
+  a = c.("attempts")
+  puts a * (c.("install_timeout") + c.("kill_after")) + (a - 1) * (c.("update_timeout") + c.("kill_after")) + step * (a - 1) * a / 2
+')" || { fail "cannot derive the ripgrep installer worst case from ops/ci_apt_install.sh"; installer_worst=""; }
+rg_timeout_rows="$(ruby -ryaml -e '
+  Dir.glob(".github/workflows/*.yml").sort.each do |path|
+    (YAML.load_file(path)["jobs"] || {}).each do |job_id, job|
+      installs = (job["steps"] || []).any? { |s| s["run"].to_s.match?(/ci_apt_install\.sh ripgrep|\[rg\]=ripgrep/) }
+      puts [path, job_id, job["timeout-minutes"].inspect].join(" ") if installs
+    end
+  end
+')" || { fail "cannot read workflow jobs that install ripgrep through the installer"; rg_timeout_rows=""; }
+rg_timeout_jobs=0
+while read -r t_path t_job t_minutes; do
+  [[ -n "$t_job" ]] || continue
+  rg_timeout_jobs=$((rg_timeout_jobs + 1))
+  if [[ ! "$t_minutes" =~ ^[0-9]+$ ]]; then
+    fail "$t_path job $t_job installs ripgrep through ops/ci_apt_install.sh but sets no explicit timeout-minutes"
+  elif [[ -z "$installer_worst" ]] || (( t_minutes * 60 <= installer_worst )); then
+    fail "$t_path job $t_job timeout ${t_minutes}m does not exceed the ripgrep installer worst case ${installer_worst:-unknown}s"
+  fi
+done <<<"$rg_timeout_rows"
+(( rg_timeout_jobs >= 3 )) \
+  || fail "expected repo-gate, merge-group required and ops-suite suite to install ripgrep through the installer, found $rg_timeout_jobs job(s)"
 # The Linux ops shard runs its groups from a discovered list, so the command scan above
 # cannot see it: its ripgrep install must precede the discovered-group run by name.
 suite_order="$(ruby -ryaml -e '

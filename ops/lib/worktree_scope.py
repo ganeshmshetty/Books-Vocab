@@ -26,6 +26,10 @@ SCOPE_OPERATIONS = ("add", "modify", "delete")
 #     registration: each lane adds or drops one group line in its own case arm
 #     or list entry; a true textual conflict is resolved at rebase and the
 #     merge queue re-tests the combined tree.
+#   ios/BooksAndVocab/*.lproj/Localizable.strings - per-locale key catalogs.
+#     Lanes usually add different keys; a same-key or write-skew collision
+#     (duplicate key, key deleted while another lane uses it) is re-checked by
+#     the merge-group strict i18n lint on the combined tree (CM decision, 2026-10-11).
 SHARED_SCOPE_FILES = frozenset(
     {
         "docs/reference/tech_index.md",

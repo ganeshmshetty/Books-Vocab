@@ -319,6 +319,21 @@ def test_exclusivity_rule_statements_name_the_shared_scope_allowlist(
     assert _unqualified_exclusivity_statements(text) == []
 
 
+@pytest.mark.parametrize("name", _RULE_FILES)
+def test_exclusivity_rule_statements_name_the_localizable_catalog_exception(
+    name: str,
+) -> None:
+    # CM decision (2026-10-11): per-locale Localizable.strings catalogs are a shared-Scope
+    # exception, so every written statement of the rule must carry it, not only the code.
+    rule_lines = [
+        line
+        for line in (OPS.parent / name).read_text().splitlines()
+        if _EXCLUSIVITY_RULE.search(line)
+    ]
+    assert rule_lines, f"{name} no longer states the rule"
+    assert all("Localizable.strings" in line for line in rule_lines), rule_lines
+
+
 def test_no_doc_states_exclusivity_without_the_allowlist() -> None:
     root = OPS.parent
     offenders = {}
