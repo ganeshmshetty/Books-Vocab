@@ -1,6 +1,6 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/issue-2641-r4 (#2641, rebased onto origin/main; conflicts in ops/complexity_budget.json resolved by taking main's ceilings, then re-raised here): measured ops 211,390 and workflows 2,135 on this lane head via ops/complexity.py check; ops ceiling = measured + 5 = 211,395, workflows ceiling = measured + 5 = 2,140. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
+  "note": "2026-10-11 lane debug/issue-2641-r5 (#2641, re-laned onto origin/main; conflicts in ops/complexity_budget.json resolved by taking main's ceilings): the closed-PR run-cancel workflow (.github/workflows/pr-closed-run-cancel.yml) pushes workflows over the main ceiling. Measured on this lane head via ops/complexity.py check: workflows 2,204; workflows ceiling = measured + 5 = 2,209 (+69 over main, within the 150-line cap). ops measured 211,582 stays under main's ceiling 211,653, so ops is not raised. The +5 is the minimal margin; ratchet reclaims any unused slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
@@ -9,6 +9,6 @@
   "ceilings": {
     "ops": 211653,
     "docs": 16077,
-    "workflows": 2140
+    "workflows": 2209
   }
 }

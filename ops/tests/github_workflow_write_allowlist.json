@@ -19,6 +19,12 @@
       "job": null,
       "scope": "issues",
       "reason": "ops/main_watch.py opens one P1 main-red issue per red area, or comments the failing run on it, after a push-triggered area suite fails on main; it runs from the default branch and never checks out PR code."
+    },
+    {
+      "workflow": "pr-closed-run-cancel.yml",
+      "job": "cancel",
+      "scope": "actions",
+      "reason": "Cancels queued or running pull_request runs on the head of a closed or merged PR (Issue #2641 retro); never a head that is still an open PR's head, never a push or merge-queue run; checks out the default branch explicitly (ref pinned to default_branch) and executes no PR code."
     }
   ]
 }
