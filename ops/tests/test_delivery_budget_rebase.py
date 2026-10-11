@@ -133,3 +133,112 @@ def test_nothing_to_raise_leaves_the_budget_equal_to_trunk(tmp_path: Path) -> No
     assert sh(repo, "git", "show", f"HEAD:{BUDGET}") == sh(
         repo, "git", "show", f"origin/main:{BUDGET}"
     )
+
+
+def build_fork_credit_lane(tmp_path: Path) -> Path:
+    """The lane forked with 30 lines of ceiling room; trunk later spends all but one of them.
+
+    Fork (C0): ops 100 lines, ceiling 130.  The lane adds 10 ops lines and raises the ceiling to 160.
+    Trunk (C1): adds 25 ops lines and lowers the ceiling to 126, so the rebase conflicts on the
+    ceiling line and deliver takes trunk's 126.  Against C1 the lane has 1 line of room and grew 10,
+    so it is over.  Only its fork's 30 lines would excuse it, and CI never sees that fork.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sh(repo, "git", "init", "-q", "-b", "main")
+    sh(repo, "git", "config", "user.email", "t@example.com")
+    sh(repo, "git", "config", "user.name", "T")
+    write(repo, "ops/a.py", "a\n" * 100)
+    write(repo, "docs/d.md", "d\n" * 5)
+    write(repo, ".github/workflows/w.yml", "w\n" * 5)
+    write(repo, BUDGET, budget_text(130))
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-qm", "base")
+
+    sh(repo, "git", "switch", "-q", "-c", "lane")
+    write(repo, "ops/b.py", "b\n" * 10)
+    write(repo, BUDGET, budget_text(160))
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-qm", "feat(ops): lane growth (#3004)")
+
+    sh(repo, "git", "switch", "-q", "main")
+    write(repo, "ops/a.py", "a\n" * 125)
+    write(repo, BUDGET, budget_text(126))
+    sh(repo, "git", "commit", "-qam", "chore: trunk moves on")
+    sh(repo, "git", "update-ref", "refs/remotes/origin/main", "main")
+    sh(repo, "git", "switch", "-q", "lane")
+    return repo
+
+
+def test_lift_judges_the_lane_without_its_fork_point(tmp_path: Path) -> None:
+    repo = build_fork_credit_lane(tmp_path)
+    rebase(repo)
+
+    # 135 measured against trunk's 126 is 10 lines of lane growth over 1 line of base room.  The
+    # raise is judged the way CI judges it (no fork point), so it holds in both views.
+    ceilings = json.loads(sh(repo, "git", "show", f"HEAD:{BUDGET}"))["ceilings"]
+    assert ceilings["ops"] == 140
+    assert "- ops: 126 -> 140 (measured 135 + 5)" in sh(
+        repo, "git", "log", "-1", "--format=%B"
+    )
+    assert complexity.main(["check", "--no-fork-points"], repo=repo) == 0
+    assert complexity.main(["check"], repo=repo) == 0
+
+
+@pytest.mark.parametrize(
+    ("failure", "raised", "match"),
+    [
+        (OSError("disk full"), deliver.DeliverError, "budget lift failed"),
+        (KeyboardInterrupt(), KeyboardInterrupt, None),
+    ],
+)
+def test_a_failed_lift_rolls_the_rebase_back_so_a_rerun_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    raised: type[BaseException],
+    match: str | None,
+) -> None:
+    repo = build_lane(tmp_path, clash=False, lane_grows=True)
+    lane_tip = sh(repo, "git", "rev-parse", "HEAD")
+    lane_budget = sh(repo, "git", "show", f"HEAD:{BUDGET}")
+    real_lift = complexity.lift
+
+    def lift_then_fail(path: Path, base: str | None = None):
+        real_lift(path, base)  # writes the budget file, then the commit step is lost
+        raise failure
+
+    monkeypatch.setattr(complexity, "lift", lift_then_fail)
+    with pytest.raises(raised, match=match):
+        rebase(repo)
+    # The whole rebase is undone: lane tip, budget file and worktree are as they were before.
+    assert sh(repo, "git", "rev-parse", "HEAD") == lane_tip
+    assert sh(repo, "git", "show", f"HEAD:{BUDGET}") == lane_budget
+    assert sh(repo, "git", "status", "--porcelain") == ""
+    assert not (repo / ".git" / "rebase-merge").exists()
+
+    monkeypatch.setattr(complexity, "lift", real_lift)
+    # A rerun redoes the rebase and the raise, instead of finding the lane already behind.
+    rebase(repo)
+    ceilings = json.loads(sh(repo, "git", "show", f"HEAD:{BUDGET}"))["ceilings"]
+    assert ceilings["ops"] == 116
+    assert sh(repo, "git", "log", "-1", "--format=%s") == (
+        "chore(ops): raise complexity ceiling after rebase onto origin/main"
+    )
+
+
+def test_lift_never_raises_on_the_base_itself(tmp_path: Path) -> None:
+    """HEAD equal to the base has no lane to charge: a red trunk must stay visible, unraised."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sh(repo, "git", "init", "-q", "-b", "main")
+    sh(repo, "git", "config", "user.email", "t@example.com")
+    sh(repo, "git", "config", "user.name", "T")
+    write(repo, "ops/a.py", "a\n" * 105)
+    write(repo, BUDGET, budget_text(100))
+    sh(repo, "git", "add", "-A")
+    sh(repo, "git", "commit", "-qm", "base")
+    sh(repo, "git", "update-ref", "refs/remotes/origin/main", "main")
+
+    assert complexity.lift(repo, "origin/main") == {}
+    assert (repo / BUDGET).read_text() == budget_text(100)

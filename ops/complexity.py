@@ -278,19 +278,24 @@ def ratcheted(measured: dict[str, int], budget: dict[str, Any]) -> dict[str, int
 
 
 def lift(repo: Path, base: str | None = None) -> dict[str, tuple[int, int, int]]:
-    """Rebase resolver: raise each area the lane is over budget to measured + ``LIFT_MARGIN``.
+    """Rebase resolver: raise each area the lane is over its own room to measured + ``LIFT_MARGIN``.
 
-    Judged exactly as the PR gate judges (charged against the base, so a sibling's growth is not the
-    lane's), so only a failing area moves, and only upward.  Returns {area: (old, new, measured)};
+    The lane is charged against the base headroom alone, never a fork point: the reflog that names
+    a fork is local, and CI (``--no-fork-points`` in the merge group) cannot see it.  So an area left
+    alone here passes the gate whichever view judges it, and a raised area is absolute at a ceiling
+    above measured.  Nothing is raised when HEAD is the base (or no base is readable): there is no
+    lane to charge, and a raise there would hide a red trunk.  Returns {area: (old, new, measured)};
     the budget file is written only when something was raised.
     """
     budget_path = repo / BUDGET_FILE
     budget = load_budget(budget_path)
     measured = measure(repo)
     ref = merge_base(repo, base)
-    snapshot = None
-    if ref is not None and ref != head_sha(repo):
-        snapshot = base_snapshot(repo, ref, fork_points(repo, ref))
+    if ref is None or ref == head_sha(repo):
+        return {}
+    snapshot = base_snapshot(repo, ref, [])
+    if snapshot is None:
+        return {}
     raised = {}
     for row in evaluate(measured, budget, snapshot):
         if row["over"]:
