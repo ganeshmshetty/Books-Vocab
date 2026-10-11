@@ -23,6 +23,8 @@ struct VocabularyEntryPresentationReviewQueueTests {
     func duplicateRowsSharingCardIdAppearOnceInDueQueue() {
         let first = makeDueSyncedEntry("dup", kgCardId: "card-1")
         let second = makeDueSyncedEntry("dup", kgCardId: "card-1")
+        first.dateAdded = now.addingTimeInterval(-7200)
+        second.dateAdded = now.addingTimeInterval(-3600)
 
         let projection = VocabularyEntryPresentation.project(
             [first, second],
@@ -32,6 +34,29 @@ struct VocabularyEntryPresentationReviewQueueTests {
 
         #expect(projection.reviewQueue.due.count == 1)
         #expect(projection.reviewQueue.due.first?.id == first.id)
+    }
+
+    /// #3059 (1) P2 regression: 代表列規則必須與今日複習一致（`ReviewSessionPersistence.representative(among:)`）。
+    /// 較晚加入但未學的列排在前，較早加入且到期的列才是代表；庫的 due 桶必須保留它，不可因輸入順序丟掉。
+    @Test("重複列的代表與今日複習一致：較早加入的到期列勝出，不因輸入順序")
+    func duplicateRepresentativeMatchesTodayRuleRegardlessOfInputOrder() {
+        let unlearned = VocabularyEntry(word: "dup", translation: "t", context: "c", bookTitle: "b")
+        unlearned.markSynced()
+        unlearned.kgCardId = "card-2"
+        unlearned.dateAdded = now.addingTimeInterval(-600)
+
+        let due = makeDueSyncedEntry("dup", kgCardId: "card-2")
+        due.dateAdded = now.addingTimeInterval(-7200)
+
+        let projection = VocabularyEntryPresentation.project(
+            [unlearned, due],
+            query: VocabularyLibraryQuery(),
+            now: now
+        )
+
+        #expect(ReviewSessionPersistence.representative(among: [unlearned, due])?.id == due.id)
+        #expect(projection.reviewQueue.due.map(\.id) == [due.id])
+        #expect(projection.reviewQueue.unlearned.isEmpty)
     }
 
     @Test("沒有 kgCardId 的列彼此不視為重複")

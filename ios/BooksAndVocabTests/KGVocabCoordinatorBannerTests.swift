@@ -104,6 +104,8 @@ struct KGVocabCoordinatorBannerTests {
 
         #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
         #expect(entry.syncAction == .delete)
+        // 延後給進行中的 sync 收斂：不得宣稱「待刪除項目已同步」。
+        #expect(coordinator.refreshSuccessMessage == nil)
     }
 
     /// #2733: 同上，但走 per-word fallback（batch 失敗後逐字 404 收斂）。
@@ -126,6 +128,8 @@ struct KGVocabCoordinatorBannerTests {
 
         #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
         #expect(entry.syncAction == .delete)
+        // 延後給進行中的 sync 收斂：不得宣稱「待刪除項目已同步」。
+        #expect(coordinator.refreshSuccessMessage == nil)
     }
 
     /// #3059 (4): batch 回應到達前使用者已撤銷刪除（列回到 add）→ 不得硬刪。
@@ -170,6 +174,32 @@ struct KGVocabCoordinatorBannerTests {
 
         #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
         #expect(entry.syncAction == .add)
+    }
+
+    /// #3059 (4) residual / I1: 已有 kgCardId 的列在 batch 回應前被撤銷（撤銷 → synced，保留舊 kgCardId），
+    /// 但 server 已刪除該卡。收斂時不得留下失效的 kgCardId 標成 synced；依 T7 改回 pending add（無 kgCardId）。
+    @Test func retryPendingDeletesRequeuesAddWhenUndoneDuringAwaitWithServerCard() async throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "carded", translation: "t", context: "c", bookTitle: "b")
+        entry.markSynced()
+        entry.kgCardId = "card-carded"
+        entry.queueDelete()
+        context.insert(entry)
+        let stub = StubDeleter()
+        stub.batchResponse = KGBatchDeleteResponse(deleted: 1, deleted_words: ["carded"], not_found: [])
+        stub.beforeBatchReply = { entry.undoQueuedDelete() }
+        let coordinator = KGVocabCoordinator()
+
+        await coordinator.retryPendingDeletes(pendingDeletes: [entry], kgService: stub, modelContext: context)
+
+        #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
+        #expect(entry.syncAction == .add)
+        #expect(entry.syncState == .pending)
+        #expect(entry.kgCardId == nil)
     }
 
     @Test func dismissingTheStateDoesNotEmitANotice() {

@@ -156,6 +156,7 @@ final class KGVocabCoordinator: KGVocabCoordinating {
         modelContext: ModelContext
     ) async {
         var failedCount = 0
+        var deferredCount = 0
         let grouped = Dictionary(grouping: pendingDeletes, by: \.notebookId)
 
         for (nbId, entries) in grouped {
@@ -167,7 +168,7 @@ final class KGVocabCoordinator: KGVocabCoordinating {
                 let resolvableSet = SyncCoordinator.locallyResolvableDeletes(from: response)
                 for entry in entries {
                     if resolvableSet.contains(entry.word) {
-                        hardDeleteResolvedDelete(entry, in: modelContext)
+                        settleResolvedDelete(entry, in: modelContext, deferred: &deferredCount)
                     } else {
                         failedCount += 1
                         AppLog.kg.error("batchDelete: word unresolved on server '\(entry.word)'")
@@ -178,10 +179,10 @@ final class KGVocabCoordinator: KGVocabCoordinating {
                 for entry in entries {
                     do {
                         try await kgService.deleteCard(word: entry.word, notebookId: entry.notebookId)
-                        hardDeleteResolvedDelete(entry, in: modelContext)
+                        settleResolvedDelete(entry, in: modelContext, deferred: &deferredCount)
                     } catch let KGError.httpError(statusCode: 404, _) {
                         // 404 = server 已無此字 → 刪除意圖已達成，本地收斂（#2728）。
-                        hardDeleteResolvedDelete(entry, in: modelContext)
+                        settleResolvedDelete(entry, in: modelContext, deferred: &deferredCount)
                     } catch {
                         failedCount += 1
                         AppLog.kg.error("deleteCard retry failed '\(entry.word)': \(error.localizedDescription)")
@@ -199,21 +200,38 @@ final class KGVocabCoordinator: KGVocabCoordinating {
         } else {
             // 全數收斂成功 → 清空前次失敗殘留的 error banner，
             // 對齊 loadInitialData / forceRefresh 成功路徑的清空慣例。
+            // 有列被延後給進行中的 sync（deferredCount）時不宣稱已同步：該列仍是 pending delete，由下一輪 sync 收斂。
             bannerError = nil
-            refreshSuccessMessage = L10n.string("待刪除項目已同步")
+            if deferredCount == 0 {
+                refreshSuccessMessage = L10n.string("待刪除項目已同步")
+            }
         }
         noticeRevision += 1
 
         await kgService.healthCheck()
     }
 
-    /// 本地收斂的硬刪守門（#2733、#3059 (4)）。
+    /// server 已確認此字不存在後的本地收斂（#2733、#3059 (4)）。守門在 await 之後重驗，不信 await 前的快照。
     /// - `isUploadInFlight` 的列仍由進行中的 sync 持有：刪除由該輪 sync 回應收斂（I3 / T5），retry 不得搶先移除，
-    ///   否則 server 稍後建立的卡會被 pull 復活（#2733）。
-    /// - await 期間被撤銷的列已不是 delete（T7），收斂結果不再適用於它，必須保留；守門在 await 之後重驗，不信快照。
-    private func hardDeleteResolvedDelete(_ entry: VocabularyEntry, in modelContext: ModelContext) {
-        guard entry.syncAction == .delete, !entry.isUploadInFlight else { return }
-        modelContext.delete(entry)
+    ///   否則 server 稍後建立的卡會被 pull 復活（#2733）；計入 `deferred`，呼叫端不得宣稱已同步。
+    /// - await 期間被撤銷的列已不是 delete：server 卡已不存在，殘留的 `kgCardId` 失效，依 T7 清除後改回 pending add，
+    ///   不留下標成 synced 的失效列（I1）。
+    private func settleResolvedDelete(
+        _ entry: VocabularyEntry,
+        in modelContext: ModelContext,
+        deferred: inout Int
+    ) {
+        guard !entry.isUploadInFlight else {
+            deferred += 1
+            return
+        }
+        switch entry.syncAction {
+        case .delete:
+            modelContext.delete(entry)
+        case .add, .edit:
+            entry.kgCardId = nil
+            entry.restorePendingEntry()
+        }
     }
 
     func handleBatchDelete(
