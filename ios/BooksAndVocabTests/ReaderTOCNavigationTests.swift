@@ -55,6 +55,7 @@ struct ReaderTOCNavigationTests {
         #expect(!staleLocationFinished)
         #expect(gate.isCurrent(replacementRequest))
         #expect(gate.activeExpectedLocatorHref == "OEBPS/chapter-b.xhtml")
+        #expect(gate.markNavigationAccepted(replacementRequest))
         let replacementLocationFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-b.xhtml"
@@ -64,6 +65,9 @@ struct ReaderTOCNavigationTests {
         #expect(gate.activeExpectedLocatorHref == nil)
     }
 
+    /// Readium 3.11 emits idle location callbacks with empty
+    /// `locations.fragments`, and emits a non-empty fragment only as the
+    /// pending-jump locator of a request. The shapes below follow that contract.
     @Test
     func lateSameResourceCallbackOfEarlierAnchorCannotCompleteLaterRequest() {
         let firstRequest = UUID()
@@ -74,20 +78,32 @@ struct ReaderTOCNavigationTests {
         gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
 
-        // Late callback reporting the first anchor must not complete the second request.
+        // An idle callback of the first jump, delivered before Readium accepted
+        // the replacement, carries no anchor and must not complete the replacement.
         let lateFirstFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
-            locatorFragments: ["a"]
+            locatorFragments: []
         )
         #expect(!lateFirstFinished)
         #expect(gate.isCurrent(replacementRequest))
         #expect(gate.activeExpectedFragments == ["b"])
 
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        // The first request's pending-jump locator names its own anchor.
+        let pendingFirstFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["a"]
+        )
+        #expect(!pendingFirstFinished)
+        #expect(gate.isCurrent(replacementRequest))
+
         let replacementFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
-            locatorFragments: ["b"]
+            locatorFragments: []
         )
         #expect(replacementFinished)
         #expect(gate.activeRequestID == nil)
@@ -98,9 +114,11 @@ struct ReaderTOCNavigationTests {
         let requestID = UUID()
         var gate = ReaderTOCNavigationRequestGate()
 
-        // Readium may report no fragment for a resolved resource; resource-level
-        // matching must still complete the request (no refused legitimate taps).
+        // Readium idle callbacks carry no anchor; once the jump is accepted,
+        // resource-level matching must still complete the request (no refused
+        // legitimate taps).
         gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.markNavigationAccepted(requestID))
 
         let finished = gate.finish(
             requestID,
@@ -109,6 +127,25 @@ struct ReaderTOCNavigationTests {
         )
         #expect(finished)
         #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
+    func staleAcceptanceCannotArmReplacementRequest() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+
+        #expect(!gate.markNavigationAccepted(replacedRequest))
+        #expect(!gate.isNavigationAccepted)
+        let finished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!finished)
     }
 
     @Test
@@ -130,26 +167,32 @@ struct ReaderTOCNavigationTests {
         ))
     }
 
-    /// Documented residual (#3043, not closed): a later anchorless request
-    /// accepts a callback that reports an earlier anchor of the same resource.
-    /// Readium's resource-level callbacks may carry incidental fragments, so
-    /// refusing them would time out legitimate anchorless taps. Pinned here so
-    /// any change to this trade-off is deliberate.
+    /// An anchorless request must not accept a report that names another
+    /// request's anchor of the same resource.
     @Test
-    func anchorlessLaterRequestAcceptsEarlierAnchorCallbackDocumentedResidual() {
+    func anchorlessLaterRequestRefusesEarlierAnchorCallback() {
         let firstRequest = UUID()
         let replacementRequest = UUID()
         var gate = ReaderTOCNavigationRequestGate()
 
         gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: [])
+        #expect(gate.markNavigationAccepted(replacementRequest))
 
         let lateFirstFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
             locatorFragments: ["a"]
         )
-        #expect(lateFirstFinished)
+        #expect(!lateFirstFinished)
+        #expect(gate.isCurrent(replacementRequest))
+
+        let resourceFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(resourceFinished)
         #expect(gate.activeRequestID == nil)
     }
 
