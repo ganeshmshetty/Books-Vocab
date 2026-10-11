@@ -263,6 +263,11 @@ struct TodayReviewView: View {
         .onChange(of: state.linkedCardStack.count) { _, _ in
             state.refreshPeerDependentCards()
         }
+        // A peer flip after the overlay closed (a failed archive rolled back) re-derives the
+        // chips too. The fingerprint is read in body, so SwiftUI tracks the peers it covers.
+        .onChange(of: state.peerChipFingerprint) { _, _ in
+            state.refreshPeerDependentCards()
+        }
         .toastSheet(item: $state.tappedLink) { link in
             LinkReasonSheet(
                 link: link,
