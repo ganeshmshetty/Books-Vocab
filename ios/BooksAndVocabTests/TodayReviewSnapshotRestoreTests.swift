@@ -200,6 +200,49 @@ struct TodayReviewSnapshotRestoreTests {
         #expect(flushed?.id == early.id)
     }
 
+    /// 不變式「佇列代表 == flush 寫入目標」：三筆共用 kgCardId，最早的一筆不可複習。
+    /// 舊實作 fetchEntry 取全部列的最早者 → 答案寫到不可複習列，而佇列顯示的是另一筆。
+    @Test func queueRepresentativeMatchesFlushTargetWhenEarliestDuplicateIsNotReviewable() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let excludedEarliest = makeEntry("dup-excluded", kgCardId: "card-dup")
+        excludedEarliest.dateAdded = Date(timeIntervalSince1970: 1_000)
+        excludedEarliest.isReviewExcluded = true
+        let reviewableLate = makeEntry("dup-late", kgCardId: "card-dup")
+        reviewableLate.dateAdded = Date(timeIntervalSince1970: 3_000)
+        let reviewableEarly = makeEntry("dup-early", kgCardId: "card-dup")
+        reviewableEarly.dateAdded = Date(timeIntervalSince1970: 2_000)
+        for entry in [reviewableLate, excludedEarliest, reviewableEarly] {
+            context.insert(entry)
+        }
+        try context.save()
+
+        // 佇列只餵可複習列（與 TodayReviewState 相同的 filter）。
+        let queued = ReviewSessionPersistence.uniqueByPersistenceID(
+            [reviewableLate, excludedEarliest, reviewableEarly].filter(\.shouldAppearInReview)
+        )
+        let flushed = try ReviewSessionPersistence.fetchEntry(for: "kg:card-dup", in: context)
+
+        #expect(queued.map(\.word) == ["dup-early"])
+        #expect(flushed?.word == "dup-early")
+        #expect(flushed?.id == reviewableEarly.id)
+    }
+
+    /// 代表規則的 fallback 分支：有可複習列時只在其中選；全部不可複習時才退回全部列中最早者。
+    @Test func representativeFallsBackToAllRowsOnlyWhenNoRowIsReviewable() {
+        let excludedEarly = makeEntry("ex-early", kgCardId: "card-x")
+        excludedEarly.dateAdded = Date(timeIntervalSince1970: 1_000)
+        excludedEarly.isReviewExcluded = true
+        let excludedLate = makeEntry("ex-late", kgCardId: "card-x")
+        excludedLate.dateAdded = Date(timeIntervalSince1970: 2_000)
+        excludedLate.isReviewExcluded = true
+        let reviewable = makeEntry("rv", kgCardId: "card-x")
+        reviewable.dateAdded = Date(timeIntervalSince1970: 3_000)
+
+        #expect(ReviewSessionPersistence.representative(among: [excludedLate, excludedEarly, reviewable])?.word == "rv")
+        #expect(ReviewSessionPersistence.representative(among: [excludedLate, excludedEarly])?.word == "ex-early")
+    }
+
     // MARK: - Missing queued card
 
     @Test func missingQueuedCardKeepsSurvivingAnswersAndRemapsIndices() {

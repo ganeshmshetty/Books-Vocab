@@ -77,6 +77,7 @@ final class TodayReviewState {
         // lazy `start()`. DispatchTime captures match the existing `_initStart` precedent.
         let _tLoad = DispatchTime.now()
         // 去重先於 loadOrder：之後的佇列、id、baseline 都保證 persistenceID 唯一。
+        // 先以 shouldAppearInReview 決定佇列成員，再由 representative(among:) 選代表（與 flush 同一規則）。
         let reviewEntries = ReviewSessionPersistence.uniqueByPersistenceID(entries.filter(\.shouldAppearInReview))
         let ordered = ReviewSessionStore.loadOrder(
             availableEntries: reviewEntries,
