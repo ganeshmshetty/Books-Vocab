@@ -330,4 +330,78 @@ final class TodayReviewGapUITests: UITestCase {
                 + "\n全表:\n" + table
         )
     }
+
+    /// #3110：推進卡片後「點一下展開」hint 不得隨卡片區高度彈簧上飄。翻面期間 hint 應隱藏
+    /// （不可點、透明），settle 後 fade in；hint 首次可點起 minY 必須固定。
+    @MainActor
+    func testExpandZoneFadesInAtStableYAfterAdvance() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeckVaried],
+            perfLog: "review"
+        )
+        captureStep("launch", app: app)
+
+        let notebook = AppPage(app: app).goToNotebooks()
+        guard notebook.notebookCard(id: Self.notebookCardID).waitUntilExists(timeout: 10) else {
+            captureStep("expand-fade-no-notebook-card", app: app)
+            XCTFail("varied review deck fixture 應種出單字本卡片 \(Self.notebookCardID)")
+            return
+        }
+        guard notebook.reviewCTAButton.waitUntilExists(timeout: 10) else {
+            captureStep("expand-fade-no-review-cta", app: app)
+            XCTFail("varied deck 有未學卡片，複習 CTA 必須出現")
+            return
+        }
+        let review = notebook.startReview()
+        guard review.progressLabel.waitUntilExists(timeout: 10) else {
+            captureStep("expand-fade-review-not-started", app: app)
+            XCTFail("tap CTA 後必須進入複習 session；progress label 缺席")
+            return
+        }
+
+        var failures: [String] = []
+        // 三次推進：varied deck 的卡高不同，至少一次會觸發卡片區高度彈簧。
+        for step in 0..<3 {
+            _ = review.cardFront.waitUntilExists(timeout: 8)
+            review.flipCard()
+            _ = review.cardBack.waitUntilExists(timeout: 5)
+            review.tapRemembered()
+            _ = review.waitForProgress("\(step + 2) / \(Self.deckSize)")
+            _ = review.cardBack.waitUntilGone(timeout: 5)
+
+            let zone = review.expandZone
+            var startY: CGFloat?
+            let hittableDeadline = Date().addingTimeInterval(5)
+            while Date() < hittableDeadline {
+                if zone.exists, zone.isHittable {
+                    startY = zone.frame.minY
+                    break
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            }
+            guard let firstY = startY else {
+                captureStep("expand-fade-\(step)-never-hittable", app: app)
+                failures.append("advance \(step)：expandZone 推進後 5s 內未變為可點")
+                break
+            }
+            captureStep("expand-fade-\(step)-first-hittable", app: app)
+
+            // 首個可點幀之後 0.6s 內每 30ms 取樣，minY 必須與首個可點幀相同。
+            var ys: [CGFloat] = [firstY]
+            let sampleEnd = Date().addingTimeInterval(0.6)
+            while Date() < sampleEnd {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+                if zone.exists { ys.append(zone.frame.minY) }
+            }
+            let drift = ys.map { abs($0 - firstY) }.max() ?? 0
+            let trail = ys.map { String(format: "%.1f", $0) }.joined(separator: ",")
+            if drift > 0.5 {
+                failures.append("advance \(step)：expandZone 可點後 minY 漂移 \(String(format: "%.1f", drift))pt（ys=\(trail)）")
+            }
+        }
+        XCTAssertTrue(
+            failures.isEmpty,
+            "點一下展開 hint 不得隨卡片區高度彈簧上飄（#3110）:\n" + failures.joined(separator: "\n")
+        )
+    }
 }
