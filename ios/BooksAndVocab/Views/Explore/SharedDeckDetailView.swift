@@ -39,7 +39,7 @@ struct SharedDeckDetailView: View {
 
     init(deckId: String) {
         self.deckId = deckId
-        _copyController = State(initialValue: SharedDeckCopyRegistry.shared.controller(for: deckId))
+        _copyController = State(initialValue: SharedDeckCopyController())
         self.injectedCards = nil
         self.previewCopyState = nil
     }
@@ -51,7 +51,7 @@ struct SharedDeckDetailView: View {
         previewCopyState: SharedDeckCopyController.CopyState? = nil
     ) {
         self.deckId = deckId
-        _copyController = State(initialValue: SharedDeckCopyRegistry.shared.controller(for: deckId))
+        _copyController = State(initialValue: SharedDeckCopyController())
         self.injectedCards = previewCards
         self.previewCopyState = previewCopyState
     }
@@ -111,8 +111,18 @@ struct SharedDeckDetailView: View {
             )
             .appAppearanceScheme()
         }
-        .task(id: deckId) { await load() }
+        .task(id: deckId) {
+            adoptCopyController()
+            await load()
+        }
+        .onChange(of: authManager.userId) { _, _ in adoptCopyController() }
         .enableInjection()
+    }
+
+    /// init 讀不到 environment，故出現時與帳號切換時依當前 userId 向 registry 接回
+    /// controller；他人的失敗卡不會因 pop/reopen 或換帳號而顯示（#2748）。
+    private func adoptCopyController() {
+        copyController = SharedDeckCopyRegistry.shared.controller(for: deckId, owner: authManager.userId)
     }
 
     // MARK: - Copy CTA
