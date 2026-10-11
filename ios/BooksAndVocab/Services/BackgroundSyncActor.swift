@@ -189,7 +189,14 @@ actor BackgroundSyncActor {
                     existingEntry.partOfSpeech = card.pos
                     existingEntry.explanation = card.note
                     existingEntry.difficultyTier = card.difficultyTier
+                    // Re-key the card-id index with the entry: a tombstone for the previous
+                    // id later in this batch must not resolve to a row that now holds another card (#2547).
+                    if let previousCardID = existingEntry.kgCardId, !previousCardID.isEmpty,
+                       localByCardID[previousCardID] === existingEntry {
+                        localByCardID[previousCardID] = nil
+                    }
                     existingEntry.kgCardId = card.id
+                    localByCardID[card.id] = existingEntry
                     existingEntry.inflections = card.inflections ?? []
                     existingEntry.collocations = card.collocations ?? []
                     existingEntry.reviewMode = VocabularyCardMode(rawValue: card.mode) ?? .recognition
