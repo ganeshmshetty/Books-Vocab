@@ -55,7 +55,8 @@ struct ReaderTOCNavigationTests {
         #expect(!staleLocationFinished)
         #expect(gate.isCurrent(replacementRequest))
         #expect(gate.activeExpectedLocatorHref == "OEBPS/chapter-b.xhtml")
-        #expect(gate.markNavigationAccepted(replacementRequest))
+        let accepted = gate.markNavigationAccepted(replacementRequest)
+        #expect(accepted)
         let replacementLocationFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-b.xhtml"
@@ -90,7 +91,8 @@ struct ReaderTOCNavigationTests {
         #expect(gate.isCurrent(replacementRequest))
         #expect(gate.activeExpectedFragments == ["b"])
 
-        #expect(gate.markNavigationAccepted(replacementRequest))
+        let accepted = gate.markNavigationAccepted(replacementRequest)
+        #expect(accepted)
 
         // The first request's pending-jump locator names its own anchor.
         let pendingFirstFinished = gate.finish(
@@ -125,7 +127,8 @@ struct ReaderTOCNavigationTests {
             locatorFragments: []
         )
         #expect(!beforeAcceptance)
-        #expect(gate.markNavigationAccepted(requestID))
+        let accepted = gate.markNavigationAccepted(requestID)
+        #expect(accepted)
 
         let anchorlessFinished = gate.finish(
             requestID,
@@ -142,7 +145,8 @@ struct ReaderTOCNavigationTests {
         var gate = ReaderTOCNavigationRequestGate()
 
         gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
-        #expect(gate.markNavigationAccepted(requestID))
+        let accepted = gate.markNavigationAccepted(requestID)
+        #expect(accepted)
 
         let finished = gate.finish(
             requestID,
@@ -163,7 +167,8 @@ struct ReaderTOCNavigationTests {
         // anchorless callback must still complete it (no refused legitimate
         // taps).
         gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml")
-        #expect(gate.markNavigationAccepted(requestID))
+        let accepted = gate.markNavigationAccepted(requestID)
+        #expect(accepted)
 
         let finished = gate.finish(
             requestID,
@@ -183,7 +188,8 @@ struct ReaderTOCNavigationTests {
         gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
 
-        #expect(!gate.markNavigationAccepted(replacedRequest))
+        let accepted = gate.markNavigationAccepted(replacedRequest)
+        #expect(!accepted)
         #expect(!gate.isNavigationAccepted)
         let finished = gate.finish(
             replacementRequest,
@@ -224,7 +230,8 @@ struct ReaderTOCNavigationTests {
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: [])
 
         #expect(gate.isCurrent(replacementRequest))
-        #expect(gate.markNavigationAccepted(replacementRequest))
+        let accepted = gate.markNavigationAccepted(replacementRequest)
+        #expect(accepted)
 
         let lateFirstFinished = gate.finish(
             replacementRequest,
