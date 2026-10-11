@@ -700,6 +700,30 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(store.profile == custom)
     }
 
+    /// #2434 (review P2): legacy adoption is per Apple ID, not per device. Device X adopts the
+    /// raw layout for account A, then sign-out drops its local copy while the KVS raw key stays
+    /// on purpose. Device Y has never adopted, so its local flag is absent, but it must not copy
+    /// that KVS raw key into account B (the cross-device form of the same re-adoption).
+    @Test func unadoptedDeviceDoesNotReAdoptKVSRawLayoutAdoptedElsewhere() {
+        let deviceX = makeDefaults()
+        let deviceY = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(deviceX, cloud).update(custom)
+        let adopting = makeStore(deviceX, cloud)
+        adopting.activateAccount("account-a")
+        #expect(adopting.profile == custom)
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: deviceX)
+        #expect(cloud.values[rawKey] != nil)
+
+        let accountBOnY = makeStore(deviceY, cloud)
+        accountBOnY.activateAccount("account-b")
+        #expect(accountBOnY.profile == .default)
+
+        let loggedOutOnY = makeStore(deviceY, cloud)
+        #expect(loggedOutOnY.profile == .default)
+    }
+
     @Test func coordinatorForwardsToSharedLayoutStore() {
         let store = makeStore(makeDefaults(), ReviewCardLayoutCloudSpy())
         let coordinator = AccountPreferenceLifecycleCoordinator(layoutStore: store)
