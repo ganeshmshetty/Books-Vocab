@@ -724,6 +724,30 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(loggedOutOnY.profile == .default)
     }
 
+    /// #2434 (review P2): a device that adopted under the pre-marker build holds only the local
+    /// marker. Its next launch must publish the iCloud marker, otherwise a never-adopted device on
+    /// the same Apple ID still re-adopts the kept KVS raw key into account B. A never-adopted device
+    /// publishes nothing (positive control).
+    @Test func preMarkerAdopterPublishesKVSMarkerSoUnadoptedDeviceDoesNotReAdopt() {
+        let deviceX = makeDefaults()
+        let deviceY = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout")
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(makeDefaults(), cloud).update(custom)
+        deviceX.set(true, forKey: marker)
+
+        _ = makeStore(makeDefaults(), cloud)
+        #expect(cloud.values[marker] == nil)
+
+        _ = makeStore(deviceX, cloud)
+        #expect(cloud.values[marker] != nil)
+
+        let accountBOnY = makeStore(deviceY, cloud)
+        accountBOnY.activateAccount("account-b")
+        #expect(accountBOnY.profile == .default)
+    }
+
     @Test func coordinatorForwardsToSharedLayoutStore() {
         let store = makeStore(makeDefaults(), ReviewCardLayoutCloudSpy())
         let coordinator = AccountPreferenceLifecycleCoordinator(layoutStore: store)
