@@ -4,7 +4,7 @@ import StoreKit
 /// control the inactive paywall actually renders (恢復購買 → restorePurchases →
 /// syncCurrentEntitlements), so the user is never sent to a missing 重新同步.
 enum SubscriptionPurchaseCopy {
-    static let backendSyncPendingKey = "Apple 購買成功，但後端同步尚未完成。請稍後點「重新同步」。"
+    static let backendSyncPendingKey = "Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。"
 }
 
 enum SubscriptionProductLoadState: Equatable {

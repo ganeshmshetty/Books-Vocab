@@ -492,7 +492,7 @@
 // ── Auto-generated: missing L10n keys ──
 "AI 翻譯與語境解釋" = "AI 翻譯與語境解釋";
 "App Store 找不到商品 %@。請確認 App Store Connect 的訂閱 Product ID、Bundle ID 與目前測試環境是否一致。" = "App Store 找不到商品 %@。請確認 App Store Connect 的訂閱 Product ID、Bundle ID 與目前測試環境是否一致。";
-"Apple 購買成功，但後端同步尚未完成。請稍後點「重新同步」。" = "Apple 購買成功，但後端同步尚未完成。請稍後點「重新同步」。";
+"Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。" = "Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。";
 "DEBUG 後端" = "DEBUG 後端";
 "Demo 模式" = "Demo 模式";
 "了解更多" = "了解更多";
