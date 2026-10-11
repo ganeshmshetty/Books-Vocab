@@ -942,6 +942,7 @@
 "podcast.followToggle.follow" = "팔로우";
 "podcast.followToggle.unfollow" = "팔로우 취소";
 "vocab.chromeIcon.collocation.dismiss" = "연어 설명 닫기";
+"vocab.chromeIcon.collocation.delete" = "연어 설명 삭제";
 
 // MARK: - Podcast Sleep Timer (track-11)
 "podcast.sleepTimer.fired.toast" = "절전 타이머가 종료되어 재생을 일시정지했습니다";

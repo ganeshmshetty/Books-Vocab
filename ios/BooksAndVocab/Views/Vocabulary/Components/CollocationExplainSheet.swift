@@ -84,6 +84,7 @@ struct CollocationExplainSheet: View {
                 VocabChromeIconButton(
                     systemImage: "trash",
                     tone: appSkin.palette.destructive,
+                    label: L10n.string("vocab.chromeIcon.collocation.delete"),
                     action: {
                         onDelete()
                         dismiss()
