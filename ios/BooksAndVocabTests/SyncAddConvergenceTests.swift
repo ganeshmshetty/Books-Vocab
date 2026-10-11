@@ -37,6 +37,21 @@ struct SyncAddConvergenceTests {
         )
     }
 
+    /// In-memory、無 CloudKit 的 VocabularyEntry 容器（與 VocabularySyncEngineTests 同款）。
+    /// 未設 `cloudKitDatabase: .none` 時 SwiftData 會落到磁碟 LocalStore，CI sandbox 拒寫（#2484）。
+    private func makeStore() throws -> ModelContainer {
+        try ModelContainer(
+            for: VocabularyEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+    }
+
+    /// 以 fetch 判定列是否已自 store 移除。`PersistentModel.isDeleted` 在 save 後不是可靠的生命週期契約
+    /// （見 BooksAndVocabTests `sanitizeOutbox_tombstonedOrphanDelete`），故斷言 store 內容。
+    private func isRemoved(_ id: UUID, from context: ModelContext) throws -> Bool {
+        try context.fetch(FetchDescriptor<VocabularyEntry>(predicate: #Predicate { $0.id == id })).isEmpty
+    }
+
     // MARK: - 命中收斂（created 與 duplicate 同路徑）
 
     @Test("cardIds 命中 → 回填 kgCardId 並 markSynced 出列")
@@ -145,11 +160,10 @@ struct SyncAddConvergenceTests {
 
     @Test("in-flight 期間被刪除後 server 拒收 add → 不成為 rejected add，保留 delete 並經 batchDelete 本地移除（#2733）")
     func delete_queued_during_flight_survives_rejection() throws {
-        let container = try ModelContainer(
-            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
-        )
+        let container = try makeStore()
         let context = ModelContext(container)
         let entry = makePendingAdd("ghost")
+        let entryId = entry.id
         context.insert(entry)
         entry.isUploadInFlight = true
         entry.deleteLocally(in: context)
@@ -176,28 +190,29 @@ struct SyncAddConvergenceTests {
             entries: [entry],
             modelContext: context
         )
-        #expect(entry.isDeleted)
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
     }
 
     @Test("非 in-flight 的 pending add 本地刪除 → 直接移除，不排 server delete")
     func idle_pending_add_delete_is_local_only() throws {
-        let container = try ModelContainer(
-            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
-        )
+        let container = try makeStore()
         let context = ModelContext(container)
         let entry = makePendingAdd("idle")
+        let entryId = entry.id
         context.insert(entry)
 
         #expect(!entry.requiresServerDelete)
         entry.deleteLocally(in: context)
-        #expect(entry.isDeleted)
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
     }
 
     @Test("已同步卡片被編輯（syncState 落在 pending+edit、kgCardId 保留）後本地刪除 → 不硬刪，排 server delete")
     func edited_synced_entry_delete_is_queued_not_hard_deleted() throws {
-        let container = try ModelContainer(
-            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
-        )
+        let container = try makeStore()
         let context = ModelContext(container)
         let entry = makePendingAdd("edited")
         context.insert(entry)
@@ -257,11 +272,10 @@ struct SyncAddConvergenceTests {
 
     @Test("in-flight 的待刪在 batchDelete 往返期間撤銷為 no-op，回應 not_found 直接硬刪（#2484 P1, I3）")
     func undo_during_flight_is_noop_and_response_removes_row() throws {
-        let container = try ModelContainer(
-            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
-        )
+        let container = try makeStore()
         let context = ModelContext(container)
         let entry = makePendingAdd("held")
+        let entryId = entry.id
         context.insert(entry)
         entry.queueDelete()
         entry.isUploadInFlight = true
@@ -275,16 +289,16 @@ struct SyncAddConvergenceTests {
             modelContext: context
         )
 
-        #expect(entry.isDeleted)
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
         #expect(outcome.deleted == 1)
         #expect(outcome.failedWords.isEmpty)
     }
 
     @Test("陳舊的 batchDelete 回應不硬刪已非 delete 的列（防禦性守門）")
     func stale_batch_delete_response_skips_non_delete_row() throws {
-        let container = try ModelContainer(
-            for: VocabularyEntry.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)
-        )
+        let container = try makeStore()
         let context = ModelContext(container)
         let entry = makePendingAdd("stale")
         context.insert(entry)

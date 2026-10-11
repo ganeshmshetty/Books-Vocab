@@ -104,6 +104,7 @@ struct VocabularySyncEngineTests {
         let container = try makeContainer()
         let context = ModelContext(container)
         let entry = makeEntry(word: "ephemeral")
+        let entryId = entry.id
         entry.restorePendingEntry()
         context.insert(entry)
         try context.save()
@@ -130,7 +131,8 @@ struct VocabularySyncEngineTests {
         )
 
         #expect(service.calls.contains("batchDelete"))
-        #expect(entry.isDeleted)
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
     }
 
     @Test("a delete issued during the delete round trip keeps a captured add from being uploaded")
@@ -210,6 +212,7 @@ struct VocabularySyncEngineTests {
         let context = ModelContext(container)
         // 同步開始時已是 pending delete 且 kgCardId 為空（server 可能沒有此卡）。
         let entry = makeEntry(word: "flip")
+        let entryId = entry.id
         entry.queueDelete()
         context.insert(entry)
         try context.save()
@@ -226,7 +229,8 @@ struct VocabularySyncEngineTests {
         )
 
         #expect(actionAfterUndo == VocabularySyncAction.delete)
-        #expect(entry.isDeleted)
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
         #expect(!service.calls.contains("add"))
     }
 
@@ -235,6 +239,7 @@ struct VocabularySyncEngineTests {
         let container = try makeContainer()
         let context = ModelContext(container)
         let entry = makeEntry(word: "confirmed")
+        let entryId = entry.id
         entry.kgCardId = "card-p1"
         entry.markSynced()
         entry.queueDelete()
@@ -254,7 +259,8 @@ struct VocabularySyncEngineTests {
 
         // The server deletes the card, so the row must be removed, not restored to synced for the orphan cleanup.
         #expect(actionAfterUndo == VocabularySyncAction.delete)
-        #expect(entry.isDeleted)
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
         #expect(!service.calls.contains("add"))
     }
 
@@ -263,6 +269,7 @@ struct VocabularySyncEngineTests {
         let container = try makeContainer()
         let context = ModelContext(container)
         let entry = makeEntry(word: "fallback-undo")
+        let entryId = entry.id
         entry.kgCardId = "card-p2"
         entry.markSynced()
         entry.queueDelete()
@@ -284,7 +291,8 @@ struct VocabularySyncEngineTests {
         #expect(result.terminalOutcome == .completed)
         #expect(actionAfterUndo == VocabularySyncAction.delete)
         #expect(service.calls.contains("delete"))
-        #expect(entry.isDeleted)
+        let removed = try isRemoved(entryId, from: context)
+        #expect(removed)
     }
 
     @Test("a delete the server never confirmed is undone to synced with its card after the sync returns (#2484)")
@@ -640,6 +648,12 @@ struct VocabularySyncEngineTests {
         #expect(service.calls.filter { $0 == "add" }.count == 1)
         #expect(second.terminalOutcome == .completed)
         #expect(entry.isFailed)
+    }
+
+    /// 以 fetch 判定列是否已自 store 移除。`PersistentModel.isDeleted` 在 engine 的 save 後不是可靠的生命週期契約
+    /// （見 BooksAndVocabTests `sanitizeOutbox_tombstonedOrphanDelete`），故斷言 store 內容。
+    private func isRemoved(_ id: UUID, from context: ModelContext) throws -> Bool {
+        try context.fetch(FetchDescriptor<VocabularyEntry>(predicate: #Predicate { $0.id == id })).isEmpty
     }
 
     private func makeContainer() throws -> ModelContainer {
