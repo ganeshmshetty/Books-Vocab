@@ -70,10 +70,23 @@ struct VocabGraphEntryCard<Destination: View>: View {
         }
         .animation(reduceMotion ? nil : AppMotion.panelState, value: current)
         .task(id: paintTimerKey(current)) { await runPaintTimer(current) }
+        // A new payload makes graph.html hide and repaint the canvas. The watchdog
+        // restarts here; the coordinator resets `hasPainted` when it sends the payload.
+        .onChange(of: thumbnailSignature) { _, _ in rearmPaintWatchdog() }
         .onAppear {
             holder.coordinator.onPainted = { paintTimedOut = false }
+            holder.coordinator.onRepaintExpected = { rearmPaintWatchdog() }
         }
         .enableInjection()
+    }
+
+    private var thumbnailSignature: String {
+        GraphThumbnailWebView.signature(nodes: nodes, edges: edges, colorScheme: colorScheme)
+    }
+
+    private func rearmPaintWatchdog() {
+        paintTimedOut = false
+        paintTimerGeneration &+= 1
     }
 
     // MARK: Error panel (no cached links)
@@ -206,7 +219,7 @@ struct VocabGraphEntryCard<Destination: View>: View {
             in: AppRoundedRect(roundness: AppRoundness.control)
         )
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("overview.graph.status")
+        .accessibilityIdentifier(isStale ? "overview.graph.stale" : "overview.graph.rendering")
     }
 
     private var retryButton: some View {
@@ -299,8 +312,10 @@ struct VocabGraphEntryCard<Destination: View>: View {
             )
         case .unpainted:
             // Replaces the web view while the paint watchdog has fired; the
-            // status row below carries the retry. If the page paints later,
-            // `onPainted` clears the timeout and the graph returns.
+            // status row below carries the retry. The web view is detached in
+            // this state, so a late paint is not relied on: Retry reattaches the
+            // page and re-arms the watchdog. Recovery from here is unverified on
+            // device (#2860 stays Refs until a fault-injection run confirms it).
             AppStateMessageContent(
                 title: StatsCopy.graphUnpaintedTitle,
                 systemImage: "hourglass",
@@ -321,7 +336,10 @@ struct VocabGraphEntryCard<Destination: View>: View {
     }
 
     private func runPaintTimer(_ state: StatsPresentation.GraphCardState) async {
-        guard bodyKind(of: state) == .graph, !holder.coordinator.hasPainted else { return }
+        // No `hasPainted` check before the wait: a new payload resets it on the
+        // update pass, which can land after this task starts. Only the state
+        // after the bounded wait decides whether the page is unpainted.
+        guard bodyKind(of: state) == .graph else { return }
         try? await Task.sleep(for: Self.paintTimeout)
         guard !Task.isCancelled, !holder.coordinator.hasPainted else { return }
         paintTimedOut = true
