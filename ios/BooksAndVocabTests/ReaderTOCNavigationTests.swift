@@ -66,8 +66,9 @@ struct ReaderTOCNavigationTests {
     }
 
     /// Readium 3.11 idle location callbacks carry empty `locations.fragments`.
-    /// A named anchor is attributable to its request; an anchorless report after
-    /// acceptance is not, and is covered by the anchorless-completion test below.
+    /// A named anchor of another TOC entry must not complete this request, even
+    /// after acceptance. An anchorless report after acceptance does complete it;
+    /// see the anchorless-completion test below.
     @Test
     func lateSameResourceCallbackNamingEarlierAnchorCannotCompleteLaterRequest() {
         let firstRequest = UUID()
@@ -133,6 +134,100 @@ struct ReaderTOCNavigationTests {
         )
         #expect(anchorlessFinished)
         #expect(gate.activeRequestID == nil)
+    }
+
+    /// Two anchored TOC entries in one resource. The first jump was accepted and
+    /// then replaced before it settled. Its late anchorless callback names no
+    /// request, so it cannot be told apart from the replacement's own callback
+    /// and must not complete the replacement.
+    @Test
+    func anchorlessCallbackOfAcceptedReplacedJumpCannotCompleteAnchoredReplacement() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        #expect(gate.markNavigationAccepted(replacedRequest))
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let lateAnchorless = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!lateAnchorless)
+        #expect(gate.isCurrent(replacementRequest))
+
+        let ownAnchor = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["b"]
+        )
+        #expect(ownAnchor)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    /// The replaced jump was never accepted, yet Readium may already have been
+    /// asked to perform it, so the replacement still requires its own anchor.
+    @Test
+    func anchorlessCallbackCannotCompleteReplacementOfUnacceptedAnchoredRequest() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.replacesUnsettledRequest)
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let lateAnchorless = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!lateAnchorless)
+        #expect(gate.isCurrent(replacementRequest))
+    }
+
+    /// A resource-level replacement has no anchor to require, so its anchorless
+    /// completion is unchanged.
+    @Test
+    func resourceLevelReplacementStillCompletesOnAnchorlessCallback() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml")
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let finished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(finished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    /// Re-issuing the active request is not a replacement of it.
+    @Test
+    func reissuingActiveRequestIsNotAReplacement() {
+        let requestID = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(!gate.replacesUnsettledRequest)
+        #expect(gate.markNavigationAccepted(requestID))
+
+        let finished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(finished)
     }
 
     @Test

@@ -52,6 +52,11 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     private(set) var activeExpectedFragments: [String] = []
     /// Set once Readium's `go(to:)` returned true for the active request.
     private(set) var isNavigationAccepted = false
+    /// Set when this request replaced a live, unfinished request. Readium may
+    /// still deliver the replaced jump's late callbacks, and they name no
+    /// request, so an anchored replacement must then be completed by a report
+    /// that names its own anchor.
+    private(set) var replacesUnsettledRequest = false
 
     /// `expectedFragments` are the anchors the TOC entry targets inside
     /// `expectedLocatorHref`. Empty means resource-level expectation only.
@@ -60,6 +65,7 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         expectedLocatorHref: String? = nil,
         expectedFragments: [String] = []
     ) {
+        replacesUnsettledRequest = activeRequestID != nil && activeRequestID != requestID
         activeRequestID = requestID
         activeExpectedLocatorHref = expectedLocatorHref
         activeExpectedFragments = expectedFragments
@@ -71,6 +77,7 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         activeExpectedLocatorHref = nil
         activeExpectedFragments = []
         isNavigationAccepted = false
+        replacesUnsettledRequest = false
     }
 
     func isCurrent(_ requestID: UUID) -> Bool {
@@ -98,7 +105,8 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
             && activeExpectedLocatorHref == locatorHref
             && Self.fragmentsAccept(
                 expected: activeExpectedFragments,
-                reported: locatorFragments
+                reported: locatorFragments,
+                requiresOwnAnchor: replacesUnsettledRequest
             )
     }
 
@@ -109,15 +117,27 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     /// out every fragment TOC tap. A report that names only other anchors is a
     /// late callback of a superseded jump and is refused. A resource-level
     /// request has no anchor of its own, so it refuses every named report.
-    /// Residual (#3043): an anchorless late callback of a superseded anchored
-    /// request can still complete the replacement, because Readium gives it no
-    /// identity to exclude. Both sides are percent-decoded first, so an encoded
-    /// TOC href and a decoded callback fragment still match.
-    static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
+    /// `requiresOwnAnchor` closes the anchorless case for a replacement of a
+    /// live request: that jump's late anchorless callback is indistinguishable
+    /// from the replacement's, so only a report naming the replacement's own
+    /// anchor may complete it. Both sides are percent-decoded first, so an
+    /// encoded TOC href and a decoded callback fragment still match.
+    /// Residual (#3043, split to a follow-up): a jump whose request already
+    /// timed out or failed is no longer live, so its anchorless late callback
+    /// can still complete a later anchored request. Readium exposes no request
+    /// identity that would exclude it.
+    static func fragmentsAccept(
+        expected: [String],
+        reported: [String],
+        requiresOwnAnchor: Bool = false
+    ) -> Bool {
         let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
+        let expectedAnchors = Set(expected.map(normalized))
         let reportedAnchors = Set(reported.map(normalized))
-        guard !reportedAnchors.isEmpty else { return true }
-        return !Set(expected.map(normalized)).isDisjoint(with: reportedAnchors)
+        guard !reportedAnchors.isEmpty else {
+            return !(requiresOwnAnchor && !expectedAnchors.isEmpty)
+        }
+        return !expectedAnchors.isDisjoint(with: reportedAnchors)
     }
 
     @discardableResult
