@@ -724,6 +724,7 @@ class Delivery:
         replay = int(
             self.git("rev-list", "--count", f"{TRUNK}..HEAD", stage="preflight")
         )
+        before = self.git("rev-parse", "HEAD", stage="preflight")
         done = self.runner(["git", "rebase", TRUNK], self.work)
         budget_only = False
         # Each budget-only step settles one lane commit, so ``replay`` bounds the loop.
@@ -742,7 +743,7 @@ class Delivery:
             )
         self.say(f"rebased onto {TRUNK} ({behind} commit(s))")
         if budget_only:
-            self.lift_budget()
+            self.lift_budget(before)
 
     def unmerged_paths(self) -> list[str]:
         return self.git(
@@ -767,29 +768,38 @@ class Delivery:
         action = "--skip" if staged.returncode == 0 else "--continue"
         return self.runner(["git", "rebase", action], self.work)
 
-    def lift_budget(self) -> None:
+    def lift_budget(self, before: str) -> None:
         """After a budget-only rebase, raise the ceilings the lane is over, in one named commit.
 
         Runs once the rebase has settled, not per step: a step measures only the commits replayed
-        so far, so a later commit's growth would slip past the ceiling set there.
+        so far, so a later commit's growth would slip past the ceiling set there.  The rebase and
+        its raise land together or not at all: any failure, Ctrl-C included, resets the lane to
+        ``before``, budget file included, so a rerun still sees it behind and redoes the step.
+        Otherwise a rebased lane whose raise was lost would look current and never be lifted.
         """
         try:
             raised = complexity.lift(self.work, TRUNK)
-        except (complexity.BudgetError, subprocess.CalledProcessError, OSError) as exc:
-            raise DeliverError(f"complexity budget lift failed: {exc}") from exc
-        if not raised:
-            return
-        lines = [
-            f"- {area}: {old:,} -> {new:,} (measured {now:,} + {complexity.LIFT_MARGIN})"
-            for area, (old, new, now) in raised.items()
-        ]
-        message = (
-            "chore(ops): raise complexity ceiling after rebase onto origin/main\n\n"
-            + "\n".join(lines)
-            + "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
-        )
-        self.git("add", "--", complexity.BUDGET_FILE, stage="budget commit")
-        self.git("commit", "-m", message, stage="budget commit")
+            if not raised:
+                return
+            lines = [
+                f"- {area}: {old:,} -> {new:,} (measured {now:,} + {complexity.LIFT_MARGIN})"
+                for area, (old, new, now) in raised.items()
+            ]
+            message = (
+                "chore(ops): raise complexity ceiling after rebase onto origin/main\n\n"
+                + "\n".join(lines)
+                + "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+            )
+            self.git("add", "--", complexity.BUDGET_FILE, stage="budget commit")
+            self.git("commit", "-m", message, stage="budget commit")
+        except BaseException as exc:
+            self.git("reset", "--hard", before, stage="budget rollback")
+            if not isinstance(exc, Exception):
+                raise
+            raise DeliverError(
+                f"complexity budget lift failed; the rebase was rolled back to "
+                f"{before[:12]} (rerun to retry): {exc}"
+            ) from exc
         self.say(f"budget: raised {', '.join(raised)} after rebase")
 
     def format_changed_python(self) -> None:
