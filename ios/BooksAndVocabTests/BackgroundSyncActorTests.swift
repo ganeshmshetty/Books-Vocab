@@ -808,6 +808,28 @@ struct BackgroundSyncActorTests {
         #expect(try BackgroundSyncActor.unsyncedEntryCount(in: context) == 0)
     }
 
+    // #2745: the logout gate decision. Zero unsynced rows must proceed with no
+    // prompt; any unsynced row or an unreadable count must require confirmation.
+    @Test func logoutGate_zeroPendingRowsProceedsDirectly() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let synced = VocabularyEntry(word: "synced", translation: "m", context: "ctx", bookTitle: "Book")
+        synced.markSynced()
+        context.insert(synced)
+        try context.save()
+
+        let count = try BackgroundSyncActor.unsyncedEntryCount(in: context)
+        #expect(SettingsLogoutGate.decide(unsyncedCount: count) == .proceed)
+    }
+
+    @Test func logoutGate_unsyncedRowsRequireConfirmation() {
+        #expect(SettingsLogoutGate.decide(unsyncedCount: 3) == .confirmUnsynced(3))
+    }
+
+    @Test func logoutGate_unreadableCountRequiresConfirmation() {
+        #expect(SettingsLogoutGate.decide(unsyncedCount: nil) == .confirmUnreadable)
+    }
+
     @Test func buildReviewEventsPushPayload_encodesLocalRecords() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
