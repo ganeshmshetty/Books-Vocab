@@ -137,11 +137,12 @@ struct ReaderTOCNavigationTests {
     }
 
     /// Two anchored TOC entries in one resource. The first jump was accepted and
-    /// then replaced before it settled. Its late anchorless callback names no
-    /// request, so it cannot be told apart from the replacement's own callback
-    /// and must not complete the replacement.
+    /// then replaced before it settled. Readium names no request and no anchor
+    /// in its idle callbacks, so the superseded jump's late anchorless report is
+    /// owed and is consumed first. The replacement's own anchorless report then
+    /// completes it; refusing it would time out every replaced anchored tap.
     @Test
-    func anchorlessCallbackOfAcceptedReplacedJumpCannotCompleteAnchoredReplacement() {
+    func supersededJumpAnchorlessReportIsConsumedBeforeAnchoredReplacementCompletes() {
         let replacedRequest = UUID()
         let replacementRequest = UUID()
         var gate = ReaderTOCNavigationRequestGate()
@@ -150,44 +151,181 @@ struct ReaderTOCNavigationTests {
         #expect(gate.markNavigationAccepted(replacedRequest))
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
         #expect(gate.markNavigationAccepted(replacementRequest))
+        #expect(gate.owedSupersededHrefs == ["OEBPS/chapter-1.xhtml"])
 
-        let lateAnchorless = gate.finish(
+        let supersededReport = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
             locatorFragments: []
         )
-        #expect(!lateAnchorless)
+        #expect(!supersededReport)
+        #expect(gate.owedSupersededHrefs.isEmpty)
         #expect(gate.isCurrent(replacementRequest))
 
-        let ownAnchor = gate.finish(
+        let ownArrival = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
-            locatorFragments: ["b"]
+            locatorFragments: []
         )
-        #expect(ownAnchor)
+        #expect(ownArrival)
         #expect(gate.activeRequestID == nil)
     }
 
     /// The replaced jump was never accepted, yet Readium may already have been
-    /// asked to perform it, so the replacement still requires its own anchor.
+    /// asked to perform it, so its report is still owed to the resource.
     @Test
-    func anchorlessCallbackCannotCompleteReplacementOfUnacceptedAnchoredRequest() {
+    func unacceptedSupersededJumpStillOwesItsAnchorlessReport() {
         let replacedRequest = UUID()
         let replacementRequest = UUID()
         var gate = ReaderTOCNavigationRequestGate()
 
         gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
-        #expect(gate.replacesUnsettledRequest)
+        #expect(gate.owedSupersededHrefs == ["OEBPS/chapter-1.xhtml"])
         #expect(gate.markNavigationAccepted(replacementRequest))
 
-        let lateAnchorless = gate.finish(
+        let supersededReport = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
             locatorFragments: []
         )
-        #expect(!lateAnchorless)
+        #expect(!supersededReport)
         #expect(gate.isCurrent(replacementRequest))
+
+        let ownArrival = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(ownArrival)
+    }
+
+    /// Readium may deliver the superseded jump's report before it accepts the
+    /// replacement. Acceptance follows the jump, so that early report is the
+    /// superseded jump's and is consumed without arming the replacement.
+    @Test
+    func supersededReportBeforeReplacementAcceptanceIsConsumed() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+
+        let earlyReport = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!earlyReport)
+        #expect(gate.owedSupersededHrefs.isEmpty)
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let ownArrival = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(ownArrival)
+    }
+
+    /// Every superseded live jump owes one report. A chain of replacements
+    /// therefore consumes one anchorless report per superseded jump.
+    @Test
+    func chainOfSupersededJumpsOwesOneReportEach() {
+        let firstRequest = UUID()
+        let secondRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(secondRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["c"])
+        #expect(gate.owedSupersededHrefs.count == 2)
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let firstOwed = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!firstOwed)
+        let secondOwed = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!secondOwed)
+        #expect(gate.owedSupersededHrefs.isEmpty)
+
+        let ownArrival = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(ownArrival)
+    }
+
+    /// A superseded jump in another resource owes its report to that resource
+    /// only. It must not delay an anchored replacement in this resource.
+    @Test
+    func supersededJumpInOtherResourceDoesNotDelayAnchoredReplacement() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-2.xhtml", expectedFragments: ["a"])
+        #expect(gate.markNavigationAccepted(replacedRequest))
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let finished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(finished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    /// Owed reports are scoped to one live request. Once the replacement
+    /// settles, a later anchored request in the same resource is not delayed
+    /// by reports of jumps that were superseded earlier.
+    @Test
+    func owedSupersededReportsAreClearedWhenReplacementSettles() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        let nextRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        // Readium never reports the superseded jump, so the replacement's own
+        // report is consumed as owed and only the next report completes it.
+        let consumedAsOwed = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!consumedAsOwed)
+        let completed = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(completed)
+        #expect(gate.owedSupersededHrefs.isEmpty)
+
+        gate.begin(nextRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["c"])
+        #expect(gate.markNavigationAccepted(nextRequest))
+        let nextFinished = gate.finish(
+            nextRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(nextFinished)
     }
 
     /// A resource-level replacement has no anchor to require, so its anchorless
@@ -219,7 +357,7 @@ struct ReaderTOCNavigationTests {
 
         gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
         gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
-        #expect(!gate.replacesUnsettledRequest)
+        #expect(gate.owedSupersededHrefs.isEmpty)
         #expect(gate.markNavigationAccepted(requestID))
 
         let finished = gate.finish(
