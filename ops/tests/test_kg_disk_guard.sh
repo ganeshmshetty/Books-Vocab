@@ -1080,11 +1080,15 @@ grep -q '"xctest_devices_verdict":"unavailable"' "$state" \
 grep -q '"lane_usage_rc":124' "$state" && ok "the killed tick still records rc 124" || bad_state "killed tick rc" "$state"
 
 echo "── shared XCTestDevices: a walk that only ran out of time is temporary, a real finding is not ──"
-fake_report_case() {  # $1=label $2=xctest_devices JSON object
-  local label="$1" xctest_json="$2"
+fake_report_case() {  # $1=label $2=xctest_devices JSON object $3=optional policy.blocking_reasons JSON array
+  local label="$1" xctest_json="$2" blocking_json="${3:-}" verdict="pass" policy_json=""
   root="$TMP/xctest-class-$label"; state="$root/guard.json"; lane_state="$root/lane-disk-usage.json"; fake_uv="$root/fake-uv"
   rm -rf "$root"; mkdir -p "$root"
-  printf '{\n  "schema": "kg.disk.lane-usage.v1",\n  "exclusions": {"supervision_worktree_paths": []},\n  "accounting": {"shared_platform_storage": {"xctest_devices": %s, "simulator_runtimes": {"exists": false, "status": "absent"}}},\n  "verdict": "pass"\n}\n' "$xctest_json" > "$root/report.json"
+  if [[ -n "$blocking_json" ]]; then
+    verdict="block"
+    policy_json="$(printf ',\n  "policy": {"verdict": "block", "blocking_reasons": %s}' "$blocking_json")"
+  fi
+  printf '{\n  "schema": "kg.disk.lane-usage.v1",\n  "exclusions": {"supervision_worktree_paths": []},\n  "accounting": {"shared_platform_storage": {"xctest_devices": %s, "simulator_runtimes": {"exists": false, "status": "absent"}}},\n  "verdict": "%s"%s\n}\n' "$xctest_json" "$verdict" "$policy_json" > "$root/report.json"
   cat >"$fake_uv" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -1131,6 +1135,21 @@ unset FAKE_UV_RC
 grep -q '"lane_usage_rc":124' "$state" && ok "the killed lane scan records rc 124" || bad_state "killed lane scan rc missing" "$state"
 grep -q '"reason":"xctest-devices-measurement-incomplete"' "$state" && grep -q '"action":"retry-next-tick"' "$state" \
   && ok "a kill keeps the measured time-limit reason, retryable" || bad_state "kill replaced the measured time-limit reason" "$state"
+# A kill does not hide a structural finding that the same fresh report names:
+# dirty/unknown/duplicate worktrees and manual-review findings clear only by a
+# human, so the time-limit must not downgrade them to retry-next-tick.
+export FAKE_UV_RC=124
+fake_report_case killed-report-structural-blocker '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}' '["dirty-physical-worktree","xctest-devices-measurement-incomplete"]'
+unset FAKE_UV_RC
+grep -q '"lane_usage_rc":124' "$state" && grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"action":"manual-review-lane-attribution"' "$state" \
+  && ok "a kill with a structural blocker in the same report stays structural manual review" || bad_state "kill with structural blocker was downgraded to the time-limit" "$state"
+# Positive control for the case above: when the report lists only the measured
+# time-limit, the same kill is still the temporary, retryable classification.
+export FAKE_UV_RC=124
+fake_report_case killed-report-time-limit-only '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}' '["xctest-devices-measurement-incomplete"]'
+unset FAKE_UV_RC
+grep -q '"reason":"xctest-devices-measurement-incomplete"' "$state" && grep -q '"action":"retry-next-tick"' "$state" \
+  && ok "a kill whose report lists only the time-limit stays temporary, retryable" || bad_state "time-limit-only kill lost its temporary classification" "$state"
 fake_report_case budget-exceeded '{"exists": true, "measurement_complete": true, "metadata_complete": true, "budget_exceeded": true, "measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "manual-review"}}'
 grep -q '"xctest_devices_manual_review":1' "$state" && ok "positive control: a real budget overrun is manual review" || bad_state "budget overrun lost manual review" "$state"
 fake_report_case unreadable '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["/x/dev: PermissionError"], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'
