@@ -70,6 +70,8 @@ struct ReviewFoldChevronPill: View {
 
     var body: some View {
         // 版面維持 48×30；可點區由 ReviewCardHitTargetButton 外擴到 44pt 見方（#3117）。
+        // 命中形狀刻意為矩形：44pt 高度只能靠上下各 7pt 外擴，pill 形命中區達不到 44pt；
+        // 寬度 44 < 48 pill 寬，橫向不侵入卡面。外擴的 7pt 帶位於 fold 接縫，由 UITest 鎖定幾何範圍。
         ReviewCardHitTargetButton(
             action: action,
             accessibilityIdentifier: "todayReview.fold.collapse",

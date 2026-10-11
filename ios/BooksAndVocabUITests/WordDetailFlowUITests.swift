@@ -27,10 +27,11 @@ final class WordDetailFlowUITests: UITestCase {
         executionTimeAllowance = 180
     }
 
-    /// #3117: the Word Detail knowledge-link "+" must expose a >= 44pt
-    /// accessibility frame. The glyph stays small; only the hit area grows.
+    /// #3117: the Word Detail knowledge-link "+" and the hero speaker must
+    /// expose >= 44pt accessibility frames. The glyphs stay small; only the
+    /// hit areas grow.
     @MainActor
-    func testWordDetailAddLinkExposesMinimumHitTarget() throws {
+    func testWordDetailHitTargetsExposeMinimumSize() throws {
         let app = launchIsolatedApp(fixtures: [.vocabulary("wordDetail")])
         let notebooks = AppPage(app: app).goToNotebooks()
 
@@ -71,6 +72,22 @@ final class WordDetailFlowUITests: UITestCase {
         XCTAssertGreaterThanOrEqual(
             addLink.frame.height, 44,
             "Word Detail add-link hit target 高度必須 >= 44pt，實際 \(addLink.frame.height)"
+        )
+
+        let heroSpeak = app.descendants(matching: .any)
+            .matching(identifier: "cardDocument.hero.speak").firstMatch
+        guard heroSpeak.waitUntilExists(timeout: 10) else {
+            captureStep("word-detail-hero-speak-missing", app: app)
+            XCTFail("Word Detail 必須有 hero 發音按鈕 cardDocument.hero.speak")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(
+            heroSpeak.frame.width, 44,
+            "hero speaker hit target 寬度必須 >= 44pt，實際 \(heroSpeak.frame.width)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            heroSpeak.frame.height, 44,
+            "hero speaker hit target 高度必須 >= 44pt，實際 \(heroSpeak.frame.height)"
         )
     }
 

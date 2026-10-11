@@ -150,10 +150,13 @@ final class TodayReviewGapUITests: UITestCase {
         )
     }
 
-    /// #3117: the hero speaker and the fold chevron must expose >= 44pt
-    /// accessibility frames. The visuals stay small; only the hit area grows.
+    /// #3117: the fold chevron must expose a >= 44pt accessibility frame. The
+    /// visual stays 48×30; the hit area grows only vertically (7pt per side),
+    /// never wider than the pill, so it cannot steal horizontal card taps.
+    /// The hero speaker lives on the word detail document, covered in
+    /// WordDetailFlowUITests (review backs no longer mount CardDocumentView).
     @MainActor
-    func testHeroSpeakerAndFoldChevronExposeMinimumHitTarget() throws {
+    func testFoldChevronExposesMinimumHitTarget() throws {
         let app = launchIsolatedApp(
             fixtures: [.notebookReviewDeckVaried],
             perfLog: "review"
@@ -181,8 +184,18 @@ final class TodayReviewGapUITests: UITestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         captureStep("hit-target-back", app: app)
 
-        assertMinimumHitTarget(review.heroSpeakButton, name: "hero speaker")
         assertMinimumHitTarget(review.foldCollapseButton, name: "fold chevron")
+        // Bound the hit band: it may extend vertically past the 30pt visual,
+        // but must never exceed the 48pt pill width (no sideways card intrusion).
+        let fold = review.foldCollapseButton.frame
+        XCTAssertLessThanOrEqual(
+            fold.width, 48,
+            "fold chevron hit 寬度不得超過 48pt pill，實際 \(fold.width)"
+        )
+        XCTAssertLessThanOrEqual(
+            fold.height, 44,
+            "fold chevron hit 高度應只向上下各外擴 7pt（<=44），實際 \(fold.height)"
+        )
     }
 
     @MainActor
