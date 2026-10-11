@@ -175,37 +175,38 @@ final class SharedDeckCopyController {
     }
 }
 
-/// 以 deckId 為鍵的 controller 註冊表（#2748）。`SharedDeckDetailView` 的 `@State`
+/// 以 (帳號 owner, deckId) 為鍵的 controller 註冊表（#2748）。`SharedDeckDetailView` 的 `@State`
 /// 在 pop 時被丟棄，但 `performCopy` 的 unstructured `Task` 仍在跑、idempotencyKey 也
-/// 需跨 reopen 保留；有進行中／失敗意圖的 controller 因此由行程級註冊表持有，view 只借用。
-/// 只有複製真的開始（`track`）才登記，故單純瀏覽 deck 不會累積條目；上一個已成功
-/// （意圖達成）的條目在查詢時剔除。條目以帳號 owner 隔離：只有同帳號的 inflight／failure
-/// 原樣回傳，其餘一律給新的未登記 controller，故登出後換帳號不會看見前一個帳號的失敗卡；
-/// 前一帳號的條目保留，該帳號再登入時仍接得回自己的意圖與 key。
+/// 需跨 reopen 保留；有進行中／失敗／已成功意圖的 controller 因此由行程級註冊表持有，view 只借用。
+/// 只有複製真的開始（`track`）才登記，故單純瀏覽 deck 不會累積條目。成功條目**保留**：複製在
+/// pop 期間完成時，reopen 必須接回 success 態，否則會給新的 idle controller 再複製出第二本。
+/// 條目以帳號 owner 隔離：登出後換帳號不會看見前一個帳號的失敗卡，且兩帳號對同一 deck 的
+/// 登記互不覆寫；前一帳號的條目保留，該帳號再登入時仍接得回自己的意圖、key 與成功態。
 @MainActor
 final class SharedDeckCopyRegistry {
     static let shared = SharedDeckCopyRegistry()
 
-    private var controllers: [String: SharedDeckCopyController] = [:]
+    private struct Key: Hashable {
+        let owner: String?
+        let deckId: String
+    }
 
-    /// 已登記（複製已開始且尚未成功）的 deck 數；供測試斷言不累積。
+    private var controllers: [Key: SharedDeckCopyController] = [:]
+
+    /// 已登記（複製已開始）的 (帳號, deck) 數；供測試斷言不累積。
     var trackedDeckCount: Int { controllers.count }
 
-    /// 同帳號且未成功的已登記 controller 原樣回傳；否則給一個**尚未登記**的新 controller。
+    /// 同帳號已登記的 controller 原樣回傳；否則給一個**尚未登記**的新 controller。
     func controller(for deckId: String, owner: String?) -> SharedDeckCopyController {
-        if let existing = controllers[deckId] {
-            if existing.isSucceeded {
-                controllers[deckId] = nil
-            } else if existing.owner == owner {
-                return existing
-            }
+        if let existing = controllers[Key(owner: owner, deckId: deckId)] {
+            return existing
         }
         return SharedDeckCopyController(owner: owner)
     }
 
-    /// 複製開始時登記，讓 pop/reopen 的 view 接回同一 controller。
+    /// 複製開始時登記（以 controller 自身的 owner 定位），讓 pop/reopen 的 view 接回同一 controller。
     func track(_ controller: SharedDeckCopyController, for deckId: String) {
-        controllers[deckId] = controller
+        controllers[Key(owner: controller.owner, deckId: deckId)] = controller
     }
 
     func removeAll() {

@@ -260,15 +260,31 @@ struct SharedDeckCopyControllerTests {
         await task.value
     }
 
-    @Test func registry_hands_out_fresh_controller_after_success() async {
+    /// 複製在 pop 期間成功：reopen 必須接回 success 態（顯示成功卡、無複製鈕），
+    /// 不得給新的 idle controller，否則可再複製出第二本 notebook（#2748 原始重現路徑）。
+    @Test func registry_keeps_success_entry_so_reopen_does_not_copy_again() async {
         let registry = SharedDeckCopyRegistry()
         let c1 = registry.controller(for: "d1", owner: "A")
         registry.track(c1, for: "d1")
         await c1.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response())]))
         let c2 = registry.controller(for: "d1", owner: "A")
-        #expect(c2 !== c1)
-        #expect(c2.state == .idle)
-        #expect(registry.trackedDeckCount == 0, "succeeded entries are pruned on lookup")
+        #expect(c2 === c1, "reopen after success must reuse the success state")
+        #expect(c2.isSucceeded)
+        #expect(registry.trackedDeckCount == 1)
+    }
+
+    /// 同一 deck、兩個帳號各自複製：B 的登記不得覆寫 A 的條目（key = owner + deckId）。
+    @Test func registry_keeps_each_accounts_entry_for_the_same_deck() async {
+        let registry = SharedDeckCopyRegistry()
+        let a = registry.controller(for: "d1", owner: "A")
+        registry.track(a, for: "d1")
+        await a.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+        let b = registry.controller(for: "d1", owner: "B")
+        registry.track(b, for: "d1")
+        await b.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+        #expect(registry.controller(for: "d1", owner: "A") === a, "A's entry survives B's tracking of the same deck")
+        #expect(registry.controller(for: "d1", owner: "B") === b)
+        #expect(registry.trackedDeckCount == 2)
     }
 
     @Test func registry_does_not_retain_controllers_that_never_started_a_copy() {
