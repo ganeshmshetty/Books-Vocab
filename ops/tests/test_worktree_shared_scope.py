@@ -133,7 +133,28 @@ def test_allowlist_is_exact_existing_canonical_paths() -> None:
         "ops/complexity_budget.json",
         "ops/test_ops.sh",
         "ops/tests/test_ops_ci_coverage.sh",
+        *LOCALIZABLE_CATALOGS,
     }
+
+
+LOCALIZABLE_CATALOGS = (
+    "ios/BooksAndVocab/en.lproj/Localizable.strings",
+    "ios/BooksAndVocab/ja.lproj/Localizable.strings",
+    "ios/BooksAndVocab/ko.lproj/Localizable.strings",
+    "ios/BooksAndVocab/zh-Hans.lproj/Localizable.strings",
+    "ios/BooksAndVocab/zh-Hant.lproj/Localizable.strings",
+)
+
+
+def test_localizable_catalogs_are_shared_and_other_ios_files_stay_exclusive() -> None:
+    for catalog in LOCALIZABLE_CATALOGS:
+        assert catalog in SHARED_SCOPE_FILES, catalog
+        # Two lanes that only touch catalogs do not collide ...
+        assert worktree_scope.overlap_paths({catalog, "ops/a.py"}, {catalog}) == set()
+    # ... but a real overlap on any other iOS file still does.
+    other = "ios/BooksAndVocab/Views/Home.swift"
+    assert other not in SHARED_SCOPE_FILES
+    assert worktree_scope.overlap_paths({other}, {other}) == {other}
 
 
 def test_overlap_paths_subtracts_only_exact_allowlisted_files() -> None:
