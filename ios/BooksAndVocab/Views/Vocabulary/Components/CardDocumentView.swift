@@ -111,10 +111,15 @@ struct CardDocumentHeroBlock: View {
                     }
 
                     HStack(spacing: appSkin.spacing.heroBaselineGap) {
-                        Button {
-                            speechService.speak(hero.word)
-                            speakTrigger.toggle()
-                        } label: {
+                        // 版面維持 36pt；可點區由 ReviewCardHitTargetButton 外擴到 44pt（#3117）。
+                        ReviewCardHitTargetButton(
+                            action: {
+                                speechService.speak(hero.word)
+                                speakTrigger.toggle()
+                            },
+                            accessibilityIdentifier: "cardDocument.hero.speak",
+                            accessibilityLabel: L10n.format("vocab.card.speak", hero.word)
+                        ) {
                             Image(systemName: "speaker.wave.2.fill")
                                 .font(appSkin.typography.iconSmall)
                                 .foregroundStyle(appSkin.palette.secondaryText)
@@ -122,8 +127,6 @@ struct CardDocumentHeroBlock: View {
                                 .frame(width: 36, height: 36)
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(L10n.format("vocab.card.speak", hero.word))
                     }
                 }
 

@@ -150,6 +150,90 @@ final class TodayReviewGapUITests: UITestCase {
         )
     }
 
+    /// #3117: the fold chevron must expose a >= 44pt accessibility frame. The
+    /// visual stays 48×30; the hit area grows only vertically (7pt per side),
+    /// never wider than the pill. The band stays inside the 28pt face padding
+    /// (ReviewFoldChevronHitBandTests pins that geometry), and the front flip is
+    /// disabled whenever the band is live, so the band never competes with a flip.
+    /// The hero speaker lives on the word detail document, covered in
+    /// WordDetailFlowUITests (review backs no longer mount CardDocumentView).
+    @MainActor
+    func testFoldChevronExposesMinimumHitTarget() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeckVaried],
+            perfLog: "review"
+        )
+        let notebook = AppPage(app: app).goToNotebooks()
+        guard notebook.notebookCard(id: Self.notebookCardID).waitUntilExists(timeout: 10) else {
+            captureStep("hit-target-no-notebook-card", app: app)
+            XCTFail("varied review deck fixture 應種出單字本卡片 \(Self.notebookCardID)")
+            return
+        }
+        guard notebook.reviewCTAButton.waitUntilExists(timeout: 10) else {
+            captureStep("hit-target-no-review-cta", app: app)
+            XCTFail("varied deck 有未學卡片，複習 CTA 必須出現")
+            return
+        }
+        let review = notebook.startReview()
+        guard review.progressLabel.waitUntilExists(timeout: 10) else {
+            captureStep("hit-target-review-not-started", app: app)
+            XCTFail("tap CTA 後必須進入複習 session；progress label 缺席")
+            return
+        }
+        _ = review.cardFront.waitUntilExists(timeout: 8)
+        _ = review.flipCard()
+        _ = review.cardBack.waitUntilExists(timeout: 5)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        captureStep("hit-target-back", app: app)
+
+        assertMinimumHitTarget(review.foldCollapseButton, name: "fold chevron")
+        // Bound the hit band: it may extend vertically past the 30pt visual,
+        // but must never exceed the 48pt pill width (no sideways card intrusion).
+        let fold = review.foldCollapseButton.frame
+        XCTAssertLessThanOrEqual(
+            fold.width, 48,
+            "fold chevron hit 寬度不得超過 48pt pill，實際 \(fold.width)"
+        )
+        XCTAssertLessThanOrEqual(
+            fold.height, 44,
+            "fold chevron hit 高度應只向上下各外擴 7pt（<=44），實際 \(fold.height)"
+        )
+        // A tap inside the enlarged band but above the 48×30 visual (4pt below the
+        // frame top sits ~18pt above the seam) is the chevron's own target and must
+        // collapse the answer.
+        review.foldCollapseButton
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 4.0 / 44.0))
+            .tap()
+        XCTAssertTrue(
+            review.cardBack.waitUntilGone(timeout: 5),
+            "點在命中帶上緣（pill 外、44pt 框內）必須收合答案"
+        )
+    }
+
+    @MainActor
+    private func assertMinimumHitTarget(
+        _ element: XCUIElement,
+        name: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard element.waitForExistence(timeout: 5) else {
+            XCTFail("\(name) 必須存在於複習畫面", file: file, line: line)
+            return
+        }
+        let frame = element.frame
+        XCTAssertGreaterThanOrEqual(
+            frame.width, 44,
+            "\(name) hit target 寬度必須 >= 44pt，實際 \(frame.width)",
+            file: file, line: line
+        )
+        XCTAssertGreaterThanOrEqual(
+            frame.height, 44,
+            "\(name) hit target 高度必須 >= 44pt，實際 \(frame.height)",
+            file: file, line: line
+        )
+    }
+
     /// Regression for the reported screenshot: after a reveal/advance cycle,
     /// the outer review column can be recomputed at intrinsic content height.
     /// The card and grading toolbar then move upward together, leaving a large

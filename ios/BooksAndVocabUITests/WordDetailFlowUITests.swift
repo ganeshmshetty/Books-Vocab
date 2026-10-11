@@ -27,6 +27,70 @@ final class WordDetailFlowUITests: UITestCase {
         executionTimeAllowance = 180
     }
 
+    /// #3117: the Word Detail knowledge-link "+" and the hero speaker must
+    /// expose >= 44pt accessibility frames. The glyphs stay small; only the
+    /// hit areas grow.
+    @MainActor
+    func testWordDetailHitTargetsExposeMinimumSize() throws {
+        let app = launchIsolatedApp(fixtures: [.vocabulary("wordDetail")])
+        let notebooks = AppPage(app: app).goToNotebooks()
+
+        guard notebooks.waitForNotebookCard(id: Fixture.notebookID, timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize its notebook")
+            return
+        }
+        notebooks.notebookCard(id: Fixture.notebookID).tapWhenReady()
+        XCTAssertTrue(app.waitForNavigationToSettle())
+
+        let vocabulary = VocabularySearchPage(app: app)
+        guard vocabulary.searchField.waitUntilExists(timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize the vocabulary search field")
+            return
+        }
+        vocabulary.search(Fixture.word)
+        guard vocabulary.waitForRowMaterialized(word: Fixture.word, timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize the target word row")
+            return
+        }
+        vocabulary.row(word: Fixture.word).tapWhenReady()
+        guard vocabulary.detailHeroWord.waitUntilExists(timeout: 10) else {
+            XCTFail("Selecting the target word must open Word Detail")
+            return
+        }
+
+        let addLink = app.descendants(matching: .any)
+            .matching(identifier: "wordDetail.card.addLink").firstMatch
+        guard addLink.waitUntilExists(timeout: 10) else {
+            captureStep("word-detail-add-link-missing", app: app)
+            XCTFail("Word Detail 必須有知識連結新增入口 wordDetail.card.addLink")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(
+            addLink.frame.width, 44,
+            "Word Detail add-link hit target 寬度必須 >= 44pt，實際 \(addLink.frame.width)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            addLink.frame.height, 44,
+            "Word Detail add-link hit target 高度必須 >= 44pt，實際 \(addLink.frame.height)"
+        )
+
+        let heroSpeak = app.descendants(matching: .any)
+            .matching(identifier: "cardDocument.hero.speak").firstMatch
+        guard heroSpeak.waitUntilExists(timeout: 10) else {
+            captureStep("word-detail-hero-speak-missing", app: app)
+            XCTFail("Word Detail 必須有 hero 發音按鈕 cardDocument.hero.speak")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(
+            heroSpeak.frame.width, 44,
+            "hero speaker hit target 寬度必須 >= 44pt，實際 \(heroSpeak.frame.width)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            heroSpeak.frame.height, 44,
+            "hero speaker hit target 高度必須 >= 44pt，實際 \(heroSpeak.frame.height)"
+        )
+    }
+
     @MainActor
     func testWordDetailHierarchyUsesStableSelectors() throws {
         let app = launchIsolatedApp(fixtures: [.vocabulary("wordDetail")])

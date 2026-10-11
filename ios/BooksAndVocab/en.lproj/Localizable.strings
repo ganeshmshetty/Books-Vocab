@@ -961,6 +961,7 @@
 "podcast.followToggle.follow" = "Follow";
 "podcast.followToggle.unfollow" = "Unfollow";
 "vocab.chromeIcon.collocation.dismiss" = "Close collocation explanation";
+"vocab.chromeIcon.collocation.delete" = "Delete collocation explanation";
 
 // MARK: - Podcast Sleep Timer (track-11)
 "podcast.sleepTimer.fired.toast" = "Sleep timer ended — playback paused";

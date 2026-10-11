@@ -21,6 +21,11 @@ struct CollocationExplainSheet: View {
         case error(String)
     }
 
+    /// 垃圾桶的 VoiceOver 名稱（#3117）。未指定時 VoiceOver 會唸 SF symbol 名 "trash"。
+    static var deleteAccessibilityLabel: String {
+        L10n.string("vocab.chromeIcon.collocation.delete")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: AppSpacing.s3) {
             Text(collocation)
@@ -84,6 +89,7 @@ struct CollocationExplainSheet: View {
                 VocabChromeIconButton(
                     systemImage: "trash",
                     tone: appSkin.palette.destructive,
+                    label: Self.deleteAccessibilityLabel,
                     action: {
                         onDelete()
                         dismiss()

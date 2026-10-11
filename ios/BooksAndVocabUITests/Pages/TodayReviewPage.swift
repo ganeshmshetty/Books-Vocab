@@ -296,6 +296,11 @@ struct TodayReviewPage {
 
     // MARK: - Toolbar
 
+    /// Fold collapse chevron on the reveal surface (#3117 hit target).
+    var foldCollapseButton: XCUIElement {
+        element("todayReview.fold.collapse")
+    }
+
     /// Previous / next chevrons (hidden while autoplay runs).
     var previousButton: XCUIElement {
         element("todayReview.nav.previous")

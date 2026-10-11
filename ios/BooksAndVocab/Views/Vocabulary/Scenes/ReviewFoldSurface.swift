@@ -60,6 +60,23 @@ struct ReviewFoldSurface<Content: View>: View {
     }
 }
 
+// MARK: - Fold Tap Targets (mutually exclusive)
+
+/// 摺頁卡兩個點擊目標的存活條件（#3117）。
+///
+/// 正面「點一下翻轉」只在還沒露出答案時可點；摺頁 chevron 與其 44pt 命中帶只在露出答案時可點。
+/// `ReviewCardView` 的 guard 與 `allowsHitTesting` 共用這兩個 predicate，
+/// `ReviewFoldChevronHitBandTests` 釘住兩者在任何狀態都不會同時為真。
+enum ReviewFoldTapTargets {
+    static func flipEnabled(showsAnswer: Bool, interactive: Bool) -> Bool {
+        !showsAnswer && interactive
+    }
+
+    static func chevronEnabled(showsAnswer: Bool) -> Bool {
+        showsAnswer
+    }
+}
+
 // MARK: - Fold Chevron Pill (centered collapse handle)
 
 struct ReviewFoldChevronPill: View {
@@ -69,7 +86,16 @@ struct ReviewFoldChevronPill: View {
     let accessibilityLabel: String
 
     var body: some View {
-        Button(action: action) {
+        // 版面維持 48×30 pill；可點區由 ReviewCardHitTargetButton 外擴為 48×44 矩形（#3117）。
+        // 矩形而非 pill：pill 形命中區達不到 44pt 高度。寬度即 pill 的 48pt，橫向不外擴。
+        // 上下各超出 pill 7pt，半高 22 < ReviewCardChrome.padding（28），命中帶只落在正反面的
+        // 空白 padding 內，碰不到任何內容；命中帶與正面翻轉的存活條件互斥，見 ReviewFoldTapTargets。
+        ReviewCardHitTargetButton(
+            minimumSide: TodayReviewMetrics.chevronHitTarget,
+            action: action,
+            accessibilityIdentifier: "todayReview.fold.collapse",
+            accessibilityLabel: accessibilityLabel
+        ) {
             Image(systemName: "chevron.up")
                 .font(appSkin.typography.iconTiny.weight(.semibold))
                 .foregroundStyle(appSkin.palette.tertiaryText.opacity(0.78))
@@ -84,9 +110,6 @@ struct ReviewFoldChevronPill: View {
                 )
                 .frame(width: 48, height: TodayReviewMetrics.chevronButtonSize)
         }
-        .buttonStyle(.plain)
-        .contentShape(AppRoundedRect(roundness: AppRoundness.pill))
-        .accessibilityLabel(accessibilityLabel)
         .enableInjection()
     }
 }

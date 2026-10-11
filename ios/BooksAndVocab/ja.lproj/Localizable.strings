@@ -942,6 +942,7 @@
 "podcast.followToggle.follow" = "フォロー";
 "podcast.followToggle.unfollow" = "フォロー解除";
 "vocab.chromeIcon.collocation.dismiss" = "コロケーション説明を閉じる";
+"vocab.chromeIcon.collocation.delete" = "コロケーション説明を削除";
 
 // MARK: - Podcast Sleep Timer (track-11)
 "podcast.sleepTimer.fired.toast" = "スリープタイマーが終了し、再生を一時停止しました";
