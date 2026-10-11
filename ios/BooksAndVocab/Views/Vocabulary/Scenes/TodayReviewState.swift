@@ -208,7 +208,7 @@ final class TodayReviewState {
         // hit) → infinite re-eval loop. Hits are served read-only; the
         // prewarm-covered, near-impossible miss builds an ephemeral card without
         // writing the observed cache (self-heals on the next prewarmCardWindow()).
-        cardCache.cached(for: entry) ?? TodayReviewCardCache.buildOne(entry)
+        cardCache.cached(for: entry) ?? TodayReviewCardCache.buildOne(entry, peers: linkedEntryLookup)
     }
 
     // MARK: - Actions
@@ -218,7 +218,8 @@ final class TodayReviewState {
     }
 
     func navigateToLinkedCard(link: KGCardLinkSummary) {
-        guard let target = linkedEntryLookup[link.cardId] else { return }
+        guard let target = linkedEntryLookup[link.cardId],
+              !target.isArchived, target.syncAction != .delete else { return }
         tappedLink = nil
         linkedCardStack.pushLinkedCard(target)
     }
@@ -270,7 +271,16 @@ final class TodayReviewState {
     }
 
     func rebuildCacheForEntry(_ entry: VocabularyEntry) {
-        cardCache.rebuild(for: entry)
+        cardCache.rebuild(for: entry, peers: linkedEntryLookup)
+    }
+
+    /// A peer was archived, restored or queued for delete while the session is open
+    /// (e.g. in the linked-card overlay). Chips are dropped at build time, so every
+    /// prepared card is rebuilt from the peers' current state (#2535). Called when the
+    /// overlay stack changes; the peer objects are live, only their cached chips are stale.
+    func refreshPeerDependentCards() {
+        cardCache.invalidateAll()
+        prewarmCardWindow()
     }
 
     /// The card's link set changed (pending link created/failed/resolved, or AddLink
@@ -278,7 +288,7 @@ final class TodayReviewState {
     /// `TodayReviewCardCache.refreshLinks`). Use `rebuildCacheForEntry` only when the
     /// card content itself changed.
     func refreshLinksForEntry(_ entry: VocabularyEntry, pendingLinks: [KGCardLinkSummary]? = nil) {
-        cardCache.refreshLinks(for: entry, pendingLinks: pendingLinks)
+        cardCache.refreshLinks(for: entry, pendingLinks: pendingLinks, peers: linkedEntryLookup)
     }
 
     func handleDetailTap() {
@@ -690,7 +700,8 @@ final class TodayReviewState {
         cardCache.prewarm(
             queue: queue,
             currentIndex: currentIndex,
-            lookaheadLimit: Self.cacheLookaheadLimit
+            lookaheadLimit: Self.cacheLookaheadLimit,
+            peers: linkedEntryLookup
         )
     }
 

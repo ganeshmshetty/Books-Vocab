@@ -88,6 +88,11 @@ struct TodayReviewCardCache {
         Set(groups.flatMap { group in group.items.map { group.id + "/" + $0.id } })
     }
 
+    /// Drops every prepared card so the next `prewarm` rebuilds them from current peer state.
+    mutating func invalidateAll() {
+        storage.removeAll(keepingCapacity: false)
+    }
+
     mutating func prewarm(
         queue: [VocabularyEntry],
         currentIndex: Int,

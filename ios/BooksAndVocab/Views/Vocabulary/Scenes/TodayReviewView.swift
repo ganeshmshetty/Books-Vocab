@@ -259,6 +259,10 @@ struct TodayReviewView: View {
         .overlay {
             LinkedCardOverlayStack(stack: $state.linkedCardStack, allEntries: allEntries)
         }
+        // Peers may be archived or restored inside the overlay; rebuild chips when it closes (#2535).
+        .onChange(of: state.linkedCardStack.count) { _, _ in
+            state.refreshPeerDependentCards()
+        }
         .toastSheet(item: $state.tappedLink) { link in
             LinkReasonSheet(
                 link: link,
