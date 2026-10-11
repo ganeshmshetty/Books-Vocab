@@ -1,15 +1,24 @@
 """GitHub budget governor for the delivery control plane.
 
-Budget state comes from ``gh api rate_limit``: it reports the same core/graphql
+Budget state comes from ``gh api rate_limit``. It reports the same core/graphql
 counters as the X-RateLimit headers, is not counted against the budget, and works
 for every gh subcommand (``gh pr view`` and friends are GraphQL-backed and emit no
-headers). The probe is refreshed at most once per ``PROBE_TTL_SECONDS``; local
-decrements keep the estimate honest between probes.
+headers). This is a deliberate deviation from reading X-RateLimit headers: those
+headers are unavailable from GraphQL-backed gh subcommands. The probe is refreshed
+at most once per ``PROBE_TTL_SECONDS``, and one probe per process is an uncounted
+extra call per refresh; local decrements keep the estimate honest between probes.
 
 Below ``STALE_SERVE_BELOW`` remaining, an already-fetched read-only result is served
-from this process's cache instead of the network. Below ``WAIT_BELOW`` the governor
-sleeps until the bottleneck resource resets (bounded by ``MAX_RESET_WAITS``). Every
-governed call, including probes, appends one NDJSON spend-log line under a lock.
+from this process's cache instead of the network, but only while that entry is
+younger than ``STALE_CACHE_TTL_SECONDS``. Accepted staleness window: up to
+``STALE_CACHE_TTL_SECONDS`` for any read served from cache. Pushes, external merges
+and state changes made by other processes, and git mutations made outside this
+governor's gh calls, are not observed within that window. Any gh mutation seen by
+this governor clears the cache. Below ``WAIT_BELOW`` the governor sleeps until the
+bottleneck resource resets (bounded by ``MAX_RESET_WAITS``), then fails closed with
+``GitHubQuotaExhausted``. Every governed call, including probes, appends one NDJSON
+spend-log line under a lock; a spend-log write failure fails open (the call proceeds
+and its row is lost).
 """
 
 from __future__ import annotations
@@ -24,8 +33,10 @@ from pathlib import Path
 from typing import Literal
 
 from ..ports.process import CommandResult, CommandRunnerPort
+from .errors import AdapterError
 
 STALE_SERVE_BELOW = 800
+STALE_CACHE_TTL_SECONDS = 300.0
 WAIT_BELOW = 50
 PROBE_TTL_SECONDS = 60.0
 MAX_RESET_WAITS = 3
@@ -35,7 +46,7 @@ _BUDGET_RESOURCES = ("core", "graphql")
 Outcome = Literal["probe", "network", "stale-cache", "waited"]
 
 
-class GitHubQuotaExhausted(RuntimeError):
+class GitHubQuotaExhausted(AdapterError):
     """Raised when the budget stays below WAIT_BELOW after bounded reset waits."""
 
 
@@ -72,7 +83,7 @@ class GitHubQuotaGovernor:
         self._sleep = sleep
         self._budget: BudgetState | None = None
         self._probed_at: float | None = None
-        self._read_cache: dict[tuple[str, ...], CommandResult] = {}
+        self._read_cache: dict[tuple[str, ...], tuple[CommandResult, float]] = {}
 
     def call(
         self,
@@ -86,15 +97,22 @@ class GitHubQuotaGovernor:
         if self._budget is not None and self._budget.remaining < WAIT_BELOW:
             self._wait_for_reset(argv)
         budget = self._budget
-        if read_only and budget is not None and budget.remaining < STALE_SERVE_BELOW and argv in self._read_cache:
+        cached = self._read_cache.get(argv)
+        if (
+            read_only
+            and budget is not None
+            and budget.remaining < STALE_SERVE_BELOW
+            and cached is not None
+            and self._clock() - cached[1] < STALE_CACHE_TTL_SECONDS
+        ):
             self._record(argv, budget.remaining, "stale-cache", 0)
-            return self._read_cache[argv], False
+            return cached[0], False
         remaining = None if budget is None else budget.remaining
         result = execute()
         if not read_only:
             self._read_cache.clear()
         elif result.exit_code == 0:
-            self._read_cache[argv] = result
+            self._read_cache[argv] = (result, self._clock())
         if self._budget is not None:
             self._budget = replace(self._budget, remaining=max(0, self._budget.remaining - 1))
         self._record(argv, remaining, "network", result.exit_code)
@@ -146,11 +164,15 @@ class GitHubQuotaGovernor:
         if wait_seconds is not None:
             row["wait_seconds"] = round(wait_seconds, 1)
         line = json.dumps(row, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        self._spend_log.parent.mkdir(parents=True, exist_ok=True)
-        with self._spend_log.open("a", encoding="utf-8") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-            try:
-                stream.write(line + "\n")
-                stream.flush()
-            finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        try:
+            self._spend_log.parent.mkdir(parents=True, exist_ok=True)
+            with self._spend_log.open("a", encoding="utf-8") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+                try:
+                    stream.write(line + "\n")
+                    stream.flush()
+                finally:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # Observability must not block delivery: a spend-log write failure fails open.
+            return
