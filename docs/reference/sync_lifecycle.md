@@ -163,6 +163,13 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 - Settings coordinator 在 account boundary 取消持有中的 resync task、遞增 generation/request token 並重置暫態進度；已進入底層同步的舊 round 即使完成，也不得更新新帳號的 UI、SwiftData save 或 terminal state。
 - DEBUG UI World 的同步 transport evidence 以 session token 隔離；帳號切換後舊 transport 的晚到事件不得寫入新 session 的證據。
 
+## 複習進度覆寫（review-state push `override`）
+
+- `ReviewStateEntry.override = true`（`POST` review-state push）是進度重設指令：`review_count` / `lapse_count` 原樣寫入、`next_review_at` 取 client 值（now），**不受** `last_reviewed_at` 新舊影響，server 較新時仍套用（#2042）。
+- 非 override 仍走 LWW：server 較新只取 counts 的 max；覆寫不取 max，否則 reset 無法落地。
+- 同批次同卡多筆合併時，較新的 override 保留其 counts，不與較舊的一般 entry 取 max。
+- 覆寫不改 `last_reviewed_at`（歷史不改寫），`override` 不會被持久化或由 pull 回傳。
+
 ## 複習事件上傳水位（review-event push watermark）
 
 複習事件（`ReviewRecord` → `PATCH /api/vocab/review-events`）是 **append-only 帳本**，不進上述 `syncStatus × actionType` 狀態機；它自己的收斂條件是**水位**而非狀態轉移。

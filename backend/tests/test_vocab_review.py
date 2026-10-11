@@ -106,6 +106,7 @@ def _entry(
     review_interval_hours: float = 24.0,
     next_review_at: str | None = None,
     last_review_feedback: int = 1,
+    override: bool = False,
 ) -> ReviewStateEntry:
     return ReviewStateEntry(
         word=word,
@@ -117,6 +118,7 @@ def _entry(
         lapse_count=lapse_count,
         review_streak=review_streak,
         last_review_feedback=last_review_feedback,
+        override=override,
     )
 
 
@@ -430,6 +432,78 @@ class TestPushReviewStatesFakes:
         result = push_review_states([entry], cards_store=store, logger=logging.getLogger())
         assert result == {"updated": 0, "skipped": 1}
         assert store.batch_update_calls == []  # nothing flushed
+
+    def test_override_resets_counts_when_server_newer(self):
+        """Progress override must persist a reset even though the server copy is newer."""
+        server_time = datetime.now(UTC)
+        client_time = server_time - timedelta(hours=1)
+        c1 = _ReviewCard(
+            id="c1",
+            content="cat",
+            last_reviewed_at=server_time,
+            review_count=10,
+            lapse_count=3,
+        )
+        store = _FakeCardsStore([c1])
+        reset_at = datetime.now(UTC)
+        entry = _entry(
+            word="cat",
+            last_reviewed_at=_iso(client_time),
+            review_count=0,
+            lapse_count=0,
+            next_review_at=_iso(reset_at),
+            override=True,
+        )
+
+        result = push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert result == {"updated": 1, "skipped": 0}
+        assert c1.review_count == 0
+        assert c1.lapse_count == 0
+        assert abs(c1.next_review_at - reset_at) < timedelta(seconds=5)
+        assert c1.last_reviewed_at == server_time  # history is not rewritten
+
+    def test_override_resets_counts_when_client_newer(self):
+        """Override is exact on the client-newer branch too; max() would undo the reset."""
+        server_time = datetime.now(UTC) - timedelta(hours=2)
+        c1 = _ReviewCard(id="c1", content="cat", last_reviewed_at=server_time, review_count=10, lapse_count=3)
+        store = _FakeCardsStore([c1])
+        entry = _entry(
+            word="cat",
+            last_reviewed_at=_iso(datetime.now(UTC)),
+            review_count=0,
+            lapse_count=0,
+            override=True,
+        )
+
+        result = push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert result == {"updated": 1, "skipped": 0}
+        assert c1.review_count == 0
+        assert c1.lapse_count == 0
+
+    def test_override_newest_entry_wins_over_older_regular_counts(self):
+        """Coalescing: a newer override keeps its zero counts instead of max() with older entries."""
+        base = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+        store = _FakeCardsStore([_ReviewCard(id="c1", content="review")])
+        older_regular = _entry(
+            word="review",
+            last_reviewed_at=_iso(base),
+            review_count=7,
+            lapse_count=2,
+        )
+        newer_override = _entry(
+            word="review",
+            last_reviewed_at=_iso(base + timedelta(hours=1)),
+            review_count=0,
+            lapse_count=0,
+            override=True,
+        )
+
+        push_review_states([older_regular, newer_override], cards_store=store, logger=logging.getLogger())
+
+        assert store._cards[0].review_count == 0
+        assert store._cards[0].lapse_count == 0
 
     def test_single_batch_update_call_for_many_entries(self):
         """N entries must collapse into ONE batch_update call (write-path perf)."""

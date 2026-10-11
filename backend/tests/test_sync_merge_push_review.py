@@ -385,3 +385,30 @@ class TestPushReviewCrossKeyAndStaged:
         )
         assert by_id == {"updated": 0, "skipped": 1}
         assert store.get(staged.id).review_count == 0
+
+
+class TestPushReviewStatesOverrideRoundTrip:
+    def test_override_reset_survives_reopen_on_server_newer_card(self, tmp_path):
+        """#2042: an override pushed against a newer server card persists across a store reopen."""
+        store = _make_store(tmp_path)
+        card = store.add("progress", "進度")
+        server_time = _now()
+        store.update(card.id, last_reviewed_at=server_time, review_count=9, lapse_count=4)
+
+        reset_at = _now()
+        entry = _entry(
+            "progress",
+            _iso(server_time - timedelta(hours=1)),
+            card_id=card.id,
+            review_count=0,
+            lapse_count=0,
+            next_review_at=_iso(reset_at),
+        ).model_copy(update={"override": True})
+
+        result = push_review_states([entry], cards_store=store, logger=logging.getLogger())
+        assert result == {"updated": 1, "skipped": 0}
+
+        reopened = _make_store(tmp_path).get(card.id)
+        assert reopened.review_count == 0
+        assert reopened.lapse_count == 0
+        assert abs(reopened.next_review_at - reset_at.replace(tzinfo=None)) < timedelta(seconds=5)

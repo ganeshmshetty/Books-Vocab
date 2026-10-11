@@ -46,6 +46,8 @@ def _merge_card_review_state(
 
     Returns ``None`` when nothing changed (caller counts it as skipped). Policy:
 
+    - ``entry.override`` → counts are written exactly and ``next_review_at``
+      is taken from the client, on either branch (progress reset, #2042).
     - server newer-or-equal → only raise ``review_count`` / ``lapse_count`` to
       the client max (counts are monotonic and conflict-free).
     - client newer → accept the full client schedule.
@@ -54,6 +56,14 @@ def _merge_card_review_state(
     multiple entries in the same batch sees its already-bumped counts.
     """
     server_last = parse_datetime(card.last_reviewed_at)
+    if entry.override and server_last and server_last >= client_last:
+        patch: dict[str, Any] = dict(review_count=entry.review_count, lapse_count=entry.lapse_count)
+        override_next = _clamp_next_review(parse_datetime(entry.next_review_at))
+        if override_next is not None:
+            patch["next_review_at"] = override_next
+        for name, value in patch.items():
+            setattr(card, name, value)
+        return patch
     if server_last and server_last >= client_last:
         changed = False
         if entry.review_count > card.review_count:
@@ -92,15 +102,18 @@ def _merge_card_review_state(
         review_interval_hours=entry.review_interval_hours,
         next_review_at=client_next,
         last_reviewed_at=client_last,
-        review_count=max(entry.review_count, card.review_count),
-        lapse_count=max(entry.lapse_count, card.lapse_count),
+        review_count=entry.review_count if entry.override else max(entry.review_count, card.review_count),
+        lapse_count=entry.lapse_count if entry.override else max(entry.lapse_count, card.lapse_count),
         review_streak=entry.review_streak,
         last_review_feedback=entry.last_review_feedback,
     )
 
 
 def _coalesce_entries(existing: ReviewStateEntry, entry: ReviewStateEntry) -> ReviewStateEntry:
-    """Combine two entries for one logical card: newest schedule, max counts."""
+    """Combine two entries for one logical card: newest schedule, max counts.
+
+    A newest ``override`` entry keeps its exact counts: max() would undo the reset.
+    """
     entry_last = _clamp_last_reviewed(parse_datetime(entry.last_reviewed_at))
     existing_last = _clamp_last_reviewed(parse_datetime(existing.last_reviewed_at))
     if entry_last is None:
@@ -108,6 +121,8 @@ def _coalesce_entries(existing: ReviewStateEntry, entry: ReviewStateEntry) -> Re
     if existing_last is None:
         return entry
     newest = entry if entry_last >= existing_last else existing
+    if newest.override:
+        return newest
     return newest.model_copy(
         update={
             "review_count": max(entry.review_count, existing.review_count),
