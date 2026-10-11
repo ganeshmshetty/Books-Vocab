@@ -27,6 +27,8 @@ struct PDFProgressRecorder {
     var now: () -> Date = Date.init
 
     func pageChanged(pageIndex: Int, pageCount: Int) {
+        // 空文件沒有可記錄的位置；guard 放在可測試的 recorder 而非 Coordinator。
+        guard pageCount > 0 else { return }
         let book = book
         let date = now()
         saver.recordChange(apply: {
@@ -421,9 +423,6 @@ private struct PDFKitRepresentable: UIViewRepresentable {
                   let pageIndex = document.index(for: currentPage) as Int?
             else { return }
 
-            let pageCount = document.pageCount
-            guard pageCount > 0 else { return }
-
             let book = book
             let modelContext = modelContext
             PDFProgressRecorder(
@@ -434,7 +433,7 @@ private struct PDFKitRepresentable: UIViewRepresentable {
                         BookManifestStore().writeBestEffort(book: book)
                     }
                 }
-            ).pageChanged(pageIndex: pageIndex, pageCount: pageCount)
+            ).pageChanged(pageIndex: pageIndex, pageCount: document.pageCount)
         }
 
         // MARK: - Selection → Vocabulary
