@@ -135,6 +135,12 @@ extension TodayReviewPresenter {
                 bleed: TodayReviewDeckHeight.clipBleed(isActive: isActive, pinned: slotHeight != nil)
             ))
             .geometryGroup()
+            // #2026 r7：展開中 active 的自然高度（＝背面總高）變動時追蹤進 latch，非 active cap 跟上，
+            // 背面縮短不留 H-H' 縫。只量 active：展開時其 slotHeight 為 nil → 量到的是自然高度，不受 cap 回授。
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                guard isActive else { return }
+                trackRevealedBackHeight(h)
+            }
             #if DEBUG
             // gap 調查（slot 整體）：量整個 slot VStack 的 layout 高度（transform 前）。
             // 非 active slot 的 h 明顯 > active = 撐高 reviewCard ZStack、把 expand

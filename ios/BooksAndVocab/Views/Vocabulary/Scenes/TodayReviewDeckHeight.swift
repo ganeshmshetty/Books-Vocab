@@ -64,15 +64,25 @@ enum TodayReviewDeckHeight {
     /// 「過渡中」= 動畫進行中（`inFlight`）**或** 模型值尚未追上目標
     /// （|shell − target| > ε，亦即剛翻 role、onChange 還沒啟動動畫的那一幀）。
     /// 後者保證 role 翻面當幀新 active 取的就是舊高度 → 零跳變。
+    ///
+    /// `settledBack`（展開離場）：展開卡的自然高度是背面總高，但 `target` 是正面高度、`shell`
+    /// 停在正面。若預覽卡 cap 仍是正面高度，翻面當幀新 active 釘住背面高度時，其 frame 會由
+    /// 正面值動畫到背面值，動畫第一幀卡片區即從背面高度硬切。故展開中（同一張卡仍 settle 展開，
+    /// 由 `RevealLatch.survives` 決定）非 active cap 直接取背面總高，翻面前後 ZStack 高度一致。
+    /// 展開中背面總高若變動（縮短／增長），cap 跟的是 `RevealLatch.tracking` 追蹤後的值，不是 settle 當下的快照。
     static func slotHeight(
         isActive: Bool,
         shell: CGFloat,
         target: CGFloat,
         inFlight: Bool,
-        revealed: Bool
+        revealed: Bool,
+        settledBack: CGFloat? = nil
     ) -> CGFloat? {
         let resolved = resolvedShell(shell: shell, target: target)
-        guard isActive else { return target > 0 ? min(resolved, target) : resolved }
+        guard isActive else {
+            if let settledBack, settledBack > 0 { return settledBack }
+            return target > 0 ? min(resolved, target) : resolved
+        }
         if revealed || shell <= 0 { return nil }
         let transitioning = inFlight || abs(shell - target) > epsilon
         return transitioning ? resolved : nil
@@ -105,6 +115,17 @@ enum TodayReviewDeckHeight {
         /// 只在「同一張卡仍展開」時保留；收合（同卡、已 front）或離場被消化後丟棄。
         func survives(currentCardKey: String, revealed: Bool) -> Bool {
             cardKey == currentCardKey && revealed
+        }
+
+        /// 展開中背面自然高度的追蹤（#2026 r7）：settle 後背面仍可能變高或變矮（「+N」展開知識連結、
+        /// 背面量測補齊）。同一張卡仍展開、且新量測與記下的值差 > ε 才回傳新 latch，否則 nil（不寫）。
+        /// 只追蹤不離開展開態；收合 / 換卡 / 無效量測一律 nil，交給既有的收合與接手規則。
+        func tracking(measured: CGFloat, currentCardKey: String, revealed: Bool) -> RevealLatch? {
+            guard survives(currentCardKey: currentCardKey, revealed: revealed),
+                  let next = RevealLatch(cardKey: cardKey, measured: measured),
+                  abs(next.height - height) > TodayReviewDeckHeight.epsilon
+            else { return nil }
+            return next
         }
     }
 
