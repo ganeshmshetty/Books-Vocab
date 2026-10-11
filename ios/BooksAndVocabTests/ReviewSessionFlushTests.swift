@@ -138,11 +138,12 @@ struct ReviewSessionFlushTests {
     /// snapshot, because that answer exists only there until a flush confirms it. Clearing
     /// unconditionally here would silently lose the answer on dismiss.
     @Test func completedSessionWithUnflushedAnswerKeepsSnapshot() throws {
-        TodayReviewSessionSnapshotStore.clear(for: Self.userID)
-        defer { TodayReviewSessionSnapshotStore.clear(for: Self.userID) }
+        let userID = "flush-finalize-unflushed-user"
+        TodayReviewSessionSnapshotStore.clear(for: userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: userID) }
         let entries = makeEntries(2)
         let (container, _) = try makeContainer(entries)
-        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: Self.userID)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: userID)
         state.submit(.remembered, container: container, reviewSettings: .default)
         state.submit(.forgot, container: container, reviewSettings: .default)
         #expect(state.currentEntry == nil)
@@ -150,6 +151,6 @@ struct ReviewSessionFlushTests {
 
         state.finalizeSnapshotAfterFlush(completed: true)
 
-        #expect(TodayReviewSessionSnapshotStore.load(for: Self.userID) != nil)
+        #expect(TodayReviewSessionSnapshotStore.load(for: userID) != nil)
     }
 }
