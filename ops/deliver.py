@@ -779,7 +779,7 @@ class Delivery:
         Runs once the rebase has settled, not per step: a step measures only the commits replayed
         so far, so a later commit's growth would slip past the ceiling set there.  The rebase and
         its raise land together or not at all: any failure, Ctrl-C included, resets the lane to
-        ``before``, budget file included, so a rerun still sees it behind and redoes the step.
+        ``before``, budget fragment included, so a rerun still sees it behind and redoes the step.
         Otherwise a rebased lane whose raise was lost would look current and never be lifted.
         """
         try:
@@ -795,10 +795,15 @@ class Delivery:
                 + "\n".join(lines)
                 + "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
             )
-            self.git("add", "--", complexity.BUDGET_FILE, stage="budget commit")
+            # The rebase has settled on a clean tree, so this stages only the fragment lift just wrote.
+            self.git("add", "--", complexity.FRAGMENT_DIR, stage="budget commit")
             self.git("commit", "-m", message, stage="budget commit")
         except BaseException as exc:
             self.git("reset", "--hard", before, stage="budget rollback")
+            # reset leaves untracked files alone: the fragment lift wrote is one, so clear that path too.
+            self.git(
+                "clean", "-fd", "--", complexity.FRAGMENT_DIR, stage="budget rollback"
+            )
             if not isinstance(exc, Exception):
                 raise
             raise DeliverError(
