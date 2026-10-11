@@ -88,6 +88,7 @@ LANE_USAGE_KILLED_RC=124
 LANE_USAGE_RC=0
 LANE_USAGE_VERDICT="unavailable"
 LANE_USAGE_EXCLUSIONS_JSON='[]'
+LANE_USAGE_STRUCTURAL_BLOCKERS=0
 XCTEST_DEVICES_KB=0
 XCTEST_DEVICES_OVERFLOW_KB=0
 XCTEST_DEVICES_COUNT=0
@@ -478,6 +479,17 @@ write_lane_usage() {
     )"
   else
     LANE_USAGE_EXCLUSIONS_JSON='[]'
+  fi
+  # Structural findings in the current report: worktree problems and manual-review
+  # causes, the same families kg_ios_disk_structural_lane_reason (lib/ios_disk_budget.sh)
+  # treats as needing a human.  Counted from policy.blocking_reasons; an unreadable
+  # current report counts as one, so the time-limit cannot mask it (fail closed).
+  LANE_USAGE_STRUCTURAL_BLOCKERS=0
+  if (( report_is_current == 1 )) && command -v jq >/dev/null 2>&1; then
+    LANE_USAGE_STRUCTURAL_BLOCKERS="$(
+      jq -r '[(.policy.blocking_reasons // [])[] | select(test("^(dirty|unknown|duplicate)-|^(physical-identity-mismatch|registry-records-invalid|supervision-path-registered)$|-manual-review-required$"))] | length' \
+        "$LANE_USAGE_STATE" 2>/dev/null || printf '1'
+    )"
   fi
   LANE_USAGE_RC="$rc"
   LANE_USAGE_VERDICT="$observed"
@@ -911,7 +923,11 @@ main() {
     # deliberately stays lane-usage-report-blocked / manual-review, fail-closed: a
     # scan that dies without writing a report is a persistent hang, and
     # retry-next-tick would hide it.
-    if (( LANE_USAGE_RC == LANE_USAGE_KILLED_RC )) && [[ "$reason" == "xctest-devices-measurement-incomplete" ]]; then
+    # A current report that also names a structural blocker (dirty, unknown or
+    # duplicate worktree, identity mismatch, manual-review finding) outranks the
+    # time-limit: it is already a complete finding that waiting cannot clear.
+    if (( LANE_USAGE_RC == LANE_USAGE_KILLED_RC )) && [[ "$reason" == "xctest-devices-measurement-incomplete" ]] \
+      && (( LANE_USAGE_STRUCTURAL_BLOCKERS == 0 )); then
       :
     else
       verdict="block"
