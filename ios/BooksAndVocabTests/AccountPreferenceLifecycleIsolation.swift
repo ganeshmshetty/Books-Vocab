@@ -85,3 +85,155 @@ struct AccountPreferenceLifecycleIsolationTests {
         return results
     }
 }
+
+/// #2556: delete_account purges every account-namespaced preference from
+/// UserDefaults and the iCloud KVS, but keeps the legacy-migration markers so a
+/// later account cannot re-adopt the pre-account raw values.
+struct AccountPreferenceNamespacePurgeTests {
+    private final class PurgeCloudSpy: CloudKeyValueStore {
+        var values: [String: String] = [:]
+
+        func double(forKey key: String) -> Double? { nil }
+        func set(_ value: Double, forKey key: String) {}
+        func string(forKey key: String) -> String? { values[key] }
+        func set(_ value: String, forKey key: String) { values[key] = value }
+        func removeObject(forKey key: String) { values[key] = nil }
+        func allKeys() -> [String] { Array(values.keys) }
+    }
+
+    private func makeDefaults() -> UserDefaults {
+        let suite = "test.account-namespace-purge.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    @Test func deleteAccountPurgesNamespacedKeysInBothLayersAndKeepsMarkersAndLegacyKeys() {
+        let defaults = makeDefaults()
+        let cloud = PurgeCloudSpy()
+        let namespaced = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout")
+        defaults.set("compact", forKey: namespaced)
+        defaults.set(true, forKey: marker)
+        defaults.set("legacy", forKey: "review_settings_mode")
+        cloud.set("cloud-a", forKey: namespaced)
+        cloud.set("cloud-legacy", forKey: "review_settings_mode")
+
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
+
+        #expect(defaults.object(forKey: namespaced) == nil)
+        #expect(cloud.string(forKey: namespaced) == nil)
+        #expect(defaults.bool(forKey: marker))
+        #expect(defaults.string(forKey: "review_settings_mode") == "legacy")
+        #expect(cloud.string(forKey: "review_settings_mode") == "cloud-legacy")
+    }
+
+    /// A retried delete (or a second purge of the same account) must be a no-op: the deleted
+    /// namespace stays gone and the other account's namespace is untouched on a populated device.
+    @Test func purgeIsIdempotentAndLeavesOtherAccountsIntact() {
+        let defaults = makeDefaults()
+        let cloud = PurgeCloudSpy()
+        let deletedKey = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let keptKey = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-b")
+        defaults.set("deleted", forKey: deletedKey)
+        cloud.set("deleted", forKey: deletedKey)
+        defaults.set("kept", forKey: keptKey)
+        cloud.set("kept", forKey: keptKey)
+
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
+        let defaultsCountAfterFirstPurge = defaults.dictionaryRepresentation().count
+        let cloudCountAfterFirstPurge = cloud.values.count
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-a", defaults: defaults, cloud: cloud)
+
+        #expect(defaults.object(forKey: deletedKey) == nil)
+        #expect(cloud.string(forKey: deletedKey) == nil)
+        #expect(defaults.string(forKey: keptKey) == "kept")
+        #expect(cloud.string(forKey: keptKey) == "kept")
+        #expect(defaults.dictionaryRepresentation().count == defaultsCountAfterFirstPurge)
+        #expect(cloud.values.count == cloudCountAfterFirstPurge)
+    }
+
+    /// #2434: deleting account B must not erase account A's preferences on the
+    /// same device (local defaults and iCloud KVS).
+    @Test func deleteAccountLeavesOtherAccountsNamespacedPreferencesIntact() {
+        let defaults = makeDefaults()
+        let cloud = PurgeCloudSpy()
+        let keyA = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let keyB = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-b")
+        defaults.set("compact", forKey: keyA)
+        defaults.set("standard", forKey: keyB)
+        cloud.set("cloud-a", forKey: keyA)
+        cloud.set("cloud-b", forKey: keyB)
+
+        AccountPreferenceNamespace.purgeNamespacedPreferences(accountID: "account-b", defaults: defaults, cloud: cloud)
+
+        #expect(defaults.object(forKey: keyB) == nil)
+        #expect(cloud.string(forKey: keyB) == nil)
+        #expect(defaults.string(forKey: keyA) == "compact")
+        #expect(cloud.string(forKey: keyA) == "cloud-a")
+    }
+}
+
+/// #2434: the logout / delete_account cleanup must reach the account-preference purge
+/// through `LocalDataCleanerService.purgeAccountPreferences`, which takes injected stores
+/// so the test never touches the shared singletons or the real Documents tree.
+struct LocalDataCleanerAccountPreferenceTests {
+    private final class CleanerCloudSpy: CloudKeyValueStore {
+        var values: [String: String] = [:]
+
+        func double(forKey key: String) -> Double? { nil }
+        func set(_ value: Double, forKey key: String) {}
+        func string(forKey key: String) -> String? { values[key] }
+        func set(_ value: String, forKey key: String) { values[key] = value }
+        func removeObject(forKey key: String) { values[key] = nil }
+        func allKeys() -> [String] { Array(values.keys) }
+    }
+
+    private func makeDefaults() -> UserDefaults {
+        let suite = "test.local-data-cleaner.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    @Test func deleteAccountPurgesOnlyTheDeletedAccountNamespace() {
+        let defaults = makeDefaults()
+        let cloud = CleanerCloudSpy()
+        let keyA = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-a")
+        let keyB = AccountPreferenceNamespace.key("review_settings_mode", accountID: "account-b")
+        defaults.set("compact", forKey: keyA)
+        defaults.set("standard", forKey: keyB)
+        cloud.set("cloud-b", forKey: keyB)
+
+        LocalDataCleanerService.purgeAccountPreferences(
+            deletedAccountID: "account-b", defaults: defaults, cloud: cloud
+        )
+
+        #expect(defaults.object(forKey: keyB) == nil)
+        #expect(cloud.string(forKey: keyB) == nil)
+        #expect(defaults.string(forKey: keyA) == "compact")
+    }
+
+    /// Sign-out (no deleted account) drops only the adopted local raw layout; the KVS raw
+    /// key and the namespaced layout survive.
+    @Test func signOutPurgeDropsAdoptedRawLocalCopyOnly() {
+        let defaults = makeDefaults()
+        let cloud = CleanerCloudSpy()
+        let rawKey = ReviewCardLayoutStore.storageKey
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout")
+        let namespaced = AccountPreferenceNamespace.key(rawKey, accountID: "account-a")
+        defaults.set("raw", forKey: rawKey)
+        defaults.set(true, forKey: marker)
+        defaults.set("own", forKey: namespaced)
+        cloud.set("raw-cloud", forKey: rawKey)
+
+        LocalDataCleanerService.purgeAccountPreferences(
+            deletedAccountID: nil, defaults: defaults, cloud: cloud
+        )
+
+        #expect(defaults.object(forKey: rawKey) == nil)
+        #expect(cloud.string(forKey: rawKey) == "raw-cloud")
+        #expect(defaults.string(forKey: namespaced) == "own")
+        #expect(defaults.bool(forKey: marker))
+    }
+}

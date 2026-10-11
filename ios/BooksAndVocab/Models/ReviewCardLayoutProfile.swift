@@ -244,6 +244,9 @@ final class ReviewCardLayoutStore {
         accountID: String? = nil
     ) {
         let normalizedAccountID = AccountPreferenceNamespace.normalizedAccountID(accountID)
+        // Launch-time backfill for a device that adopted before the KVS marker existed, so it is
+        // published even when the store starts logged out (#2434).
+        AccountPreferenceNamespace.publishLocalAdoptionToCloud(feature: Self.legacyFeature, defaults: defaults, cloud: cloud)
         if let normalizedAccountID {
             Self.migrateLegacyPreferences(defaults: defaults, cloud: cloud, accountID: normalizedAccountID)
         }
@@ -342,6 +345,36 @@ final class ReviewCardLayoutStore {
         resolvedUpdatedAt = nil
     }
 
+    /// Sign-out / delete cleanup for the pre-account raw layout (#2434). Only the
+    /// local copy that this device has adopted is dropped; until the local marker
+    /// exists the raw key is the sole local copy of the pre-account layout.
+    /// The iCloud KVS raw key is deliberately left alone: removing it would
+    /// propagate to every device on the same Apple ID, including devices that
+    /// have not adopted the layout yet (cross-device data loss).
+    static func purgeAdoptedLegacyRawLayout(defaults: UserDefaults) {
+        guard AccountPreferenceNamespace.isLegacyMigrated(feature: legacyFeature, defaults: defaults, cloud: nil) else {
+            return
+        }
+        defaults.removeObject(forKey: Self.storageKey)
+    }
+
+    private static let legacyFeature = "review-card-layout"
+
+    /// Adoption is recorded in UserDefaults and in iCloud KVS, so one device's
+    /// adoption also stops every other device on the same Apple ID from adopting
+    /// the kept KVS raw key into a later account (#2434).
+    private static func isLegacyRawAdopted(defaults: UserDefaults, cloud: CloudKeyValueStore?) -> Bool {
+        AccountPreferenceNamespace.isLegacyMigrated(feature: legacyFeature, defaults: defaults, cloud: cloud)
+    }
+
+    /// A logged-out (raw-key) store must not read the iCloud raw key back once an
+    /// account has adopted it: sign-out purged the local copy and the KVS copy is
+    /// kept on purpose, so reading it would resurrect the purged layout (#2434).
+    private var ignoresLegacyRawCloud: Bool {
+        guard accountID == nil, let defaults, let cloud else { return false }
+        return Self.isLegacyRawAdopted(defaults: defaults, cloud: cloud)
+    }
+
     private var storageKey: String { Self.namespacedKey(accountID: accountID) }
 
     private static func namespacedKey(accountID: String?) -> String {
@@ -349,9 +382,10 @@ final class ReviewCardLayoutStore {
     }
 
     private static func readResolved(defaults: UserDefaults, cloud: CloudKeyValueStore, key: String) -> Envelope? {
-        resolve(
+        let readsCloud = key != Self.storageKey || !isLegacyRawAdopted(defaults: defaults, cloud: cloud)
+        return resolve(
             local: decodeEnvelope(defaults.string(forKey: key)),
-            cloud: decodeEnvelope(cloud.string(forKey: key))
+            cloud: readsCloud ? decodeEnvelope(cloud.string(forKey: key)) : nil
         )
     }
 
@@ -359,7 +393,8 @@ final class ReviewCardLayoutStore {
         AccountPreferenceNamespace.migrateLegacyIfNeeded(
             accountID: accountID,
             defaults: defaults,
-            feature: "review-card-layout"
+            cloud: cloud,
+            feature: legacyFeature
         ) {
             AccountPreferenceNamespace.copyLegacyObject(storageKey, defaults: defaults, accountID: accountID)
             AccountPreferenceNamespace.copyLegacyCloudString(storageKey, cloud: cloud, accountID: accountID)
@@ -379,6 +414,7 @@ final class ReviewCardLayoutStore {
 
     private func handleCloudChange(_ notification: Notification) {
         guard !isAccountBoundarySuspended,
+              !ignoresLegacyRawCloud,
               let keys = notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String],
               keys.contains(storageKey),
               let remote = Self.decodeEnvelope(cloud?.string(forKey: storageKey))

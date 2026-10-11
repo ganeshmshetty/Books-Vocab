@@ -501,6 +501,7 @@ struct ReviewCardLayoutStoreTests {
 private final class ReviewCardLayoutCloudSpy: CloudKeyValueStore {
     var values: [String: String] = [:]
     var setCalls: [String] = []
+    var removedKeys: [String] = []
 
     func double(forKey key: String) -> Double? { nil }
     func set(_ value: Double, forKey key: String) {}
@@ -509,6 +510,11 @@ private final class ReviewCardLayoutCloudSpy: CloudKeyValueStore {
         values[key] = value
         setCalls.append(key)
     }
+    func removeObject(forKey key: String) {
+        values[key] = nil
+        removedKeys.append(key)
+    }
+    func allKeys() -> [String] { Array(values.keys) }
 }
 
 @MainActor
@@ -591,6 +597,155 @@ struct ReviewCardLayoutStoreAccountScopeTests {
         #expect(store.profile == custom)
         store.activateAccount("account-b")
         #expect(store.profile == .default)
+    }
+
+    /// #2434: sign-out drops the adopted pre-account raw layout from local
+    /// UserDefaults only. The iCloud KVS raw key is shared by every device on the
+    /// same Apple ID, and a device that has not adopted it yet still needs it, so
+    /// the cleanup must not propagate a removal. The account's own namespaced
+    /// layout survives so re-login still restores it.
+    @Test func signOutCleanupRemovesAdoptedRawLayoutLocallyAndKeepsKVS() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(defaults, cloud).update(custom)
+
+        let store = makeStore(defaults, cloud)
+        store.activateAccount("account-a")
+        #expect(store.profile == custom)
+        #expect(defaults.string(forKey: rawKey) != nil)
+        #expect(cloud.values[rawKey] != nil)
+
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+
+        #expect(defaults.string(forKey: rawKey) == nil)
+        #expect(cloud.values[rawKey] != nil)
+        #expect(cloud.removedKeys.isEmpty)
+
+        store.activateAccount("account-a")
+        #expect(store.profile == custom)
+    }
+
+    /// Until legacy migration has adopted the raw layout, it is the only copy
+    /// of the pre-account data and must survive a cleanup.
+    @Test func signOutCleanupKeepsUnadoptedRawLayout() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        makeStore(defaults, cloud).update(ReviewCardLayoutProfile(recognition: .compact, production: .standard))
+
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+
+        #expect(defaults.string(forKey: rawKey) != nil)
+        #expect(cloud.values[rawKey] != nil)
+        #expect(cloud.removedKeys.isEmpty)
+    }
+
+    /// #2434 (review P2): sign-out purges the adopted local raw copy, but the KVS raw key is
+    /// kept on purpose. A logged-out store must not re-adopt it from KVS, or the purged
+    /// account's layout comes back after logout.
+    @Test func loggedOutStoreDoesNotReadAdoptedKVSRawLayoutAfterSignOutCleanup() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(defaults, cloud).update(custom)
+        let adopting = makeStore(defaults, cloud)
+        adopting.activateAccount("account-a")
+        #expect(adopting.profile == custom)
+
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+        #expect(cloud.values[rawKey] != nil)
+
+        let loggedOut = makeStore(defaults, cloud)
+        #expect(loggedOut.profile == .default)
+        adopting.activateAccount(nil)
+        #expect(adopting.profile == .default)
+    }
+
+    /// Same boundary on the live path: a raw-key KVS change after adoption must not
+    /// apply to a logged-out store.
+    @Test func loggedOutStoreIgnoresExternalRawKVSChangeAfterAdoption() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let center = NotificationCenter()
+        makeStore(defaults, cloud).update(ReviewCardLayoutProfile(recognition: .standard, production: .compact))
+        let adopting = makeStore(defaults, cloud)
+        adopting.activateAccount("account-a")
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: defaults)
+
+        let loggedOut = ReviewCardLayoutStore(
+            defaults: defaults,
+            cloud: cloud,
+            notificationCenter: center,
+            cloudNotificationObject: nil
+        )
+        // A writer on another device updates the shared raw KVS key.
+        makeStore(makeDefaults(), cloud).update(ReviewCardLayoutProfile(recognition: .compact, production: .compact))
+        center.post(
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: nil,
+            userInfo: [NSUbiquitousKeyValueStoreChangedKeysKey: [rawKey]]
+        )
+        #expect(loggedOut.profile == .default)
+    }
+
+    /// Positive control: a device that has never adopted the raw layout still reads it
+    /// from KVS while logged out (the pre-account data is the only copy there).
+    @Test func unadoptedDeviceLoggedOutStillReadsKVSRawLayout() {
+        let defaults = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .compact, production: .standard)
+        makeStore(makeDefaults(), cloud).update(custom)
+
+        let store = makeStore(defaults, cloud)
+        #expect(store.profile == custom)
+    }
+
+    /// #2434 (review P2): legacy adoption is per Apple ID, not per device. Device X adopts the
+    /// raw layout for account A, then sign-out drops its local copy while the KVS raw key stays
+    /// on purpose. Device Y has never adopted, so its local flag is absent, but it must not copy
+    /// that KVS raw key into account B (the cross-device form of the same re-adoption).
+    @Test func unadoptedDeviceDoesNotReAdoptKVSRawLayoutAdoptedElsewhere() {
+        let deviceX = makeDefaults()
+        let deviceY = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(deviceX, cloud).update(custom)
+        let adopting = makeStore(deviceX, cloud)
+        adopting.activateAccount("account-a")
+        #expect(adopting.profile == custom)
+        ReviewCardLayoutStore.purgeAdoptedLegacyRawLayout(defaults: deviceX)
+        #expect(cloud.values[rawKey] != nil)
+
+        let accountBOnY = makeStore(deviceY, cloud)
+        accountBOnY.activateAccount("account-b")
+        #expect(accountBOnY.profile == .default)
+
+        let loggedOutOnY = makeStore(deviceY, cloud)
+        #expect(loggedOutOnY.profile == .default)
+    }
+
+    /// #2434 (review P2): a device that adopted under the pre-marker build holds only the local
+    /// marker. Its next launch must publish the iCloud marker, otherwise a never-adopted device on
+    /// the same Apple ID still re-adopts the kept KVS raw key into account B. A never-adopted device
+    /// publishes nothing (positive control).
+    @Test func preMarkerAdopterPublishesKVSMarkerSoUnadoptedDeviceDoesNotReAdopt() {
+        let deviceX = makeDefaults()
+        let deviceY = makeDefaults()
+        let cloud = ReviewCardLayoutCloudSpy()
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-card-layout")
+        let custom = ReviewCardLayoutProfile(recognition: .standard, production: .compact)
+        makeStore(makeDefaults(), cloud).update(custom)
+        deviceX.set(true, forKey: marker)
+
+        _ = makeStore(makeDefaults(), cloud)
+        #expect(cloud.values[marker] == nil)
+
+        _ = makeStore(deviceX, cloud)
+        #expect(cloud.values[marker] != nil)
+
+        let accountBOnY = makeStore(deviceY, cloud)
+        accountBOnY.activateAccount("account-b")
+        #expect(accountBOnY.profile == .default)
     }
 
     @Test func coordinatorForwardsToSharedLayoutStore() {

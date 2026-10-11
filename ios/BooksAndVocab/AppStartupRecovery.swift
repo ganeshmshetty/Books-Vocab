@@ -74,7 +74,8 @@ extension BooksAndVocabApp {
                 // migration crash 的殘留狀態。雲端資料不受影響（remote 仍保留，登入後會 re-sync）。
                 await localDataCleaner.clearLocalData(
                     container: modelContainer,
-                    reason: "startup-recovery"
+                    reason: "startup-recovery",
+                    deletedAccountID: nil
                 )
                 // 額外清除 store 檔案以便下一次 retry 走「全新建立」路徑。
                 let storeFilesRemoved = AppBootstrap.purgeStoreFiles()

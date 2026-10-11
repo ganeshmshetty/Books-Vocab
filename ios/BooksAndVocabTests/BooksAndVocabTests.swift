@@ -476,7 +476,7 @@ struct BooksAndVocabTests {
             for: VocabularyEntry.self, ReviewRecord.self, Notebook.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         )
-        await LocalDataCleanerService().clearLocalData(container: container, reason: "user_logout")
+        await LocalDataCleanerService().clearLocalData(container: container, reason: "user_logout", deletedAccountID: nil)
 
         // No stale today-review session may survive logout.
         #expect(TodayReviewSessionSnapshotStore.load(for: "user-A") == nil)

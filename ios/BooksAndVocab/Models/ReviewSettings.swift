@@ -153,6 +153,8 @@ protocol CloudKeyValueStore {
     func set(_ value: Double, forKey key: String)
     func string(forKey key: String) -> String?
     func set(_ value: String, forKey key: String)
+    func removeObject(forKey key: String)
+    func allKeys() -> [String]
 }
 
 extension CloudPreferencesSync: CloudKeyValueStore {}
@@ -222,27 +224,76 @@ enum AccountPreferenceNamespace {
 
     static func key(_ key: String, accountID: String?) -> String {
         guard let normalizedAccountID = normalizedAccountID(accountID) else { return key }
+        return "\(accountPrefix(normalizedAccountID))\(key)"
+    }
+
+    private static func accountPrefix(_ normalizedAccountID: String) -> String {
         let digest = SHA256.hash(data: Data(normalizedAccountID.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return "\(prefix)\(digest).\(key)"
+        return "\(prefix)\(digest)."
+    }
+
+    static func legacyMigrationMarker(feature: String) -> String {
+        "\(prefix)legacy-migration.\(feature).v1"
+    }
+
+    /// delete_account 專用：僅移除「被刪除帳號」在本機與 iCloud KVS 內的命名空間偏好
+    /// （`kg.account.<digest>.*`）。其他帳號在同裝置上的偏好保持不動。
+    /// legacy-migration marker 不屬於任何帳號 digest，故天然保留，避免之後的帳號重新領養
+    /// pre-account raw 值。
+    static func purgeNamespacedPreferences(
+        accountID: String,
+        defaults: UserDefaults,
+        cloud: CloudKeyValueStore
+    ) {
+        guard let normalizedAccountID = normalizedAccountID(accountID) else { return }
+        let digestPrefix = accountPrefix(normalizedAccountID)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(digestPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+        for key in cloud.allKeys() where key.hasPrefix(digestPrefix) {
+            cloud.removeObject(forKey: key)
+        }
+    }
+
+    /// 已領養判定：本機 flag，或傳入 iCloud KVS 時其中任一處有紀錄即算已領養。
+    /// KVS 紀錄讓同一 Apple ID 的其他裝置也不再把 KVS 內保留的 pre-account raw 值
+    /// 領養給後續帳號（#2434 cross-device re-adoption）。
+    static func isLegacyMigrated(feature: String, defaults: UserDefaults, cloud: CloudKeyValueStore?) -> Bool {
+        let marker = legacyMigrationMarker(feature: feature)
+        return defaults.bool(forKey: marker) || cloud?.string(forKey: marker) != nil
+    }
+
+    /// Adoption recorded before the iCloud marker existed lives only in UserDefaults. Publish it
+    /// to KVS (idempotent, run on every launch) so a never-adopted device on the same Apple ID
+    /// treats the kept KVS raw value as adopted and does not copy it into a later account (#2434).
+    static func publishLocalAdoptionToCloud(feature: String, defaults: UserDefaults, cloud: CloudKeyValueStore?) {
+        guard let cloud else { return }
+        let marker = legacyMigrationMarker(feature: feature)
+        guard defaults.bool(forKey: marker), cloud.string(forKey: marker) == nil else { return }
+        cloud.set("adopted", forKey: marker)
     }
 
     /// Migrate the pre-account raw preference namespace exactly once per
-    /// preference family. The marker is deliberately global to the device/
-    /// Apple-ID store: legacy values describe the one existing local user and
-    /// must never be copied into every account that signs in afterwards.
+    /// preference family. The marker is deliberately global to the Apple-ID
+    /// store (UserDefaults plus, when `cloud` is passed, iCloud KVS): legacy
+    /// values describe the one existing local user and must never be copied
+    /// into every account that signs in afterwards.
     static func migrateLegacyIfNeeded(
         accountID: String?,
         defaults: UserDefaults,
+        cloud: CloudKeyValueStore? = nil,
         feature: String,
         migration: () -> Void
     ) {
+        publishLocalAdoptionToCloud(feature: feature, defaults: defaults, cloud: cloud)
         guard normalizedAccountID(accountID) != nil else { return }
-        let marker = "kg.account.legacy-migration.\(feature).v1"
-        guard !defaults.bool(forKey: marker) else { return }
+        guard !isLegacyMigrated(feature: feature, defaults: defaults, cloud: cloud) else { return }
         migration()
+        let marker = legacyMigrationMarker(feature: feature)
         defaults.set(true, forKey: marker)
+        cloud?.set("adopted", forKey: marker)
     }
 
     static func copyLegacyObject(

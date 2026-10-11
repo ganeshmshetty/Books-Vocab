@@ -180,7 +180,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
            let container = self.modelContainer {
             AppLog.auth.info("Manual login account switch — clearing previous user's local data")
             accountPreferenceLifecycle.suspend()
-            await localDataCleaner.clearLocalData(container: container, reason: "manual_login_account_switch")
+            await localDataCleaner.clearLocalData(container: container, reason: "manual_login_account_switch", deletedAccountID: nil)
         }
         login(userId: customToken, token: customToken)
     }
@@ -217,8 +217,30 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     }
 
     func logout(modelContainer: ModelContainer? = nil, reason: String = "user_logout") {
+        // Capture before the up-front teardown nils `userId`: a delete_account logout must scope the
+        // account-preference purge to exactly this account (#2434), never to other accounts on the device.
+        // Callers that await before logging out must use logoutAfterAccountDeletion with an ID captured
+        // beforehand instead (#2556): a concurrent 401 teardown may already have nil'd `userId`.
+        let deletedAccountID = reason == LocalDataCleanerService.deleteAccountReason ? userId : nil
+        endSession(modelContainer: modelContainer, reason: reason, deletedAccountID: deletedAccountID)
+    }
+
+    /// delete_account 登出。`deletedAccountID` 必須是呼叫端於 `await DELETE` 之前擷取的帳號；
+    /// 併發的 401 teardown 會先把 `userId` 清為 nil，之後再讀會跳過帳號偏好 purge（#2556）。
+    func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?) {
+        endSession(
+            modelContainer: modelContainer,
+            reason: LocalDataCleanerService.deleteAccountReason,
+            deletedAccountID: deletedAccountID
+        )
+    }
+
+    private func endSession(modelContainer: ModelContainer?, reason: String, deletedAccountID: String?) {
         AppAnalytics.track(.logoutPerformed(reason: reason))
         let container = modelContainer ?? self.modelContainer
+        if reason == LocalDataCleanerService.deleteAccountReason, deletedAccountID == nil {
+            AppLog.auth.warning("logout(delete_account): no account captured; account-preference purge skipped (#2434)")
+        }
         accountPreferenceLifecycle.suspend()
         localDataCleanupGeneration += 1
         pendingLocalDataCleanup = Task { [previousCleanup = pendingLocalDataCleanup] in
@@ -245,7 +267,11 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             await previousCleanup?.value
 
             if let container {
-                await localDataCleaner.clearLocalData(container: container, reason: reason)
+                await localDataCleaner.clearLocalData(
+                    container: container,
+                    reason: reason,
+                    deletedAccountID: deletedAccountID
+                )
             }
 
             // Stale-guard (mirrors SubscriptionManager+Refresh requestUserId check), second line
@@ -284,7 +310,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         if isAccountSwitch, let container = modelContainer {
             AppLog.auth.info("Account switch — clearing previous user's local data")
             accountPreferenceLifecycle.suspend()
-            await localDataCleaner.clearLocalData(container: container, reason: accountSwitchReason)
+            await localDataCleaner.clearLocalData(container: container, reason: accountSwitchReason, deletedAccountID: nil)
         }
         login(userId: userId, token: jwtToken)
     }

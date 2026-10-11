@@ -17,7 +17,9 @@ protocol SessionInvalidating: AnyObject {
 }
 
 protocol LocalDataClearing: AnyObject {
-    func clearLocalData(container: ModelContainer, reason: String) async
+    /// `deletedAccountID` is non-nil only for a delete_account logout: it names the account whose
+    /// namespaced preferences (local + iCloud KVS) must be purged. Every other caller passes nil.
+    func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async
 }
 
 /// AuthManager 的行為契約，供 View / Handler 依賴，方便替換 Mock 進行測試
@@ -41,6 +43,8 @@ protocol AuthManaging: AnyObject {
     func login(userId: String, token: String)
     func login(customToken: String) async
     func logout(modelContainer: ModelContainer?, reason: String)
+    /// delete_account 登出；`deletedAccountID` 須於 `await` 前擷取，見 `AuthManager.logoutAfterAccountDeletion`。
+    func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?)
     func loginWithGoogle(modelContainer: ModelContainer?)
     func loginWithApple(modelContainer: ModelContainer?)
 }
