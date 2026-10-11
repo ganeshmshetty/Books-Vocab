@@ -150,6 +150,50 @@ grep -Fq 'if ((${#changed_python[@]} == 0)); then' <<<"$repo_gate_block" \
   || fail "changed-Python format step has no empty-set pass path"
 grep -Fq 'uv run --no-project --python 3.13 --with '\''ruff==0.16.3'\'' ruff format --check "${changed_python[@]}"' <<<"$repo_gate_block" \
   || fail "changed-Python format step does not invoke the pinned ruff formatter"
+# Issue #3028 (CR on #3062): hosted runners do not guarantee ripgrep, and the
+# github-workflows fixtures fail loudly without it.  Every job that runs that group
+# must install rg from an unmasked step before its first group run.  Jobs are found
+# by the command they run, not a hand-kept list, so a new job cannot skip the install.
+rg_contract_rows="$(ruby -ryaml -e '
+  Dir.glob(".github/workflows/*.yml").sort.each do |path|
+    (YAML.load_file(path)["jobs"] || {}).each do |job_id, job|
+      steps = job["steps"] || []
+      gate = steps.index { |s| s["run"].to_s.match?(/test_ops\.sh[^\n]*\bgithub-workflows\b/) }
+      next if gate.nil?
+      install = steps.index { |s| s["run"].to_s.match?(/ci_apt_install\.sh ripgrep|\[rg\]=ripgrep/) }
+      step = install && steps[install]
+      masked = step && (step.key?("if") || step.key?("continue-on-error") || step["run"].to_s.include?("||"))
+      puts [path, job_id, install.inspect, gate, masked ? "masked" : "clear"].join(" ")
+    end
+  end
+')" || { fail "cannot read workflow jobs for the ripgrep install contract"; rg_contract_rows=""; }
+rg_jobs=0
+while read -r rg_path rg_job rg_install rg_gate rg_mask; do
+  rg_jobs=$((rg_jobs + 1))
+  if [[ ! "$rg_install" =~ ^[0-9]+$ ]]; then
+    fail "$rg_path job $rg_job runs the github-workflows group without a ripgrep install step (ops/ci_apt_install.sh ripgrep before the group)"
+  elif (( rg_install >= rg_gate )); then
+    fail "$rg_path job $rg_job: ripgrep install (step $rg_install) does not precede the github-workflows group (step $rg_gate)"
+  fi
+  [[ "$rg_mask" != masked ]] \
+    || fail "$rg_path job $rg_job: ripgrep install step is conditional, continue-on-error or masked with ||"
+done <<<"$rg_contract_rows"
+(( rg_jobs >= 2 )) \
+  || fail "expected pr-gate repo-gate and merge-group required to run the github-workflows group, found $rg_jobs job(s)"
+# The Linux ops shard runs its groups from a discovered list, so the command scan above
+# cannot see it: its ripgrep install must precede the discovered-group run by name.
+suite_order="$(ruby -ryaml -e '
+  steps = YAML.load_file(ARGV[0])["jobs"]["suite"]["steps"]
+  verify = steps.index { |s| s["run"].to_s.include?("[rg]=ripgrep") }
+  run = steps.index { |s| s["run"].to_s.include?("./ops/test_ops.sh \"${selected[@]}\"") }
+  puts [verify.inspect, run.inspect].join(" ")
+' .github/workflows/ops-suite.yml)" || suite_order="nil nil"
+read -r suite_verify suite_run <<<"$suite_order" || true
+if [[ ! "$suite_verify" =~ ^[0-9]+$ || ! "$suite_run" =~ ^[0-9]+$ ]]; then
+  fail "ops-suite shard has no ripgrep install step before its Linux group run (step indices: $suite_order)"
+elif (( suite_verify >= suite_run )); then
+  fail "ops-suite ripgrep install (step $suite_verify) does not precede the Linux group run (step $suite_run)"
+fi
 delivery_control_group="$(awk '
   /delivery-control\)/ { in_group=1 }
   in_group { print }
