@@ -23,6 +23,11 @@ struct LocalizationSemanticKeysTests {
         "app.loading.progress"
     ]
 
+    private let settingsPlanHeaderKeys = [
+        "功能",
+        "Free"
+    ]
+
     private let pluralKeys = [
         "notebook.dueCount",
         "notebook.unlearnedCount",
@@ -99,6 +104,31 @@ struct LocalizationSemanticKeysTests {
                 if locale == "en" {
                     #expect((count["one"] as? String)?.isEmpty == false)
                 }
+            }
+        }
+    }
+
+    @Test
+    func settingsPlanHeaderKeysResolveInEverySupportedLanguage() throws {
+        let store = AppLanguageStore.shared
+        defer { store.setLanguage(.system) }
+
+        for (locale, language) in supportedLanguages {
+            store.setLanguage(language)
+            let path = try #require(Bundle.main.path(forResource: locale, ofType: "lproj"))
+            let bundle = try #require(Bundle(path: path))
+            for key in settingsPlanHeaderKeys {
+                let value = bundle.localizedString(
+                    forKey: key,
+                    value: "**missing**",
+                    table: "Localizable"
+                )
+                #expect(value != "**missing**", "missing \(locale) translation for settings plan header \(key)")
+                #expect(L10n.string(key) == value, "runtime bundle mismatch for \(locale) settings plan header \(key)")
+            }
+            let free = bundle.localizedString(forKey: "Free", value: "**missing**", table: "Localizable")
+            if locale != "en" {
+                #expect(free != "Free", "untranslated \(locale) settings plan header Free")
             }
         }
     }
