@@ -88,6 +88,8 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
             // Mark everything captured here before the first suspension below. A user delete in
             // any of those suspensions (delete round trip, an earlier add group, an earlier edit)
             // then queues a server delete instead of hard-deleting a row this sync still holds (#2733).
+            // Undo and reader re-capture are refused for these rows until this sync returns (I3, #2484),
+            // so a captured delete is still a delete when its response or fallback request completes.
             let captured = queuedDeletes + adds + edits
             captured.forEach { $0.isUploadInFlight = true }
             defer { captured.forEach { $0.isUploadInFlight = false } }
@@ -115,10 +117,11 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                         // Batch failure is recoverable: retry each card individually.
                         for entry in entries {
                             if Task.isCancelled { return cancelledResult(since: start) }
-                            // Revived by `undoQueuedDelete` during an earlier await: the user's latest intent wins (T5).
-                            guard entry.syncAction == .delete else { continue }
                             do {
                                 try await service.deleteCard(word: entry.word, notebookId: entry.notebookId)
+                                // Defensive recheck after the suspension (I3 keeps the held delete a delete): never
+                                // hard-delete a row that is no longer a held delete (T5).
+                                guard entry.isUploadInFlight, entry.syncAction == .delete else { continue }
                                 modelContext.delete(entry)
                                 deleted += 1
                                 emit(.stepProgress("upload_delete", current: deleted, total: queuedDeletes.count, detail: ""))
