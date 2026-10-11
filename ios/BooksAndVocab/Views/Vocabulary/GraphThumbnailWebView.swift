@@ -109,11 +109,17 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
         }
     }
 
-    /// Retry rebuilds a page that never completed its `ready` handshake, or one
-    /// lost after automatic recovery ran out. A page that is ready but still
-    /// drawing is slow, not stuck; rebuilding it
-    /// would restart the layout and can keep a large graph from ever painting.
-    var needsRebuildOnRetry: Bool { pageLost || (!hasPainted && !graphBridgeReady) }
+    /// Whether Retry must reload the page. A page that never completed its `ready`
+    /// handshake, or one lost after automatic recovery ran out, is stuck. A page
+    /// that reported `ready` but has not painted is stuck only once the card's
+    /// watchdog fired (`paintTimedOut`): before that it is slow, and reloading it
+    /// would restart the layout. After the watchdog fires, a reload is the only
+    /// recovery, since re-arming the watchdog alone leaves the same page blank (#2860).
+    func needsRebuildOnRetry(paintTimedOut: Bool) -> Bool {
+        if pageLost { return true }
+        guard !hasPainted else { return false }
+        return !graphBridgeReady || paintTimedOut
+    }
 
     /// Rebuilds the page and replays the last payload. Used when the web content
     /// process was terminated or the thumbnail never painted; without it
@@ -133,7 +139,7 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
         guard consecutiveTerminations < Self.maxAutomaticRecoveries else {
             // Automatic recovery is spent. The dead page must not keep looking
             // painted: clear the paint state so the watchdog shows the status row,
-            // and its Retry rebuilds the page (`needsRebuildOnRetry`).
+            // and its Retry rebuilds the page (`needsRebuildOnRetry(paintTimedOut:)`).
             pageLost = true
             hasPainted = false
             onRepaintExpected?()

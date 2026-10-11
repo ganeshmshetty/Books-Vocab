@@ -219,10 +219,10 @@ struct GraphThumbnailViewportTests {
         #expect(coordinator.graphBridgeReady, "fourth termination must not auto-recover")
         #expect(coordinator.pendingPayload == nil)
         #expect(!coordinator.hasPainted, "a dead page must not keep looking painted")
-        #expect(coordinator.needsRebuildOnRetry, "manual Retry must rebuild a page lost after ready")
+        #expect(coordinator.needsRebuildOnRetry(paintTimedOut: false), "manual Retry must rebuild a page lost after ready")
 
         coordinator.receiveBridgeEvent("painted")
-        #expect(!coordinator.needsRebuildOnRetry, "a paint clears the lost-page state")
+        #expect(!coordinator.needsRebuildOnRetry(paintTimedOut: false), "a paint clears the lost-page state")
         coordinator.webViewWebContentProcessDidTerminate(webView)
         #expect(!coordinator.graphBridgeReady, "a paint resets the termination budget")
     }
@@ -263,22 +263,25 @@ struct GraphThumbnailViewportTests {
         #expect(expectations == 1)
     }
 
-    /// Retry rebuilds only a page whose `ready` handshake never completed. A
-    /// ready but still-drawing graph is slow, so retry must not restart it; a
-    /// painted graph never needs a rebuild.
-    @Test func retryRebuild_onlyWhenPageNeverReportedReady() {
+    /// Retry reloads a stuck page: one that never reported `ready`, or one that
+    /// reported `ready` but whose first paint timed out (#2860). Inside the
+    /// watchdog window a ready page is slow, not stuck, so Retry must not restart
+    /// its render. Before the fix a timed-out ready page was never reloaded, so
+    /// Retry re-armed the watchdog and the same blank page timed out again.
+    @Test func retryRebuild_stuckOrPaintTimedOutOnly() {
         let coordinator = GraphThumbnailCoordinator()
         let webView = WKWebView(frame: .zero)
         coordinator.webView = webView
         coordinator.sendInitGraph("{\"nodes\":[]}", webView: webView)
 
-        #expect(coordinator.needsRebuildOnRetry, "a page that never reported ready is stuck and must be rebuilt")
+        #expect(coordinator.needsRebuildOnRetry(paintTimedOut: false), "a page that never reported ready is stuck and must be rebuilt")
 
         coordinator.receiveBridgeEvent("ready")
-        #expect(!coordinator.needsRebuildOnRetry, "a ready but unpainted page is slow; retry must not restart its render")
+        #expect(!coordinator.needsRebuildOnRetry(paintTimedOut: false), "a ready page inside the watchdog window is slow; retry must not restart its render")
+        #expect(coordinator.needsRebuildOnRetry(paintTimedOut: true), "a ready page whose first paint timed out must be reloaded, or Retry leaves it blank")
 
         coordinator.receiveBridgeEvent("painted")
-        #expect(!coordinator.needsRebuildOnRetry)
+        #expect(!coordinator.needsRebuildOnRetry(paintTimedOut: true), "a painted page never needs a rebuild")
     }
 
     @Test func coordinatorRecover_beforePaintKeepsBridgeReplayable() {
