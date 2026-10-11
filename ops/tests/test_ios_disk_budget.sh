@@ -430,7 +430,12 @@ classify "lane-total-budget-exceeded alone" 75 "" lane-total-budget-exceeded
 classify "lane-budget-exceeded:<path> alone" 75 "" "lane-budget-exceeded:/x/lane"
 classify "measurement-incomplete reasons" 75 "" workspace-measurement-incomplete lane-measurement-incomplete
 classify "empty blocking_reasons" 75 ""
-classify "tick crash (lane_usage_rc=124) even with stale structural reasons" 75 124 dirty-physical-worktree
+# #3001: a killed scan (rc 124) whose current report already names a structural
+# blocker is a fact waiting cannot clear, so it is structural; a time-limit-only
+# kill stays temporary.
+classify "lane scan killed (rc=124) with a current structural reason is structural" 77 124 dirty-physical-worktree
+classify "lane scan killed (rc=124) with only a measurement limit is temporary" 75 124 lane-measurement-incomplete
+classify "lane scan killed (rc=124) with a quota reason only is temporary" 75 124 lane-total-budget-exceeded
 classify "structural reason mixed with a quota reason" 77 75 lane-total-budget-exceeded dirty-physical-worktree
 # Issue #2905: an unregistered worktree is a warning under budget, never a blocking reason.
 classify "unregistered-physical-worktree is not structural (fresh report rc=75)" 75 75 unregistered-physical-worktree
@@ -477,6 +482,9 @@ grep -q 'retryable=no' <<<"$STALE_OUT" && ok "a report from the same tick stays 
 grep -q 'unregisteredWorktrees=/x/orphan-one;/x/orphan-two' <<<"$STALE_OUT" && ok "positive control: a fresh report names its worktrees" || bad "fresh report lost its worktree names: $STALE_OUT"
 stale_case "report just inside the slack window" 77 75 100 dirty-physical-worktree
 stale_case "report just outside the slack window" 75 75 160 dirty-physical-worktree
+# #3001: a kill is structural only with the same tick's current report; an old one is not.
+stale_case "rc=124 kill with a report older than the tick stays temporary" 75 124 4800 dirty-physical-worktree
+stale_case "rc=124 kill with a current structural report is structural" 77 124 20 dirty-physical-worktree
 lane_guard_with_rc 75 > "$TMP/stale-guard.json"
 missing_out="$(KG_IOS_DISK_GUARD_STATE="$TMP/stale-guard.json" KG_IOS_DISK_LANE_USAGE_STATE="$TMP/no-such-lane-report.json" \
   KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state test" 2>&1)" && missing_rc=0 || missing_rc=$?

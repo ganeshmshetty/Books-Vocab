@@ -5,6 +5,12 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/ops/kg_disk_guard.sh"
 TMP="$(mktemp -d -t kg_disk_guard_test_XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
+# Hermetic HOME: any path the guard derives from $HOME (Application Support,
+# ~/.local) must land in the fixture, never on the runner's real home.  The
+# real uv binary is pinned before the override.
+REAL_UV_BIN="${KG_DISK_GUARD_UV_BIN:-$HOME/.local/bin/uv}"
+export HOME="$TMP/home"
+mkdir -p "$HOME"
 PASS=0; FAIL=0
 # Each fixture is a serial one-shot; bypass the host-level singleton lock so
 # the test suite does not depend on launchd/shlock state from another run.
@@ -27,6 +33,7 @@ bad(){ echo "  ✗ $*"; FAIL=$((FAIL+1)); }
 # A failed state assertion must say what the guard actually recorded; CI is the
 # only place some of these diverge and its log is all we get.
 bad_state(){ bad "$1"; printf '      state: %s\n' "$(tr -d '\n' < "$2" 2>/dev/null | head -c 1600)"; }
+
 
 # Linux runners do not provide macOS's shlock.  Keep production behavior
 # fail-closed when it is unavailable, but give lock-acquisition fixtures the
@@ -652,7 +659,7 @@ git -C "$supervision" commit -m supervision >/dev/null 2>&1
 printf '%s\n' '{"schema":"kg.worktree.registry.v2","records":[]}' > "$registry"
 KG_DISK_GUARD_WORKSPACE="$root" KG_DISK_GUARD_STATE="$state" \
   KG_DISK_GUARD_REGISTRY_STATE="$registry" KG_DISK_GUARD_LANE_USAGE_STATE="$lane_state" \
-  KG_DISK_USAGE_CODEX_WORKTREE_ROOT="$codex_root" KG_DISK_GUARD_UV_BIN="$HOME/.local/bin/uv" \
+  KG_DISK_USAGE_CODEX_WORKTREE_ROOT="$codex_root" KG_DISK_GUARD_UV_BIN="$REAL_UV_BIN" \
   KG_DISK_GUARD_FREE_BYTES=$((30*1073741824)) KG_DISK_GUARD_ACTIVE_BUILD=0 \
   "$SCRIPT" >/dev/null 2>&1
 grep -q '"lane_kind": "supervision"' "$lane_state" && ok "supervision checkout kind is explicit" || bad "supervision checkout kind missing"
@@ -719,7 +726,7 @@ state_count="$(find "$TMP/high" -maxdepth 1 -type f -name 'state.json*' | wc -l 
 [[ "$bytes2" -lt 1400 && "$state_count" -eq 1 ]] && ok "state bounded, one atomic file (${bytes2} bytes)" || bad "state accumulation: bytes=$bytes2 files=$state_count"
 
 echo "── lane usage: missing active lanes warn without blocking disk attribution ──"
-export KG_DISK_GUARD_UV_BIN="$HOME/.local/bin/uv"
+export KG_DISK_GUARD_UV_BIN="$REAL_UV_BIN"
 root="$TMP/lane-usage"; state="$root/guard.json"; registry="$root/registry.json"; lane_state="$root/lane-disk-usage.json"
 mkdir -p "$root"
 git -C "$root" init -b main >/dev/null 2>&1
@@ -807,6 +814,33 @@ grep -q '"verdict": "warning"' "$lane_state" && ok "unregistered checkout warns 
 grep -q '"blocking_reasons": \[\]' "$lane_state" && ok "unregistered checkout blocks nothing under budget" || bad "unregistered checkout blocked under budget"
 grep -q '"lane_usage_verdict":"warning"' "$state" && ok "guard state carries the unregistered warning" || bad "guard state missed unregistered warning"
 grep -q '"lane_usage_rc":0' "$state" && ok "guard state keeps exit 0 for an unregistered checkout" || bad "guard state changed exit for an unregistered checkout"
+
+echo "── lane usage: an unregistered checkout does not mask a registered terminal dirty block (issue #2905) ──"
+root="$TMP/unregistered-masks-dirty"; state="$root/guard.json"; registry="$root/registry.json"; lane_state="$root/lane-disk-usage.json"
+terminal_dirty="$TMP/terminal-dirty-worktree"; stray="$TMP/stray-unregistered-checkout"
+mkdir -p "$root"
+git -C "$root" init -b main >/dev/null 2>&1
+git -C "$root" config user.email disk-test@example.com
+git -C "$root" config user.name "Disk Test"
+printf 'main\n' > "$root/tracked.txt"
+git -C "$root" add tracked.txt >/dev/null 2>&1
+git -C "$root" commit -m initial >/dev/null 2>&1
+git -C "$root" worktree add -b terminal-dirty "$terminal_dirty" HEAD >/dev/null 2>&1
+printf 'dirty\n' > "$terminal_dirty/dirty.txt"
+git -C "$root" worktree add -b stray "$stray" HEAD >/dev/null 2>&1
+printf 'stray\n' > "$stray/stray.txt"
+printf '%s\n' '{"schema":"kg.worktree.registry.v2","records":[{"branch":"terminal-dirty","path":"'"$terminal_dirty"'","status":"merged","claim_generation":0,"external_ids":["DIRECT-DELIVERY-TERMINAL-DIRTY"]}]}' > "$registry"
+KG_DISK_GUARD_WORKSPACE="$root" KG_DISK_GUARD_STATE="$state" KG_DISK_GUARD_REGISTRY_STATE="$registry" \
+  KG_DISK_GUARD_LANE_USAGE_STATE="$lane_state" KG_DISK_GUARD_FREE_BYTES=$((30*1073741824)) \
+  KG_DISK_GUARD_ACTIVE_BUILD=0 "$SCRIPT" >/dev/null 2>&1
+jq -e '.policy.blocking_reasons | index("dirty-physical-worktree")' "$lane_state" >/dev/null \
+  && ok "the registered terminal dirty checkout still blocks" || bad_state "terminal dirty block masked" "$lane_state"
+jq -e '.policy.warning_reasons | any(startswith("unregistered-physical-worktree:") and endswith("/stray-unregistered-checkout"))' "$lane_state" >/dev/null \
+  && ok "the stray checkout still warns by path beside the block" || bad_state "stray warning lost beside the block" "$lane_state"
+jq -e '.policy.blocking_reasons | any(startswith("unregistered-physical-worktree:"))' "$lane_state" >/dev/null \
+  && bad "stray checkout became a blocking reason under budget" || ok "stray checkout is not a blocking reason"
+grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"action":"manual-review-lane-attribution"' "$state" \
+  && ok "guard names the lane block, not the stray checkout" || bad_state "guard reason/action wrong" "$state"
 
 echo "── lane usage: a tick run from a linked worktree copy is rooted at the canonical checkout ──"
 # Regression (2026-10-07): an agent ran ./ops/kg_disk_guard.sh from its own
@@ -951,6 +985,10 @@ grep -q '"lane_usage_rc":75' "$state" \
   && bad "supervisor kill is indistinguishable from a written report (rc 75)" || ok "supervisor kill is not reported as rc 75"
 grep -q '"lane_usage_verdict":"block"' "$state" \
   && ok "external timeout still blocks the guard" || bad "external timeout did not block the guard"
+# Pin the fail-closed choice: a kill that wrote no current report has no measured
+# cause, so it is manual review, not retry-next-tick (a persistent hang must not hide).
+grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"action":"manual-review-lane-attribution"' "$state" \
+  && ok "a kill with no current report fails closed to manual review" || bad_state "no-report kill reason/action" "$state"
 grep -q '"lane_usage_budget_seconds":2' "$state" \
   && ok "external timeout records its configured budget" || bad "external timeout budget missing"
 if [[ -s "$child_pid_file" ]]; then
@@ -1042,11 +1080,15 @@ grep -q '"xctest_devices_verdict":"unavailable"' "$state" \
 grep -q '"lane_usage_rc":124' "$state" && ok "the killed tick still records rc 124" || bad_state "killed tick rc" "$state"
 
 echo "── shared XCTestDevices: a walk that only ran out of time is temporary, a real finding is not ──"
-fake_report_case() {  # $1=label $2=xctest_devices JSON object
-  local label="$1" xctest_json="$2"
+fake_report_case() {  # $1=label $2=xctest_devices JSON object $3=optional policy.blocking_reasons JSON array
+  local label="$1" xctest_json="$2" blocking_json="${3:-}" verdict="pass" policy_json=""
   root="$TMP/xctest-class-$label"; state="$root/guard.json"; lane_state="$root/lane-disk-usage.json"; fake_uv="$root/fake-uv"
   rm -rf "$root"; mkdir -p "$root"
-  printf '{\n  "schema": "kg.disk.lane-usage.v1",\n  "exclusions": {"supervision_worktree_paths": []},\n  "accounting": {"shared_platform_storage": {"xctest_devices": %s, "simulator_runtimes": {"exists": false, "status": "absent"}}},\n  "verdict": "pass"\n}\n' "$xctest_json" > "$root/report.json"
+  if [[ -n "$blocking_json" ]]; then
+    verdict="block"
+    policy_json="$(printf ',\n  "policy": {"verdict": "block", "blocking_reasons": %s}' "$blocking_json")"
+  fi
+  printf '{\n  "schema": "kg.disk.lane-usage.v1",\n  "exclusions": {"supervision_worktree_paths": []},\n  "accounting": {"shared_platform_storage": {"xctest_devices": %s, "simulator_runtimes": {"exists": false, "status": "absent"}}},\n  "verdict": "%s"%s\n}\n' "$xctest_json" "$verdict" "$policy_json" > "$root/report.json"
   cat >"$fake_uv" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -1084,6 +1126,30 @@ grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"lane_usage_
   && ok "a lane report that exits 75 still overwrites the guard reason" || bad_state "lane report rc 75 reason" "$state"
 grep -q '"xctest_devices_time_limited":1' "$state" && grep -q '"xctest_devices_manual_review":0' "$state" \
   && ok "the time-limit survives the lane-report override" || bad_state "time-limit lost behind the lane-report override" "$state"
+# Follow-up of #2905 (CR): a supervisor kill (rc 124) of the lane scan is an
+# unmeasured tick, not a lane verdict.  The XCTestDevices time-limit measured in
+# the same tick is the precise, retryable cause and must reach the guard reason.
+export FAKE_UV_RC=124
+fake_report_case killed-report-after-time-limit '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'
+unset FAKE_UV_RC
+grep -q '"lane_usage_rc":124' "$state" && ok "the killed lane scan records rc 124" || bad_state "killed lane scan rc missing" "$state"
+grep -q '"reason":"xctest-devices-measurement-incomplete"' "$state" && grep -q '"action":"retry-next-tick"' "$state" \
+  && ok "a kill keeps the measured time-limit reason, retryable" || bad_state "kill replaced the measured time-limit reason" "$state"
+# A kill does not hide a structural finding that the same fresh report names:
+# dirty/unknown/duplicate worktrees and manual-review findings clear only by a
+# human, so the time-limit must not downgrade them to retry-next-tick.
+export FAKE_UV_RC=124
+fake_report_case killed-report-structural-blocker '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}' '["dirty-physical-worktree","xctest-devices-measurement-incomplete"]'
+unset FAKE_UV_RC
+grep -q '"lane_usage_rc":124' "$state" && grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"action":"manual-review-lane-attribution"' "$state" \
+  && ok "a kill with a structural blocker in the same report stays structural manual review" || bad_state "kill with structural blocker was downgraded to the time-limit" "$state"
+# Positive control for the case above: when the report lists only the measured
+# time-limit, the same kill is still the temporary, retryable classification.
+export FAKE_UV_RC=124
+fake_report_case killed-report-time-limit-only '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}' '["xctest-devices-measurement-incomplete"]'
+unset FAKE_UV_RC
+grep -q '"reason":"xctest-devices-measurement-incomplete"' "$state" && grep -q '"action":"retry-next-tick"' "$state" \
+  && ok "a kill whose report lists only the time-limit stays temporary, retryable" || bad_state "time-limit-only kill lost its temporary classification" "$state"
 fake_report_case budget-exceeded '{"exists": true, "measurement_complete": true, "metadata_complete": true, "budget_exceeded": true, "measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "manual-review"}}'
 grep -q '"xctest_devices_manual_review":1' "$state" && ok "positive control: a real budget overrun is manual review" || bad_state "budget overrun lost manual review" "$state"
 fake_report_case unreadable '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["/x/dev: PermissionError"], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'

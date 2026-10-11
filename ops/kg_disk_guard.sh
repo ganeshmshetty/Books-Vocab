@@ -81,12 +81,14 @@ LANE_USAGE_GRACE_SECONDS="${KG_DISK_GUARD_LANE_USAGE_GRACE_SECONDS:-60}"
 (( LANE_USAGE_GRACE_SECONDS < 1 )) && LANE_USAGE_GRACE_SECONDS=1
 (( LANE_USAGE_GRACE_SECONDS > 120 )) && LANE_USAGE_GRACE_SECONDS=120
 # disk_usage.py exits 0 or 75 only after it atomically wrote its report.  A scan
-# the supervisor had to kill wrote nothing this run, so it gets the conventional
-# timeout(1) status instead of sharing 75 with "report written".
+# the supervisor had to kill gets the conventional timeout(1) status instead of
+# sharing 75 with "report written".  The kill may land after this run already
+# wrote a current report; only that report can feed the tick (write_lane_usage).
 LANE_USAGE_KILLED_RC=124
 LANE_USAGE_RC=0
 LANE_USAGE_VERDICT="unavailable"
 LANE_USAGE_EXCLUSIONS_JSON='[]'
+LANE_USAGE_STRUCTURAL_BLOCKERS=0
 XCTEST_DEVICES_KB=0
 XCTEST_DEVICES_OVERFLOW_KB=0
 XCTEST_DEVICES_COUNT=0
@@ -477,6 +479,17 @@ write_lane_usage() {
     )"
   else
     LANE_USAGE_EXCLUSIONS_JSON='[]'
+  fi
+  # Structural findings in the current report: worktree problems and manual-review
+  # causes, the same families kg_ios_disk_structural_lane_reason (lib/ios_disk_budget.sh)
+  # treats as needing a human.  Counted from policy.blocking_reasons; an unreadable
+  # current report counts as one, so the time-limit cannot mask it (fail closed).
+  LANE_USAGE_STRUCTURAL_BLOCKERS=0
+  if (( report_is_current == 1 )) && command -v jq >/dev/null 2>&1; then
+    LANE_USAGE_STRUCTURAL_BLOCKERS="$(
+      jq -r '[(.policy.blocking_reasons // [])[] | select(test("^(dirty|unknown|duplicate)-|^(physical-identity-mismatch|registry-records-invalid|supervision-path-registered)$|-manual-review-required$"))] | length' \
+        "$LANE_USAGE_STATE" 2>/dev/null || printf '1'
+    )"
   fi
   LANE_USAGE_RC="$rc"
   LANE_USAGE_VERDICT="$observed"
@@ -898,13 +911,33 @@ main() {
   # Existing lane evidence remains in the report; this only prevents new
   # work from being admitted on incomplete accounting.
   if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" || "$LANE_USAGE_VERDICT" == "unavailable" ]]; then
-    verdict="block"
-    if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" ]]; then
-      reason="lane-usage-report-blocked"
+    # Why only rc 124 keeps the XCTestDevices time-limit reason, and rc 75 does not:
+    # - rc 75: the scan finished and its report carries complete lane attribution
+    #   with its own block cause.  That finding outranks the time-limit, which is
+    #   only a subordinate sub-measurement (test: "lane report that exits 75").
+    # - rc 124: the scan was killed, so its attribution is unknown and the
+    #   time-limit is the only measured cause in this tick.  It is kept, and it is
+    #   retryable.  The reason survives only if write_lane_usage saw a current
+    #   report, because XCTEST_DEVICES_TIME_LIMITED is set only from one.
+    # A kill with no current report of its own has no measured cause at all.  It
+    # deliberately stays lane-usage-report-blocked / manual-review, fail-closed: a
+    # scan that dies without writing a report is a persistent hang, and
+    # retry-next-tick would hide it.
+    # A current report that also names a structural blocker (dirty, unknown or
+    # duplicate worktree, identity mismatch, manual-review finding) outranks the
+    # time-limit: it is already a complete finding that waiting cannot clear.
+    if (( LANE_USAGE_RC == LANE_USAGE_KILLED_RC )) && [[ "$reason" == "xctest-devices-measurement-incomplete" ]] \
+      && (( LANE_USAGE_STRUCTURAL_BLOCKERS == 0 )); then
+      :
     else
-      reason="lane-usage-report-unavailable"
+      verdict="block"
+      if (( LANE_USAGE_RC != 0 )) || [[ "$LANE_USAGE_VERDICT" == "block" ]]; then
+        reason="lane-usage-report-blocked"
+      else
+        reason="lane-usage-report-unavailable"
+      fi
+      action="manual-review-lane-attribution"
     fi
-    action="manual-review-lane-attribution"
   fi
   write_state "$free" "$prev" "$growth" "$active" "$cache" "$docker_cache" "$docker_running" "$worktree_cache" "$worktree_keys" "$worktree_overflow" "$cache_overflow" "$cache_budget_kb" "$cache_budget_overflow" "$cache_headroom_kb" "$cache_writer_limit_kb" "$cache_headroom_overflow" "$cache_repair_remaining" "$cache_repair_status" "$verdict" "$reason" "$action" "$LANE_USAGE_VERDICT" "$LANE_USAGE_RC" "$LANE_USAGE_BUDGET_SECONDS" "$LANE_USAGE_EXCLUSIONS_JSON" "$CACHE_EVICTION_ATTEMPTED" "$CACHE_EVICTION_EVICTED" "$CACHE_EVICTION_FAILED" "$CACHE_BUDGET_REPAIRED" "$derived_data" "$DERIVED_DATA_BUDGET_KB" "$derived_data_overflow" "$XCTEST_DEVICES_KB" "$XCTEST_DEVICES_BUDGET_KB" "$XCTEST_DEVICES_OVERFLOW_KB" "$XCTEST_DEVICES_COUNT" "$XCTEST_DEVICES_VERDICT" "$XCTEST_DEVICES_RECLAIM_STATUS" "$XCTEST_DEVICES_MANUAL_REVIEW" "$SIMULATOR_RUNTIME_KB" "$SIMULATOR_RUNTIME_BUDGET_KB" "$SIMULATOR_RUNTIME_OVERFLOW_KB" "$SIMULATOR_RUNTIME_COUNT" "$SIMULATOR_RUNTIME_VERDICT" "$SIMULATOR_RUNTIME_RECLAIM_STATUS" "$SIMULATOR_RUNTIME_MANUAL_REVIEW" "$XCTEST_DEVICES_TIME_LIMITED"
   logger -t kg-disk-guard "verdict=$verdict freeGiB=$free_gib growthGiB=$growth_gib activeBuild=$active dockerCacheGiB=$docker_gib dockerActive=$docker_running cacheKB=$cache cacheBudgetKB=$cache_budget_kb cacheBudgetOverflowKB=$cache_budget_overflow cacheHeadroomKB=$cache_headroom_kb cacheWriterLimitKB=$cache_writer_limit_kb cacheHeadroomOverflowKB=$cache_headroom_overflow cacheRepairStatus=$cache_repair_status cacheRepairRemainingKB=$cache_repair_remaining derivedDataKB=$derived_data derivedDataBudgetKB=$DERIVED_DATA_BUDGET_KB derivedDataOverflowKB=$derived_data_overflow worktreeCacheKB=$worktree_cache worktreeKeys=$worktree_keys worktreeOverflowKeys=$worktree_overflow cacheOverflowKeys=$cache_overflow simulatorRuntimeKB=$SIMULATOR_RUNTIME_KB simulatorRuntimeBudgetKB=$SIMULATOR_RUNTIME_BUDGET_KB simulatorRuntimeOverflowKB=$SIMULATOR_RUNTIME_OVERFLOW_KB simulatorRuntimeCount=$SIMULATOR_RUNTIME_COUNT simulatorRuntimeVerdict=$SIMULATOR_RUNTIME_VERDICT action=$action" 2>/dev/null || true

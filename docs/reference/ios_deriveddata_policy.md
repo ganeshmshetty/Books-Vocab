@@ -196,7 +196,7 @@ start 的 `ps` 探測受報告期限（`--time-budget-seconds`）約束：每次
 兩者都完整計入 per-lane／aggregate bytes 與 quota。lock 理由不符（他人持有、無理由、名稱指向別的目錄）、
 未上鎖且目錄名非 harness 形狀（例如手建的 `scratch`；dirty 時另觸發 dirty blocker）、
 lock 狀態未觀測到、或不在該 root 直屬的 checkout 無法歸屬，仍歸為 unregistered，但不再因此 hard block：只以 `unregistered-physical-worktree:<path>` 警告並附 remedy（issue #2905）。
-被 guard 擋下時（暫時性空間／預算 exit 75；`lane-usage-report-blocked` 與 manual-review 這類結構性擋下為 **exit 77、retryable=no**，見 `docs/sop/ios.md` 的 exit code 契約），`kg.ios.disk-budget.v1` 輸出會附 `blockingReasons=`／`unregisteredWorktrees=`／
+被 guard 擋下時（暫時性空間／預算與 `lane-usage-report-blocked` 預設 exit 75；只有 lane 報告的 `blocking_reasons` 含結構性原因（dirty／unknown／duplicate／identity mismatch 等）或 XCTestDevices／simulator runtime 需人工審查時才是 **exit 77、retryable=no**，見 `docs/sop/ios.md` 的 exit code 契約），`kg.ios.disk-budget.v1` 輸出會附 `blockingReasons=`／`unregisteredWorktrees=`／
 `dirtyWorktrees=`；`lane-usage-report-*` 的擋下會先 inline 重跑一次 guard tick（`KG_IOS_DISK_GUARD_AUTO_REFRESH=0` 可關），
 也可手動 `./ops/ios_ops.sh guard [--refresh]` 立即重新評估。
 guard state 與 `lane_disk_usage.json` 是 host-global、只有一個 writer 身分：`kg_disk_guard.sh` 未設
@@ -238,7 +238,7 @@ measurement evidence；dirty、unknown、超出 measurement budget 或其他未�
 
 guard 另在 shell 邊界監督外部掃描程序，避免卡住的 attribution process 無限佔用 CPU、鎖或工作階段。**監督用的 kill 時限是 budget + grace**（`KG_DISK_GUARD_LANE_USAGE_GRACE_SECONDS`，預設 60、範圍 1–120），嚴格晚於掃描自己的期限：掃描要先啟動程序才開始計時，期限過後還要一小段收尾才能寫出 partial 報告。2026-10-08 之前兩者都是從幾乎同一時刻起算的 240 秒，kill 永遠先到，期限機制形同虛設，報告 80 分鐘沒有被重寫。`ops/kg_disk_guard.sh --help` 是純說明命令，不會啟動 guard tick、改狀態或刪 cache。
 
-`lane_usage_rc` 的語意：`0`／`75` 只代表 `disk_usage.py` **這次**已原子寫出報告（0 = pass／warning、75 = 報告為 block）；被 kill 的掃描什麼都沒寫，記為 `124`（`timeout(1)` 慣例），其他非零是 crash。消費端（`ops/lib/ios_disk_budget.sh`）不只看 rc：報告的 mtime 不得早於寫出該 guard state 的 tick 超過 `KG_IOS_DISK_LANE_REPORT_SLACK_SECONDS`（預設 120 秒，小於 5 分鐘 tick 間隔，所以前一輪的報告不會過關）。過期或不存在的報告不能當結構性證據：輸出 `laneUsageFresh=no`、名單印 `unknown`，exit 75（暫時、可重試）並指向 `guard --refresh`；不會再因為一份舊報告點名早已不存在的 worktree 而 exit 77。
+`lane_usage_rc` 的語意：`0`／`75` 只代表 `disk_usage.py` **這次**已原子寫出報告（0 = pass／warning、75 = 報告為 block）；被 kill 的掃描通常沒有寫出本次報告，記為 `124`（`timeout(1)` 慣例）；kill 落在本次 tick 寫出 current 報告之後時，該報告仍有效：`blocking_reasons` 含結構性原因判 77，只剩量測時限判 75（#3001）。其他非零是 crash。消費端（`ops/lib/ios_disk_budget.sh`）不只看 rc：報告的 mtime 不得早於寫出該 guard state 的 tick 超過 `KG_IOS_DISK_LANE_REPORT_SLACK_SECONDS`（預設 120 秒，小於 5 分鐘 tick 間隔，所以前一輪的報告不會過關）。過期或不存在的報告不能當結構性證據：輸出 `laneUsageFresh=no`、名單印 `unknown`，exit 75（暫時、可重試）並指向 `guard --refresh`；不會再因為一份舊報告點名早已不存在的 worktree 而 exit 77。
 
 **量測範圍（2026-10-08）。** 歸戶量的是 lane 的內容，不是整個磁碟：
 

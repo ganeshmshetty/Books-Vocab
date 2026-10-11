@@ -181,12 +181,15 @@ kg_ios_disk_guard_block_is_structural() {
     lane-usage-report-blocked) ;;
     *) return 1 ;;
   esac
-  # disk_usage.py exits 0 or 75 when it wrote a complete report; anything else
-  # (timeout kill = 124, crash) leaves a possibly stale file, so it is never
-  # evidence.  Producers before 2026-10-08 also recorded a supervisor kill as 75,
-  # so the rc alone is not enough: the report must also postdate the tick.
+  # disk_usage.py exits 0 or 75 when it wrote a complete report.  A supervisor kill
+  # (124) is evidence only when the report that tick wrote before the kill names a
+  # structural reason: the kill can land after that write, and waiting still cannot
+  # clear such a finding (#3001).  A kill whose report is missing, stale or
+  # time-limit-only stays temporary (75).  Any other rc is a crash, never evidence.
+  # Producers before 2026-10-08 also recorded a supervisor kill as 75, so the rc
+  # alone is not enough: the report must also postdate the tick (checked below).
   lane_rc="$(sed -nE 's/.*"lane_usage_rc"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$state" | head -1)"
-  case "${lane_rc:-0}" in 0|75) ;; *) return 1 ;; esac
+  case "${lane_rc:-0}" in 0|75|124) ;; *) return 1 ;; esac
   kg_ios_disk_lane_report_is_fresh "$state" || return 1
   lane_state="$(kg_ios_disk_lane_usage_state "$state")"
   reasons="$(kg_ios_disk_json_array "$lane_state" blocking_reasons)"
