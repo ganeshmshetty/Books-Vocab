@@ -259,8 +259,8 @@ final class AppToastCoordinator {
         retire(id: nil)
     }
 
-    /// 點擊截斷的 pill 切換展開。沒有顯示中的通知時為 no-op；展開時重排自動收起計時
-    /// （至少 `expandedDismissFloor`），收起時回到該則的正常時長。
+    /// 點擊截斷的 pill 切換展開／收合（收合不關閉通知）。沒有顯示中的通知時為 no-op；展開時
+    /// 重排自動消失計時（至少 `expandedDismissFloor`），收合時回到該則的正常時長。
     func toggleExpanded(animation: Animation = AppMotion.panelState) {
         guard let visible = queue.current else { return }
         withAnimation(animation) {
