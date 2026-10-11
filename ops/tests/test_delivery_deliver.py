@@ -1381,8 +1381,9 @@ def _ios_pr_checks(build: str = "SUCCESS") -> list[dict[str, Any]]:
         _check("ios-quality / ios-plan", "SUCCESS"),
         _check("ios-quality / ios-build", build),
         _check("ios-quality / ios-verdict", "SUCCESS"),
-        _check("ios-quality / ios-tests (unit)", "SKIPPED"),
-        _check("ios-quality / ios-tests (ui-smoke)", "SKIPPED"),
+        # GitHub reports a skipped matrix job under its unexpanded template name
+        # (verified on PR #3090's rollup), not one entry per scope.
+        _check("ios-quality / ios-tests (${{ matrix.scope }})", "SKIPPED"),
         _check("ios-quality / ios-targeted", "SKIPPED"),
     ]
 
