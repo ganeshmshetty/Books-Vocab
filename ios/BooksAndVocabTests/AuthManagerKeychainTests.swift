@@ -195,6 +195,34 @@ struct AuthManagerKeychainTests {
         #expect(logoutCleaner.deletedAccountIDs == [nil])
     }
 
+    /// #2556: SettingsCoordinator captures the account BEFORE awaiting `DELETE /api/user/account`.
+    /// A concurrent in-flight request can get 401 first, and its teardown nils `userId` before the
+    /// delete logout runs. The delete logout must purge the captured account, not re-read `userId`.
+    /// Pre-fix the delete logout re-read the cleared `userId` and passed nil, skipping the purge.
+    @Test func deleteAccountPurgeTargetSurvivesConcurrent401Teardown() async {
+        let cleaner = RecordingCleaner()
+        let store = FakeSessionStore([session(userId: "account-a", token: "a.jwt", keychainReadFailed: false)])
+        let manager = AuthManager(
+            verifier: NoopVerifier(),
+            localDataCleaner: cleaner,
+            sessionStore: store,
+            accountPreferenceLifecycle: NoopAccountPreferenceLifecycle()
+        )
+        manager.modelContainer = Self.makeContainer()
+
+        let capturedAccountID = manager.userId
+        manager.logout(reason: "token_expired")
+        await manager.waitForPendingLocalDataCleanup()
+        #expect(manager.userId == nil)
+
+        manager.logoutAfterAccountDeletion(
+            modelContainer: manager.modelContainer,
+            deletedAccountID: capturedAccountID
+        )
+        await manager.waitForPendingLocalDataCleanup()
+        #expect(cleaner.deletedAccountIDs == [nil, "account-a"])
+    }
+
     // MARK: - (a) transient read failure must NOT log the user out
 
     @Test func transient_read_failure_with_prior_profile_keeps_user_logged_in() {
