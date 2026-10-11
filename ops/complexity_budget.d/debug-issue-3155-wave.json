@@ -4,5 +4,5 @@
   "raise": {
     "ops": 756
   },
-  "note": "Issue #3155 conversion: the per-lane fragment mechanism (load, fold, ratchet, raise and lift helpers, tests, docs) is ops tooling this lane owns, above the base headroom; one-time raise to measured + LIFT_MARGIN, moved out of the base file that #3177 edited (superseded by this branch after CR)."
+  "note": "Issue #3155 conversion: the per-lane fragment mechanism (load, fold, ratchet, raise and lift helpers, tests, docs) is ops tooling this lane owns, above the base headroom; one-time raise to measured + LIFT_MARGIN, carried by this fragment and not by the base file (fix of the CR findings on #3196: the base is main's ceiling 213922, so the effective ceiling 214678 is counted once)."
 }
