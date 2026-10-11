@@ -141,14 +141,8 @@ enum ReviewSessionPersistence {
 
         // 只有在有卡遺失、且遺失的卡之外仍有「未 flush」答案時才 partial restore；
         // 否則維持舊行為：任何不一致即清除快照。
-        if kept.count != snapshot.queue.count {
-            let atRisk = snapshot.submissions.contains { oldToNew[$0.key] != nil && !$0.value.flushed }
-            guard atRisk else {
-                TodayReviewSessionSnapshotStore.clear(for: userId)
-                return nil
-            }
-        }
-
+        // Drop log runs before the clear branch below: an unflushed answer for a missing card
+        // is lost on that path too, so it must be logged there as well (#3123).
         let droppedAnswers = snapshot.submissions.keys.filter { oldToNew[$0] == nil }
         if !droppedAnswers.isEmpty {
             let droppedUnflushed = droppedAnswers.filter { !(snapshot.submissions[$0]?.flushed ?? true) }.count
@@ -156,6 +150,14 @@ enum ReviewSessionPersistence {
                 AppLog.data.error("restoreSnapshot: dropped \(droppedAnswers.count) answers (\(droppedUnflushed) unflushed) for cards no longer reviewable")
             } else {
                 AppLog.data.info("restoreSnapshot: dropped \(droppedAnswers.count) already-flushed answers for cards no longer reviewable")
+            }
+        }
+
+        if kept.count != snapshot.queue.count {
+            let atRisk = snapshot.submissions.contains { oldToNew[$0.key] != nil && !$0.value.flushed }
+            guard atRisk else {
+                TodayReviewSessionSnapshotStore.clear(for: userId)
+                return nil
             }
         }
 
