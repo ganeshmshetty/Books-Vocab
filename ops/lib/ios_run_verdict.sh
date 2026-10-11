@@ -55,6 +55,11 @@ kg_ios_verdict_identity_kv() {
   printf 'ts=%s pid=%s cwd=%s' "$(date +%s)" "$$" "${KG_VERDICT_CWD:-$PWD}"
 }
 
+# Names the commit under test on every verdict line (#2906); unknown outside a repo.
+kg_ios_verdict_commit_kv() {
+  printf 'commit=%s' "$(git -C "${1:-$PWD}" rev-parse HEAD 2>/dev/null || echo unknown)"
+}
+
 kg_ios_verdict_publish() {
   if [[ -f "$VERDICT_FILE" && "$VERDICT_FILE" != "$VERDICT_LATEST_FILE" ]]; then
     cp -f "$VERDICT_FILE" "$VERDICT_LATEST_FILE" 2>/dev/null || true
