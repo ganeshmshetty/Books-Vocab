@@ -390,16 +390,6 @@ struct BackgroundSyncActorTests {
         #expect(entry?.isPendingDelete == true)
     }
 
-    // MARK: - Orphan cleanup safety-valve signalling
-    //
-    // Regression coverage for the sync-boundary leak: when a FULL sync's
-    // orphan cleanup is blocked by the mass-deletion safety valve, the local
-    // store still holds ghost entries. `pullCardsToLocal` must report this so
-    // the caller can refuse to advance the incremental boundary (forcing a
-    // full-sync retry next time) instead of permanently stranding the ghosts.
-
-    /// Seed `count` server-synced entries that will become orphans (they are
-    /// absent from any fetched-card list).
     // MARK: - Tombstone resolution (#2547)
 
     @Test func syncDown_tombstone_doesNotDeleteLiveCardWithSameWord() async throws {
@@ -495,6 +485,44 @@ struct BackgroundSyncActorTests {
         #expect(entries.first?.kgCardId == "card-Y")
     }
 
+    @Test func syncDown_liveRekeyThenTombstoneForOldId_keepsRekeyedEntry() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let existing = VocabularyEntry(word: "ephemeral", translation: "meaning-ephemeral", context: "an example")
+        existing.notebookId = "default"
+        existing.kgCardId = "card-X"
+        existing.markSynced()
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        // Batch order matters: the live card re-keys the entry from card-X to card-Y,
+        // then the tombstone for card-X arrives and must not delete the re-keyed row.
+        let rekeyed = try makeCard(id: "card-Y", content: "ephemeral", sourceJSON: nil)
+        let tombstone = try makeCard(id: "card-X", content: "ephemeral", sourceJSON: nil, isDeleted: true)
+
+        try await actor.pullCardsToLocal(
+            fetchedCards: [rekeyed, tombstone],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let context = ModelContext(container)
+        let entries = try context.fetch(FetchDescriptor<VocabularyEntry>()).filter { $0.word == "ephemeral" }
+        #expect(entries.count == 1)
+        #expect(entries.first?.kgCardId == "card-Y")
+    }
+
+    // MARK: - Orphan cleanup safety-valve signalling
+    //
+    // Regression coverage for the sync-boundary leak: when a FULL sync's
+    // orphan cleanup is blocked by the mass-deletion safety valve, the local
+    // store still holds ghost entries. `pullCardsToLocal` must report this so
+    // the caller can refuse to advance the incremental boundary (forcing a
+    // full-sync retry next time) instead of permanently stranding the ghosts.
+
+    /// Seed `count` server-synced entries that will become orphans (they are
+    /// absent from any fetched-card list).
     private func seedSyncedEntries(_ container: ModelContainer, count: Int) throws {
         let context = ModelContext(container)
         for i in 0..<count {
