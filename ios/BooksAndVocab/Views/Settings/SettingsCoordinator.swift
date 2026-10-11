@@ -46,7 +46,7 @@ private struct SettingsConfigurationPayloadError: LocalizedError {
     func requestDeleteAccount()
     func clearDeleteAccountError()
     func presentSubscriptionPaywall()
-    func deleteAccount(authManager: any AuthManaging, kgService: any KGServing, modelContext: ModelContext) async
+    func deleteAccount(authManager: any AuthManaging, kgService: any AccountErasing, modelContext: ModelContext) async
     func readResetSnapshot(
         authManager: any AuthManaging,
         modelContext: ModelContext
@@ -598,9 +598,10 @@ final class SettingsCoordinator: SettingsCoordinating {
         showSubscriptionPaywall = true
     }
 
+    /// 僅需 `AccountErasing`（窄化依賴，讓 #2556 回歸測試能注入會觸發 401 teardown 的替身）。
     func deleteAccount(
         authManager: any AuthManaging,
-        kgService: any KGServing,
+        kgService: any AccountErasing,
         modelContext: ModelContext
     ) async {
         guard authManager.isLoggedIn, !isDeletingAccount else { return }

@@ -223,6 +223,56 @@ struct AuthManagerKeychainTests {
         #expect(cleaner.deletedAccountIDs == [nil, "account-a"])
     }
 
+    /// `AccountErasing` 替身：模擬 #2556 競態，`DELETE /api/user/account` 回傳前，併發請求的 401
+    /// 已先行 teardown 登出。
+    @MainActor
+    private final class TeardownDuringAccountDeletion: AccountErasing {
+        private let authManager: AuthManager
+        private(set) var deleteCalls = 0
+
+        init(authManager: AuthManager) {
+            self.authManager = authManager
+        }
+
+        func deleteAccount() async throws {
+            deleteCalls += 1
+            authManager.logout(reason: "token_expired")
+            // endSession defers the up-front `userId = nil` into a Task. Drain it so the
+            // teardown has actually cleared the session before this DELETE returns, as in production.
+            await authManager.waitForPendingLocalDataCleanup()
+        }
+    }
+
+    /// #2556 fail-without-fix：驅動正式的 `SettingsCoordinator.deleteAccount`，而非手抄其擷取邏輯。
+    /// 替身 DELETE 於回傳前觸發 401 teardown，因此 delete logout 只有在 coordinator 於 `await` 前讀取
+    /// `userId` 時，才能 purge 被刪帳號。若把讀取移到 `await kgService.deleteAccount()` 之後，delete logout
+    /// 會收到 nil、跳過 purge，第二筆記錄變成 nil，本測試即紅。
+    @Test func settingsCoordinatorCapturesDeleteTargetBeforeAwaitingDeletion() async {
+        let cleaner = RecordingCleaner()
+        let store = FakeSessionStore([session(userId: "account-a", token: "a.jwt", keychainReadFailed: false)])
+        let manager = AuthManager(
+            verifier: NoopVerifier(),
+            localDataCleaner: cleaner,
+            sessionStore: store,
+            accountPreferenceLifecycle: NoopAccountPreferenceLifecycle()
+        )
+        let container = Self.makeContainer()
+        manager.modelContainer = container
+        let erasing = TeardownDuringAccountDeletion(authManager: manager)
+        let coordinator = SettingsCoordinator(translationLifecycle: NoopAccountPreferenceLifecycle())
+
+        await coordinator.deleteAccount(
+            authManager: manager,
+            kgService: erasing,
+            modelContext: container.mainContext
+        )
+        await manager.waitForPendingLocalDataCleanup()
+
+        #expect(erasing.deleteCalls == 1)
+        #expect(manager.isLoggedIn == false)
+        #expect(cleaner.deletedAccountIDs == [nil, "account-a"])
+    }
+
     // MARK: - (a) transient read failure must NOT log the user out
 
     @Test func transient_read_failure_with_prior_profile_keeps_user_logged_in() {
