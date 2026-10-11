@@ -295,7 +295,7 @@ class FakeWorld:
                 )
                 return ok(json.dumps(closed))
             if cmd[1] == "api" and f"/commits/{QUEUE_HEAD}/check-runs" in cmd[-1]:
-                return ok(json.dumps([{"check_runs": self.queue_runs}]))
+                return ok(json.dumps({"check_runs": self.queue_runs}))
             if (
                 cmd[1] == "api"
                 and "/check-runs?" in cmd[-1]

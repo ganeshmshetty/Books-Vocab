@@ -1403,7 +1403,7 @@ class Delivery:
         # group this PR sat in, falling back to the head when none was seen.
         if self.queue_head:
             runs = self.gh_pages(
-                f"repos/{repo}/commits/{self.queue_head}/check-runs?filter=latest",
+                f"repos/{repo}/commits/{self.queue_head}/check-runs?filter=latest&per_page=100",
                 "check_runs",
             )
             checks, link = list(newest_by_name(runs).values()), "html_url"
