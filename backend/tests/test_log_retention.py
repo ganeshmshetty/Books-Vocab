@@ -71,10 +71,10 @@ def _insert_pipeline_row(started_at: str, run_id: str | None = None) -> None:
 
 
 def test_prune_pipeline_log_drops_only_old_rows(isolated_logs):
-    _insert_pipeline_row(_iso(40))   # old
-    _insert_pipeline_row(_iso(31))   # old
-    _insert_pipeline_row(_iso(29))   # recent
-    _insert_pipeline_row(_iso(1))    # recent
+    _insert_pipeline_row(_iso(40))  # old
+    _insert_pipeline_row(_iso(31))  # old
+    _insert_pipeline_row(_iso(29))  # recent
+    _insert_pipeline_row(_iso(1))  # recent
 
     deleted, remaining = log_retention.prune_pipeline_log(days=30)
 
@@ -93,9 +93,11 @@ def test_prune_pipeline_log_noop_when_empty(isolated_logs):
 def test_prune_pipeline_log_preserves_index(isolated_logs):
     _insert_pipeline_row(_iso(40))
     log_retention.prune_pipeline_log(days=30)
-    rows = pipeline_log._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pipeline_runs'"
-    ).fetchall()
+    rows = (
+        pipeline_log._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='pipeline_runs'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_pr_started" in names
 
@@ -117,10 +119,10 @@ def _insert_judge_row(created_at: str) -> None:
 
 
 def test_prune_judge_log_drops_only_old_rows(isolated_logs):
-    _insert_judge_row(_iso(80))   # old
-    _insert_judge_row(_iso(61))   # old
-    _insert_judge_row(_iso(59))   # recent
-    _insert_judge_row(_iso(1))    # recent
+    _insert_judge_row(_iso(80))  # old
+    _insert_judge_row(_iso(61))  # old
+    _insert_judge_row(_iso(59))  # recent
+    _insert_judge_row(_iso(1))  # recent
 
     deleted, remaining = log_retention.prune_judge_log(days=60)
 
@@ -131,9 +133,11 @@ def test_prune_judge_log_drops_only_old_rows(isolated_logs):
 def test_prune_judge_log_preserves_index(isolated_logs):
     _insert_judge_row(_iso(80))
     log_retention.prune_judge_log(days=60)
-    rows = judge_log._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='judge_log'"
-    ).fetchall()
+    rows = (
+        judge_log._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='judge_log'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_jl_created" in names
 
@@ -155,10 +159,10 @@ def _insert_translate_row(created_at: str) -> None:
 
 
 def test_prune_translate_log_drops_only_old_rows(isolated_logs):
-    _insert_translate_row(_iso(20))   # old
-    _insert_translate_row(_iso(15))   # old
-    _insert_translate_row(_iso(13))   # recent
-    _insert_translate_row(_iso(1))    # recent
+    _insert_translate_row(_iso(20))  # old
+    _insert_translate_row(_iso(15))  # old
+    _insert_translate_row(_iso(13))  # recent
+    _insert_translate_row(_iso(1))  # recent
 
     deleted, remaining = log_retention.prune_translate_log(days=14)
 
@@ -169,9 +173,11 @@ def test_prune_translate_log_drops_only_old_rows(isolated_logs):
 def test_prune_translate_log_preserves_index(isolated_logs):
     _insert_translate_row(_iso(30))
     log_retention.prune_translate_log(days=14)
-    rows = translate_log._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='translate_log'"
-    ).fetchall()
+    rows = (
+        translate_log._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='translate_log'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_tl_cache" in names
     assert "idx_tl_user" in names
@@ -182,9 +188,11 @@ def test_translate_log_has_bare_created_at_index(isolated_logs):
     ``(created_at)`` index SQLite full-scans. ``idx_tl_user`` leads with
     user_id so it can't serve a bare-created_at predicate."""
     translate_log._get_conn()  # force schema/index init
-    rows = translate_log._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='translate_log'"
-    ).fetchall()
+    rows = (
+        translate_log._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='translate_log'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_tl_created" in names
 
@@ -213,10 +221,10 @@ def _insert_cache_hit_row(created_at: str) -> None:
 
 
 def test_prune_translate_cache_hits_drops_only_old_rows(isolated_logs):
-    _insert_cache_hit_row(_iso(20))   # old (>14d)
-    _insert_cache_hit_row(_iso(15))   # old
-    _insert_cache_hit_row(_iso(13))   # recent
-    _insert_cache_hit_row(_iso(1))    # recent
+    _insert_cache_hit_row(_iso(20))  # old (>14d)
+    _insert_cache_hit_row(_iso(15))  # old
+    _insert_cache_hit_row(_iso(13))  # recent
+    _insert_cache_hit_row(_iso(1))  # recent
 
     deleted, remaining = log_retention.prune_translate_cache_hits(days=14)
 
@@ -227,8 +235,8 @@ def test_prune_translate_cache_hits_drops_only_old_rows(isolated_logs):
 def test_prune_translate_cache_hits_reuses_translate_log_retention_env(isolated_logs, monkeypatch):
     """Fix B reuses ``TRANSLATE_LOG_RETENTION_DAYS`` — no new env/knob."""
     monkeypatch.setenv("TRANSLATE_LOG_RETENTION_DAYS", "3")
-    _insert_cache_hit_row(_iso(4))   # >3d → pruned
-    _insert_cache_hit_row(_iso(2))   # inside 3d → survives
+    _insert_cache_hit_row(_iso(4))  # >3d → pruned
+    _insert_cache_hit_row(_iso(2))  # inside 3d → survives
 
     deleted, remaining = log_retention.prune_translate_cache_hits()  # env default
 
@@ -246,9 +254,11 @@ def test_prune_translate_cache_hits_safe_with_no_data(isolated_logs):
 def test_prune_translate_cache_hits_preserves_index(isolated_logs):
     _insert_cache_hit_row(_iso(30))
     log_retention.prune_translate_cache_hits(days=14)
-    rows = translate_log._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='translate_cache_hits'"
-    ).fetchall()
+    rows = (
+        translate_log._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='translate_cache_hits'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_tch_created" in names
 
@@ -269,10 +279,10 @@ def _insert_token_row(created_at: str) -> None:
 
 
 def test_prune_token_usage_drops_only_old_rows(isolated_logs):
-    _insert_token_row(_iso(120))   # old
-    _insert_token_row(_iso(91))    # old
-    _insert_token_row(_iso(89))    # recent
-    _insert_token_row(_iso(1))     # recent
+    _insert_token_row(_iso(120))  # old
+    _insert_token_row(_iso(91))  # old
+    _insert_token_row(_iso(89))  # recent
+    _insert_token_row(_iso(1))  # recent
 
     deleted, remaining = log_retention.prune_token_usage(days=90)
 
@@ -283,9 +293,11 @@ def test_prune_token_usage_drops_only_old_rows(isolated_logs):
 def test_prune_token_usage_preserves_index(isolated_logs):
     _insert_token_row(_iso(120))
     log_retention.prune_token_usage(days=90)
-    rows = token_tracker._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='token_usage'"
-    ).fetchall()
+    rows = (
+        token_tracker._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='token_usage'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_user_created" in names
 
@@ -294,9 +306,11 @@ def test_token_usage_has_bare_created_at_index(isolated_logs):
     """Fix A (R8#3): both composite indexes lead with user_id, so the bare
     ``created_at`` retention DELETE full-scans. Needs a ``(created_at)`` index."""
     token_tracker._get_conn()  # force schema/index init
-    rows = token_tracker._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='token_usage'"
-    ).fetchall()
+    rows = (
+        token_tracker._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='token_usage'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_tu_created" in names
 
@@ -317,10 +331,10 @@ def _insert_llm_error_row(created_at: str) -> None:
 
 
 def test_prune_llm_errors_drops_only_old_rows(isolated_logs):
-    _insert_llm_error_row(_iso(40))   # old
-    _insert_llm_error_row(_iso(31))   # old
-    _insert_llm_error_row(_iso(29))   # recent
-    _insert_llm_error_row(_iso(1))    # recent
+    _insert_llm_error_row(_iso(40))  # old
+    _insert_llm_error_row(_iso(31))  # old
+    _insert_llm_error_row(_iso(29))  # recent
+    _insert_llm_error_row(_iso(1))  # recent
 
     deleted, remaining = log_retention.prune_llm_errors(days=30)
 
@@ -331,9 +345,11 @@ def test_prune_llm_errors_drops_only_old_rows(isolated_logs):
 def test_prune_llm_errors_preserves_index(isolated_logs):
     _insert_llm_error_row(_iso(40))
     log_retention.prune_llm_errors(days=30)
-    rows = llm_error_log._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='llm_errors'"
-    ).fetchall()
+    rows = (
+        llm_error_log._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='llm_errors'")
+        .fetchall()
+    )
     names = {r[0] for r in rows}
     assert "idx_le_created" in names
 
@@ -488,9 +504,9 @@ def test_prune_judge_log_respects_retention_days_env(isolated_logs, monkeypatch)
     monkeypatch.setenv("JUDGE_LOG_RETENTION_DAYS", "7")
 
     for _ in range(5):
-        _insert_judge_row(_iso(8))   # 8 days ago → must be pruned under 7d window
+        _insert_judge_row(_iso(8))  # 8 days ago → must be pruned under 7d window
     for _ in range(5):
-        _insert_judge_row(_iso(0))   # today → must survive
+        _insert_judge_row(_iso(0))  # today → must survive
 
     deleted, remaining = log_retention.prune_judge_log()  # uses env default
 
@@ -626,3 +642,56 @@ def test_cli_all_flag_respects_retention_env(isolated_logs):
     out = json.loads(result.stdout)
     assert out["judge_log"]["deleted"] == 1
     assert out["judge_log"]["days"] == 7
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bounded DELETE batches (#2091)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_prune_deletes_a_backlog_in_bounded_batches(isolated_logs, monkeypatch):
+    """A backlog larger than one batch is removed by several LIMIT-bounded DELETEs.
+
+    One unbounded DELETE would hold the log lock for the whole backlog on the
+    first run, which can outlast docker stop's 10s grace period.
+    """
+    monkeypatch.setattr(log_retention, "DELETE_BATCH_SIZE", 2)
+    for _ in range(7):
+        _insert_pipeline_row(_iso(40))  # older than the cutoff
+    _insert_pipeline_row(_iso(1))  # newer than the cutoff
+
+    conn = pipeline_log._get_conn()
+    deletes: list[str] = []
+    conn.set_trace_callback(lambda sql: deletes.append(sql) if sql.lstrip().upper().startswith("DELETE") else None)
+    try:
+        deleted, remaining = log_retention.prune_pipeline_log(days=30)
+    finally:
+        conn.set_trace_callback(None)
+
+    assert deleted == 7
+    assert remaining == 1
+    assert len(deletes) > 1, "backlog must be drained by more than one statement"
+    assert all("LIMIT" in sql.upper() for sql in deletes), deletes
+    survivors = conn.execute("SELECT started_at FROM pipeline_runs").fetchall()
+    assert len(survivors) == 1
+    assert survivors[0][0] > _iso(30)
+
+
+def test_prune_stops_at_a_batch_boundary_and_keeps_committed_batches(isolated_logs, monkeypatch):
+    """A stop request ends the prune between batches; batches already committed stay deleted."""
+    monkeypatch.setattr(log_retention, "DELETE_BATCH_SIZE", 2)
+    for _ in range(7):
+        _insert_pipeline_row(_iso(40))
+    _insert_pipeline_row(_iso(1))
+
+    checks: list[int] = []
+
+    def should_stop() -> bool:
+        checks.append(1)
+        return len(checks) > 1  # allow the first batch, stop before the second
+
+    with pytest.raises(log_retention.RetentionStopped):
+        log_retention.prune_pipeline_log(days=30, should_stop=should_stop)
+
+    count = pipeline_log._get_conn().execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
+    assert count == 8 - 2, "exactly the first batch of 2 old rows was committed"
