@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# ci_macos_queue_probe.sh — record how long this macOS job waited for a runner
-# (started_at - created_at) and fail with a named cause when the pool starved it
-# (Issue #2641). A measurement problem (API/permission/clock) only warns: the
-# probe must never turn a healthy build red.
+# ci_macos_queue_probe.sh — a measurement, never a gate: records how long this macOS
+# job waited for a runner (started_at - created_at). It runs after the job got its
+# runner, so failing here only forces a rerun that queues again (owner decision
+# 2026-10-11, #2641). Starvation warns with ::warning:: and the named cause; exit 0.
 set -uo pipefail
 
 max_min="${KG_MACOS_QUEUE_MAX_MIN:-20}"
@@ -35,6 +35,7 @@ fi
 printf 'macOS queue wait: %ss (budget %smin)\n' "$wait_s" "$max_min"
 printf '### macOS runner queue\n\nqueued-to-started: %ss (budget %s min)\n' "$wait_s" "$max_min" >>"$summary"
 if (( wait_s > max_min * 60 )); then
+  printf '::warning::macos-capacity starved: job waited %ss for a macos-26 runner (budget %smin)\n' "$wait_s" "$max_min"
   printf 'macos-capacity starved: job waited %ss for a macos-26 runner (budget %smin)\n' "$wait_s" "$max_min" >&2
-  exit 1
 fi
+exit 0

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_ci_macos_queue_probe.sh — queue-wait measurement fails only on starvation.
+# test_ci_macos_queue_probe.sh — queue wait is a measurement: starvation warns, never fails the job.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROBE="$ROOT/ops/ci_macos_queue_probe.sh"
@@ -27,10 +27,10 @@ stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:05:00Z
 out="$(run_probe)" && grep -q 'queue wait: 300s' <<<"$out" && grep -q '300s' "$tmp/summary" \
   && pass "short wait is recorded and passes" || fail "short wait must pass and be recorded: $out"
 
+# Starvation warns (::warning:: annotation, exit 0) and the wait is still recorded.
 stub_gh 2026-01-01T00:00:00Z 2026-01-01T00:45:00Z
-if out="$(run_probe)"; then fail "starved wait must fail"; \
-elif grep -q 'macos-capacity starved' <<<"$out"; then pass "starved wait fails with named cause"; \
-else fail "starved failure lacks the named cause: $out"; fi
+if out="$(run_probe)" && grep -q '^::warning::macos-capacity starved' <<<"$out" && grep -q '2700s' "$tmp/summary"; then pass "starved wait warns and exits 0"; \
+else fail "starved wait must exit 0 with the warning annotation: $out"; fi
 
 stub_gh 2026-01-01T00:00:00Z ''
 run_probe >/dev/null && pass "API failure only warns" || fail "API failure must not fail the job"
@@ -53,8 +53,8 @@ stub_paged_gh() {
   chmod +x "$tmp/bin/gh"
 }
 stub_paged_gh
-if out="$(run_probe)"; then fail "runner on job 115 must be found and its starvation must fail"; \
-elif grep -q 'macos-capacity starved' <<<"$out"; then pass "runner on job 115 (beyond the first 100) is found through pagination"; \
+if out="$(run_probe)" && grep -q '^::warning::macos-capacity starved' <<<"$out"; then
+  pass "runner on job 115 (beyond the first 100) is found through pagination"
 else fail "runner on job 115 was not measured (pagination missing): $out"; fi
 
 (( failures == 0 )) || exit 1
