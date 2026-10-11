@@ -618,7 +618,7 @@ def test_asset_upload_after_tombstone_is_rejected_and_not_recorded(isolated_api,
 
 def test_prefix_sweep_failure_is_reported_to_sentry_with_erasure_context(tmp_path, monkeypatch):
     """A swallowed prefix-sweep failure must reach Sentry, not just the log: the
-    client cannot retry after the tombstone, so this is the only operator signal."""
+    client cannot retry after the tombstone, so Sentry is the alert path."""
     import kg.user_handlers as user_handlers
 
     class _ListingDown(_BucketFake):
@@ -640,8 +640,12 @@ def test_prefix_sweep_failure_is_reported_to_sentry_with_erasure_context(tmp_pat
 
 
 def test_local_only_asset_declaration_after_tombstone_is_rejected(isolated_api, monkeypatch):
-    """#2702 applies to the local_only branch too: a token issued before erasure
-    must get 401 and must not flip the book's asset storage."""
+    """#2702 applies to the local_only branch too: an erased account must get 401
+    and must not flip the book's asset storage.
+
+    Only ``_terminated`` is written (no ``_revoked_before``), so the 401 can only
+    come from the local_only registration guard; the CurrentUser revocation check
+    would otherwise reject the request first and the guard would go untested."""
     _swap_settings(KGSettings(data_dir=isolated_api.data_dir, jwt_secret=TEST_JWT_SECRET, library_bucket="b"))
     monkeypatch.setattr(library_router, "_library_s3_client", lambda settings: _BucketFake())
     created = isolated_api.client.post(
@@ -653,7 +657,7 @@ def test_local_only_asset_declaration_after_tombstone_is_rejected(isolated_api, 
     book_id = created.json()["id"]
 
     users = json.loads(isolated_api.users_file.read_text())
-    _tombstone_accounts(users, [isolated_api.user_id], purge_external_api_keys=None)
+    users["_terminated"] = [isolated_api.user_id]
     isolated_api.users_file.write_text(json.dumps(users))
 
     response = isolated_api.client.post(

@@ -457,7 +457,7 @@ def delete_user_account_response(
     # (#2702), but a presigned PUT minted earlier can still land after the
     # ledger-driven delete. Sweep the whole account prefix, outside the lock.
     # Best-effort: the client cannot retry (its token is revoked), so a failure
-    # is logged and reported to Sentry (the only operator signal). A PUT
+    # is logged and reported to Sentry, which is the operator alert path. A PUT
     # completing after this sweep, inside the URL TTL, is bounded by the bucket
     # lifecycle rule rather than by this request.
     try:
