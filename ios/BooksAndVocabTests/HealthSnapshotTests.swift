@@ -73,7 +73,7 @@ private final class RecordingSessionStore: AuthSessionStoring {
 }
 
 private final class NoopLocalDataCleaner: LocalDataClearing {
-    func clearLocalData(container: ModelContainer, reason: String) async {}
+    func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {}
 }
 
 private final class NoopAuthVerifier: AuthVerifying {
