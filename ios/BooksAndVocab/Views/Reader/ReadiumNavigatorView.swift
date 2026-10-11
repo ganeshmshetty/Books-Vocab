@@ -402,7 +402,11 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
             }
             guard acceptsNavigator(navigator, generation: callbackGeneration) else { return }
             let matchingTOCRequestID = activeTOCRequestID.flatMap { requestID in
-                tocNavigationGate.matchesCurrent(requestID, locatorHref: locator.href.string)
+                tocNavigationGate.matchesCurrent(
+                    requestID,
+                    locatorHref: locator.href.string,
+                    locatorFragments: locator.locations.fragments
+                )
                     ? requestID
                     : nil
             }
@@ -412,7 +416,8 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
             if let requestID = matchingTOCRequestID,
                tocNavigationGate.finish(
                    requestID,
-                   ifMatchingLocatorHref: locator.href.string
+                   ifMatchingLocatorHref: locator.href.string,
+                   locatorFragments: locator.locations.fragments
                ) {
                 activeTOCNavigationTask?.cancel()
                 activeTOCNavigationTask = nil
