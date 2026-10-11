@@ -640,6 +640,7 @@
 "到期複習" = "Due review";
 "到期複習（%@）" = "Due review (%@)";
 "功能" = "Features";
+"Free" = "Free";
 "匯入錯誤・%@" = "Import error · %@";
 "匯入電子書開始閱讀（EPUB・TXT・MD・PDF）" = "Import an ebook to start reading (EPUB · TXT · MD · PDF)";
 "點擊上方匯入按鈕加入你的第一本書" = "Tap the import button above to add your first book";

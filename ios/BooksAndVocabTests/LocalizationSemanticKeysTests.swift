@@ -102,5 +102,27 @@ struct LocalizationSemanticKeysTests {
             }
         }
     }
+
+    @Test
+    func settingsPlanFreeHeaderResolvesInEverySupportedLanguage() throws {
+        let store = AppLanguageStore.shared
+        defer { store.setLanguage(.system) }
+
+        for (locale, language) in supportedLanguages {
+            store.setLanguage(language)
+            let path = try #require(Bundle.main.path(forResource: locale, ofType: "lproj"))
+            let bundle = try #require(Bundle(path: path))
+            let value = bundle.localizedString(
+                forKey: "Free",
+                value: "**missing**",
+                table: "Localizable"
+            )
+            #expect(value != "**missing**", "missing \(locale) translation for settings plan header Free")
+            #expect(L10n.string("Free") == value, "runtime bundle mismatch for \(locale) settings plan header Free")
+            if locale != "en" {
+                #expect(value != "Free", "untranslated \(locale) settings plan header Free")
+            }
+        }
+    }
 }
 #endif

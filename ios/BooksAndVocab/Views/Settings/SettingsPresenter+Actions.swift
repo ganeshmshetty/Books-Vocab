@@ -304,7 +304,7 @@ struct SettingsPlanComparisonTable: View {
                 .foregroundStyle(appSkin.palette.tertiaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text("Free")
+            Text(L10n.string("Free"))
                 .font(appSkin.typography.caption)
                 .foregroundStyle(appSkin.palette.tertiaryText)
                 .frame(minWidth: 52, alignment: .center)
