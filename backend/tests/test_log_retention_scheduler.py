@@ -7,6 +7,8 @@ import logging
 import threading
 from datetime import datetime
 
+import pytest
+
 from kg.log_retention_scheduler import LogRetentionScheduler, next_run_at
 
 
@@ -90,3 +92,32 @@ def test_run_next_sleeps_a_full_day_when_called_exactly_at_target():
     asyncio.run(scheduler.run_next())
 
     assert sleeps == [24 * 3600.0]
+
+
+class _StopForever(Exception):
+    """Raised by the injected sleep to end run_forever deterministically."""
+
+
+def test_run_forever_keeps_scheduling_after_a_failed_run():
+    now = datetime(2026, 10, 11, 4, 16, 0)
+    sleeps = 0
+    calls: list[int] = []
+
+    async def _sleep(seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 3:
+            raise _StopForever
+
+    def _run_all() -> dict[str, dict[str, int]]:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("disk full")
+        return {}
+
+    scheduler = LogRetentionScheduler(run_all_fn=_run_all, clock=lambda: now, sleep_fn=_sleep)
+
+    with pytest.raises(_StopForever):
+        asyncio.run(scheduler.run_forever())
+
+    assert len(calls) == 2

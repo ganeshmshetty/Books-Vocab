@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
 from typing import Any
@@ -61,8 +62,36 @@ class LogRetentionScheduler:
 
     async def _run_once(self) -> None:
         # run_all uses blocking sqlite connections; keep them off the event loop.
+        # Cancelling the awaiting task does not stop a worker thread that already
+        # started, so on cancellation we wait for it to finish before propagating:
+        # the lifespan must not release the runtime root or worker lock under a
+        # live DELETE. A run cancelled before its thread started is skipped
+        # outright, so there is nothing to wait for and no hang on shutdown.
+        state_lock = threading.Lock()
+        running = False
+        cancelled = False
+        finished = threading.Event()
+
+        def _work() -> dict[str, dict[str, int]]:
+            nonlocal running
+            with state_lock:
+                if cancelled:
+                    return {}
+                running = True
+            try:
+                return self._run_all_fn()
+            finally:
+                finished.set()
+
         try:
-            report = await asyncio.to_thread(self._run_all_fn)
+            report = await asyncio.to_thread(_work)
+        except asyncio.CancelledError:
+            with state_lock:
+                thread_started = running
+                cancelled = not running
+            if thread_started:
+                await asyncio.to_thread(finished.wait)
+            raise
         except Exception:
             self._logger.exception("log retention run failed; will retry at the next scheduled time")
             return
