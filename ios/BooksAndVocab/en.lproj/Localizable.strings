@@ -76,6 +76,9 @@
 "匯出 JSON" = "Export JSON";
 "刪除" = "Delete";
 "複習紀錄會一併移除，無法復原。" = "Its review history will be removed too. This cannot be undone.";
+"刪除 %@ 個單字？" = "Delete %@ words?";
+"刪除這個單字？" = "Delete this word?";
+"複習紀錄與知識連結會一併移除，無法復原。" = "Their review history and knowledge links will be removed too. This cannot be undone.";
 "複習紀錄與 %@ 條知識連結會一併移除，無法復原。" = "Its review history and %@ knowledge link(s) will be removed too. This cannot be undone.";
 "刪除「%@」？" = "Delete “%@”?";
 "刪除 Books & Vocab 單字" = "Delete Books & Vocab Words";

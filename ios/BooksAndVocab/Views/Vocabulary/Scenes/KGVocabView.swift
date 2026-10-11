@@ -33,6 +33,7 @@ struct KGVocabView: View {
     @State private var coordinator = KGVocabCoordinator()
     @State private var query: VocabularyLibraryQuery
     @State private var selectionState = SelectionModeState()
+    @State private var batchDeleteConfirmation = BatchDeleteConfirmation()
     @State private var selectedRowID: UUID?
     @State private var loginGate = LoginGateState()
     @Query private var pendingDeletes: [VocabularyEntry]
@@ -208,12 +209,28 @@ struct KGVocabView: View {
                 SelectionToolbar(
                     selectionCount: selectionState.selectionCount,
                     onArchive: { handleBatchArchive() },
-                    onDelete: { handleBatchDelete() }
+                    onDelete: { batchDeleteConfirmation.request(selectionCount: selectionState.selectionCount) }
                 )
                 .transition(.readerPanelReveal)
             }
         }
         .animateSpring(selectionState.isSelecting)
+        // Alert, not confirmationDialog: in the UI test the confirmationDialog rendered as a
+        // popover that showed only the destructive action, so its Cancel button was not
+        // hittable and the cancel path was unreachable. Batch delete therefore uses .alert.
+        // Follow-up: the single-word delete in WordDetailSheet.swift still uses
+        // .confirmationDialog, so the two destructive confirmations differ in presentation.
+        .alert(
+            KGVocabCopy.batchDeleteTitle(count: batchDeleteConfirmation.requestedCount),
+            isPresented: $batchDeleteConfirmation.isPending
+        ) {
+            Button(WordDetailCopy.delete, role: .destructive) {
+                batchDeleteConfirmation.confirm(selectionCount: selectionState.selectionCount) { handleBatchDelete() }
+            }
+            Button(WordDetailCopy.cancel, role: .cancel) { batchDeleteConfirmation.cancel() }
+        } message: {
+            Text(KGVocabCopy.batchDeleteMessage())
+        }
         .onChange(of: query) { _, _ in
             selectionState.exit()
         }
