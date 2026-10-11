@@ -69,6 +69,9 @@ enum SyncFailurePresentation {
         language: AppLanguage,
         preferredLanguages: [String] = Locale.preferredLanguages
     ) -> String {
+        // 字串與列表分隔符共用同一個解析結果（#2997）：.system 只解析一次，
+        // 不讓字串（L10n）與分隔符（ListFormatter）各自解析而分歧。
+        let language = language.resolved(preferredLanguages: preferredLanguages)
         var reasonOrder: [String] = []
         var labelsByReason: [String: [String]] = [:]
         for failure in failures {
@@ -84,27 +87,22 @@ enum SyncFailurePresentation {
             return L10n.format(
                 "sync.failure.message",
                 language: language,
-                localizedList(operations, language: language, preferredLanguages: preferredLanguages),
+                localizedList(operations, language: language),
                 reason
             )
         }
         return L10n.format(
             "背景同步部分失敗：%@",
             language: language,
-            localizedList(groups, language: language, preferredLanguages: preferredLanguages)
+            localizedList(groups, language: language)
         )
     }
 
-    private static func localizedList(
-        _ items: [String],
-        language: AppLanguage,
-        preferredLanguages: [String]
-    ) -> String {
+    private static func localizedList(_ items: [String], language: AppLanguage) -> String {
         let formatter = ListFormatter()
-        formatter.locale = AppLanguageStore.shared.formatLocale(
-            for: language,
-            preferredLanguages: preferredLanguages
-        )
+        // language 已在 partialFailureSummary 解析為具體語系；格式化仍經 formatLocale(for:)，
+        // 與 L10n.format(language:) 走同一條路徑（#2997）。
+        formatter.locale = AppLanguageStore.shared.formatLocale(for: language)
         // ListFormatter.string(from:) 對非空陣列不會回 nil；callers 保證 items 非空。
         // 這裡不寫回寫死的 ASCII 分隔符，unreachable fallback 只保留不會把標點硬編在內的形式。
         return formatter.string(from: items) ?? items.joined()
