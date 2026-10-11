@@ -113,6 +113,7 @@ struct TodayReviewSessionPersistenceController {
             queueCount: queueCount,
             queuePersistenceIDs: queuePersistenceIDs,
             queueBaselines: queueBaselines,
+            queueEntryIDs: queueEntryIDs,
             submittedAnswers: submittedAnswers
         )
     }
