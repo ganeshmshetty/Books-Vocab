@@ -330,11 +330,16 @@ struct ReaderTOCNavigationState: Equatable {
         case .missingDestination: phaseValue = "missingDestination"
         }
         let selected = selectedTitle ?? ""
+        // `expected` is the resource href (fragment stripped), not the requested
+        // TOC href; UI automation must compare against the resource part.
         let expected = expectedLocatorHref ?? ""
         let destination = destinationHref ?? ""
         return "phase=\(phaseValue);selected=\(selected);expected=\(expected);destination=\(destination)"
     }
 
+    /// Starts a TOC navigation request. `expectedHref` may carry a `#fragment`;
+    /// the stored expectation is the resource href only (see `resourceHref`),
+    /// so callers must not expect `expectedLocatorHref` to equal the input.
     @discardableResult
     mutating func beginSelection(
         path: [Int],
@@ -349,9 +354,16 @@ struct ReaderTOCNavigationState: Equatable {
         observedLocatorHref = nil
         failureReason = nil
         activeRequestID = requestID
-        expectedLocatorHref = expectedHref
+        expectedLocatorHref = Self.resourceHref(expectedHref)
         phase = .loading
         return requestID
+    }
+
+    /// TOC hrefs may carry a `#fragment` section anchor, but Readium locators
+    /// report only the resource href, so compare against the resource part.
+    static func resourceHref(_ href: String) -> String {
+        guard let hash = href.firstIndex(of: "#") else { return href }
+        return String(href[..<hash])
     }
 
     @discardableResult
@@ -572,7 +584,7 @@ struct ReaderTOCEvidenceEntry: Codable, Equatable {
             }
             switch entry.partition {
             case "required":
-                if entry.observation.observedLocatorHref != entry.observation.requestedHref {
+                if entry.observation.observedLocatorHref != ReaderTOCNavigationState.resourceHref(entry.observation.requestedHref) {
                     errors.append("\(prefix).observation.locatorMismatch")
                 }
                 if entry.observation.contentSelector?.isEmpty != false
@@ -581,7 +593,7 @@ struct ReaderTOCEvidenceEntry: Codable, Equatable {
                 }
             case "counterexample":
                 if entry.observation.observedLocatorHref == nil
-                    || entry.observation.observedLocatorHref == entry.observation.requestedHref {
+                    || entry.observation.observedLocatorHref == ReaderTOCNavigationState.resourceHref(entry.observation.requestedHref) {
                     errors.append("\(prefix).observation.counterexampleLocator")
                 }
                 if entry.observation.contentSelector != nil || entry.observation.observedContent != nil {
