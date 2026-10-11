@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterCommandError, AdapterPayloadError
 
+_GRAPHQL_NON_QUERY_OPERATION = re.compile(r"\b(?:mutation|subscription)\b")
 _READ_ONLY_JSON_COMMANDS = frozenset(
     {
         ("repo", "view"),
@@ -169,6 +171,10 @@ def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
     if endpoint == "graphql":
         query = _graphql_query(argv)
         if query is None:
+            return False
+        # A document may hold several operations; one mutation or subscription anywhere
+        # makes the whole request a non-read, whatever the first operation is.
+        if _GRAPHQL_NON_QUERY_OPERATION.search(query):
             return False
         operation = query.lstrip()
         return operation.startswith(("query ", "query\t", "query\n", "query{", "{"))
