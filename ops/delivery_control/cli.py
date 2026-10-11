@@ -78,6 +78,10 @@ MUTATING_COMMANDS = frozenset(
 SCOPED_LEASE_COMMANDS = frozenset(
     {"queue", "cleanup-merged", "release-published", "publish", "drain"}
 )
+# queue holds no lease at all (GitHub-only, guarded by expectedHeadOid), so it
+# never refuses on a busy lock.  The other scoped commands start with GitHub
+# reads and must refuse at zero GitHub cost when the lease is busy (#2871).
+BUSY_PROBE_COMMANDS = SCOPED_LEASE_COMMANDS - {"queue"}
 
 
 # cleanup-merged is the observed starvation case (#2463): it follows a merge
@@ -963,6 +967,12 @@ def _run_command_serialized(
         return run_command(args, application)
     canonical = Path(repo)
     wait = lock_wait_seconds(args)
+    if args.command in BUSY_PROBE_COMMANDS:
+        # #2871: a busy lease must refuse before the first GitHub read.  The
+        # probe only checks availability; the per-section lease still guards
+        # the mutation, so network I/O stays outside it (#2236).
+        with OperationLock(canonical, command=args.command, wait_seconds=wait):
+            pass
     if args.command in SCOPED_LEASE_COMMANDS:
         return run_command(
             args,
