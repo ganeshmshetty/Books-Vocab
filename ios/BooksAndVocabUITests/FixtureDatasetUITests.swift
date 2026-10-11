@@ -444,9 +444,19 @@ final class FixtureDatasetUITests: UITestCase {
             XCTFail("bookshelf fixture (with_books_library) should render at least one book card")
             return
         }
+        // Wait on the card that carries the title, with the same budget as the
+        // card wait. A bare staticTexts query with a 5 s window flakes on a
+        // loaded ui-smoke runner; the combined card label is the stable surface.
+        let titledCard = app.descendants(matching: .any)
+            .matching(NSPredicate(
+                format: "identifier BEGINSWITH[c] %@ AND label CONTAINS[c] %@",
+                "book.card.",
+                expectedTitle
+            ))
+            .firstMatch
         XCTAssertTrue(
-            app.staticTexts[expectedTitle].waitUntilExists(timeout: 5),
-            "dataset-overridden book title '\(expectedTitle)' should render in the bookshelf"
+            titledCard.waitUntilExists(timeout: 10),
+            "dataset-overridden book title '\(expectedTitle)' should render in a bookshelf card"
         )
     }
 
