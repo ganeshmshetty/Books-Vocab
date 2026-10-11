@@ -175,6 +175,7 @@ struct SharedDeckCopyControllerTests {
         case rawTimedOut
         case wrappedBadServerResponse
         case unauthorized
+        case pendingSession
         case httpServerError
 
         var testDescription: String { rawValue }
@@ -182,6 +183,7 @@ struct SharedDeckCopyControllerTests {
         var error: Error {
             switch self {
             case .kgOffline: return KGError.offline
+            case .pendingSession: return KGSessionPendingError()
             case .wrappedTimedOut: return KGError.networkError(underlying: URLError(.timedOut))
             case .wrappedNotConnected: return KGError.networkError(underlying: URLError(.notConnectedToInternet))
             case .wrappedConnectionLost: return KGError.networkError(underlying: URLError(.networkConnectionLost))
@@ -198,7 +200,7 @@ struct SharedDeckCopyControllerTests {
             case .kgOffline, .wrappedTimedOut, .wrappedNotConnected,
                  .wrappedConnectionLost, .wrappedCannotConnect, .rawTimedOut:
                 return "offline"
-            case .unauthorized:
+            case .unauthorized, .pendingSession:
                 return "unauthorized"
             case .wrappedBadServerResponse, .httpServerError:
                 return "generic"

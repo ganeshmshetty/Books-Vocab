@@ -135,7 +135,7 @@ final class SharedDeckCopyController {
     /// 一個給人看（已 i18n、會隨文案改動），一個給 telemetry 聚合（ASCII、穩定、
     /// 可跨版本比對）。共用同一組判別條件。
     static func failureReason(for error: Error) -> String {
-        if let kg = error as? KGError, case .unauthorized = kg { return "unauthorized" }
+        if isSessionExpired(error) { return "unauthorized" }
         if isOffline(error) { return "offline" }
         return "generic"
     }
@@ -143,13 +143,20 @@ final class SharedDeckCopyController {
     /// 錯誤 → user-facing 訊息映射。以 error type 判別（不依賴 NetworkMonitor 單例，
     /// 保持可決定性測試）。
     static func message(for error: Error) -> String {
-        if let kg = error as? KGError, case .unauthorized = kg {
+        if isSessionExpired(error) {
             return L10n.string("explore.copy.error.unauthorized")
         }
         if isOffline(error) {
             return L10n.string("explore.copy.error.offline")
         }
         return L10n.string("explore.copy.error.generic")
+    }
+
+    /// 登入態失效的唯一判別（`message` / `failureReason` 共用）。`KGSessionPendingError`
+    /// 是 keychain token 尚未載入的空窗（#2714），對使用者等同需要重新登入，故與 `.unauthorized` 同類。
+    private static func isSessionExpired(_ error: Error) -> Bool {
+        if let kg = error as? KGError, case .unauthorized = kg { return true }
+        return error is KGSessionPendingError
     }
 
     private static let offlineURLErrorCodes: Set<URLError.Code> = [
