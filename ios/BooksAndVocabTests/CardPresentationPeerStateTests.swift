@@ -106,6 +106,47 @@ struct CardPresentationPeerStateTests {
         #expect(restored.linkGroups.flatMap(\.items).count == 1)
     }
 
+    /// #2535: a delete-queued peer is dropped from the review prewarm as well, not only archived ones.
+    @Test func reviewSessionPrewarmDropsDeleteQueuedPeerChip() throws {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        b.syncAction = .delete
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        let card = try #require(state.preparedCardCache[source.id])
+        #expect(card.linkGroups.isEmpty)
+    }
+
+    /// #2535: a delete-queued peer's chip is removed on refresh and restored after rollback.
+    @Test func peerDeleteQueueAndRollbackUpdatesReviewCardChips() throws {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+
+        b.syncAction = .delete
+        state.refreshPeerDependentCards()
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.isEmpty)
+
+        b.syncAction = .add
+        state.refreshPeerDependentCards()
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+    }
+
+    /// #2535: a stale chip tapped after its peer was delete-queued must not open the peer.
+    @Test func navigatingToDeleteQueuedPeerIsRefused() {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        b.syncAction = .delete
+        let link = KGCardLinkSummary(id: "l-b", cardId: "b", word: "b", kind: "shares_usage",
+                                     label: "共用用法", confidence: 1, reason: "r")
+        state.navigateToLinkedCard(link: link)
+        #expect(state.linkedCardStack.isEmpty)
+    }
+
     /// #2535: a stale chip tapped after its peer was archived must not open the peer.
     @Test func navigatingToArchivedPeerIsRefused() {
         let source = Self.source(linkingTo: ["b"])

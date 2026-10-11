@@ -339,6 +339,50 @@ struct TodayReviewAnswerReplacementTests {
         #expect(feedbackByCard.count == 3)
     }
 
+    /// #2482 (review P1): a flushed answer's baseline is the pre-review snapshot. After a
+    /// restore, shuffling must keep that baseline; re-deriving it from the live (post-review)
+    /// entry makes the replace re-apply the grade on top and double-counts.
+    @Test func replaceAfterRestoreAndShuffleDoesNotDoubleCountFlushedAnswer() async throws {
+        let userID = "replace-user"
+        TodayReviewSessionSnapshotStore.clear(for: userID)
+        ReviewSessionStore.clear(userID: userID)
+        defer {
+            TodayReviewSessionSnapshotStore.clear(for: userID)
+            ReviewSessionStore.clear(userID: userID)
+        }
+        let entries = makeEntries(6)
+        let (container, _) = try makeContainer(entries)
+        let first = TodayReviewState(entries: entries, allEntries: entries, currentUserID: userID)
+        first.submit(.remembered, container: container, reviewSettings: .default)
+        first.flushPendingAnswers(container: container, reviewSettings: .default)
+        try await waitForFlush(first, index: 0)
+        first.persistSnapshot()
+        let target = first.queue[0]
+
+        let restored = TodayReviewState(entries: entries, allEntries: entries, currentUserID: userID)
+        #expect(restored.queue[0] === target)
+        #expect(restored.submittedAnswers[0]?.flushed == true)
+        restored.goPrevious()
+        for _ in 0..<5 {
+            restored.shuffleQueue()
+        }
+        #expect(restored.queue[0] === target)
+        #expect(restored.currentEntry === target)
+
+        restored.submit(.forgot, container: container, reviewSettings: .default)
+        restored.flushPendingAnswers(container: container, reviewSettings: .default)
+        try await waitForFlush(restored, index: 0)
+
+        let fresh = ModelContext(container)
+        let stored = try #require(try fresh.fetch(FetchDescriptor<VocabularyEntry>())
+            .first { $0.kgCardId == target.kgCardId })
+        let records = try fresh.fetch(FetchDescriptor<ReviewRecord>())
+            .filter { $0.kgCardId == target.kgCardId }
+        #expect(stored.reviewCount == 1)
+        #expect(records.count == 1)
+        #expect(records.first?.feedback == ReviewFeedback.forgot.rawValue)
+    }
+
     private struct FetchFailure: Error {}
 
     /// #2796: a failed `ReviewRecord` lookup must NOT be read as "no record yet" (would insert a
