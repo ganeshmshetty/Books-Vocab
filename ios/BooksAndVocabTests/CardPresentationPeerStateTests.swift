@@ -72,4 +72,47 @@ struct CardPresentationPeerStateTests {
         let prepared = TodayReviewCardCache.buildOne(source, peers: ["b": b])
         #expect(prepared.linkGroups.isEmpty)
     }
+
+    /// #2535 review path: the prewarmed card must honour peers that are already
+    /// archived when the session starts (the bug: prewarm passed no peers).
+    @Test func reviewSessionPrewarmDropsArchivedPeerChip() throws {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        b.isArchived = true
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        let card = try #require(state.preparedCardCache[source.id])
+        #expect(card.linkGroups.isEmpty)
+    }
+
+    /// #2535: archiving a peer while the session is open must drop the chip on
+    /// refresh, and a rolled-back archive must bring it back.
+    @Test func peerArchiveAndRollbackUpdatesReviewCardChips() throws {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+
+        b.isArchived = true
+        state.refreshPeerDependentCards()
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.isEmpty)
+
+        b.isArchived = false
+        state.refreshPeerDependentCards()
+        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+    }
+
+    /// #2535: a stale chip tapped after its peer was archived must not open the peer.
+    @Test func navigatingToArchivedPeerIsRefused() {
+        let source = Self.source(linkingTo: ["b"])
+        source.markSynced()
+        let b = Self.entry("b", cardId: "b")
+        let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
+        b.isArchived = true
+        let link = KGCardLinkSummary(id: "l-b", cardId: "b", word: "b", kind: "shares_usage",
+                                     label: "共用用法", confidence: 1, reason: "r")
+        state.navigateToLinkedCard(link: link)
+        #expect(state.linkedCardStack.isEmpty)
+    }
 }
