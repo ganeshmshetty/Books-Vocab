@@ -21,7 +21,9 @@ SCOPE_OPERATIONS = ("add", "modify", "delete")
 # stays exclusive; no globs.  Each entry needs a justification in
 # docs/reference/delivery_model.md (enforced by test_worktree_shared_scope.py):
 #   docs/reference/tech_index.md, docs/registry.yml - append-only indexes.
-#   ops/complexity_budget.json                      - numeric ratchet ceilings.
+#   ops/complexity_budget.json                      - base ceilings.  A lane's raise is its own
+#     exclusive fragment in ops/complexity_budget.d/; only CM fold/ratchet and
+#     pre-fragment lanes still edit this line (rebase resolves it, see deliver.py).
 #   ops/test_ops.sh, ops/tests/test_ops_ci_coverage.sh - test-group
 #     registration: each lane adds or drops one group line in its own case arm
 #     or list entry; a true textual conflict is resolved at rebase and the
