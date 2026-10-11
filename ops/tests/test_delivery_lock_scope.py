@@ -15,6 +15,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,7 +27,7 @@ from delivery_control.adapters import operation_lock
 from delivery_control.adapters.operation_lock import OperationLock
 from delivery_control.adapters.runtime import RuntimeStatusMap
 from delivery_control.application_services import DeliveryApplication
-from delivery_control.domain.errors import CompareAndSwapConflict
+from delivery_control.domain.errors import CompareAndSwapConflict, DeliverySourceError
 from test_delivery_cli import (
     EVENT_START,
     HEAD,
@@ -179,7 +180,13 @@ def test_queue_admits_while_another_process_holds_the_operation_lock(
 
 @pytest.mark.parametrize(
     "argv",
-    [["cleanup-merged", "--pr", "41"], ["release-published", "--pr", "41"]],
+    [
+        ["cleanup-merged", "--pr", "41"],
+        ["release-published", "--pr", "41"],
+        ["publish", "--lane", "DIRECT-CLI", "--title", "fix: exact delivery"],
+        ["drain", "--once"],
+    ],
+    ids=["cleanup-merged", "release-published", "publish", "drain"],
 )
 def test_busy_lease_refuses_before_any_github_read(
     tmp_path: Path,
@@ -187,12 +194,22 @@ def test_busy_lease_refuses_before_any_github_read(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """#2871: a busy lease costs zero GitHub calls (refusal precedes the reads)."""
+    """#2871: a busy lease costs zero GitHub calls (refusal precedes the reads).
+
+    Every public GitHub method is observed, so a read added ahead of the probe
+    is caught whatever its name; publish and drain are the commands that start
+    with network reads too, not only the two cleanup paths.
+    """
 
     monkeypatch.setenv("KG_DELIVERY_LOCK_WAIT_SECONDS", "0.05")
     application, registry, _, github = _application(tmp_path)
     calls: Calls = []
-    _observe(github, "github", ("get_pull_request", "changed_paths"), calls, _no)
+    github_reads = tuple(
+        name
+        for name in vars(type(github))
+        if not name.startswith("_") and callable(getattr(github, name))
+    )
+    _observe(github, "github", github_reads, calls, _no)
     _observe(registry, "registry", ("resolve",), calls, _no)
 
     lock_path = OperationLock(tmp_path, command="x").path
@@ -398,7 +415,7 @@ def test_lock_timeout_flag_reaches_the_lock(
     assert waits == [7.0]
 
 
-def test_cleanup_merged_waits_by_default_and_other_commands_do_not(
+def test_only_cleanup_merged_overrides_the_default_lock_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("KG_DELIVERY_LOCK_WAIT_SECONDS", raising=False)
@@ -413,3 +430,26 @@ def test_cleanup_merged_waits_by_default_and_other_commands_do_not(
     monkeypatch.setenv("KG_DELIVERY_LOCK_WAIT_SECONDS", "9")
     args = cli._parser().parse_args(["cleanup-merged", "--pr", "41"])
     assert cli.lock_wait_seconds(args) is None  # the env var decides
+
+
+def test_a_non_cleanup_busy_lease_waits_the_default_30s_before_refusing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-cleanup lease waits the lock's 30s default (test hooks unset), then refuses."""
+    monkeypatch.delenv("KG_DELIVERY_LOCK_WAIT_SECONDS", raising=False)
+    monkeypatch.delenv(operation_lock.LOCK_DIR_ENV, raising=False)
+    now = [0.0]  # fake clock: sleep advances time, so the poll loop runs instantly
+    clock = SimpleNamespace(
+        monotonic=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s)
+    )
+    monkeypatch.setattr(operation_lock, "time", clock)
+    lock_path = OperationLock(tmp_path, command="x").path
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as foreign:
+        fcntl.flock(foreign.fileno(), fcntl.LOCK_EX)
+        with (
+            pytest.raises(DeliverySourceError, match="already in progress"),
+            OperationLock(tmp_path, command="sync-main"),
+        ):
+            pass
+    assert now[0] >= operation_lock.DEFAULT_WAIT_SECONDS == 30.0
