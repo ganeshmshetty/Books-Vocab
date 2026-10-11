@@ -106,7 +106,6 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 
 - `updated` 只計**使用者可見內容**真的不同的詞條，判準集中在純函式 `BackgroundSyncActor.contentDiffers(card:from:)`（translation / pos / note / difficultyTier / inflections / collocations / examples / mode / graphLinks / isArchived / notebookId / book source）。
 - **複習狀態刻意不算變動**（`lastReviewedAt` / `reviewCount` / `nextReviewAt` / `streak` / `lapse`）。它每次複習都由本機推上去、下一輪 incremental pull 再原樣拉回；若計入，任何一次複習後的同步都會被判為「單字庫有變化」——這正是要避免的假陽性。
-- **複習狀態 push（#2483）**：每筆 entry 以送出時的 `lastReviewedAt` 瞬時值 ack（不用牆鐘），請求中才 flush 的複習因此維持 dirty、下輪再送；超過 1,000 筆分批送出，每批回應後各自 ack，後續批失敗不回收前面已 ack 的批次。
 - SwiftData 對屬性是「指派即髒」，所以判準必須在覆寫欄位**之前**取樣，事後問 `hasChanges` 得不到答案。
 
 **分頁（`X-Next-Cursor`）**：`GET /api/vocab` 每頁最多 `limit`（預設 5,000）列，依 `(updated_at, id)` 升冪；還有下一頁時回 `X-Next-Cursor`。cursor 是 opaque token，綁定請求 scope（`notebook_id` + `since`），換 scope 重用會被 400 拒絕。iOS 一律經 `KGService.fetchAllVocabPages` 讀取：每頁原樣重送同一組 `notebook_id`／`since` 再加 `cursor`，直到 header 缺席；`X-Pipeline-Pending` 取最後一頁。
