@@ -484,9 +484,9 @@ def _fold_into_base(
     budget_path: Path, ceilings: dict[str, int], fragments: list[dict[str, Any]]
 ) -> None:
     """Make ``ceilings`` the base and delete the ``fragments`` they absorb.  The base is validated before
-    anything is removed.  The fragments go first: a crash between the two writes leaves the base without
-    the raises (a lower ceiling, at worst a red check to rerun), never with them counted twice (a
-    silently wider ceiling)."""
+    anything is removed.  The fragments go first, so a crash between the two writes never counts a raise
+    twice (a silently wider ceiling).  The raises are then lost, not replayed: the base keeps the lower
+    ceiling, the check goes red, and a rerun finds no fragments; ``raise`` restores them."""
     base = load_base_budget(budget_path)
     _drop_fragments(budget_path, fragments)
     base["ceilings"] = ceilings

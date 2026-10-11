@@ -726,14 +726,12 @@ class Delivery:
         )
         before = self.git("rev-parse", "HEAD", stage="preflight")
         done = self.runner(["git", "rebase", TRUNK], self.work)
-        budget_only = False
         # Each budget-only step settles one lane commit, so ``replay`` bounds the loop.
         for _ in range(replay):
             if done.returncode == 0 or self.unmerged_paths() != [
                 complexity.BUDGET_FILE
             ]:
                 break
-            budget_only = True
             done = self.take_trunk_budget()
         if done.returncode != 0:
             self.runner(["git", "rebase", "--abort"], self.work)
@@ -742,8 +740,10 @@ class Delivery:
                 f"cleanly (rebase aborted):\n{failure_detail(done) or 'no output'}"
             )
         self.say(f"rebased onto {TRUNK} ({behind} commit(s))")
-        if budget_only:
-            self.lift_budget(before)
+        # A clean rebase can leave the lane over its headroom too: a sibling's fragment spends the
+        # base room under it, and the lane's commits never conflict on the budget.  Lift always;
+        # it writes nothing when no area is over.
+        self.lift_budget(before)
 
     def unmerged_paths(self) -> list[str]:
         return self.git(
@@ -774,7 +774,7 @@ class Delivery:
         )
 
     def lift_budget(self, before: str) -> None:
-        """After a budget-only rebase, raise the ceilings the lane is over, in one named commit.
+        """After a rebase onto trunk, raise the ceilings the lane is over, in one named commit.
 
         Runs once the rebase has settled, not per step: a step measures only the commits replayed
         so far, so a later commit's growth would slip past the ceiling set there.  The rebase and

@@ -2,7 +2,7 @@
   "schema": "kg.complexity-budget-raise.v1",
   "issue": 3155,
   "raise": {
-    "ops": 771
+    "ops": 836
   },
-  "note": "Issue #3155 conversion: the per-lane fragment mechanism (load, fold, ratchet, raise and lift helpers, tests, docs) is ops tooling this lane owns, above the base headroom; one-time raise to measured + LIFT_MARGIN, carried by this fragment and not by the base file (fix of the CR findings on #3196: the base is main's ceiling 213922, so the effective ceiling 214678 is counted once). Fix of the review findings on #3198 (r4): the fold/ratchet write-order and over-budget message edits add 14 ops lines (measured 214688 over effective 214678 by 10); this top-up is +15 = that 10 + LIFT_MARGIN 5"
+  "note": "Issue #3155 conversion: the per-lane fragment mechanism (load, fold, ratchet, raise and lift helpers, tests, docs) is ops tooling this lane owns, above the base headroom. The raise is carried by this fragment, not the base file. Top-ups: review round r4 (fold/ratchet write-order and over-budget message), review round r6 (clean-rebase lift in deliver and its regression test)."
 }
