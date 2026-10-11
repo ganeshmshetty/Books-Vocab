@@ -240,19 +240,11 @@ final class AddLinkCoordinator {
         }
     }
 
-    nonisolated static func lookupEvidence(
-        for entry: VocabularyEntry,
-        recoveringProviderError: Bool = false,
-        compact: Bool = false
-    ) -> String {
-        let detail = compact
-            ? compactDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
-            : dictionaryDetailProjection(for: entry, recoveringProviderError: recoveringProviderError)
-        return lookupEvidence(for: entry, detail: detail)
-    }
-
-    /// Evidence for an already materialized projection, so a row body does not decode the payload twice.
-    nonisolated static func lookupEvidence(
+    /// Accessibility value of a candidate row, collapsed or expanded. It names only what the
+    /// collapsed row draws (word, translation, first sense) and the materialization verdict over
+    /// every sense. Examples, forms, provenance and further senses are exposed only through the
+    /// expanded hierarchy, never through the row value (#2407).
+    nonisolated static func rowAccessibilityValue(
         for entry: VocabularyEntry,
         detail: AddLinkDetailProjection
     ) -> String {
@@ -261,47 +253,16 @@ final class AddLinkCoordinator {
             return value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         }
 
-        let primarySense = detail.senses.first?.definition
-        let primaryExample = detail.senses.first?.examples.first
-        var evidence = [
+        var summary = [
             "word=\(normalized(entry.word))",
             "translation=\(normalized(entry.translation))",
-            "sense=\(normalized(primarySense))",
-            "example=\(normalized(primaryExample))",
-            "source=\(normalized(entry.bookTitle))",
-            "chapter=\(normalized(entry.chapterTitle))",
-            "detail.state=\(detail.state.accessibilityValue)",
-            "detail.senses=\(detail.senses.count)"
+            "sense=\(normalized(detail.senses.first?.definition))",
+            "detail.state=\(detail.state.accessibilityValue)"
         ]
-
-        for (senseIndex, sense) in detail.senses.enumerated() {
-            evidence.append("detail.sense[\(senseIndex + 1)]=\(normalized(sense.definition))")
-            evidence.append(
-                "detail.sense[\(senseIndex + 1)].partOfSpeech=\(normalized(sense.partOfSpeech))"
-            )
-            evidence.append(
-                "detail.sense[\(senseIndex + 1)].translation=\(normalized(sense.translation))"
-            )
-            for (exampleIndex, example) in sense.examples.enumerated() {
-                evidence.append(
-                    "detail.example[\(senseIndex + 1),\(exampleIndex + 1)]=\(normalized(example))"
-                )
-            }
-        }
-
-        // The state is the verdict over every sense; a compact projection only holds the first one.
-        var missingExample = detail.hasMissingExample
-        if case .missingExample = detail.state { missingExample = true }
-        evidence.append("detail.missing-example=\(missingExample ? "true" : "false")")
-        evidence.append("detail.forms=\(detail.forms.map(normalized).joined(separator: ", "))")
-        evidence.append("detail.provenance.provider=\(normalized(detail.provenance.provider))")
-        evidence.append("detail.provenance.source=\(normalized(detail.provenance.source))")
-        evidence.append("detail.provenance.chapter=\(normalized(detail.provenance.chapter))")
-        evidence.append("detail.provenance.context=\(normalized(detail.provenance.context))")
         if case .providerDecodeError = detail.state {
-            evidence.append("detail.recovery=retryable")
+            summary.append("detail.recovery=retryable")
         }
-        return evidence.joined(separator: " | ")
+        return summary.joined(separator: " | ")
     }
 
     /// Full projection: every sense, example, form and provenance level.

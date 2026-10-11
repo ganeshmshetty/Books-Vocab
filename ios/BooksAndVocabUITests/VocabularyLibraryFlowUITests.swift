@@ -565,17 +565,26 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         searchField.typeText("fort")
         XCTAssertTrue(lookupState.firstMatch.waitUntilValueEquals("results-2", timeout: 5))
 
-        let fortuitous = app.buttons.matching(
-            NSPredicate(format: "label CONTAINS[c] %@", "fortuitous")
-        ).firstMatch
-        guard fortuitous.waitUntilExists(timeout: 5) else {
+        // Select the row by identifier: a word-label query would also match its expand toggle (#2407).
+        guard let fortuitous = app.descendants(matching: .any)
+            .matching(identifier: "addLink.local.result.vocab-linked-fortuitous")
+            .exactlyOneElement(timeout: 5, named: "AddLink fortuitous row") else {
             XCTFail("AddLink lookup 必須顯示 fortuitous candidate")
             return
         }
-        let evidence = fortuitous.value as? String ?? ""
-        XCTAssertTrue(evidence.contains("sense=Happening by chance"))
-        XCTAssertTrue(evidence.contains("example=The fortuitous meeting"))
-        XCTAssertTrue(evidence.contains("source=The Weight of Words"))
+        // Collapsed row: the visible first sense and the verdict only. The example and provenance
+        // stay hidden until the row is expanded, so the row value must not name them (#2407).
+        let rowSummary = fortuitous.value as? String ?? ""
+        XCTAssertTrue(rowSummary.contains("sense=Happening by chance"))
+        XCTAssertTrue(rowSummary.contains("detail.state=ready-senses-2"))
+        XCTAssertFalse(
+            rowSummary.contains("example=The fortuitous meeting"),
+            "collapsed row must not name the example hidden until expansion"
+        )
+        XCTAssertFalse(
+            rowSummary.contains("source=The Weight of Words"),
+            "collapsed row must not name provenance hidden until expansion"
+        )
         captureStep("add-link-lookup-results", app: app)
 
         let cancel = app.buttons.matching(identifier: "addLink.cancel")

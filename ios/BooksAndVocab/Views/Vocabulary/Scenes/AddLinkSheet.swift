@@ -298,7 +298,7 @@ struct AddLinkSheet: View {
                         // One link at a time: every row is locked while one is in flight.
                         .disabled(coordinator.linkingTargetCardID != nil)
                         .accessibilityIdentifier(AddLinkCoordinator.detailIdentifier(for: entry))
-                        .accessibilityValue(AddLinkCoordinator.lookupEvidence(for: entry, detail: projection))
+                        .accessibilityValue(AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: projection))
                         .overlay(alignment: .trailing) {
                             // Return will link exactly this word (#2038). Applied after the
                             // button's own id/value so the hint keeps an id of its own.
