@@ -1399,9 +1399,17 @@ def test_external_card_meaning_update_graph_open_failure_is_captured_not_raised(
         raise RuntimeError("graph store unavailable")
 
     captured: list[str] = []
+    evicted: list[str] = []
+
+    class _RecordingEmbeddings:
+        def remove(self, cid):
+            evicted.append(cid)
+
     monkeypatch.setattr(external_router, "_graph_store", broken_graph)
+    monkeypatch.setattr(external_router, "_embedding_store", lambda *_a, **_k: _RecordingEmbeddings())
     monkeypatch.setattr(external_router, "capture_handled", lambda exc, *, context: captured.append(context))
 
     external_router._reembed_after_meaning_edit(user, card_id, "default")
 
     assert captured == ["external_api.judge_requeue"]
+    assert evicted == [card_id]
