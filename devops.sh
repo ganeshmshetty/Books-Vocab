@@ -994,9 +994,12 @@ HELP
 #   3. 解壓到 staging，每個 *.db 須 PRAGMA quick_check=ok
 #   4. 停容器 → 現況 rename 成 <data>.broken.<ts>（保留為快照，不 rm）→ 新資料就位 → 起容器
 # 任何一道失敗都在動到現況之前中止；swap 失敗會把現況搬回。
+# 互斥鎖由遠端 payload 於第一個讀寫動作前自行取得並自行釋放（容器停止後的失敗保留鎖，需人工 rmdir）；
+# 本機不取鎖，本機 ssh 中斷或 INT／TERM 不會替仍在 swap 的遠端程序放行鎖。
 # 確認閘門刻意不走 confirm()：restore 覆寫生產資料，DEVOPS_YES=1（agent 模式）一律拒絕，
 # 且必須在互動 TTY 逐字輸入與本次日期與 bucket 綁定的確切字串（見 docs/sop/backup_restore.md §2.5）。
-# 這是防誤觸閘門，不是授權控制：script(1) 與管線都能偽造 TTY 與輸入。授權來自 ssh 權限與 owner 決策（#2923）。
+# 這是防誤觸閘門，不是授權控制：script(1) 與管線都能偽造 TTY 與輸入。授權僅來自 ssh 權限；
+# owner 對 restore 指令的決策（#2923）尚未取得，merge 前必須連結 owner 決策，本註解不視為其已存在。
 # 同一字串隨遠端呼叫送出，由 devops_restore_remote.sh 再驗一次，使確認無法套用到其他日期或 bucket。
 restore_confirm() {
   local token="$1" prompt="$2" ans=""
@@ -1022,13 +1025,17 @@ cmd_restore() {
     exit 2
   fi
   local bucket="${KG_BACKUP_BUCKET:-kg-backups-prod-967512079054}"
+  # bucket 會未加引號地併入遠端指令字串；只接受 S3 bucket 名稱字元集，其餘一律拒絕
+  if [[ ! "$bucket" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+    echo "✗ KG_BACKUP_BUCKET 不是合法的 S3 bucket 名稱：${bucket}" >&2
+    exit 2
+  fi
   local token="restore ${date_arg} ${bucket}"
   [[ -f "$payload" ]] || err "缺少 restore 遠端腳本: $payload"
   restore_confirm "$token" "restore：以 S3 data/${date_arg}.tar.gz 覆寫 ${REMOTE_DATA_DIR}（現況改名保留為 .broken.<ts>，不刪除），期間停止容器"
-  # 與 deploy／restart／migrate 互斥：swap 期間其他指令不得啟動容器；鎖由 EXIT trap 釋放
-  acquire_deploy_lock
   section "restore ${date_arg}（S3 ${bucket}）"
-  run_remote "bash -s -- ${date_arg} ${bucket} ${REMOTE_DATA_DIR} ${REMOTE_DIR} $(printf '%q' "$token")" < "$payload"
+  # 不在本機取鎖：遠端 payload 自持 ${DEPLOY_LOCK_DIR}，與 deploy／restart／migrate 互斥
+  run_remote "bash -s -- ${date_arg} ${bucket} ${REMOTE_DATA_DIR} ${REMOTE_DIR} $(printf '%q' "$token") $(printf '%q' "$DEPLOY_LOCK_DIR")" < "$payload"
 }
 
 # ── 指令：ssh ─────────────────────────────────────────────────────────────────
