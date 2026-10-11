@@ -908,6 +908,12 @@ def test_unregistered_dirty_worktree_under_budget_warns_and_names_path(
     assert len(remedies) == 1
     assert str(unregistered) in remedies[0]
     assert f"git -C {repo} worktree remove {unregistered}" in remedies[0]
+    # #3001: the adopt half must be runnable as printed: --worktree and the
+    # required --intent (placeholder), not the bare subcommand.
+    assert (
+        f"adopt it with ./ops/worktree_orchestrate.py adopt --worktree {unregistered} "
+        "--intent <intent>" in remedies[0]
+    )
 
 
 def test_unregistered_remedy_shell_quotes_paths_with_spaces(tmp_path: Path) -> None:
@@ -930,6 +936,10 @@ def test_unregistered_remedy_shell_quotes_paths_with_spaces(tmp_path: Path) -> N
         f"git -C {repo} worktree remove {shlex.quote(str(unregistered))}" in remedies[0]
     )
     assert f"worktree remove {unregistered}" not in remedies[0]
+    assert (
+        f"adopt it with ./ops/worktree_orchestrate.py adopt --worktree "
+        f"{shlex.quote(str(unregistered))} --intent <intent>" in remedies[0]
+    )
 
 
 def test_unregistered_worktree_over_budget_blocks_on_its_own_line(
