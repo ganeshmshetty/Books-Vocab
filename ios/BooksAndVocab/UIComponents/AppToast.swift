@@ -72,11 +72,11 @@ struct AppToast: View {
             .accessibilityIdentifier("app.toast")
             .accessibilityValue(item.style.accessibilityValue)
             // .combine 會吞掉內層 Button 的語意，因此可點性要在合併後的元素上重新宣告。
-            .accessibilityAddTraits(canToggle ? .isButton : [])
-            .accessibilityAction(.default) {
-                if canToggle { onToggleExpanded?() }
-            }
-            .accessibilityHint(canToggle && !isExpanded ? Text(L10n.string("toast.expand.hint")) : Text(verbatim: ""))
+            .modifier(ToggleAccessibility(
+                canToggle: canToggle,
+                isExpanded: isExpanded,
+                onToggle: onToggleExpanded
+            ))
             // 長文案在 pill 內截斷，而不是讓 pill 貼齊螢幕邊緣。
             .padding(.horizontal, AppShellMetrics.pageHorizontalPadding)
             .padding(.top, AppSpacing.s2)
@@ -164,6 +164,30 @@ private extension AppToastItem.Style {
         case .info: "info"
         case .warning: "warning"
         case .error: "error"
+        }
+    }
+}
+
+/// 可展開才宣告 button 語意、預設動作與 hint；不可展開的 pill 不掛任何 toggle 無障礙修飾，
+/// VoiceOver 行為與未截斷時完全相同。hint 只在可展開且收合時附上（與 ui-design.md 一致）。
+private struct ToggleAccessibility: ViewModifier {
+    let canToggle: Bool
+    let isExpanded: Bool
+    let onToggle: (() -> Void)?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if canToggle, let onToggle {
+            let expandable = content
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default, onToggle)
+            if isExpanded {
+                expandable
+            } else {
+                expandable.accessibilityHint(Text(L10n.string("toast.expand.hint")))
+            }
+        } else {
+            content
         }
     }
 }

@@ -68,6 +68,28 @@ private struct GlassControlsScene: View {
                     onToggleExpanded: {},
                     onDismiss: {}
                 )
+                // Narrow width (320pt, iPhone SE class): collapsed truncated pill and its expanded state.
+                VStack(alignment: .leading, spacing: AppSpacing.s3) {
+                    AppToast(
+                        item: .init(message: "背景同步部分失敗：複習進度上傳失敗：伺服器暫時不可用, 複習紀錄上傳失敗：伺服器暫時不可用", style: .warning), // i18n-allow: debug-only visual review fixture
+                        onToggleExpanded: {},
+                        onDismiss: {}
+                    )
+                    AppToast(
+                        item: .init(message: "Background sync partly failed: review progress upload failed, review log upload failed: server temporarily unavailable", style: .warning), // i18n-allow: debug-only visual review fixture
+                        isExpanded: true,
+                        onToggleExpanded: {},
+                        onDismiss: {}
+                    )
+                }
+                .frame(width: 320, alignment: .leading)
+                // Dynamic Type accessibility3: a collapsed truncated pill must still show chevron.down and stay tappable.
+                AppToast(
+                    item: .init(message: "背景同步部分失敗：複習進度上傳失敗：伺服器暫時不可用", style: .warning), // i18n-allow: debug-only visual review fixture
+                    onToggleExpanded: {},
+                    onDismiss: {}
+                )
+                .environment(\.dynamicTypeSize, .accessibility3)
             }
             .padding(AppSpacing.s5)
         }
