@@ -444,6 +444,51 @@ classify "duplicate-physical-worktree" 77 "" duplicate-physical-worktree
 classify "physical-identity-mismatch" 77 "" physical-identity-mismatch
 classify "registry-records-invalid" 77 "" registry-records-invalid
 
+echo "── #3001: over-quota unregistered checkout names its remedy, not cache cleanup ──"
+# Cleaning the cache cannot clear an unregistered checkout over the lane quota,
+# so the 75 epilogue must point at adopt/remove for that exact path.
+unreg_usage="$TMP/unreg-usage.json"
+unreg_guard="$TMP/unreg-guard.json"
+cat > "$unreg_usage" <<'JSON'
+{
+  "policy": {
+    "blocking_reasons": [
+      "lane-budget-exceeded:/x/stray checkout"
+    ],
+    "unregistered_physical_worktrees": [
+      "/x/stray checkout"
+    ]
+  }
+}
+JSON
+lane_guard_with_rc 75 > "$unreg_guard"
+unreg_script='source "$1"; rc=0; kg_ios_disk_budget_guard_state test || rc=$?; kg_ios_disk_budget_blocked_hint "[t]" "$rc"'
+unreg_out="$(KG_IOS_DISK_GUARD_STATE="$unreg_guard" KG_IOS_DISK_LANE_USAGE_STATE="$unreg_usage" \
+  KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "$unreg_script" _ "$LIB" 2>&1)"
+grep -q 'worktree remove' <<<"$unreg_out" && ok "over-quota unregistered 75 prints the remove remedy" || bad "over-quota unregistered 75 lacks the remedy: $unreg_out"
+grep -q 'adopt' <<<"$unreg_out" && ok "over-quota unregistered 75 names adopt" || bad "over-quota unregistered 75 does not name adopt: $unreg_out"
+grep -q "/x/stray checkout" <<<"$unreg_out" && ok "remedy names the exact unregistered path" || bad "remedy does not name the path: $unreg_out"
+grep -q 'clean rebuildable cache' <<<"$unreg_out" && bad "over-quota unregistered 75 still says only clean the cache" || ok "over-quota unregistered 75 does not say only clean the cache"
+# Negative control: a warning-only unregistered path (no lane-budget-exceeded line
+# of its own, and a prefix-sharing sibling path) is never named as over quota.
+cat > "$unreg_usage" <<'JSON'
+{
+  "policy": {
+    "blocking_reasons": [
+      "lane-budget-exceeded:/x/stray"
+    ],
+    "unregistered_physical_worktrees": [
+      "/x/stray checkout",
+      "/x/stray"
+    ]
+  }
+}
+JSON
+prefix_out="$(KG_IOS_DISK_GUARD_STATE="$unreg_guard" KG_IOS_DISK_LANE_USAGE_STATE="$unreg_usage" \
+  KG_IOS_DISK_GUARD_AUTO_REFRESH=0 /bin/bash -c "$unreg_script" _ "$LIB" 2>&1)"
+grep -q 'path="/x/stray checkout"' <<<"$prefix_out" && bad "warning-only unregistered path named as over quota" || ok "warning-only unregistered path is not named as over quota"
+grep -q 'path="/x/stray"' <<<"$prefix_out" && ok "exact over-quota path is named" || bad "exact over-quota path not named: $prefix_out"
+
 echo "── lane-usage-report-blocked: a stale report is never structural evidence ──"
 # Regression (2026-10-08): the tick's supervisor killed the scan and recorded
 # lane_usage_rc=75, which the consumer reads as "a complete report was written".

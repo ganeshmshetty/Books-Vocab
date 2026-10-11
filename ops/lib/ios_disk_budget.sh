@@ -137,11 +137,27 @@ kg_ios_disk_lane_report_is_fresh() {
   (( KG_IOS_DISK_LANE_REPORT_LAG <= slack ))
 }
 
+# #3001: print the subset of unregistered worktrees whose own usage line is over
+# the lane quota (`lane-budget-exceeded:<path>`), one per line.  Only these are
+# blocked; the rest only warn.  Inputs are ';'-joined lists, as kg_ios_disk_json_array
+# prints them; a stale or unknown report yields nothing.
+kg_ios_disk_guard_unregistered_over_quota() {
+  local unregistered="$1" reasons="$2" path
+  local IFS=';'
+  [[ "$unregistered" == none || "$unregistered" == unknown ]] && return 0
+  for path in $unregistered; do
+    [[ ";$reasons;" == *";lane-budget-exceeded:$path;"* ]] && printf '%s\n' "$path"
+  done
+  return 0
+}
+
 # Say WHICH worktrees and reasons made the shared guard block, so a blocked
 # agent does not read a lane-attribution verdict as a disk-space problem.  A
 # stale report's lists are history, not current fact, so they print as unknown.
 kg_ios_disk_guard_diagnose() {
   local operation="$1" state="$2" lane_state reasons unregistered dirty unknown mismatches repairs fresh="yes"
+  local over_quota_path quoted
+  KG_IOS_DISK_UNREGISTERED_OVER_QUOTA=""
   lane_state="$(kg_ios_disk_lane_usage_state "$state")"
   if kg_ios_disk_lane_report_is_fresh "$state"; then
     reasons="$(kg_ios_disk_json_array "$lane_state" blocking_reasons)"
@@ -155,6 +171,15 @@ kg_ios_disk_guard_diagnose() {
     reasons="unknown"; unregistered="unknown"; dirty="unknown"; unknown="unknown"; mismatches="unknown"; repairs="unknown"
   fi
   echo "schema=kg.ios.disk-budget.v1 operation=$operation detail=guard-block guardReason=$(kg_ios_disk_guard_json_string "$state" reason) guardAction=$(kg_ios_disk_guard_json_string "$state" action) laneUsageVerdict=$(kg_ios_disk_guard_json_string "$state" lane_usage_verdict) laneUsageFresh=$fresh laneUsageLagSeconds=$KG_IOS_DISK_LANE_REPORT_LAG blockingReasons=${reasons:-none} unregisteredWorktrees=${unregistered:-none} dirtyWorktrees=${dirty:-none} unknownWorktrees=${unknown:-none} identityMismatchWorktrees=${mismatches:-none} identityRepairs=\"${repairs:-none}\" laneUsage=$lane_state refresh=\"./ops/ios_ops.sh guard --refresh\"" >&2
+  # #3001: over-quota unregistered checkouts are cleared only by adopt or removal,
+  # so name that remedy per path (shell-quoted, copy-pasteable) and remember the
+  # paths for kg_ios_disk_budget_blocked_hint.
+  while IFS= read -r over_quota_path; do
+    [[ -n "$over_quota_path" ]] || continue
+    printf -v quoted '%q' "$over_quota_path"
+    echo "schema=kg.ios.disk-budget.v1 operation=$operation detail=unregistered-over-quota path=\"$over_quota_path\" remedy=\"./ops/worktree_orchestrate.py adopt --worktree $quoted, or once its work is saved: git worktree remove $quoted\" waitingOrCacheCleanupClears=no" >&2
+    KG_IOS_DISK_UNREGISTERED_OVER_QUOTA="${KG_IOS_DISK_UNREGISTERED_OVER_QUOTA:+$KG_IOS_DISK_UNREGISTERED_OVER_QUOTA$'\n'}$over_quota_path"
+  done < <(kg_ios_disk_guard_unregistered_over_quota "${unregistered:-none}" "${reasons:-none}")
 }
 
 # A guard block that no amount of waiting or cache cleaning clears.  Two sources:
@@ -237,6 +262,7 @@ kg_ios_disk_guard_refresh() {
 kg_ios_disk_budget_guard_state() {
   local operation="${1:-ios-write}"
   local lock_held="${2:-0}"
+  KG_IOS_DISK_UNREGISTERED_OVER_QUOTA=""
   local state="${KG_IOS_DISK_GUARD_STATE:-$KG_IOS_DISK_GUARD_STATE_DEFAULT}"
   local enforce="${KG_IOS_DISK_GUARD_ENFORCE_XCTEST:-0}"
   local max_age="${KG_IOS_DISK_GUARD_MAX_AGE_SECONDS:-900}"
@@ -400,6 +426,9 @@ kg_ios_disk_budget_blocked_hint() {
     echo "$prefix blocked by the shared disk guard (exit $rc, structural, retryable=no): see the guard reason and action above; do not poll" >&2
   elif (( rc == KG_IOS_DISK_BUDGET_EXIT )) && [[ "${KG_IOS_DISK_GUARD_STALE_LANE_REPORT:-0}" == "1" ]]; then
     echo "$prefix blocked by the shared disk guard (exit $rc, temporary): its lane-usage report is stale, not a cache problem; run './ops/ios_ops.sh guard --refresh' or retry after the next tick" >&2
+  elif (( rc == KG_IOS_DISK_BUDGET_EXIT )) && [[ -n "${KG_IOS_DISK_UNREGISTERED_OVER_QUOTA:-}" ]]; then
+    # #3001: waiting or cleaning the cache cannot clear this; only adopt or removal can.
+    echo "$prefix blocked by an unregistered checkout over the lane quota (exit $rc, temporary): cache cleanup does not clear it; adopt or remove the path named above, then run './ops/ios_ops.sh guard --refresh'" >&2
   elif (( rc == KG_IOS_DISK_BUDGET_EXIT )); then
     echo "$prefix blocked by disk budget; clean rebuildable cache before retry" >&2
   else
