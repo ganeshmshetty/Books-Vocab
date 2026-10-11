@@ -1,13 +1,13 @@
 {
   "schema": "kg.complexity-budget.v1",
-  "note": "2026-10-11 lane debug/issue-3028-wave (#3028, CR P1 fix): the merge-group duplicate-key step adds 14 lines to .github/workflows/merge-group-required.yml (workflows 2,204 -> 2,218) and the shared-catalog and merge-group fixture tests add 67 lines under ops/ (ops 211,646 -> 211,713). Ceilings are measured + 5 (workflows 2,223, ops 211,718); ratchet reclaims the slack later.",
+  "note": "2026-10-11 lane debug/issue-3028-r2 (#3028, CR P1 fix on #3038): merge-group-required.yml runs the full strict i18n lint instead of the duplicate-key helper, and the merge-group test gains red/green fixtures (ops 211,733 measured at this lane head on origin/main cb3391402; ops ceiling raised to measured + 5 = 211,738, workflows 2,219 within its 2,223 ceiling). Ratchet reclaims the slack later.",
   "slack": {
     "ops": 2000,
     "docs": 1000,
     "workflows": 250
   },
   "ceilings": {
-    "ops": 211718,
+    "ops": 211738,
     "docs": 16077,
     "workflows": 2223
   }

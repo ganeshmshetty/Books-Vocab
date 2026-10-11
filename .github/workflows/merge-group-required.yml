@@ -90,19 +90,20 @@ jobs:
       - name: Run short repository gate
         run: ./ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control
 
-      # Localizable.strings catalogs are shared Scope, so the PR-time copy of this
-      # guard (static.i18n in the PR fan-out) no longer serialises catalog lanes and
-      # is not the last check: two lanes adding one key at non-adjacent positions
-      # merge textually clean and only the merged result exposes the duplicate.
-      # The helper always exits 0 and reports on stdout, so any output fails here.
-      - name: Check i18n duplicate keys
+      # Localizable.strings catalogs are shared Scope, so the PR-time static.i18n
+      # check no longer serialises catalog lanes and is not the last check.  Lanes
+      # merge textually clean yet the merged tree can fail: two lanes adding one key
+      # at non-adjacent positions (duplicate), or one lane deleting a key that another
+      # lane starts to use (missing key).  --strict re-runs every check on the merged
+      # tree and exits non-zero on any finding.  ripgrep is installed when missing,
+      # as the PR-time static check does.
+      - name: Run strict i18n lint
         run: |
           set -euo pipefail
-          out="$(uv run --python 3.13 python ops/_i18n_duplicate_keys.py ios/BooksAndVocab)"
-          if [ -n "$out" ]; then
-            echo "$out"
-            exit 1
+          if ! command -v rg >/dev/null 2>&1; then
+            ./ops/ci_apt_install.sh ripgrep
           fi
+          ./ops/i18n_lint.sh --strict
 
       - name: Install ffmpeg and ffprobe
         if: steps.scope.outputs.backend == 'true'

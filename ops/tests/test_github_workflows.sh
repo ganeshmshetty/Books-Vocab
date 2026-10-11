@@ -249,45 +249,60 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     grep -Fq 'set -euo pipefail' <<<"$block" \
       || fail "merge-group ${label} step does not run with set -euo pipefail"
   }
-  # i18n duplicate keys: the five Localizable.strings catalogs are shared Scope, so
-  # the PR-time ui-quality-gate no longer serialises catalog lanes.  Two lanes that
-  # add the same key at non-adjacent positions can both pass their own PR checks
-  # and textually merge cleanly; only the merge queue sees the result.  The helper
-  # always exits 0 and reports on stdout, so the step must fail on any output.
-  # Run the workflow's own step block against fixture catalogs: a fallback value
-  # or a skipped step cannot satisfy these cases.
-  i18n_step="$(merge_group_step_containing '_i18n_duplicate_keys.py')"
+  # Shared Localizable.strings catalogs leave the PR-time static.i18n check unserialised,
+  # so the merge queue re-runs the full strict lint on the merged tree.  Run the
+  # workflow's own step block against fixture catalogs (KG_I18N_SRC): a clean tree
+  # passes, a non-adjacent duplicate key fails, and a key used in Swift but absent
+  # from en.lproj (the write-skew of a deleted key) fails.  The uv shim answers only
+  # `python find`, so the lint's interpreter lookup is hermetic.
+  i18n_step="$(merge_group_step_containing 'ops/i18n_lint.sh --strict')"
   if [[ -z "$i18n_step" ]]; then
-    fail "merge-group required gate has no i18n duplicate-key step (shared catalogs leave the merge queue as the only re-check)"
+    fail "merge-group required gate has no strict i18n lint step (shared catalogs leave the merge queue as the only re-check)"
   else
-    merge_group_assert_unmasked_step "i18n duplicate-key" "$i18n_step" no
-    i18n_tmp="$(mktemp -d)"
+    merge_group_assert_unmasked_step "strict i18n lint" "$i18n_step" no
+    # Fixtures live under the repo root (gitignored .cache): the key extractor
+    # reports paths relative to its root and fails closed on anything outside it.
+    mkdir -p "$ROOT/.cache"
+    i18n_tmp="$(mktemp -d "$ROOT/.cache/test-i18n-XXXXXX")"
     i18n_run="$i18n_tmp/step.sh"
     ruby -ryaml -e '
       steps = YAML.load_file(ARGV[0])["jobs"]["required"]["steps"]
-      step = steps.find { |s| s["run"].to_s.include?("_i18n_duplicate_keys.py") }
-      abort("no i18n duplicate-key step") unless step
+      step = steps.find { |s| s["run"].to_s.include?("ops/i18n_lint.sh --strict") }
+      abort("no strict i18n lint step") unless step
       File.write(ARGV[1], step["run"])
     ' "$MERGE_GROUP_REQUIRED" "$i18n_run" \
-      || fail "cannot extract the i18n duplicate-key step run block"
-    # uv is a host tool; the shim runs the same stdlib-only helper with the system interpreter.
-    mkdir -p "$i18n_tmp/bin" "$i18n_tmp/repo/ops" "$i18n_tmp/repo/ios/BooksAndVocab/en.lproj"
-    printf '%s\n' '#!/usr/bin/env bash' 'shift 4' 'exec python3 -I "$@"' >"$i18n_tmp/bin/uv"
+      || fail "cannot extract the strict i18n lint step run block"
+    mkdir -p "$i18n_tmp/bin"
+    printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$(command -v python3)"' >"$i18n_tmp/bin/uv"
     chmod +x "$i18n_tmp/bin/uv"
-    cp ops/_i18n_duplicate_keys.py "$i18n_tmp/repo/ops/"
-    i18n_catalog="$i18n_tmp/repo/ios/BooksAndVocab/en.lproj/Localizable.strings"
-    run_i18n_step() { (cd "$i18n_tmp/repo" && PATH="$i18n_tmp/bin:$PATH" bash "$i18n_run"); }
-    printf '%s\n' '"a" = "1";' '"b" = "2";' >"$i18n_catalog"
-    run_i18n_step >/dev/null 2>&1 \
-      || fail "i18n duplicate-key step rejects a clean catalog"
-    printf '%s\n' '"a" = "1";' '"b" = "2";' '"a" = "3";' >"$i18n_catalog"
-    if run_i18n_step >/dev/null 2>&1; then
-      fail "i18n duplicate-key step passes a non-adjacent duplicate key (helper exits 0 with output; the step must fail on it)"
+    printf 'findings=0\nlocalized_calls=0\n' >"$i18n_tmp/baseline.txt"
+    i18n_fixture() {  # $1 = name, $2 = key used in Swift, $3 = extra en.lproj line (optional)
+      local root="$i18n_tmp/fx-$1" loc
+      for loc in en zh-Hans ja ko; do
+        mkdir -p "$root/$loc.lproj"
+        printf '%s\n' '"kept" = "Kept";' >"$root/$loc.lproj/Localizable.strings"
+      done
+      [[ -z "${3:-}" ]] || printf '%s\n' "$3" >>"$root/en.lproj/Localizable.strings"
+      printf 'let title = L10n.string("%s")\n' "$2" >"$root/Feature.swift"
+    }
+    run_i18n_step() {  # $1 = fixture name; the step's exit status is the result
+      (cd "$ROOT" && UV_BIN="$i18n_tmp/bin/uv" KG_I18N_SRC="$i18n_tmp/fx-$1" KG_I18N_BASELINE="$i18n_tmp/baseline.txt" bash "$i18n_run" 2>&1)
+    }
+    i18n_fixture clean kept
+    i18n_fixture dup kept '"kept" = "Again";'
+    i18n_fixture missing gone
+    run_i18n_step clean >/dev/null \
+      || fail "strict i18n lint step rejects a clean catalog tree"
+    if out="$(run_i18n_step dup)"; then
+      fail "strict i18n lint step passes a non-adjacent duplicate key (the merge queue must fail on it)"
     fi
-    rm -f "$i18n_catalog"
-    if run_i18n_step >/dev/null 2>&1; then
-      fail "i18n duplicate-key step passes with no .strings catalogs at all (helper reports that as output; the gate must fail closed)"
+    grep -Fq 'duplicate key "kept"' <<<"$out" \
+      || fail "strict i18n lint duplicate-key case does not name the duplicate"
+    if out="$(run_i18n_step missing)"; then
+      fail "strict i18n lint step passes a Swift key missing from en.lproj (write-skew of a deleted key)"
     fi
+    grep -Fq 'missing_key: gone' <<<"$out" \
+      || fail "strict i18n lint missing-key case does not name the missing key"
     rm -rf "$i18n_tmp"
   fi
   scope_step_id="$(awk '
