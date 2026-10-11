@@ -145,16 +145,17 @@ Scope: `ios/BooksAndVocab`
 
 | State | 觸發條件 | 目前 UI | 狀態 |
 |------|----------|--------|------|
-| Loading | `!linksLoaded`，無失敗 | `AppLoadingStateCard` 卡身（catalog「Graph loading」） | 已覆蓋（unit＋catalog） |
-| Error panel 5xx | `!linksLoaded` + `failureReason`（HTTP 5xx） | 錯誤面板 `overview.graph.error`＋原因＋重試（catalog「Graph error 5xx」） | 已覆蓋（unit＋catalog；UI 未測） |
-| Error panel offline | `!linksLoaded` + `failureReason`（離線） | 同上（catalog「Graph error offline」） | 已覆蓋（unit＋catalog；UI 未測） |
-| Graph painted | `linksLoaded`，nodes > 0，已 painted，無失敗 | 縮圖＋健康條，無狀態列（catalog「Populated」） | 已覆蓋（unit＋catalog） |
-| Empty | `linksLoaded`，nodes == 0 | 原生 empty 卡身（不走 paint watchdog）（catalog「Empty」） | 已覆蓋（unit＋catalog） |
-| Stale | `linksLoaded` + `failureReason` | 保留快取圖＋`overview.graph.status` 警示列（原因＋重試）（catalog「Graph stale 5xx」） | 已覆蓋（unit＋catalog；UI 未測） |
-| Rendering | nodes > 0，8 秒內未 painted，無失敗 | 逾時後縮圖 web view 改為卡身「關聯圖尚未顯示」（`.unpainted`，不留空白），狀態列「關聯圖繪製中」＋重試（非 stale 警示）；之後 painted 即回到縮圖 | 部分覆蓋（unit；UI 與 catalog 未測，無法穩定造出未繪製縮圖） |
+| Loading | `!linksLoaded`，無失敗 | `AppLoadingStateCard` 卡身（catalog 場景「Graph loading」） | unit 覆蓋；catalog 場景已備，截圖未取 |
+| Error panel 5xx | `!linksLoaded` + `failureReason`（HTTP 5xx） | 錯誤面板 `overview.graph.error`＋原因＋重試（catalog 場景「Graph error 5xx」） | unit 覆蓋；catalog 場景已備，截圖未取；UI 未測 |
+| Error panel offline | `!linksLoaded` + `failureReason`（離線） | 同上（catalog 場景「Graph error offline」） | unit 覆蓋；catalog 場景已備，截圖未取；UI 未測 |
+| Graph painted | `linksLoaded`，nodes > 0，已 painted，無失敗 | 縮圖＋健康條，無狀態列（catalog 場景「Populated」） | unit 覆蓋；catalog 場景已備，截圖未取 |
+| Empty | `linksLoaded`，nodes == 0 | 原生 empty 卡身（不走 paint watchdog）（catalog 場景「Empty」） | unit 覆蓋；catalog 場景已備，截圖未取 |
+| Stale | `linksLoaded` + `failureReason` | 保留快取圖＋`overview.graph.stale` 警示列（原因＋重試）（catalog 場景「Graph stale 5xx」） | unit 覆蓋；catalog 場景已備，截圖未取；UI 未測 |
+| Rendering | nodes > 0，8 秒內未 painted，無失敗 | 逾時後縮圖 web view 自卡身移除，卡身「關聯圖尚未顯示」（`.unpainted`，不留空白），狀態列「關聯圖繪製中」（`overview.graph.rendering`）＋重試（非 stale 警示）。web view 已分離，晚到的 painted 不被依賴；重試重新掛回並重新計時（裝置上未驗證） | 部分覆蓋（unit；視圖層與故障注入 reproduction 未做） |
+| New payload | 縮圖收到新 payload（signature 改變） | `sendInitGraph` 重置 `hasPainted`（graph.html 會重新隱藏 canvas）；卡片依 signature 重新計時；已逾時的 `.unpainted` 隨 payload 回到 `.graph` | 已覆蓋（coordinator unit；watchdog 視圖層未測） |
 | Rendering + stale | nodes > 0，逾時，且有 `failureReason` | 卡身同為「關聯圖尚未顯示」，狀態列為 stale 警示（原因＋重試） | 已覆蓋（unit） |
 | Retry on unpainted | 縮圖（`.graph`／`.unpainted`）且 `!hasPainted` 的重試 | 頁面未回報 `ready`（`needsRebuildOnRetry`）才 `recover()` 重建 web view；已 ready 但仍繪製中的慢圖只重新計時，不重啟渲染；錯誤面板（無縮圖）重試只回呼 `onRetry` | 部分覆蓋（coordinator unit；視圖層未測） |
-| Web content terminated | 縮圖 web content process 終止 | 自動 `recover()` 最多 3 次（連續、未 painted 前）；之後停止，交由 `.rendering` 列重試 | 已覆蓋（coordinator unit） |
+| Web content terminated | 縮圖 web content process 終止 | 自動 `recover()` 最多 3 次（連續、未 painted 前）；之後標記 `pageLost` 並清除 `hasPainted`，8 秒後由 `.rendering` 列呈現，其重試 `needsRebuildOnRetry` 重建頁面（不因已 ready 而被擋） | 已覆蓋（coordinator unit） |
 
 ### Today Review State
 
