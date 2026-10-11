@@ -7,7 +7,7 @@ struct AppStartupFailure: Equatable {
     let technicalDetails: String
 
     /// #2743 — 恢復步驟必須先點名永久遺失風險，不能等使用者點了按鈕才發現。
-    static let clearCacheRecoveryStepKey = "如果重試無效，可以清除本機快取；尚未同步到雲端的單字、筆記本與複習紀錄會永久刪除，無法復原。"
+    static let clearCacheRecoveryStepKey = "如果重試無效，可以清除本機快取；所有尚未同步到雲端的本機資料會永久刪除，無法復原。"
 
     static func storageInitialization(error: Error) -> AppStartupFailure {
         AppStartupFailure(
@@ -47,7 +47,7 @@ struct AppStartupRecoveryActions {
 /// 且 SwiftUI 關閉 binding 與按鈕 action 的先後順序不保證，前提判斷會讓清除靜默失效。
 struct AppStartupClearCacheGate: Equatable {
     static let titleKey = "要清除本機快取嗎？"
-    static let messageKey = "尚未同步到雲端的單字、筆記本與複習紀錄會永久遺失，無法復原。已備份到雲端的資料不受影響。"
+    static let messageKey = "所有尚未同步到雲端的本機資料（單字、筆記本、複習紀錄、書籍與播客等）會永久遺失，無法復原。已備份到雲端的資料不受影響。"
     static let confirmKey = "清除本機資料"
 
     enum Effect: Equatable {

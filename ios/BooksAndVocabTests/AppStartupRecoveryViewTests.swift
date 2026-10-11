@@ -34,7 +34,9 @@ struct AppStartupRecoveryViewTests {
         #expect(!gate.isPresented)
     }
 
-    @Test func confirmationCopyIsLocalizedAndWarnsAboutUnsyncedData() {
+    /// 每個 shipped locale 必須自己持有這些鍵。走 `L10n.string` 會回落到 en，缺譯的 ja/ko/zh-Hans
+    /// 會假綠，故用 `fallback: nil`（同 NotebookPaletteTests 的嚴格契約）。zh-Hant 以原文為鍵，不在此檢查。
+    @Test func confirmationCopyResolvesInEveryShippedLocaleWithoutEnglishFallback() {
         let keys = [
             AppStartupClearCacheGate.titleKey,
             AppStartupClearCacheGate.messageKey,
@@ -42,12 +44,35 @@ struct AppStartupRecoveryViewTests {
             AppStartupFailure.clearCacheRecoveryStepKey
         ]
         for language in AppLanguage.allCases where language != .system && language != .traditionalChinese {
+            let bundle = AppLanguageStore.shared.stringBundle(for: language)
             for key in keys {
-                #expect(L10n.string(key, language: language) != key, "untranslated \(key) for \(language.rawValue)")
+                #expect(L10n.lookup(key, in: bundle, fallback: nil) != key, "untranslated \(key) for \(language.rawValue)")
             }
         }
-        #expect(L10n.string(AppStartupClearCacheGate.messageKey, language: .traditionalChinese).contains("單字、筆記本與複習紀錄"))
-        #expect(L10n.string(AppStartupFailure.clearCacheRecoveryStepKey, language: .traditionalChinese).contains("永久刪除"))
+    }
+
+    /// 文案必須涵蓋 `AppBootstrap.purgeStoreFiles` 實際刪除的全部未同步本機資料：LocalStore 整檔
+    /// （單字、筆記本、複習紀錄、播客、共享牌組、設定投影）與 CloudStore 內未同步的列（書籍、播客進度）。
+    /// 只點名部分類型會讓使用者低估風險。每個 marker 是該語系獨有的譯文片段，英文回落無法滿足。
+    @Test func confirmationCopyCoversAllUnsyncedLocalData() {
+        let scopeMarkers: [AppLanguage: String] = [
+            .english: "All local data that has not synced",
+            .japanese: "クラウドに同期されていないすべてのローカルデータ",
+            .korean: "클라우드에 동기화되지 않은 모든 로컬 데이터",
+            .simplifiedChinese: "所有尚未同步到云端的本机数据",
+            .traditionalChinese: "所有尚未同步到雲端的本機資料"
+        ]
+        for (language, marker) in scopeMarkers {
+            #expect(
+                L10n.string(AppStartupClearCacheGate.messageKey, language: language).contains(marker),
+                "\(language.rawValue) confirmation message does not cover all unsynced local data"
+            )
+            #expect(
+                L10n.string(AppStartupFailure.clearCacheRecoveryStepKey, language: language).contains(marker),
+                "\(language.rawValue) recovery step does not cover all unsynced local data"
+            )
+        }
+        #expect(L10n.string(AppStartupClearCacheGate.messageKey, language: .traditionalChinese).contains("書籍與播客"))
     }
 
     @Test func recoveryStepWarnsBeforeTapAboutPermanentLoss() {
