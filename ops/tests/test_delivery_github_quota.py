@@ -1,5 +1,3 @@
-# ruff: noqa: E402
-
 from __future__ import annotations
 
 import json
@@ -28,7 +26,9 @@ from delivery_control.adapters.github_quota import (
 from delivery_control.ports.process import CommandResult
 
 READ = ("gh", "issue", "list", "--json", "number")
+OTHER_READ = ("gh", "label", "list", "--json", "name")
 WRITE = ("gh", "issue", "comment", "1", "--body", "x")
+CHECKS = ("gh", "pr", "checks", "7", "--required", "--json", "name,state")
 REPO = Path("/repo")
 
 
@@ -106,9 +106,8 @@ def _call(
     *,
     read_only: bool,
 ):
-    return governor.call(
-        argv, read_only=read_only, execute=lambda: runner.run(argv, cwd=REPO)
-    )
+    kind = "cached-read" if read_only else "mutation"
+    return governor.call(argv, kind=kind, execute=lambda: runner.run(argv, cwd=REPO))
 
 
 def _spend_rows(path: Path) -> list[dict[str, object]]:
@@ -497,3 +496,102 @@ def test_spend_log_is_capped_to_newest_rows(
     remaining = [row["remaining"] for row in rows]
     assert remaining == sorted(remaining, reverse=True)
     assert rows[-1]["remaining"] == 5_000 - 39
+
+
+class RaisingWriteRunner(FakeRunner):
+    """Fails the write after it has reached the transport, as a dropped connection would."""
+
+    def run(self, argv: tuple[str, ...], *, cwd: Path | None = None) -> CommandResult:
+        if argv == WRITE:
+            self.calls.append(argv)
+            raise RuntimeError("connection dropped after the write may have landed")
+        return super().run(argv, cwd=cwd)
+
+
+def test_live_checks_read_reaches_network_and_keeps_cached_reads(
+    tmp_path: Path,
+) -> None:
+    # gh pr checks is a non-mutating live read: it always executes and is never cached,
+    # but it changed nothing, so it must not evict cached reads the way a write does.
+    runner = FakeRunner(remaining=5_000)
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson", repo=tmp_path)
+    adapter = GitHubCliAdapter(repo=tmp_path, runner=runner, quota=governor)
+
+    adapter.runner.run(READ, cwd=tmp_path)
+    adapter.runner.run(CHECKS, cwd=tmp_path)
+    runner.remaining = STALE_SERVE_BELOW - 1
+    clock.t += PROBE_TTL_SECONDS + 1
+    adapter.runner.run(CHECKS, cwd=tmp_path)
+    adapter.runner.run(READ, cwd=tmp_path)
+
+    assert runner.count(CHECKS) == 2
+    assert runner.count(READ) == 1
+
+
+def test_write_that_raises_still_evicts_read_cache(tmp_path: Path) -> None:
+    runner = RaisingWriteRunner(remaining=5_000)
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson", repo=tmp_path)
+    adapter = GitHubCliAdapter(repo=tmp_path, runner=runner, quota=governor)
+
+    adapter.runner.run(READ, cwd=tmp_path)
+    runner.remaining = STALE_SERVE_BELOW - 1
+    clock.t += PROBE_TTL_SECONDS + 1
+    with pytest.raises(RuntimeError):
+        adapter.runner.run(WRITE, cwd=tmp_path)
+    adapter.runner.run(READ, cwd=tmp_path)
+
+    assert runner.count(READ) == 2
+
+
+def test_expired_read_cache_entries_are_evicted_when_another_read_is_cached(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(remaining=5_000)
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson", repo=tmp_path)
+    adapter = GitHubCliAdapter(repo=tmp_path, runner=runner, quota=governor)
+
+    adapter.runner.run(READ, cwd=tmp_path)
+    clock.t += STALE_CACHE_TTL_SECONDS + 1
+    adapter.runner.run(OTHER_READ, cwd=tmp_path)
+
+    assert READ not in governor._read_cache
+    assert OTHER_READ in governor._read_cache
+
+
+class CheckRunner(HeadRunner):
+    """HeadRunner that also answers the required-checks read with one passing check."""
+
+    def run(self, argv: tuple[str, ...], *, cwd: Path | None = None) -> CommandResult:
+        if argv[:3] == ("gh", "pr", "checks"):
+            self.calls.append(argv)
+            payload = [
+                {
+                    "name": "backend-quality",
+                    "state": "SUCCESS",
+                    "startedAt": None,
+                    "completedAt": None,
+                }
+            ]
+            return CommandResult(argv, 0, json.dumps(payload), "")
+        return super().run(argv, cwd=cwd)
+
+
+def test_required_check_snapshot_binds_the_live_head_below_800(tmp_path: Path) -> None:
+    # The before/after head reads of a required-checks observation gate merges. A cached
+    # pr view of the old head must not be replayed there, or the checks fetched for the
+    # new head would be bound to the old one.
+    runner = CheckRunner(remaining=5_000, head=OLD_HEAD)
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson", repo=tmp_path)
+    adapter = GitHubCliAdapter(repo=tmp_path, runner=runner, quota=governor)
+    assert adapter.get_pull_request(7).head_sha == OLD_HEAD
+    runner.head = NEW_HEAD
+    runner.remaining = STALE_SERVE_BELOW - 1
+    clock.t += PROBE_TTL_SECONDS + 1
+
+    snapshot = adapter.required_check_snapshot(7)
+
+    assert snapshot.head_sha == NEW_HEAD

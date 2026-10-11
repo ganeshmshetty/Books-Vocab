@@ -8,19 +8,24 @@ headers are unavailable from GraphQL-backed gh subcommands. The probe is refresh
 at most once per ``PROBE_TTL_SECONDS``, and one probe per process is an uncounted
 extra call per refresh; local decrements keep the estimate honest between probes.
 
-Below ``STALE_SERVE_BELOW`` remaining, an already-fetched read-only result is served
-from this process's cache instead of the network, but only while that entry is
+Each call has one of three kinds. ``cached-read`` (gh JSON queries and GraphQL reads)
+is cached and, below ``STALE_SERVE_BELOW`` remaining, an already-fetched result is
+served from this process's cache instead of the network, but only while that entry is
 younger than ``STALE_CACHE_TTL_SECONDS``. Accepted staleness window: up to
 ``STALE_CACHE_TTL_SECONDS`` for any read served from cache. Pushes, external merges
 and state changes made by other processes, and git mutations made outside this
-governor's gh calls, are not observed within that window. Any gh mutation seen by
-this governor clears the cache.
+governor's gh calls, are not observed within that window. ``live-read`` (for example
+``gh pr checks``, whose status gates merges) always reaches the network, is never
+cached or stale-served, and changed nothing, so it does not evict the cache.
+``mutation`` always reaches the network and evicts the whole cache, even when the
+call raises, because a partial write may already have landed.
 
 Stale serve is never applied inside an ``authoritative_reads()`` scope. The adapter
-opens that scope around every mutation and its pre/post verification reads, because
-those reads decide whether a write is authorized or verified; a cached answer there
-would replay one stale head on every retry. Authoritative reads still pay the budget
-wait and the spend-log row.
+opens that scope around every mutation, its pre/post verification reads, and the
+required-check observation, because those reads decide whether a write or a merge is
+authorized; a cached answer there would replay one stale head on every retry or bind
+checks to an old head. Authoritative reads still pay the budget wait and the spend-log
+row.
 
 Below ``WAIT_BELOW`` the governor sleeps until the bottleneck resource resets (bounded
 by ``MAX_RESET_WAITS``), then fails closed with ``GitHubQuotaExhausted``. Every governed
@@ -57,6 +62,7 @@ RATE_LIMIT_ARGV = ("gh", "api", "rate_limit")
 _BUDGET_RESOURCES = ("core", "graphql")
 
 Outcome = Literal["probe", "network", "stale-cache", "waited"]
+CallKind = Literal["cached-read", "live-read", "mutation"]
 
 
 class GitHubQuotaExhausted(AdapterError):
@@ -115,7 +121,7 @@ class GitHubQuotaGovernor:
         self,
         argv: tuple[str, ...],
         *,
-        read_only: bool,
+        kind: CallKind,
         execute: Callable[[], CommandResult],
     ) -> tuple[CommandResult, bool]:
         """Return ``(result, executed)``; ``executed`` is False when served from cache."""
@@ -125,7 +131,7 @@ class GitHubQuotaGovernor:
         budget = self._budget
         cached = self._read_cache.get(argv)
         if (
-            read_only
+            kind == "cached-read"
             and self._authoritative_depth == 0
             and budget is not None
             and budget.remaining < STALE_SERVE_BELOW
@@ -135,17 +141,33 @@ class GitHubQuotaGovernor:
             self._record(argv, budget.remaining, "stale-cache", 0)
             return cached[0], False
         remaining = None if budget is None else budget.remaining
-        result = execute()
-        if not read_only:
-            self._read_cache.clear()
-        elif result.exit_code == 0:
-            self._read_cache[argv] = (result, self._clock())
+        try:
+            result = execute()
+        finally:
+            # Evict on every mutation attempt, not only on success: a write that
+            # raises may already have landed on GitHub.
+            if kind == "mutation":
+                self._read_cache.clear()
+        if kind == "cached-read" and result.exit_code == 0:
+            self._remember(argv, result)
         if self._budget is not None:
             self._budget = replace(
                 self._budget, remaining=max(0, self._budget.remaining - 1)
             )
         self._record(argv, remaining, "network", result.exit_code)
         return result, True
+
+    def _remember(self, argv: tuple[str, ...], result: CommandResult) -> None:
+        """Cache one read and drop entries past their TTL so the cache stays bounded."""
+        now = self._clock()
+        expired = [
+            key
+            for key, (_, stored_at) in self._read_cache.items()
+            if now - stored_at >= STALE_CACHE_TTL_SECONDS
+        ]
+        for key in expired:
+            del self._read_cache[key]
+        self._read_cache[argv] = (result, now)
 
     def _refresh_if_stale(self) -> None:
         if (

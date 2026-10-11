@@ -19,6 +19,9 @@ _READ_ONLY_JSON_COMMANDS = frozenset(
         ("label", "list"),
     }
 )
+# Non-mutating reads that must reach the network every time: required-check status
+# gates merges, so a cached "success" must never be replayed. They evict nothing either.
+_LIVE_READ_COMMANDS = frozenset({("pr", "checks")})
 _TRANSIENT_ERROR_MARKERS = (
     "tls handshake timeout",
     "connection reset",
@@ -175,6 +178,12 @@ def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
     if method is not None:
         return method.upper() == "GET"
     return not _has_gh_api_input(argv)
+
+
+def _is_live_read_command(argv: tuple[str, ...]) -> bool:
+    return (
+        len(argv) >= 3 and argv[0] == "gh" and (argv[1], argv[2]) in _LIVE_READ_COMMANDS
+    )
 
 
 def _is_transient_failure(result: CommandResult) -> bool:
