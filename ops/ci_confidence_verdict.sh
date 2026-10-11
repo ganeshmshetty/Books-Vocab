@@ -10,8 +10,10 @@ Usage: ops/ci_confidence_verdict.sh --plan <json> --needs <json>
 The plan contains string booleans for backend, ops, ios, and macos_ops. The
 needs object is GitHub Actions' toJSON(needs) value. ops-suite is selected by
 ops or macos_ops (its macos-native-ops job consumes macos_ops). Selected suites
-must succeed; explicitly unselected suites must be skipped. Every other
-confidence dependency, including unknown dependencies, must succeed.
+must succeed; explicitly unselected suites must be skipped. A selected iOS suite
+on a PR is compile-only: ios-build must succeed and the iOS test jobs must be
+skipped (pr-gate passes run_tests=false). Every other confidence dependency,
+including unknown dependencies, must succeed.
 EOF
 }
 
@@ -58,6 +60,7 @@ printf '%s\n' "$needs" | jq -r 'to_entries[] | "\(.key)=\(.value.result // "miss
 
 if ! jq -e --argjson plan "$plan" '
   def result($name): .[$name].result // "missing";
+  def ios($key): (.["ios-quality"].outputs // {})[$key];
   def known($name): [
     "changed-paths",
     "repo-gate",
@@ -86,8 +89,15 @@ if ! jq -e --argjson plan "$plan" '
     end
   )
   and (
+    # PR iOS runs are compile-only (pr-gate passes run_tests=false): ios-build
+    # must have succeeded and every iOS test job must be skipped by design.
+    # ios-quality exposes each job result as an output, so the aggregate
+    # ios-quality result is never the only proof.
     if $plan.ios == "true"
     then result("ios-quality") == "success"
+      and ios("build_result") == "success"
+      and ios("tests_result") == "skipped"
+      and ios("targeted_result") == "skipped"
     else result("ios-quality") == "skipped"
     end
   )
