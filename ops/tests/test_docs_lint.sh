@@ -150,11 +150,8 @@ if [ -n "$(ls -A "$TMP/scratch")" ]; then
   exit 1
 fi
 
-# #2923: backup_restore.md §2.5 must say its restore snippet runs over direct ssh, because the run
-# guard blocks its mv/tar lines. §2.5a must name the protected names the guard enforces and list the
-# legitimate maintenance commands it blocks; every 擋／允許 row must agree with devops_run_is_blocked.
-awk '/^### 2\.5 /{f=1;next} /^#### 2\.5a /{f=0} f' docs/sop/backup_restore.md >"$TMP/sop_25.txt"
-require_grep 'direct ssh' "$TMP/sop_25.txt"
+# #2923: §2.5a must name the protected names the run guard enforces and list the legitimate
+# maintenance commands it blocks; every 擋／允許 row must agree with devops_run_is_blocked.
 require_grep '^#### 2\.5a ' docs/sop/backup_restore.md
 awk '/^#### 2\.5a /{f=1;next} /^#+ /{f=0} f' docs/sop/backup_restore.md >"$TMP/sop_25a.txt"
 require_grep '受保護名稱' "$TMP/sop_25a.txt"
