@@ -116,7 +116,8 @@ struct TodayReviewPresenter: View {
     /// 逐幀寫入不觸發 body；只在 completeFling 的 settle 縫讀一次當過渡起點。
     @State var deckHeightProbe = DeckHeightProbe()
     /// 背面展開 settle 後記下的卡片區總高（previous / shuffle / autoplay 離場的接手起點；
-    /// 規則見 `TodayReviewDeckHeight.RevealLatch`）。離場被 retarget 消化、或同卡收合即丟棄。
+    /// 規則見 `TodayReviewDeckHeight.RevealLatch`）。展開中同時是非 active cap 的依據
+    /// （`deckSettledBackHeight`）。離場被 retarget 消化、或同卡收合即丟棄。
     @State var deckRevealLatch: TodayReviewDeckHeight.RevealLatch?
 
     /// 目前 active slot 的實測 front 高度 = 過渡目標（非 active slot cap 到此值）。
@@ -182,14 +183,25 @@ struct TodayReviewPresenter: View {
         TodayReviewDeckHeight.effectiveShell(shell: deckShellHeight, handoff: deckHandoffHeight)
     }
 
+    /// 已 settle 的展開背面高度（同一張卡仍展開才有效；見 `RevealLatch`）。非 nil 時非 active
+    /// slot 的 cap 取它（見 `TodayReviewDeckHeight.slotHeight` 的 `settledBack`）。
+    var deckSettledBackHeight: CGFloat? {
+        guard let latch = deckRevealLatch,
+              latch.survives(currentCardKey: currentCardKey, revealed: state.revealStage.showsAnswer)
+        else { return nil }
+        return latch.height
+    }
+
     /// slot 的 layout 高度（nil = 自然高度）。cardSlotView 與 deckDepthShell 共用。
-    func deckSlotHeight(isActive: Bool) -> CGFloat? {
+    /// `settled: false` 只給裝飾殼層：殼層維持正面基準，不隨展開背面下移外露。
+    func deckSlotHeight(isActive: Bool, settled: Bool = true) -> CGFloat? {
         TodayReviewDeckHeight.slotHeight(
             isActive: isActive,
             shell: deckEffectiveShell,
             target: activeCardHeight,
             inFlight: deckHeightInFlight,
-            revealed: state.revealStage.showsAnswer
+            revealed: state.revealStage.showsAnswer,
+            settledBack: (settled && !isActive) ? deckSettledBackHeight : nil
         )
     }
 
@@ -461,7 +473,10 @@ struct TodayReviewPresenter: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.revealSettleSeconds * 1_000_000_000))
             guard generation == backMountGeneration else { return }
-            deckRevealLatch = TodayReviewDeckHeight.RevealLatch(cardKey: cardKey, measured: probe.layoutHeight)
+            // 展開中非 active cap 會由正面高度改到背面高度：以 reveal spring 寫入，預覽下緣連續過渡、不瞬跳。
+            withAnimation(AppMotion.reviewRevealSpring) {
+                deckRevealLatch = TodayReviewDeckHeight.RevealLatch(cardKey: cardKey, measured: probe.layoutHeight)
+            }
         }
     }
 
@@ -500,7 +515,7 @@ struct TodayReviewPresenter: View {
         // promote / 連續堆疊機制見 TodayReviewCardSlot.swift。
         return ZStack(alignment: .top) {
             // depth-2 殼層 — 純裝飾常駐節點（卡不足以 opacity 隱藏，不結構移除）。
-            deckDepthShell(height: deckSlotHeight(isActive: false) ?? 0)
+            deckDepthShell(height: deckSlotHeight(isActive: false, settled: false) ?? 0)
 
             cardSlotView(slot: 0, viewport: viewport)
             cardSlotView(slot: 1, viewport: viewport)
