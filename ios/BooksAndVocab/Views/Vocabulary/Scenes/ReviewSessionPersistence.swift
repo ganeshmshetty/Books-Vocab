@@ -26,9 +26,16 @@ enum ReviewSessionPersistence {
         return entries.filter { winners[persistenceID(for: $0)] === $0 }
     }
 
-    private static func precedes(_ lhs: VocabularyEntry, _ rhs: VocabularyEntry) -> Bool {
+    /// 單一 persistenceID 的代表排序鍵：`dateAdded` 早者優先，平手以 `id` 字典序。
+    /// `uniqueByPersistenceID`（佇列）與 `fetchEntry`（flush 寫入）共用此比較器，兩者不得各自定義。
+    static func precedes(_ lhs: VocabularyEntry, _ rhs: VocabularyEntry) -> Bool {
         if lhs.dateAdded != rhs.dateAdded { return lhs.dateAdded < rhs.dateAdded }
         return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    /// 從同一 persistenceID 的多筆候選中挑出代表（與佇列選中的那筆相同）。
+    static func representative(among entries: [VocabularyEntry]) -> VocabularyEntry? {
+        entries.min(by: precedes)
     }
 
     static func makeBaseline(
@@ -349,17 +356,17 @@ enum ReviewSessionPersistence {
 
     // MARK: - Private DB helpers
 
-    private static func fetchEntry(
+    static func fetchEntry(
         for persistenceID: String,
         in context: ModelContext
     ) throws -> VocabularyEntry? {
         if persistenceID.hasPrefix("kg:") {
+            // 不可 fetchLimit = 1：sync 競態可能有多筆同 kgCardId，必須取與佇列代表相同的那筆（同一比較器）。
             let kgCardID = String(persistenceID.dropFirst(3))
-            var descriptor = FetchDescriptor<VocabularyEntry>(
+            let descriptor = FetchDescriptor<VocabularyEntry>(
                 predicate: #Predicate<VocabularyEntry> { $0.kgCardId == kgCardID }
             )
-            descriptor.fetchLimit = 1
-            return try context.fetch(descriptor).first
+            return representative(among: try context.fetch(descriptor))
         }
 
         guard persistenceID.hasPrefix("local:"),
