@@ -92,15 +92,18 @@ struct CardPresentationPeerStateTests {
         source.markSynced()
         let b = Self.entry("b", cardId: "b")
         let state = TodayReviewState(entries: [source], allEntries: [source, b], currentUserID: nil)
-        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+        let before = try #require(state.preparedCardCache[source.id])
+        #expect(before.linkGroups.flatMap(\.items).count == 1)
 
         b.isArchived = true
         state.refreshPeerDependentCards()
-        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.isEmpty)
+        let archived = try #require(state.preparedCardCache[source.id])
+        #expect(archived.linkGroups.isEmpty)
 
         b.isArchived = false
         state.refreshPeerDependentCards()
-        #expect(try #require(state.preparedCardCache[source.id]).linkGroups.flatMap(\.items).count == 1)
+        let restored = try #require(state.preparedCardCache[source.id])
+        #expect(restored.linkGroups.flatMap(\.items).count == 1)
     }
 
     /// #2535: a stale chip tapped after its peer was archived must not open the peer.
