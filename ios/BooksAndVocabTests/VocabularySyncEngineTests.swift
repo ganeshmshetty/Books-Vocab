@@ -471,8 +471,8 @@ struct VocabularySyncEngineTests {
         #expect(json["explanation"] as? String == "edited explanation")
     }
 
-    @Test("a cleared note is sent as an empty explanation, which the backend treats as clear")
-    func contentEditPayloadSendsEmptyForClearedExplanation() throws {
+    @Test("an unknown local note is omitted, so an unrelated edit never clears the server note")
+    func contentEditPayloadOmitsUnknownExplanation() throws {
         let payload = KGService.vocabContentPayload(
             translation: "edited translation",
             explanation: nil
@@ -481,6 +481,18 @@ struct VocabularySyncEngineTests {
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
 
         #expect(json["meaning"] as? String == "edited translation")
+        #expect(json["explanation"] == nil)
+    }
+
+    @Test("an explicit empty explanation is sent, which the backend treats as clear")
+    func contentEditPayloadSendsEmptyExplanationAsClear() throws {
+        let payload = KGService.vocabContentPayload(
+            translation: "edited translation",
+            explanation: ""
+        )
+        let data = try JSONEncoder().encode(payload)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
         #expect(json["explanation"] as? String == "")
     }
 

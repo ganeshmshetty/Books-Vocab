@@ -79,9 +79,26 @@ private struct KGCardPreferencesUpdate: Encodable {
 
 struct KGVocabContentUpdate: Encodable, Equatable {
     let meaning: String
-    /// Always encoded. The backend treats an omitted or null `explanation` as "no change"
-    /// and "" as "clear the note", so a cleared note (nil locally) must be sent as "" (#2550).
-    let explanation: String
+    /// nil is omitted from the wire and the backend reads that as "no change"; "" clears the note.
+    /// A nil local note is not known to be empty (the server note may not have been pulled yet), so it
+    /// must never be coerced to "" or an unrelated edit would wipe it. Sending "" for an explicit clear
+    /// needs a tri-state local value, tracked under #2550.
+    let explanation: String?
+}
+
+extension KGAddResponse {
+    /// The backend numbers `rejected[].index` within each request. Rebasing a chunk's response by its
+    /// start offset makes every rejection address the caller's submission array (#2472).
+    func offsettingRejected(by offset: Int) -> KGAddResponse {
+        guard offset != 0 else { return self }
+        return KGAddResponse(
+            created: created,
+            skipped: skipped,
+            duplicates: duplicates,
+            cardIds: cardIds,
+            rejected: rejected.map { KGRejectedItem(index: $0.index + offset, word: $0.word, reason: $0.reason) }
+        )
+    }
 }
 
 // MARK: - Vocabulary CRUD
@@ -97,7 +114,7 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
     }
 
     func batchDeleteCards(words: [String], notebookId: String) async throws -> KGBatchDeleteResponse {
-        try await Self.performChunked(words, send: { chunk in
+        try await Self.performChunked(words, send: { chunk, _ in
             let body = try JSONEncoder().encode(["words": chunk])
             return try await self.authenticatedDecode(
                 KGBatchDeleteResponse.self,
@@ -143,7 +160,7 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
         translation: String,
         explanation: String?
     ) -> KGVocabContentUpdate {
-        KGVocabContentUpdate(meaning: translation, explanation: explanation ?? "")
+        KGVocabContentUpdate(meaning: translation, explanation: explanation)
     }
 
     func updateCardContent(
@@ -170,7 +187,7 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
             let words: [String]
             let archived: Bool
         }
-        return try await Self.performChunked(words, send: { chunk in
+        return try await Self.performChunked(words, send: { chunk, _ in
             let body = try JSONEncoder().encode(BatchArchiveBody(words: chunk, archived: archived))
             return try await self.authenticatedDecode(
                 KGBatchArchiveResponse.self,
@@ -237,14 +254,14 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
 
     func batchAdd(entries: [VocabularyEntry], notebookId: String = "default") async throws -> KGAddResponse {
         let payload = Self.vocabPayload(for: entries)
-        return try await Self.performChunked(payload, send: { chunk in
+        return try await Self.performChunked(payload, send: { chunk, offset in
             try await self.authenticatedDecode(
                 KGAddResponse.self,
                 path: "api/vocab",
                 method: "POST",
                 queryItems: [URLQueryItem(name: "notebook_id", value: notebookId)],
                 body: try JSONEncoder().encode(chunk)
-            )
+            ).offsettingRejected(by: offset)
         }, merge: Self.merged)
     }
 
@@ -252,18 +269,19 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
 
     static let maxVocabBatchSize = 500
 
-    /// Sends `items` in <= `maxVocabBatchSize` slices and folds the responses.
-    /// Empty input still sends once so legacy behaviour is unchanged.
+    /// Sends `items` in <= `maxVocabBatchSize` slices and folds the responses. `send` also receives
+    /// the slice's start offset in `items`, so index-bearing responses can be rebased to the caller's
+    /// array. Empty input still sends once so legacy behaviour is unchanged.
     static func performChunked<Item, Response>(
         _ items: [Item],
-        send: ([Item]) async throws -> Response,
+        send: ([Item], Int) async throws -> Response,
         merge: (Response, Response) -> Response
     ) async throws -> Response {
-        guard items.count > maxVocabBatchSize else { return try await send(items) }
+        guard items.count > maxVocabBatchSize else { return try await send(items, 0) }
         var result: Response?
         for start in stride(from: 0, to: items.count, by: maxVocabBatchSize) {
             let chunk = Array(items[start..<min(start + maxVocabBatchSize, items.count)])
-            let response = try await send(chunk)
+            let response = try await send(chunk, start)
             result = result.map { merge($0, response) } ?? response
         }
         return result!
@@ -274,7 +292,8 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
             created: a.created + b.created,
             skipped: a.skipped + b.skipped,
             duplicates: a.duplicates + b.duplicates,
-            cardIds: a.cardIds.merging(b.cardIds) { _, new in new }
+            cardIds: a.cardIds.merging(b.cardIds) { _, new in new },
+            rejected: a.rejected + b.rejected
         )
     }
 

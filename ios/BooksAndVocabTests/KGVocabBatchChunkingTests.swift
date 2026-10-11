@@ -15,7 +15,7 @@ struct KGVocabBatchChunkingTests {
     @Test func splitsIntoRequestsNoLargerThanCap() async throws {
         let items = Array(0..<1201)
         var sizes: [Int] = []
-        let total: Int = try await KGService.performChunked(items) { chunk in
+        let total: Int = try await KGService.performChunked(items) { chunk, _ in
             sizes.append(chunk.count)
             return chunk.count
         } merge: { $0 + $1 }
@@ -25,7 +25,7 @@ struct KGVocabBatchChunkingTests {
 
     @Test func exactlyCapIsSingleRequest() async throws {
         var calls = 0
-        _ = try await KGService.performChunked(Array(0..<500)) { chunk -> Int in
+        _ = try await KGService.performChunked(Array(0..<500)) { chunk, _ -> Int in
             calls += 1
             return chunk.count
         } merge: { $0 + $1 }
@@ -34,7 +34,7 @@ struct KGVocabBatchChunkingTests {
 
     @Test func emptyInputStillSendsOnceToKeepLegacyBehaviour() async throws {
         var calls = 0
-        _ = try await KGService.performChunked([Int]()) { chunk -> Int in
+        _ = try await KGService.performChunked([Int]()) { chunk, _ -> Int in
             calls += 1
             return chunk.count
         } merge: { $0 + $1 }
@@ -45,7 +45,7 @@ struct KGVocabBatchChunkingTests {
         struct Boom: Error {}
         var calls = 0
         do {
-            _ = try await KGService.performChunked(Array(0..<1001)) { chunk -> Int in
+            _ = try await KGService.performChunked(Array(0..<1001)) { chunk, _ -> Int in
                 calls += 1
                 if calls == 2 { throw Boom() }
                 return chunk.count
@@ -65,6 +65,14 @@ struct KGVocabBatchChunkingTests {
         #expect(m.skipped == 1)
         #expect(m.duplicates == ["x", "y"])
         #expect(m.cardIds == ["a": "1", "b": "2"])
+    }
+
+    @Test func mergeKeepsRejectedItemsFromEveryChunk() {
+        let a = KGAddResponse(created: 0, skipped: 0, duplicates: [], cardIds: [:],
+                              rejected: [KGRejectedItem(index: 0, word: "x", reason: "word: bad")])
+        let b = KGAddResponse(created: 0, skipped: 0, duplicates: [], cardIds: [:],
+                              rejected: [KGRejectedItem(index: 500, word: "y", reason: "word: bad")])
+        #expect(KGService.merged(a, b).rejected.map(\.index) == [0, 500])
     }
 
     @Test func mergesDeleteAndArchiveResponses() {
@@ -127,6 +135,21 @@ struct KGVocabBatchWiringTests {
 
         #expect(transport.requests.count == 1)
         #expect(try bodyArray(transport.requests[0]).count == 500)
+    }
+
+    @Test func batchAddRebasesRejectedIndexesToSubmissionOrder() async throws {
+        // The backend numbers rejections inside each request, so every chunk reports its first item (index 0).
+        let transport = ChunkRecordingTransport(
+            responseBody: #"{"created":0,"skipped":0,"duplicates":[],"cardIds":{},"rejected":[{"index":0,"word":"w","reason":"word: bad"}]}"#
+        )
+        let entries = (0..<1201).map { VocabularyEntry(word: "w\($0)", translation: "t", context: "c", bookTitle: "b") }
+
+        let response = try await makeService(transport).batchAdd(entries: entries, notebookId: "nb")
+        #expect(response.rejected.map(\.index) == [0, 500, 1000])
+
+        // A rejection in chunk 2 must reach the entry it refers to, not stay pending and be resent forever.
+        SyncCoordinator.convergeAddedEntries(response: response, entries: entries)
+        #expect(entries.indices.filter { entries[$0].rejectedReason != nil } == [0, 500, 1000])
     }
 
     @Test func batchDeleteSplitsAt500() async throws {
