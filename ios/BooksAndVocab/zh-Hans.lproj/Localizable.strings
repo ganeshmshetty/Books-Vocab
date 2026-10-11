@@ -942,6 +942,7 @@
 "podcast.followToggle.follow" = "关注";
 "podcast.followToggle.unfollow" = "取消关注";
 "vocab.chromeIcon.collocation.dismiss" = "关闭搭配说明";
+"vocab.chromeIcon.collocation.delete" = "删除搭配说明";
 
 // MARK: - Podcast Sleep Timer (track-11)
 "podcast.sleepTimer.fired.toast" = "睡眠定时已结束，播放已暂停";

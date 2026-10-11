@@ -950,6 +950,7 @@
 "podcast.followToggle.follow" = "追蹤";
 "podcast.followToggle.unfollow" = "取消追蹤";
 "vocab.chromeIcon.collocation.dismiss" = "關閉搭配說明";
+"vocab.chromeIcon.collocation.delete" = "刪除搭配說明";
 
 // MARK: - Podcast Sleep Timer (track-11)
 "podcast.sleepTimer.fired.toast" = "睡眠定時已結束，播放已暫停";
