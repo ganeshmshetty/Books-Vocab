@@ -533,6 +533,88 @@ class TestPushReviewStatesFakes:
             assert getattr(server_newer, field) == getattr(client_newer, field), field
         assert server_newer.next_review_at == client_newer.next_review_at == reset_at
 
+    @pytest.fixture
+    def frozen_clock(self, monkeypatch: pytest.MonkeyPatch) -> datetime:
+        """Pin vocab_review's clock so the skew clamp and horizon are deterministic."""
+        now = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+
+        monkeypatch.setattr("kg.vocab_review.datetime", _FrozenDatetime)
+        return now
+
+    def test_override_schedule_matches_across_clock_order_with_skew_clamp(self, frozen_clock):
+        """Same override must yield one schedule on both branches when the client clock is skewed.
+
+        The client runs 30 min fast: its last_reviewed_at is clamped to now and its next_review_at
+        is shifted back by that same offset on the client-newer branch, so the server-newer branch
+        must apply the identical correction (#2042 CR P2).
+        """
+        now = frozen_clock
+        skewed_last = now + timedelta(minutes=30)
+        kwargs = dict(
+            last_reviewed_at=_iso(skewed_last),
+            review_count=0,
+            lapse_count=0,
+            review_interval_hours=12.0,
+            review_streak=0,
+            last_review_feedback=-1,
+            next_review_at=_iso(skewed_last + timedelta(hours=12)),  # derived from the fast clock
+            override=True,
+        )
+
+        def _run(server_last: datetime) -> _ReviewCard:
+            card = _ReviewCard(
+                id="c1",
+                content="cat",
+                last_reviewed_at=server_last,
+                review_count=10,
+                lapse_count=3,
+                review_interval_hours=96.0,
+                review_streak=5,
+                last_review_feedback=1,
+            )
+            push_review_states(
+                [_entry(word="cat", **kwargs)],
+                cards_store=_FakeCardsStore([card]),
+                logger=logging.getLogger(),
+            )
+            return card
+
+        server_newer = _run(now + timedelta(minutes=4))  # inside skew tolerance, stored as-is
+        client_newer = _run(now - timedelta(hours=1))
+
+        assert server_newer.next_review_at == client_newer.next_review_at == now + timedelta(hours=12)
+
+    @pytest.mark.parametrize("raw_next", ["", "not-a-date"])
+    def test_override_unusable_next_review_resets_schedule_on_both_branches(self, frozen_clock, caplog, raw_next):
+        """Missing/unparseable override next_review_at resets the schedule on both branches, like client-newer."""
+        now = frozen_clock
+        resets: list[datetime | None] = []
+        for server_last in (now + timedelta(minutes=4), now - timedelta(hours=1)):
+            card = _ReviewCard(
+                id="c1",
+                content="cat",
+                last_reviewed_at=server_last,
+                review_count=10,
+                lapse_count=3,
+                next_review_at=now + timedelta(days=3),
+            )
+            # _entry() substitutes a default for falsy next_review_at; patch the raw value after validation.
+            entry = _entry(
+                word="cat", last_reviewed_at=_iso(now), review_count=0, lapse_count=0, override=True
+            ).model_copy(update={"next_review_at": raw_next})
+            with caplog.at_level(logging.WARNING):
+                push_review_states([entry], cards_store=_FakeCardsStore([card]), logger=logging.getLogger())
+            resets.append(card.next_review_at)
+
+        assert resets == [None, None]
+        warned = [r for r in caplog.records if "unparseable next_review_at" in r.getMessage()]
+        assert len(warned) == (2 if raw_next == "not-a-date" else 0)
+
     def test_override_resets_counts_when_client_newer(self):
         """Override is exact on the client-newer branch too; max() would undo the reset."""
         server_time = datetime.now(UTC) - timedelta(hours=2)
