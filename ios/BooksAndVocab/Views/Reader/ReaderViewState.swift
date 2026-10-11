@@ -102,21 +102,22 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
             )
     }
 
-    /// Readium 3.11 idle location callbacks carry empty `locations.fragments`
-    /// (positions and resource-level fallback locators have none), so an
-    /// anchorless report cannot be told apart from a late idle callback of a
-    /// superseded request. Only a request without an anchor of its own (a
-    /// resource-level expectation) may be completed by an empty report. An
-    /// anchored request completes only on a report that names its own anchor.
-    /// A report that names an anchor is Readium's pending-jump locator of some
-    /// request, so it must name the active request's anchor. Both sides are
-    /// percent-decoded first, so an encoded TOC href and a decoded callback
-    /// fragment still match.
+    /// Readium 3.11 idle location callbacks carry empty `locations.fragments`,
+    /// and no callback is guaranteed to name a jump's anchor. An accepted
+    /// anchored request therefore completes on a report for its resource that
+    /// names no anchor or names its own anchor; requiring the anchor would time
+    /// out every fragment TOC tap. A report that names only other anchors is a
+    /// late callback of a superseded jump and is refused. A resource-level
+    /// request has no anchor of its own, so it refuses every named report.
+    /// Residual (#3043): an anchorless late callback of a superseded anchored
+    /// request can still complete the replacement, because Readium gives it no
+    /// identity to exclude. Both sides are percent-decoded first, so an encoded
+    /// TOC href and a decoded callback fragment still match.
     static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
         let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
-        let expectedAnchors = Set(expected.map(normalized))
-        guard !expectedAnchors.isEmpty else { return reported.isEmpty }
-        return !expectedAnchors.isDisjoint(with: reported.map(normalized))
+        let reportedAnchors = Set(reported.map(normalized))
+        guard !reportedAnchors.isEmpty else { return true }
+        return !Set(expected.map(normalized)).isDisjoint(with: reportedAnchors)
     }
 
     @discardableResult
