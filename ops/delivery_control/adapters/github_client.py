@@ -9,8 +9,6 @@ from typing import Any
 
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterCommandError, AdapterPayloadError
-from .github_quota import GitHubQuotaGovernor
-from .subprocess_runner import SubprocessCommandRunner
 
 _READ_ONLY_JSON_COMMANDS = frozenset(
     {
@@ -86,7 +84,8 @@ def _option_value(argv: tuple[str, ...], *options: str) -> str | None:
 
 def _has_gh_api_input(argv: tuple[str, ...]) -> bool:
     return any(
-        value in _GH_API_INPUT_FLAGS or value.startswith(("--field=", "--raw-field=", "--input=", "-f", "-F"))
+        value in _GH_API_INPUT_FLAGS
+        or value.startswith(("--field=", "--raw-field=", "--input=", "-f", "-F"))
         for value in argv
     )
 
@@ -155,7 +154,11 @@ def _graphql_query(argv: tuple[str, ...]) -> str | None:
 
 
 def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
-    if len(argv) >= 3 and argv[0] == "gh" and (argv[1], argv[2]) in _READ_ONLY_JSON_COMMANDS:
+    if (
+        len(argv) >= 3
+        and argv[0] == "gh"
+        and (argv[1], argv[2]) in _READ_ONLY_JSON_COMMANDS
+    ):
         return True
     if len(argv) < 2 or argv[0] != "gh" or argv[1] != "api":
         return False
@@ -182,42 +185,10 @@ def _is_transient_failure(result: CommandResult) -> bool:
 
 
 class GitHubCliClient:
-    def __init__(
-        self,
-        *,
-        repo: Path,
-        runner: CommandRunnerPort,
-        quota: GitHubQuotaGovernor | None = None,
-    ) -> None:
+    def __init__(self, *, repo: Path, runner: CommandRunnerPort) -> None:
         self.repo = repo
         self.runner = runner
-        if quota is None and isinstance(runner, SubprocessCommandRunner):
-            quota = GitHubQuotaGovernor(
-                repo=repo,
-                runner=runner,
-                spend_log=repo / ".cache" / "github_spend.ndjson",
-            )
-        self.quota = quota
         self.last_command_attempts: tuple[CommandAttempt, ...] = ()
-
-    def _attempt(
-        self,
-        argv: tuple[str, ...],
-        *,
-        read_only: bool,
-        attempts: list[CommandAttempt],
-    ) -> CommandResult:
-        if self.quota is None:
-            result, executed = self.runner.run(argv, cwd=self.repo), True
-        else:
-            result, executed = self.quota.call(
-                argv,
-                read_only=read_only,
-                execute=lambda: self.runner.run(argv, cwd=self.repo),
-            )
-        if executed:
-            attempts.append(CommandAttempt(argv=argv, cwd=self.repo, result=result))
-        return result
 
     def _run_result(
         self,
@@ -226,11 +197,15 @@ class GitHubCliClient:
         allow_nonzero: bool = False,
         retry_read_only: bool = False,
     ) -> CommandResult:
-        read_only = _is_read_only_json_query(argv)
-        attempts: list[CommandAttempt] = []
-        result = self._attempt(argv, read_only=read_only, attempts=attempts)
-        if retry_read_only and read_only and _is_transient_failure(result):
-            result = self._attempt(argv, read_only=read_only, attempts=attempts)
+        result = self.runner.run(argv, cwd=self.repo)
+        attempts = [CommandAttempt(argv=argv, cwd=self.repo, result=result)]
+        if (
+            retry_read_only
+            and _is_read_only_json_query(argv)
+            and _is_transient_failure(result)
+        ):
+            result = self.runner.run(argv, cwd=self.repo)
+            attempts.append(CommandAttempt(argv=argv, cwd=self.repo, result=result))
         self.last_command_attempts = tuple(attempts)
         if result.exit_code != 0 and (not allow_nonzero or not result.stdout.strip()):
             raise AdapterCommandError(result)

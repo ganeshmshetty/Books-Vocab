@@ -26,6 +26,7 @@ from .errors import AdapterCommandError, AdapterPayloadError
 from .github_checks import GitHubChecks
 from .github_client import GitHubCliClient
 from .github_commands import GitHubCommands
+from .github_governed_runner import govern_runner
 from .github_issue_commands import GitHubIssueCommands
 from .github_issue_queries import GitHubIssueQueries
 from .github_parsing import (
@@ -36,6 +37,7 @@ from .github_parsing import (
 )
 from .github_queries import PR_FIELDS, GitHubQueries
 from .github_queue import GitHubQueueGraphQLAdapter
+from .github_quota import GitHubQuotaGovernor
 from .github_rules import GitHubRules, read_repository_name
 from .subprocess_runner import SubprocessCommandRunner
 
@@ -50,9 +52,19 @@ class GitHubCliAdapter:
         *,
         repo: Path | None = None,
         runner: CommandRunnerPort | None = None,
+        quota: GitHubQuotaGovernor | None = None,
     ) -> None:
         self.repo = (repo or Path.cwd()).resolve()
-        self.runner = runner or SubprocessCommandRunner()
+        raw_runner = runner or SubprocessCommandRunner()
+        if quota is None and isinstance(raw_runner, SubprocessCommandRunner):
+            quota = GitHubQuotaGovernor(
+                repo=self.repo,
+                runner=raw_runner,
+                spend_log=self.repo / ".cache" / "github_spend.ndjson",
+            )
+        self.quota = quota
+        # Single governed chokepoint: every adapter below receives this runner.
+        self.runner = govern_runner(raw_runner, quota)
         self._pull_request_snapshot_cache: dict[int, PullRequestSnapshot] = {}
         self._required_observation_numbers: tuple[int, ...] = ()
         self._open_observations_pending = False
