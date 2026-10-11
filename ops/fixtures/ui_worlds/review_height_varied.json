@@ -2831,7 +2831,7 @@
           "durationSec": 120.0,
           "audioAvailable": true,
           "previewAvailable": true,
-          "previewDurationSec": 180,
+          "previewDurationSec": 60,
           "subtitleAvailable": true,
           "download": {
             "audioAssetRef": "audio.atomic_habits_ep1_flash_playable",
@@ -2854,16 +2854,16 @@
       "color": "sunset",
       "coverPattern": "waves",
       "sortOrder": -10000,
-      "durationSec": 1034.6,
+      "durationSec": 12.0,
       "episodes": [
         {
           "remoteId": "ui-auth-series_ep_01",
           "episodeNumber": 1,
           "title": "Tiered Access Preview Episode",
-          "durationSec": 1034.6,
+          "durationSec": 12.0,
           "audioAvailable": true,
           "previewAvailable": true,
-          "previewDurationSec": 180,
+          "previewDurationSec": 12.0,
           "subtitleAvailable": true,
           "download": {
             "audioAssetRef": "audio.atomic_habits_ep1_flash_auth",
@@ -2876,7 +2876,7 @@
           "remoteId": "ui-auth-series_ep_02",
           "episodeNumber": 2,
           "title": "Tiered Access Gated Episode",
-          "durationSec": 1034.6,
+          "durationSec": 12.0,
           "audioAvailable": true,
           "previewAvailable": false,
           "previewDurationSec": 0,
