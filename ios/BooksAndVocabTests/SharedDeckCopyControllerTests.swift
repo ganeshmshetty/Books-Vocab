@@ -231,7 +231,7 @@ struct SharedDeckCopyControllerTests {
     }
 
     // MARK: - Registry (#2748: controller survives view pop/reopen)
-    // View wiring (`State(initialValue: registry.controller(for:))` + `track` in
+    // View wiring (`adoptCopyController()` in `.task` / account change + `track` in
     // performCopy) is covered by review only; these tests pin the registry contract.
 
     @Test func registry_returns_same_controller_for_same_deck_while_key_held() async {

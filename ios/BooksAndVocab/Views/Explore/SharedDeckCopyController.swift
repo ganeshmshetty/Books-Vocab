@@ -3,7 +3,7 @@
 //  Books & Vocab
 //
 //  Explore 複製流程狀態機（idle/inflight/success/failure）+ idempotencyKey 穩定性。
-//  擁有者 = `SharedDeckCopyRegistry`（依 deckId，跨 view pop/reopen；#2748）。
+//  擁有者 = `SharedDeckCopyRegistry`（依 deckId + 帳號 owner，跨 view pop/reopen；#2748）。
 //  純狀態 + 一支 async `copy`；網路只透過注入的 `any DeckCopying`（窄協定），
 //  故可完整單元測試（無 SwiftData / 無真實網路）。
 //
@@ -43,10 +43,15 @@ final class SharedDeckCopyController {
     /// 後的「重試」沿用使用者當初確認的名稱，而非退回 deck 標題（#2748）。
     private(set) var lastNotebookName: String?
 
+    /// 擁有此意圖的帳號（登入 userId；未登入為 nil）。registry 只把同帳號的 controller
+    /// 交回，避免帳號 B 看見帳號 A 的失敗卡與 notebook 名稱（#2748）。
+    let owner: String?
+
     /// Test seam：注入決定性的 key 產生器。
     private let makeKey: () -> String
 
-    init(makeKey: @escaping () -> String = { UUID().uuidString }) {
+    init(owner: String? = nil, makeKey: @escaping () -> String = { UUID().uuidString }) {
+        self.owner = owner
         self.makeKey = makeKey
     }
 
@@ -174,8 +179,9 @@ final class SharedDeckCopyController {
 /// 在 pop 時被丟棄，但 `performCopy` 的 unstructured `Task` 仍在跑、idempotencyKey 也
 /// 需跨 reopen 保留；有進行中／失敗意圖的 controller 因此由行程級註冊表持有，view 只借用。
 /// 只有複製真的開始（`track`）才登記，故單純瀏覽 deck 不會累積條目；上一個已成功
-/// （意圖達成）的條目在查詢時剔除，其餘（inflight / failure）原樣回傳。登出時
-/// `removeAll()`，避免前一個帳號的失敗卡殘留到下一個帳號。
+/// （意圖達成）的條目在查詢時剔除。條目以帳號 owner 隔離：只有同帳號的 inflight／failure
+/// 原樣回傳，其餘一律給新的未登記 controller，故登出後換帳號不會看見前一個帳號的失敗卡；
+/// 前一帳號的條目保留，該帳號再登入時仍接得回自己的意圖與 key。
 @MainActor
 final class SharedDeckCopyRegistry {
     static let shared = SharedDeckCopyRegistry()
@@ -185,13 +191,16 @@ final class SharedDeckCopyRegistry {
     /// 已登記（複製已開始且尚未成功）的 deck 數；供測試斷言不累積。
     var trackedDeckCount: Int { controllers.count }
 
-    /// 已登記且未成功者原樣回傳；否則給一個**尚未登記**的新 controller。
-    func controller(for deckId: String) -> SharedDeckCopyController {
+    /// 同帳號且未成功的已登記 controller 原樣回傳；否則給一個**尚未登記**的新 controller。
+    func controller(for deckId: String, owner: String?) -> SharedDeckCopyController {
         if let existing = controllers[deckId] {
-            if !existing.isSucceeded { return existing }
-            controllers[deckId] = nil
+            if existing.isSucceeded {
+                controllers[deckId] = nil
+            } else if existing.owner == owner {
+                return existing
+            }
         }
-        return SharedDeckCopyController()
+        return SharedDeckCopyController(owner: owner)
     }
 
     /// 複製開始時登記，讓 pop/reopen 的 view 接回同一 controller。
