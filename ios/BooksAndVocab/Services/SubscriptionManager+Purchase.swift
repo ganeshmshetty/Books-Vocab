@@ -65,6 +65,8 @@ extension SubscriptionManager {
                 if let product = products.first {
                     proProduct = product
                     if entitlements.pro.price_display == nil {
+                        // 衍生欄位：只補 price_display、以當下已套用的值為基礎（同步執行，無 await），
+                        // 不代表新的權威狀態，故不取世代；取世代會丟棄進行中的 refresh 回應（#2800）。
                         entitlements = KGEntitlements(
                             pro: merge(entitlements.pro, priceDisplay: product.displayPrice)
                         )
@@ -107,7 +109,7 @@ extension SubscriptionManager {
                 let transaction = try checkVerified(verification)
                 await transaction.finish()
                 purchaseStatusMessage = L10n.string("購買成功，正在同步訂閱狀態⋯")
-                entitlements = optimisticEntitlements(from: product, status: inferredStatus(for: product))
+                commitEntitlements(optimisticEntitlements(from: product, status: inferredStatus(for: product)))
                 do {
                     try await syncTransaction(
                         transaction,

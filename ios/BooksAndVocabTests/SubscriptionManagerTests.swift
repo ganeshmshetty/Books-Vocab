@@ -373,9 +373,11 @@ struct SubscriptionManagerTests {
         let mgr = SubscriptionManager.shared
         let savedEntitlements = mgr.entitlements
         let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
         defer {
             mgr.entitlements = savedEntitlements
             mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
         }
         mgr.lastRefreshTime = nil
 
@@ -441,9 +443,11 @@ struct SubscriptionManagerTests {
         let mgr = SubscriptionManager.shared
         let savedEntitlements = mgr.entitlements
         let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
         defer {
             mgr.entitlements = savedEntitlements
             mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
         }
         mgr.lastRefreshTime = nil
         mgr.entitlements = KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
@@ -455,6 +459,66 @@ struct SubscriptionManagerTests {
         )
         await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: false)
         #expect(!mgr.entitlements.pro.is_active)
+    }
+
+    @MainActor
+    @Test func refresh_discards_stale_free_response_after_optimistic_write() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = launch refresh 掛起，之後才回 free；2 = 強制 refresh，不在 responses 內 → 拋錯（模擬網路失敗）。
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: [1]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        // 購買的樂觀寫入發生在 launch refresh 發出之後：必須使其回應失效。
+        mgr.commitEntitlements(KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")))
+
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(mgr.lastError != nil)
+        #expect(mgr.hasProAccess)
+
+        // 過期的 free 回應最後到達：不得把付費用戶降為 free。
+        service.release(1)
+        await launch.value
+        #expect(mgr.hasProAccess)
+    }
+
+    @MainActor
+    @Test func refresh_issued_after_optimistic_write_still_applies() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+
+        // 對照組：寫入之後才發出的 refresh 不受影響，必須照常套用（證明 funnel 不是無條件阻擋）。
+        mgr.commitEntitlements(KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")))
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: []
+        )
+        await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: false)
+        #expect(!mgr.hasProAccess)
     }
 }
 
