@@ -49,6 +49,13 @@ assert_plan 'ordinary ops source stays off macOS' \
 assert_plan 'iOS shared helper selects ops plus iOS' \
   'ops/lib/project_python.sh' \
   '{"backend":false,"ops":true,"ios":true}'
+# The merge queue is the only gate that runs iOS on main (ios-quality has no push
+# trigger), so every input the iOS entrypoints read must select iOS here.
+for p in ops/lib/heavy_slots.sh ops/lib/lock_wait.py ops/lib/exit_codes.py ops/lib/streaming_command.py ops/ios_coverage.py; do
+  assert_plan "iOS entrypoint dependency selects ops plus iOS (merge queue gate): $p" \
+    "$p" \
+    '{"backend":false,"ops":true,"ios":true}'
+done
 assert_plan 'lab/podcast source selects only ops confidence (Issue #2064)' \
   'lab/podcast/pipeline.py' \
   '{"backend":false,"ops":true,"ios":false}'
@@ -130,6 +137,11 @@ for p in docs/sop/ios.md ops/backup_verify.sh ops/review_flip_probe.sh ops/ui_qu
 done
 for p in ios/BooksAndVocab/Views/Foo.swift ops/fixtures/ui_worlds/marketing_demo.json .github/workflows/ios-quality.yml; do
   assert_macos "ui-smoke only for $p (#2641)" "$p" false true
+done
+# Helpers the iOS entrypoints run or source change what the ui-smoke leg executes,
+# so they enable it as well (ops/lib/* also reaches the macOS ops job).
+for p in ops/lib/heavy_slots.sh ops/lib/lock_wait.py ops/lib/exit_codes.py ops/lib/streaming_command.py; do
+  assert_macos "iOS helper enables the ui-smoke leg (#2641): $p" "$p" true true
 done
 for p in ios/BooksAndVocab.xcodeproj/project.pbxproj ios/BooksAndVocab/Services/AppCrashReporting.swift ios/Info.plist ios/BooksAndVocab/Services/SentryReporter.swift ios/BooksAndVocab/Services/SentryConfiguration.swift ios/BooksAndVocab/Services/SentryPrivacyPolicy.swift ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved ops/ios_ops.sh ops/ios_test.sh ops/lib/ios_ops_core.sh ops/lib/signal_traps.sh ops/ui_world_manifest.py ops/ci_scope_router.sh .github/workflows/pr-gate.yml ios/BooksAndVocabUITests/FooFlowUITests.swift newdir/x; do
   assert_macos "macOS native ops and ui-smoke for $p (#2641)" "$p" true true
