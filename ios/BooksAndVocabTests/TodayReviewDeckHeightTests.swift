@@ -223,6 +223,33 @@ struct TodayReviewDeckHeightTests {
         }
     }
 
+    // MARK: 展開中背面高度變動（背面縮短 / 增長，#2026 r7）
+
+    /// settle 後背面自然高度仍會變（「+N」展開知識連結、背面量測補齊）。latch 若凍結在 settle 當下
+    /// 的值，非 active cap 會停在舊高度：背面縮短後卡片區比卡片高，收合時即 H-H' 縫。展開中 active
+    /// 的量測須追蹤進 latch；收合、換卡、雜訊、無效量測一律不寫（交給既有收合 / 接手規則）。
+    @Test func expandedLatchTracksTheActiveBackHeight() {
+        let latch = H.RevealLatch(cardKey: "a", measured: 480)!
+        #expect(latch.tracking(measured: 360, currentCardKey: "a", revealed: true)?.height == 360)
+        #expect(latch.tracking(measured: 600, currentCardKey: "a", revealed: true)?.height == 600)
+        #expect(latch.tracking(measured: 480.3, currentCardKey: "a", revealed: true) == nil)
+        #expect(latch.tracking(measured: 0, currentCardKey: "a", revealed: true) == nil)
+        #expect(latch.tracking(measured: 360, currentCardKey: "a", revealed: false) == nil)
+        #expect(latch.tracking(measured: 360, currentCardKey: "b", revealed: true) == nil)
+    }
+
+    /// 背面由 480 縮成 360 後：非 active cap 取追蹤後的 360，與 active 自然高度相等，
+    /// 卡片區 = 背面實高、不留 120 的縫。
+    @Test func shrunkBackFaceKeepsTheCapEqualToTheActiveHeightWhileExpanded() {
+        let tracked = H.RevealLatch(cardKey: "a", measured: 480)!
+            .tracking(measured: 360, currentCardKey: "a", revealed: true)!
+        let cap = H.slotHeight(
+            isActive: false, shell: 200, target: 200,
+            inFlight: false, revealed: true, settledBack: tracked.height
+        )
+        #expect(cap == 360)
+    }
+
     // MARK: 轉場期間的裁切（leftover B：變高時內容溢出到展開區）
 
     @Test func nonActiveSlotsAlwaysHardClip() {

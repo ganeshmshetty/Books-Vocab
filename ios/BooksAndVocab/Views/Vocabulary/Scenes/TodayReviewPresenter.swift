@@ -117,7 +117,8 @@ struct TodayReviewPresenter: View {
     @State var deckHeightProbe = DeckHeightProbe()
     /// 背面展開 settle 後記下的卡片區總高（previous / shuffle / autoplay 離場的接手起點；
     /// 規則見 `TodayReviewDeckHeight.RevealLatch`）。展開中同時是非 active cap 的依據
-    /// （`deckSettledBackHeight`）。離場被 retarget 消化、或同卡收合即丟棄。
+    /// （`deckSettledBackHeight`），背面高度變動時由 `trackRevealedBackHeight` 追蹤（#2026 r7）。
+    /// 離場被 retarget 消化、或同卡收合即丟棄。
     @State var deckRevealLatch: TodayReviewDeckHeight.RevealLatch?
 
     /// 目前 active slot 的實測 front 高度 = 過渡目標（非 active slot cap 到此值）。
@@ -477,6 +478,21 @@ struct TodayReviewPresenter: View {
             withAnimation(AppMotion.reviewRevealSpring) {
                 deckRevealLatch = TodayReviewDeckHeight.RevealLatch(cardKey: cardKey, measured: probe.layoutHeight)
             }
+        }
+    }
+
+    /// 展開中 active 的自然高度（＝背面總高）變動時，追蹤進 latch（#2026 r7；規則見 `RevealLatch.tracking`）。
+    /// 不加動畫：active 的自然高度本身是瞬間變的，cap 若跟著 spring 會讓卡片區落後於卡片，露出縫。
+    func trackRevealedBackHeight(_ height: CGFloat) {
+        guard let next = deckRevealLatch?.tracking(
+            measured: height,
+            currentCardKey: currentCardKey,
+            revealed: state.revealStage.showsAnswer
+        ) else { return }
+        var noAnim = Transaction(animation: nil)
+        noAnim.disablesAnimations = true
+        withTransaction(noAnim) {
+            deckRevealLatch = next
         }
     }
 
