@@ -46,15 +46,26 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
     /// True once graph.html reported that the thumbnail canvas is visible (#2860).
     private(set) var hasPainted = false
     var onPainted: (() -> Void)?
+    /// Fired when the page owes a fresh first paint (rebuilt, or lost after the
+    /// automatic recoveries ran out). The card re-arms its paint watchdog here.
+    var onRepaintExpected: (() -> Void)?
     weak var webView: WKWebView?
     /// Web-content terminations since the last paint. Automatic recovery stops
     /// once this reaches `maxAutomaticRecoveries`, so a page that crashes while
-    /// loading cannot reload forever; the `.rendering` retry stays available.
+    /// loading cannot reload forever.
     private(set) var consecutiveTerminations = 0
+    /// True once automatic recovery is spent on a dead page. The next Retry
+    /// rebuilds it; a ready-handshake check alone would not, because a page lost
+    /// after `ready` still reports `graphBridgeReady`.
+    private(set) var pageLost = false
     static let maxAutomaticRecoveries = 3
 
     func sendInitGraph(_ json: String, webView: WKWebView) {
         lastPayload = json
+        // graph.html hides the canvas on every thumbnail init and reports `painted`
+        // again once the simulation converges, so a previous paint no longer covers
+        // this payload. The paint watchdog must see a fresh `painted`.
+        hasPainted = false
         guard graphBridgeReady else { pendingPayload = json; return }
         webView.evaluateJavaScript("initGraph('\(json.jsSingleQuoteEscaped)')", completionHandler: nil)
     }
@@ -73,6 +84,7 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
         if type == "painted" {
             hasPainted = true
             consecutiveTerminations = 0
+            pageLost = false
             onPainted?()
             return
         }
@@ -83,10 +95,11 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
         }
     }
 
-    /// Retry rebuilds only a page that never completed its `ready` handshake.
-    /// A page that is ready but still drawing is slow, not stuck; rebuilding it
+    /// Retry rebuilds a page that never completed its `ready` handshake, or one
+    /// lost after automatic recovery ran out. A page that is ready but still
+    /// drawing is slow, not stuck; rebuilding it
     /// would restart the layout and can keep a large graph from ever painting.
-    var needsRebuildOnRetry: Bool { !hasPainted && !graphBridgeReady }
+    var needsRebuildOnRetry: Bool { pageLost || (!hasPainted && !graphBridgeReady) }
 
     /// Rebuilds the page and replays the last payload. Used when the web content
     /// process was terminated or the thumbnail never painted; without it
@@ -94,14 +107,24 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
     func recover() {
         graphBridgeReady = false
         hasPainted = false
+        pageLost = false
         pendingPayload = lastPayload
         if let webView, let htmlURL = Bundle.main.url(forResource: "graph", withExtension: "html") {
             webView.loadFileURL(htmlURL, allowingReadAccessTo: htmlURL.deletingLastPathComponent())
         }
+        onRepaintExpected?()
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        guard consecutiveTerminations < Self.maxAutomaticRecoveries else { return }
+        guard consecutiveTerminations < Self.maxAutomaticRecoveries else {
+            // Automatic recovery is spent. The dead page must not keep looking
+            // painted: clear the paint state so the watchdog shows the status row,
+            // and its Retry rebuilds the page (`needsRebuildOnRetry`).
+            pageLost = true
+            hasPainted = false
+            onRepaintExpected?()
+            return
+        }
         consecutiveTerminations += 1
         recover()
     }
@@ -132,9 +155,10 @@ struct GraphThumbnailWebView: UIViewRepresentable {
 // MARK: - Shared update + payload
 
 extension GraphThumbnailWebView {
-    static func performUpdate(_ webView: WKWebView, coordinator: GraphThumbnailCoordinator,
-                               nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
-                               theme: KnowledgeGraphTheme, colorScheme: ColorScheme) {
+    /// Payload identity shared by `performUpdate` (re-init dedup) and the card
+    /// (paint watchdog re-arm), so both agree on when a new payload exists.
+    static func signature(nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
+                          colorScheme: ColorScheme) -> String {
         // Signature uses discrete visual features only. `n.ratio` is excluded
         // because it derives from `Date()` in KnowledgeGraphPresentation.nodes
         // and drifts on every body recomputation, causing spurious re-inits
@@ -143,7 +167,13 @@ extension GraphThumbnailWebView {
         // produces identical strings and visual meaning is preserved.
         // Reuses GraphWebView.dataSignature so thumbnail and full graph share one diff
         // (covers node word and edge id/from/to/kind, not just edge count).
-        let sig = GraphWebView.dataSignature(nodes: nodes, edges: edges) + (colorScheme == .dark ? "D" : "L")
+        GraphWebView.dataSignature(nodes: nodes, edges: edges) + (colorScheme == .dark ? "D" : "L")
+    }
+
+    static func performUpdate(_ webView: WKWebView, coordinator: GraphThumbnailCoordinator,
+                               nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
+                               theme: KnowledgeGraphTheme, colorScheme: ColorScheme) {
+        let sig = signature(nodes: nodes, edges: edges, colorScheme: colorScheme)
         guard coordinator.lastSignature != sig else { return }
         coordinator.lastSignature = sig
         coordinator.sendInitGraph(buildPayload(nodes: nodes, edges: edges, theme: theme, colorScheme: colorScheme), webView: webView)

@@ -197,8 +197,8 @@ struct GraphThumbnailViewportTests {
     }
 
     /// Automatic recovery after web-content termination is capped at three
-    /// consecutive terminations without a paint; the fourth is left to the
-    /// visible `.rendering` retry instead of reloading in a loop.
+    /// consecutive terminations without a paint. The fourth leaves the page dead
+    /// but not painted, so the watchdog shows the status row and Retry rebuilds it.
     @Test func webContentTermination_autoRecoversAtMostThreeTimesUntilPaint() {
         let coordinator = GraphThumbnailCoordinator()
         let webView = WKWebView(frame: .zero)
@@ -217,10 +217,49 @@ struct GraphThumbnailViewportTests {
         coordinator.webViewWebContentProcessDidTerminate(webView)
         #expect(coordinator.graphBridgeReady, "fourth termination must not auto-recover")
         #expect(coordinator.pendingPayload == nil)
+        #expect(!coordinator.hasPainted, "a dead page must not keep looking painted")
+        #expect(coordinator.needsRebuildOnRetry, "manual Retry must rebuild a page lost after ready")
 
         coordinator.receiveBridgeEvent("painted")
+        #expect(!coordinator.needsRebuildOnRetry, "a paint clears the lost-page state")
         coordinator.webViewWebContentProcessDidTerminate(webView)
         #expect(!coordinator.graphBridgeReady, "a paint resets the termination budget")
+    }
+
+    /// A payload sent after a paint is hidden again by graph.html, so the old
+    /// `painted` must not satisfy the watchdog for the new graph.
+    @Test func newPayload_requiresFreshPaintAfterEarlierPaint() {
+        let coordinator = GraphThumbnailCoordinator()
+        let webView = WKWebView(frame: .zero)
+        coordinator.webView = webView
+        coordinator.sendInitGraph("{\"nodes\":[]}", webView: webView)
+        coordinator.receiveBridgeEvent("ready")
+        coordinator.receiveBridgeEvent("painted")
+        #expect(coordinator.hasPainted)
+
+        coordinator.sendInitGraph("{\"nodes\":[1]}", webView: webView)
+        #expect(!coordinator.hasPainted, "the re-rendered graph starts hidden; the earlier paint no longer covers it")
+
+        coordinator.receiveBridgeEvent("painted")
+        #expect(coordinator.hasPainted)
+    }
+
+    /// Recovery owes the card a fresh paint. The card re-arms its watchdog
+    /// through `onRepaintExpected`; without that a rebuilt page that never
+    /// repaints would stay blank with no status row.
+    @Test func recover_notifiesCardToRearmPaintWatchdog() {
+        let coordinator = GraphThumbnailCoordinator()
+        let webView = WKWebView(frame: .zero)
+        coordinator.webView = webView
+        coordinator.sendInitGraph("{\"nodes\":[]}", webView: webView)
+        coordinator.receiveBridgeEvent("ready")
+        coordinator.receiveBridgeEvent("painted")
+
+        var expectations = 0
+        coordinator.onRepaintExpected = { expectations += 1 }
+
+        coordinator.recover()
+        #expect(expectations == 1)
     }
 
     /// Retry rebuilds only a page whose `ready` handshake never completed. A
