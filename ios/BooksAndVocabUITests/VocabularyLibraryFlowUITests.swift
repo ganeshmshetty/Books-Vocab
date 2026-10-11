@@ -184,9 +184,16 @@ final class VocabularyLibraryFlowUITests: UITestCase {
 
         // Candidate rows only: the create entry (`addLink.create`) stays listed next
         // to partial matches and its sentence repeats the typed word (#2030/#2037).
+        // The per-row expand toggle (`<row id>.expand`, label "<word>, 展開") also
+        // carries the word, so it is excluded here: one row per word stays one match (#2407).
         func candidateQuery(for word: String) -> XCUIElementQuery {
             app.buttons.matching(
-                NSPredicate(format: "label CONTAINS[c] %@ AND identifier != %@", word, "addLink.create")
+                NSPredicate(
+                    format: "label CONTAINS[c] %@ AND identifier != %@ AND NOT (identifier ENDSWITH %@)",
+                    word,
+                    "addLink.create",
+                    ".expand"
+                )
             )
         }
 
