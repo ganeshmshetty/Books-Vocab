@@ -95,12 +95,20 @@ extension ReadiumNavigatorView.Coordinator {
                 guard let self else { return }
                 self.tocNavigationGate.markNavigationAccepted(requestID)
             }
+            // Readium performed no jump for this request, so a superseded one
+            // owes no report to its resource. Reported from the bridge, so it
+            // holds even when the race already settled as cancelled.
+            let markRefused: @MainActor () -> Void = { [weak self] in
+                guard let self else { return }
+                self.tocNavigationGate.jumpRefused(requestID)
+            }
             activeTOCNavigationTask = Task { @MainActor [weak self] in
                 AppLog.reader.debug("Attempting navigation to: \(String(describing: locator.href))")
                 let event = await bridge.navigate(
                     requestID: requestID,
                     locator: locator,
-                    onAccepted: markAccepted
+                    onAccepted: markAccepted,
+                    onRefused: markRefused
                 )
                 guard let self else { return }
                 guard self.tocNavigationGate.isCurrent(requestID) else { return }
