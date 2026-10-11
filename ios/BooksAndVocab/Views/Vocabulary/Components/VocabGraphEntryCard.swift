@@ -28,6 +28,28 @@ struct VocabGraphEntryCard<Destination: View>: View {
     /// exposes the status row instead of a blank body.
     static var paintTimeout: Duration { .seconds(8) }
 
+    // Explicit init: the stored `@State private` members would otherwise make
+    // the synthesized memberwise initializer private to this file.
+    init(
+        linksLoaded: Bool,
+        linkCount: Int,
+        nodes: [KnowledgeGraphNode],
+        edges: [KnowledgeGraphEdge],
+        failureReason: String?,
+        holder: GraphThumbnailHolder,
+        onRetry: @escaping () -> Void,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) {
+        self.linksLoaded = linksLoaded
+        self.linkCount = linkCount
+        self.nodes = nodes
+        self.edges = edges
+        self.failureReason = failureReason
+        self.holder = holder
+        self.onRetry = onRetry
+        self.destination = destination
+    }
+
     private var state: StatsPresentation.GraphCardState {
         StatsPresentation.graphCardState(
             linksLoaded: linksLoaded,
@@ -96,7 +118,9 @@ struct VocabGraphEntryCard<Destination: View>: View {
         // retry button, and the header and thumbnail are links of their own.
         VocabCard(padding: 0) {
             VStack(spacing: 0) {
-                NavigationLink(destination: destination) {
+                NavigationLink {
+                    destination()
+                } label: {
                     header(showsChevron: true)
                         .padding(appSkin.metrics.cardBlockPadding)
                         .frame(maxWidth: .infinity)
@@ -111,7 +135,9 @@ struct VocabGraphEntryCard<Destination: View>: View {
                         .transition(.opacity)
                 }
 
-                NavigationLink(destination: destination) {
+                NavigationLink {
+                    destination()
+                } label: {
                     VStack(spacing: 0) {
                         thumbnailBody(kind: bodyKind(of: state))
                             .aspectRatio(1, contentMode: .fit)
@@ -147,7 +173,9 @@ struct VocabGraphEntryCard<Destination: View>: View {
         }
         // Everything except the retry button navigates, per the card contract.
         return HStack(spacing: appSkin.spacing.inlineGap) {
-            NavigationLink(destination: destination) {
+            NavigationLink {
+                destination()
+            } label: {
                 HStack(spacing: appSkin.spacing.inlineGap) {
                     Image(systemName: isStale ? "exclamationmark.triangle" : "hourglass")
                         .font(appSkin.typography.iconSmall)
