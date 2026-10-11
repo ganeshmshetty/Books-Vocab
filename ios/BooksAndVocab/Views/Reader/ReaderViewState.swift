@@ -49,46 +49,77 @@ enum ReaderTOCNavigationEvent: Equatable, Sendable {
 struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     private(set) var activeRequestID: UUID?
     private(set) var activeExpectedLocatorHref: String?
+    private(set) var activeExpectedFragments: [String] = []
 
-    mutating func begin(_ requestID: UUID, expectedLocatorHref: String? = nil) {
+    /// `expectedFragments` are the anchors the TOC entry targets inside
+    /// `expectedLocatorHref`. Empty means resource-level expectation only.
+    mutating func begin(
+        _ requestID: UUID,
+        expectedLocatorHref: String? = nil,
+        expectedFragments: [String] = []
+    ) {
         activeRequestID = requestID
         activeExpectedLocatorHref = expectedLocatorHref
+        activeExpectedFragments = expectedFragments
     }
 
     mutating func invalidate() {
         activeRequestID = nil
         activeExpectedLocatorHref = nil
+        activeExpectedFragments = []
     }
 
     func isCurrent(_ requestID: UUID) -> Bool {
         activeRequestID == requestID
     }
 
-    func matchesCurrent(_ requestID: UUID, locatorHref: String) -> Bool {
-        isCurrent(requestID) && activeExpectedLocatorHref == locatorHref
+    func matchesCurrent(
+        _ requestID: UUID,
+        locatorHref: String,
+        locatorFragments: [String] = []
+    ) -> Bool {
+        isCurrent(requestID)
+            && activeExpectedLocatorHref == locatorHref
+            && Self.fragmentsAccept(
+                expected: activeExpectedFragments,
+                reported: locatorFragments
+            )
+    }
+
+    /// Readium callbacks carry no request ID, so two entries that share one
+    /// resource are told apart by the anchor the callback reports. A callback
+    /// that reports no anchor keeps resource-level matching, so legitimate
+    /// same-resource taps are not refused; one that reports an anchor must name
+    /// the active request's anchor.
+    static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
+        guard !expected.isEmpty, !reported.isEmpty else { return true }
+        return !Set(expected).isDisjoint(with: reported)
     }
 
     @discardableResult
     mutating func finish(_ requestID: UUID) -> Bool {
         guard isCurrent(requestID) else { return false }
-        activeRequestID = nil
-        activeExpectedLocatorHref = nil
+        invalidate()
         return true
     }
 
     /// A Readium location callback has no request ID. It may be a late event
     /// from a cancelled request, so only a callback for the active request's
-    /// expected href may consume the token.
+    /// expected href and anchor may consume the token.
     @discardableResult
     mutating func finish(
         _ requestID: UUID,
-        ifMatchingLocatorHref locatorHref: String
+        ifMatchingLocatorHref locatorHref: String,
+        locatorFragments: [String] = []
     ) -> Bool {
-        guard matchesCurrent(requestID, locatorHref: locatorHref) else {
+        guard matchesCurrent(
+            requestID,
+            locatorHref: locatorHref,
+            locatorFragments: locatorFragments
+        ) else {
             return false
         }
-        activeRequestID = nil
-        activeExpectedLocatorHref = nil
+        invalidate()
         return true
     }
 }

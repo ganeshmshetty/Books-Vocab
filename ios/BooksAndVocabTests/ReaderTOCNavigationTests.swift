@@ -65,6 +65,53 @@ struct ReaderTOCNavigationTests {
     }
 
     @Test
+    func lateSameResourceCallbackOfEarlierAnchorCannotCompleteLaterRequest() {
+        let firstRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        // Two TOC entries share one XHTML resource but target different anchors.
+        gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+
+        // Late callback reporting the first anchor must not complete the second request.
+        let lateFirstFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["a"]
+        )
+        #expect(!lateFirstFinished)
+        #expect(gate.isCurrent(replacementRequest))
+        #expect(gate.activeExpectedFragments == ["b"])
+
+        let replacementFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["b"]
+        )
+        #expect(replacementFinished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
+    func sameResourceCallbackWithoutReportedAnchorStillCompletesRequest() {
+        let requestID = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        // Readium may report no fragment for a resolved resource; resource-level
+        // matching must still complete the request (no refused legitimate taps).
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+
+        let finished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(finished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
     func invalidatingNavigationGateRejectsLateTeardownCompletion() {
         let requestID = UUID()
         var gate = ReaderTOCNavigationRequestGate()
