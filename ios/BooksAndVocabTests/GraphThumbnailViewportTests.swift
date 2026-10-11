@@ -290,5 +290,59 @@ struct GraphThumbnailViewportTests {
         #expect(coordinator.pendingPayload == nil)
         #expect(coordinator.lastPayload == nil)
     }
+
+    /// The card's watchdog wiring must route paint and repaint events into its
+    /// `@State` bindings, so a painted graph clears the status row and a rebuilt
+    /// page re-arms the watchdog.
+    @Test func paintWatchdogBinding_routesPaintAndRepaintIntoCardState() {
+        let sink = PaintWatchdogSink()
+        let coordinator = GraphThumbnailCoordinator()
+        coordinator.bindPaintWatchdog(timedOut: sink.timedOutBinding, generation: sink.generationBinding)
+
+        sink.timedOut = true
+        coordinator.receiveBridgeEvent("painted")
+        #expect(!sink.timedOut, "a paint must clear the timed-out state")
+
+        coordinator.recover()
+        #expect(sink.generation == 1, "a repaint expectation must re-arm the watchdog")
+        #expect(!sink.timedOut)
+    }
+
+    /// Regression for the card retain cycle (#2860): binding the card must not
+    /// keep its holder, and so its web view and WebContent process, alive after
+    /// the owner releases them. Holder deinit removes the script message handler.
+    @Test func paintWatchdogBinding_doesNotRetainHolder() {
+        let probe = holderWithPaintWatchdogBoundThenDropped()
+        #expect(probe.holder == nil, "binding the card must not close a retain cycle through the holder")
+    }
+
+    @MainActor
+    private final class PaintWatchdogSink {
+        var timedOut = false
+        var generation = 0
+
+        var timedOutBinding: Binding<Bool> {
+            Binding(get: { self.timedOut }, set: { self.timedOut = $0 })
+        }
+
+        var generationBinding: Binding<Int> {
+            Binding(get: { self.generation }, set: { self.generation = $0 })
+        }
+    }
+
+    private final class WeakHolderProbe {
+        weak var holder: GraphThumbnailHolder?
+    }
+
+    /// Returns a weak probe after every strong reference to the holder is gone
+    /// (the function frame holds the only one until it returns).
+    private func holderWithPaintWatchdogBoundThenDropped() -> WeakHolderProbe {
+        let sink = PaintWatchdogSink()
+        let holder = GraphThumbnailHolder()
+        holder.coordinator.bindPaintWatchdog(timedOut: sink.timedOutBinding, generation: sink.generationBinding)
+        let probe = WeakHolderProbe()
+        probe.holder = holder
+        return probe
+    }
 }
 #endif

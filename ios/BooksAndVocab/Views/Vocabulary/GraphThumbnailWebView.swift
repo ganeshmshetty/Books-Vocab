@@ -60,6 +60,20 @@ final class GraphThumbnailCoordinator: NSObject, WKScriptMessageHandler, WKNavig
     private(set) var pageLost = false
     static let maxAutomaticRecoveries = 3
 
+    /// Routes this coordinator's paint events into a card's watchdog state.
+    /// Captures only the two bindings, never the card value: the card owns the
+    /// holder and the holder owns this coordinator, so a card capture closes a
+    /// retain cycle that keeps the web view and its WebContent process alive
+    /// after their owner is gone (#2860).
+    @MainActor
+    func bindPaintWatchdog(timedOut: Binding<Bool>, generation: Binding<Int>) {
+        onPainted = { timedOut.wrappedValue = false }
+        onRepaintExpected = {
+            timedOut.wrappedValue = false
+            generation.wrappedValue &+= 1
+        }
+    }
+
     func sendInitGraph(_ json: String, webView: WKWebView) {
         lastPayload = json
         // graph.html hides the canvas on every thumbnail init and reports `painted`

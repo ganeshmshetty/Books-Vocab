@@ -74,8 +74,7 @@ struct VocabGraphEntryCard<Destination: View>: View {
         // restarts here; the coordinator resets `hasPainted` when it sends the payload.
         .onChange(of: thumbnailSignature) { _, _ in rearmPaintWatchdog() }
         .onAppear {
-            holder.coordinator.onPainted = { paintTimedOut = false }
-            holder.coordinator.onRepaintExpected = { rearmPaintWatchdog() }
+            holder.coordinator.bindPaintWatchdog(timedOut: $paintTimedOut, generation: $paintTimerGeneration)
         }
         .enableInjection()
     }
