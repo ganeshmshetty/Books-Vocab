@@ -192,8 +192,9 @@ kg_ios_disk_guard_diagnose() {
   if [[ -n "${KG_IOS_DISK_UNREGISTERED_OVER_QUOTA:-}" ]]; then
     KG_IOS_DISK_UNREGISTERED_ONLY=1
     local reason quota_path matched
-    local IFS=';'
-    for reason in ${reasons:-none}; do
+    # One reason per line, read literally: an unquoted word list would be
+    # pathname-expanded against the cwd and miss the literal bracket path (#3001 CR P3).
+    while IFS= read -r reason; do
       matched=0
       while IFS= read -r quota_path; do
         [[ "$reason" == "lane-budget-exceeded:$quota_path" ]] && matched=1
@@ -202,7 +203,7 @@ kg_ios_disk_guard_diagnose() {
         KG_IOS_DISK_UNREGISTERED_ONLY=0
         break
       fi
-    done
+    done < <(tr ';' '\n' <<< "${reasons:-none}")
   fi
 }
 
