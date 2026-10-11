@@ -232,6 +232,24 @@ final class NotebookListCoordinator: NotebookListCoordinating {
         kgService: any NotebookServing,
         toastCoordinator: AppToastCoordinator
     ) async {
+        await createNotebookCore(
+            name: name, color: color, coverPattern: coverPattern, coverImagePath: coverImagePath,
+            modelContext: modelContext, kgService: kgService, toastCoordinator: toastCoordinator,
+            persist: { $0.safeSaveWithToast($1) }
+        )
+    }
+
+    /// `createNotebook` 的實作 seam：`persist` 可注入，讓測試模擬本地存檔失敗（不在 protocol 上）。
+    func createNotebookCore(
+        name: String,
+        color: String?,
+        coverPattern: String?,
+        coverImagePath: String?,
+        modelContext: ModelContext,
+        kgService: any NotebookServing,
+        toastCoordinator: AppToastCoordinator,
+        persist: (ModelContext, AppToastCoordinator) -> Bool
+    ) async {
         do {
             let remote = try await kgService.createNotebook(name: name, color: color, coverPattern: coverPattern)
             let nb = Notebook(remoteId: remote.id, name: remote.name, color: remote.color)
@@ -244,8 +262,13 @@ final class NotebookListCoordinator: NotebookListCoordinating {
                 projection.applyRemote(settings)
                 modelContext.insert(projection)
             }
-            if modelContext.safeSaveWithToast(toastCoordinator) {
+            if persist(modelContext, toastCoordinator) {
                 toastCoordinator.success("已建立".localized)
+            } else {
+                // remote 已建立但本地存檔失敗：model 已 insert，先退回無封面再清 staged 檔，
+                // 避免之後任一次成功 save 持久化指向已刪檔的 dangling 路徑（#2428）。
+                nb.coverImagePath = nil
+                NotebookCoverCommit.discardStagedFile(staged: coverImagePath, original: nil)
             }
         } catch {
             // API 失敗：staged 封面沒有任何 owner，立即清掉避免孤兒檔（#2428）。
