@@ -164,6 +164,69 @@ struct VocabularySyncEngineTests {
         #expect(!add.isUploadInFlight)
     }
 
+    @Test("undo of a delete on an add the server never got restores a pending add that uploads on the next sync (#2484)")
+    func undoOfUnsentAddDeleteUploadsOnNextSync() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let queuedDelete = makeEntry(word: "gone")
+        queuedDelete.kgCardId = "card-gone"
+        queuedDelete.markSynced()
+        queuedDelete.queueDelete()
+        let add = makeEntry(word: "ghost")
+        add.restorePendingEntry()
+        context.insert(queuedDelete)
+        context.insert(add)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.onDeleteInFlight = { add.deleteLocally(in: context) }
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [queuedDelete, add], modelContext: context, service: service, emit: { _ in }
+        )
+        #expect(add.isPendingDelete)
+        #expect(add.kgCardId == nil)
+
+        // SyncView「還原」
+        add.undoQueuedDelete()
+        #expect(add.isPendingAdd)
+
+        service.onDeleteInFlight = nil
+        service.addResponse = KGAddResponse(
+            created: 1, skipped: 0, duplicates: [], cardIds: ["ghost": "card-ghost"]
+        )
+        let next = await VocabularySyncEngine().execute(
+            pendingEntries: [add], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(next.terminalOutcome == .completed)
+        #expect(service.uploadedWords == ["ghost"])
+        #expect(add.isSynced)
+        #expect(add.kgCardId == "card-ghost")
+    }
+
+    @Test("undo during the delete round trip is not hard-deleted by the stale batch response (#2484)")
+    func undoDuringDeleteRoundTripSurvivesResponse() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        // 同步開始時已是 pending delete 且 kgCardId 為空（server 可能沒有此卡）。
+        let entry = makeEntry(word: "flip")
+        entry.queueDelete()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.onDeleteInFlight = { entry.undoQueuedDelete() }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(!entry.isDeleted)
+        #expect(entry.isPendingAdd)
+        #expect(entry.kgCardId == nil)
+        #expect(!service.calls.contains("add"))
+    }
+
     @Test("a delete issued while another notebook's add group uploads keeps the unsent add from being uploaded")
     func deleteDuringOtherGroupUploadSkipsAdd() async throws {
         let container = try makeContainer()

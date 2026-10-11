@@ -269,6 +269,9 @@ final class SyncCoordinator: SyncCoordinating {
         var deleted = 0
         var failedWords: [String] = []
         for entry in entries {
+            // 撤銷還原（`undoQueuedDelete`）可能發生在 delete 往返期間：列已不是 delete，
+            // 回應不得硬刪（會丟掉從未上傳的 add），也不得標 failed（T5/T6）。
+            guard entry.syncAction == .delete else { continue }
             if resolvableSet.contains(entry.word) {
                 modelContext.delete(entry)
                 deleted += 1
