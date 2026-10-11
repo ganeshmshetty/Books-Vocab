@@ -14,28 +14,29 @@ enum ReviewSessionPersistence {
         return "local:\(entry.id.uuidString)"
     }
 
-    /// 同一 persistenceID 只保留一筆，勝者與輸入順序無關：`dateAdded` 最早者勝，平手以 `id` 字典序決定。
-    /// 回傳保持輸入的相對順序。輸入來自無排序的 fetch，「第一筆」不具決定性。
+    /// 同一 persistenceID 只保留代表一筆（規則見 `representative(among:)`）。
+    /// 回傳保持輸入的相對順序；勝者與輸入順序無關（輸入來自無排序的 fetch）。
     static func uniqueByPersistenceID(_ entries: [VocabularyEntry]) -> [VocabularyEntry] {
-        var winners: [String: VocabularyEntry] = [:]
-        for entry in entries {
-            let key = persistenceID(for: entry)
-            if let current = winners[key], !precedes(entry, current) { continue }
-            winners[key] = entry
-        }
+        let winners = Dictionary(grouping: entries) { persistenceID(for: $0) }
+            .compactMapValues { group in representative(among: group) }
         return entries.filter { winners[persistenceID(for: $0)] === $0 }
     }
 
-    /// 單一 persistenceID 的代表排序鍵：`dateAdded` 早者優先，平手以 `id` 字典序。
-    /// `uniqueByPersistenceID`（佇列）與 `fetchEntry`（flush 寫入）共用此比較器，兩者不得各自定義。
-    static func precedes(_ lhs: VocabularyEntry, _ rhs: VocabularyEntry) -> Bool {
-        if lhs.dateAdded != rhs.dateAdded { return lhs.dateAdded < rhs.dateAdded }
-        return lhs.id.uuidString < rhs.id.uuidString
-    }
-
-    /// 從同一 persistenceID 的多筆候選中挑出代表（與佇列選中的那筆相同）。
+    /// 同一 persistenceID 的代表列規則。全 app 只有這一處定義；佇列（`uniqueByPersistenceID`）、
+    /// flush 寫入（`fetchEntry`）與還原快照都經此函式，不得各自選列。
+    ///
+    /// 候選 = 該 persistenceID 中 `shouldAppearInReview` 的列；候選為空才退回全部列。
+    /// 在候選中 `dateAdded` 最早者勝，平手以 `id` 字典序。
+    ///
+    /// 不變式：佇列代表 == flush 寫入目標。佇列只餵入可複習列，flush 餵入同一 persistenceID 的全部列；
+    /// 只要存在可複習列，兩邊的候選集合相同，min 結果必定相同。
+    /// 因此「最早的一筆不可複習」時，佇列與 flush 都落在最早的可複習列上（見 TodayReviewSnapshotRestoreTests）。
     static func representative(among entries: [VocabularyEntry]) -> VocabularyEntry? {
-        entries.min(by: precedes)
+        let reviewable = entries.filter { $0.shouldAppearInReview }
+        return (reviewable.isEmpty ? entries : reviewable).min { lhs, rhs in
+            if lhs.dateAdded != rhs.dateAdded { return lhs.dateAdded < rhs.dateAdded }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
     }
 
     static func makeBaseline(
@@ -119,7 +120,7 @@ enum ReviewSessionPersistence {
             return nil
         }
 
-        // sync 競態可能讓兩筆 VocabularyEntry 共用同一 kgCardId：只保留第一筆，避免 trap 與重複入列。
+        // sync 競態可能讓兩筆 VocabularyEntry 共用同一 kgCardId：每個 persistenceID 只保留代表列（同一規則），避免 trap 與重複入列。
         let uniqueEntries = uniqueByPersistenceID(orderedEntries)
         let entryMap = Dictionary(
             uniqueEntries.map { (persistenceID(for: $0), $0) },
@@ -361,7 +362,8 @@ enum ReviewSessionPersistence {
         in context: ModelContext
     ) throws -> VocabularyEntry? {
         if persistenceID.hasPrefix("kg:") {
-            // 不可 fetchLimit = 1：sync 競態可能有多筆同 kgCardId，必須取與佇列代表相同的那筆（同一比較器）。
+            // 不可 fetchLimit = 1：sync 競態可能有多筆同 kgCardId，必須取與佇列代表相同的那筆。
+            // 取全部同 kgCardId 的列（含不可複習者）再交給 representative(among:)，由它決定，不在此自選。
             let kgCardID = String(persistenceID.dropFirst(3))
             let descriptor = FetchDescriptor<VocabularyEntry>(
                 predicate: #Predicate<VocabularyEntry> { $0.kgCardId == kgCardID }
