@@ -442,6 +442,193 @@ struct ToastNotificationTests {
         #expect(coordinator.current == nil)
     }
 
+    // MARK: - Tap-to-expand affordance (#2862)
+
+    /// chevron 與可點性必須同源且只看截斷：沒有 handler 的呼叫點（preview／fixture）不得露出；
+    /// 未截斷的 pill 即使殘留展開狀態（同 key 取代成短文案）也不可點。
+    @Test func toggleAffordanceRequiresHandlerAndTruncation() {
+        #expect(!AppToast.offersToggle(hasHandler: false, isTruncated: true))
+        #expect(!AppToast.offersToggle(hasHandler: true, isTruncated: false))
+        #expect(AppToast.offersToggle(hasHandler: true, isTruncated: true))
+    }
+
+    /// 展開外觀同樣只在截斷時成立：未截斷的 pill 外觀與收合時相同。
+    @Test func expandedLayoutOnlyAppliesWhileTruncated() {
+        #expect(!AppToast.showsExpandedLayout(isExpanded: true, isTruncated: false))
+        #expect(!AppToast.showsExpandedLayout(isExpanded: false, isTruncated: true))
+        #expect(!AppToast.showsExpandedLayout(isExpanded: false, isTruncated: false))
+        #expect(AppToast.showsExpandedLayout(isExpanded: true, isTruncated: true))
+    }
+
+    /// 截斷 = 自然寬度乘以最小縮放比仍放不下。無容差：邊界上的誤報只多露一個 chevron，
+    /// 漏報則是末端被截卻沒有任何提示。
+    @Test func truncationBoundaryAtMinimumScaleHasNoTolerance() {
+        // 100 * 0.8 = 80：剛好放得下。
+        #expect(!AppToast.isTruncated(natural: 100, visible: 80))
+        // 差 0.5pt 即截斷（不再有容差吸收）。
+        #expect(AppToast.isTruncated(natural: 100, visible: 79.5))
+        #expect(AppToast.isTruncated(natural: 100, visible: 79))
+        // 自然寬度小於可用寬度：不截斷。
+        #expect(!AppToast.isTruncated(natural: 50, visible: 200))
+        // 未量測（任一為 0）：不截斷，避免首幀閃 chevron。
+        #expect(!AppToast.isTruncated(natural: 0, visible: 0))
+        #expect(!AppToast.isTruncated(natural: 100, visible: 0))
+        #expect(!AppToast.isTruncated(natural: 0, visible: 80))
+    }
+
+    /// Reduce Motion 的展開／收合只淡入淡出，不得走位移的 panel 動畫。
+    @Test func reduceMotionExpansionUsesFadeInsteadOfPanelSlide() {
+        #expect(AppToast.expansionMotion(reduceMotion: true) == .fade)
+        #expect(AppToast.expansionMotion(reduceMotion: false) == .panel)
+    }
+
+    // MARK: - Coordinator: tap-to-expand (#2862)
+
+    @Test func expandedToastGetsAtLeastEightSecondsBeforeDismiss() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("long message") // 2.5s normally
+        clock.advance(by: .seconds(1))
+        coordinator.toggleExpanded()
+        #expect(coordinator.isExpanded)
+        // Deadline is now t=1s + 8s = t=9s.
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current?.message == "long message")
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func expandedWarningKeepsEightSecondFloor() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.warning("warn") // 4.0s, expanded floor 8s
+        coordinator.toggleExpanded()
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current != nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func collapseRestoresNormalDurationFromCollapseTime() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("msg") // 2.5s
+        coordinator.toggleExpanded() // t=0, deadline 8s
+        clock.advance(by: .seconds(1))
+        coordinator.toggleExpanded() // t=1s, collapsed: deadline t=3.5s
+        #expect(!coordinator.isExpanded)
+        clock.advance(by: .milliseconds(2_499))
+        #expect(coordinator.current?.message == "msg")
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func toggleWithoutVisibleToastIsNoOp() {
+        let coordinator = AppToastCoordinator(scheduler: ManualToastScheduler())
+        coordinator.toggleExpanded()
+        #expect(!coordinator.isExpanded)
+        coordinator.info("next")
+        #expect(!coordinator.isExpanded)
+    }
+
+    @Test func retireResetsExpansion() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("first")
+        coordinator.toggleExpanded()
+        coordinator.dismiss()
+        #expect(!coordinator.isExpanded)
+        coordinator.info("second")
+        #expect(!coordinator.isExpanded)
+        clock.advance(by: .milliseconds(2_500))
+        #expect(coordinator.current == nil)
+    }
+
+    @Test func sameEventReplacementPreservesExpansionWithFreshFloor() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("saved", key: "k")
+        coordinator.toggleExpanded() // t=0, deadline 8s
+        clock.advance(by: .seconds(2))
+        coordinator.info("saved updated", key: "k") // t=2s, deadline t=10s
+        #expect(coordinator.isExpanded)
+        #expect(coordinator.current?.message == "saved updated")
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current != nil)
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+    }
+
+    /// 同 key 取代成不再截斷的短文案 → 收合，且收合後回到該則的正常時長（非殘留的 8 秒下限）。
+    /// 之後的長文案即使未點擊也不得自動展開（#2862 review：short→long 殘留展開）。
+    @Test func sameEventShortReplacementCollapsesSoLaterLongTextStaysCollapsed() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        let overlay = UUID()
+        coordinator.info("long message", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        coordinator.toggleExpanded()
+        #expect(coordinator.isExpanded)
+
+        clock.advance(by: .seconds(1))
+        coordinator.info("ok", key: "k")
+        coordinator.reportTruncation(false, overlay: overlay)
+        #expect(!coordinator.isExpanded)
+        // 收合於 t=1s，info 的正常時長 2.5s → t=3.5s 退場。
+        clock.advance(by: .milliseconds(2_499))
+        #expect(coordinator.current?.message == "ok")
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+
+        coordinator.info("long message again", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        #expect(!coordinator.isExpanded)
+    }
+
+    /// 同 key 取代但文案仍截斷：展開保留（同事件取代保留展開的規則）。
+    @Test func sameEventLongReplacementKeepsExpansionWhileStillTruncated() {
+        let coordinator = AppToastCoordinator(scheduler: ManualToastScheduler())
+        let overlay = UUID()
+        coordinator.info("long one", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        coordinator.toggleExpanded()
+        coordinator.info("long two", key: "k")
+        coordinator.reportTruncation(true, overlay: overlay)
+        #expect(coordinator.isExpanded)
+    }
+
+    /// root 與 sheet 寬度可能不同：只要其中一個仍截斷就保留展開；全部回報不截斷才收合。
+    @Test func expansionSurvivesWhileAnyOverlayStillTruncates() {
+        let coordinator = AppToastCoordinator(scheduler: ManualToastScheduler())
+        let root = UUID()
+        let sheet = UUID()
+        coordinator.info("long", key: "k")
+        coordinator.reportTruncation(true, overlay: sheet)
+        coordinator.reportTruncation(false, overlay: root)
+        coordinator.toggleExpanded()
+        coordinator.info("long two", key: "k")
+        coordinator.reportTruncation(false, overlay: root)
+        #expect(coordinator.isExpanded)
+        coordinator.reportTruncation(false, overlay: sheet)
+        #expect(!coordinator.isExpanded)
+    }
+
+    @Test func queuedNoticeWaitsBehindExpandedToastWithoutStarving() {
+        let clock = ManualToastScheduler()
+        let coordinator = AppToastCoordinator(scheduler: clock)
+        coordinator.info("first")
+        coordinator.info("second")
+        coordinator.toggleExpanded()
+        clock.advance(by: .milliseconds(7_999))
+        #expect(coordinator.current?.message == "first")
+        #expect(coordinator.pending.map(\.message) == ["second"])
+        clock.advance(by: .milliseconds(1))
+        #expect(coordinator.current == nil)
+        clock.advance(by: AppToastCoordinator.handoffDelay)
+        #expect(coordinator.current?.message == "second")
+        #expect(!coordinator.isExpanded)
+    }
+
     // MARK: - Production scheduler contract
     //
     // The fake-time tests above assume `AppToastTaskScheduler` runs an action

@@ -61,7 +61,8 @@ struct AppToastItem: Identifiable, Equatable {
 
     /// 單行文案上限，以「欄」計：全形字（中日韓）2 欄、其餘 1 欄。40 欄 = 20 個全形字
     /// 或 40 個半形字元，約為 iPhone SE 寬度下 caption 字級單行可容納量。超過時 pill
-    /// 仍維持單行（先縮小、再尾端截斷），但較長的說明應改放面板。
+    /// 收合時仍維持單行（先縮小、再尾端截斷），截斷者可由使用者輕點展開（#2862）；
+    /// 失敗清單、原因、下一步等較長說明仍應改放面板。
     static let copyBudgetColumns = 40
 
     static func exceedsCopyBudget(_ message: String) -> Bool {
@@ -218,6 +219,14 @@ final class AppToastCoordinator {
     /// 前一則退場動畫（`AppMotion.panelState`，response 0.3）的讓位時間：
     /// 下一則在它離場後才進場，避免兩則 pill 交疊或原地跳字。
     static let handoffDelay: Duration = .milliseconds(350)
+    /// 展開後的自動收起下限（#2862）：展開的目的就是讀完整文案，不得在讀完前消失。
+    static let expandedDismissFloor: Duration = .seconds(8)
+
+    /// 顯示中那則是否展開成完整多行文案。狀態在 coordinator 上，root 與 sheet 內的
+    /// 兩個 overlay 共用同一份，才不會各自展開。
+    private(set) var isExpanded = false
+    /// 目前顯示那則仍被截斷的 overlay（只存回報為截斷者），見 `reportTruncation`。
+    @ObservationIgnored private var truncatingOverlays: Set<UUID> = []
 
     private var queue = AppToastQueue()
     private let scheduler: any AppToastScheduler
@@ -253,6 +262,31 @@ final class AppToastCoordinator {
         retire(id: nil)
     }
 
+    /// 點擊截斷的 pill 切換展開／收合（收合不關閉通知）。沒有顯示中的通知時為 no-op；展開時
+    /// 重排自動消失計時（至少 `expandedDismissFloor`），收合時回到該則的正常時長。
+    func toggleExpanded(animation: Animation = AppMotion.panelState) {
+        guard let visible = queue.current else { return }
+        withAnimation(animation) {
+            isExpanded.toggle()
+        }
+        scheduleDismiss(for: visible)
+    }
+
+    /// overlay 回報目前顯示那則是否仍被截斷（以量測為準，見 `AppToast`）。所有回報都已是「不截斷」
+    /// 時展開即失效：同 key 取代成短文案後，之後的長文案不得在未點擊時自動展開。root 與 sheet 的
+    /// 寬度可能不同，只要其中一個仍截斷就保留展開，與兩者同步展開的規則一致。
+    func reportTruncation(_ truncated: Bool, overlay: UUID) {
+        if truncated {
+            truncatingOverlays.insert(overlay)
+        } else {
+            truncatingOverlays.remove(overlay)
+        }
+        guard isExpanded, truncatingOverlays.isEmpty, let visible = queue.current else { return }
+        isExpanded = false
+        // 收合即回到該則的正常時長，與 toggleExpanded 的收合路徑一致。
+        scheduleDismiss(for: visible)
+    }
+
     func success(_ message: String, key: String? = nil) {
         show(AppToastItem(message: message, style: .success, key: key))
     }
@@ -276,9 +310,15 @@ final class AppToastCoordinator {
         // be scheduled regardless — otherwise the toast never clears when
         // VoiceOver is on, leaving `current` stuck forever.
         _ = PlatformAccessibility.announceIfVoiceOver(item.message)
+        scheduleDismiss(for: item)
+    }
+
+    private func scheduleDismiss(for item: AppToastItem) {
         dismissTimer?.cancel()
+        let normal = Duration.seconds(item.duration)
+        let delay = isExpanded ? max(normal, Self.expandedDismissFloor) : normal
         let id = item.id
-        dismissTimer = scheduler.schedule(after: .seconds(item.duration)) { [weak self] in
+        dismissTimer = scheduler.schedule(after: delay) { [weak self] in
             self?.retire(id: id)
         }
     }
@@ -290,7 +330,8 @@ final class AppToastCoordinator {
         dismissTimer?.cancel()
         dismissTimer = nil
         let needsHandoff = withAnimation(AppMotion.panelState) {
-            queue.retireCurrent()
+            isExpanded = false
+            return queue.retireCurrent()
         }
         guard needsHandoff else { return }
         handoffTimer?.cancel()
