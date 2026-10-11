@@ -86,7 +86,7 @@ macos_needs="$(jq -cn '{
   "design-system": {result: "success"},
   "ui-quality-gate": {result: "success"},
   "ops-suite": {result: "success"},
-  "ios-quality": {result: "success"}
+  "ios-quality": {result: "success", outputs: {build_result: "success", tests_result: "skipped", targeted_result: "skipped"}}
 }')"
 assert_accepts 'macOS-only plan expects ops-suite to run' "$macos_plan" "$macos_needs"
 assert_rejects 'macOS-only plan cannot skip ops-suite' \
@@ -95,6 +95,46 @@ assert_rejects 'macOS-only plan cannot skip ops-suite' \
 assert_rejects 'ops-suite must be skipped when neither ops nor macos_ops is selected' \
   '{"backend":"false","ops":"false","ios":"true","macos_ops":"false"}' \
   "$macos_needs"
+
+# iOS on a PR runs compile-only (pr-gate passes run_tests=false): the test jobs
+# are skipped by design and ios-build must have succeeded. The caller's single
+# result cannot prove that alone, because a reusable-workflow caller whose
+# nested jobs were all skipped may still read as success; the explicit job
+# outputs carry each result, and only the declared PR shape is accepted.
+ios_plan='{"backend":"false","ops":"false","ios":"true","macos_ops":"false"}'
+ios_pr_needs="$(jq -cn '{
+  "changed-paths": {result: "success"},
+  "repo-gate": {result: "success"},
+  "backend-quality": {result: "skipped"},
+  "llm-eval": {result: "success"},
+  "design-system": {result: "success"},
+  "ui-quality-gate": {result: "success"},
+  "ops-suite": {result: "skipped"},
+  "ios-quality": {result: "success", outputs: {build_result: "success", tests_result: "skipped", targeted_result: "skipped"}}
+}')"
+assert_accepts 'PR compile-only iOS run (build succeeded, tests skipped) is confidence green' \
+  "$ios_plan" "$ios_pr_needs"
+assert_rejects 'PR iOS caller success without compile proof is never green' \
+  "$ios_plan" \
+  "$(jq -c 'del(."ios-quality".outputs)' <<<"$ios_pr_needs")"
+assert_rejects 'PR iOS run with a skipped compile check is never green' \
+  "$ios_plan" \
+  "$(jq -c '."ios-quality".outputs.build_result = "skipped"' <<<"$ios_pr_needs")"
+assert_rejects 'PR iOS run with a failed compile check is never green' \
+  "$ios_plan" \
+  "$(jq -c '."ios-quality".result = "failure" | ."ios-quality".outputs.build_result = "failure"' <<<"$ios_pr_needs")"
+assert_rejects 'PR iOS test job that ran is not the declared compile-only fan-out' \
+  "$ios_plan" \
+  "$(jq -c '."ios-quality".outputs.tests_result = "success"' <<<"$ios_pr_needs")"
+assert_rejects 'PR iOS test failure is never green' \
+  "$ios_plan" \
+  "$(jq -c '."ios-quality".outputs.tests_result = "failure"' <<<"$ios_pr_needs")"
+assert_rejects 'PR iOS targeted job that ran is not the declared compile-only fan-out' \
+  "$ios_plan" \
+  "$(jq -c '."ios-quality".outputs.targeted_result = "success"' <<<"$ios_pr_needs")"
+assert_rejects 'iOS selected but the caller skipped is never green' \
+  "$ios_plan" \
+  "$(jq -c '."ios-quality".result = "skipped"' <<<"$ios_pr_needs")"
 
 if (( failures > 0 )); then
   printf 'ci confidence verdict: %d failure(s)\n' "$failures" >&2
