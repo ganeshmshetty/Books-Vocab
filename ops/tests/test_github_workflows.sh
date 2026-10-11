@@ -1442,6 +1442,67 @@ if ! ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' .github
   fail "workflow YAML does not parse"
 fi
 
+# --- Closed-PR run cancel (Issue #2641 retro 2026-10-09) ---------------------
+# pr-closed-run-cancel may cancel PR-event runs on a closed PR's head, but never
+# on the head of an open PR (the old open-PR reaper cancelled 346 runs and let
+# #2412 reach main), and never a push run that shares the SHA after a
+# fast-forward merge. A stub gh replays fixtures and records POSTs; the workflow's
+# own cancel-runs step script is what runs, so the rule itself is exercised.
+CANCEL_WF=".github/workflows/pr-closed-run-cancel.yml"
+if [[ ! -f "$CANCEL_WF" ]]; then
+  fail "$CANCEL_WF is missing: closed PRs keep their queued runs"
+else
+  ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); on = y.fetch("on", y[true]); exit(on == {"pull_request" => {"types" => ["closed"]}} ? 0 : 1)' "$CANCEL_WF" \
+    || fail "$CANCEL_WF must trigger on pull_request types [closed] and nothing else"
+  grep -Fq 'github.event.pull_request.head.repo.full_name == github.repository' "$CANCEL_WF" \
+    || fail "$CANCEL_WF does not skip fork PRs (their token is read-only)"
+  cancel_step="$wf_tmp/cancel-step.sh"
+  ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); s = y["jobs"].values.flat_map { |j| j["steps"] || [] }.find { |st| st["id"] == "cancel-runs" }; abort("no cancel-runs step") unless s; File.write(ARGV[1], s["run"])' "$CANCEL_WF" "$cancel_step" 2>/dev/null \
+    || fail "$CANCEL_WF has no cancel-runs step"
+  cancel_bin="$wf_tmp/cancel-bin"
+  mkdir -p "$cancel_bin"
+  cat >"$cancel_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# Replays the fixture for each GET (--jq applied with real jq) and logs POST paths.
+if [[ "$2" == "-X" ]]; then printf '%s\n' "$4" >>"$CANCEL_LOG"; exit 0; fi
+case "$*" in
+  *pulls*) src="$CANCEL_FIXTURES/open-pulls.json" ;;
+  *status=queued*) src="$CANCEL_FIXTURES/runs-queued.json" ;;
+  *status=in_progress*) src="$CANCEL_FIXTURES/runs-in_progress.json" ;;
+  *) src="$CANCEL_FIXTURES/none.json" ;;
+esac
+jq_expr="."
+while (( $# )); do
+  [[ "$1" == --jq ]] && jq_expr="$2"
+  shift
+done
+jq -r "$jq_expr" "$src"
+STUB
+  chmod +x "$cancel_bin/gh"
+  # cancel_case <name> <open-PR head sha> -> cancelled run ids, or step-exit-nonzero
+  cancel_case() {
+    local dir="$wf_tmp/cancel-$1" closed_sha=cafe0000
+    mkdir -p "$dir"
+    printf '[{"number": 7, "head": {"sha": "%s"}}]\n' "$2" >"$dir/open-pulls.json"
+    printf '{"workflow_runs": [{"id": 11, "event": "pull_request", "head_sha": "%s"}, {"id": 12, "event": "push", "head_sha": "%s"}]}\n' "$closed_sha" "$closed_sha" >"$dir/runs-queued.json"
+    printf '{"workflow_runs": [{"id": 13, "event": "pull_request_target", "head_sha": "%s"}]}\n' "$closed_sha" >"$dir/runs-in_progress.json"
+    printf '{"workflow_runs": []}\n' >"$dir/none.json"
+    : >"$dir/posts.log"
+    if ! env PATH="$cancel_bin:$PATH" GH_TOKEN=test REPO=owner/repo HEAD_SHA="$closed_sha" \
+      CANCEL_FIXTURES="$dir" CANCEL_LOG="$dir/posts.log" bash "$cancel_step" >"$dir/step.log" 2>&1; then
+      printf 'step-exit-nonzero'
+      return
+    fi
+    sed -n 's#.*/actions/runs/\([0-9]*\)/cancel#\1#p' "$dir/posts.log" | sort -n | paste -sd' ' -
+  }
+  got="$(cancel_case free beef0000)"
+  [[ "$got" == "11 13" ]] \
+    || fail "closed PR head: want PR-event runs 11 and 13 cancelled, push run 12 kept; got [$got]"
+  got="$(cancel_case shared cafe0000)"
+  [[ -z "$got" ]] \
+    || fail "closed PR head is also an open PR's head, yet runs were cancelled: [$got]"
+fi
+
 if (( failures > 0 )); then
   printf 'github workflow contract: %d failure(s)\n' "$failures" >&2
   exit 1

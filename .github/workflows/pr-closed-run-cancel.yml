@@ -1,0 +1,67 @@
+name: pr-closed-run-cancel
+
+# Issue #2641 retro (2026-10-09): when a PR is merged or closed, cancel its
+# queued or running PR-event runs so a dead PR stops holding the scarce
+# macos-26 pool. Three guards are load-bearing:
+#   - a head that is still the head of ANY open PR is never cancelled (the
+#     old open-PR reaper cancelled 346 runs and let #2412 reach main);
+#   - only pull_request and pull_request_target runs are cancelled: after a
+#     fast-forward merge, main's push run carries the same SHA, and push runs
+#     must run to completion;
+#   - fork PRs are skipped, their GITHUB_TOKEN is read-only.
+# This workflow checks out the default branch only and executes no PR code.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-closed-run-cancel-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  cancel:
+    name: cancel runs of a closed PR head
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Checkout default branch (no PR code is executed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every workflow carries the repo's pinned Actions generation (contract);
+      # the cancel step itself needs only gh.
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Cancel PR-event runs on the closed head
+        id: cancel-runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Captured before grep: a pipe into `grep -q` could SIGPIPE gh and
+          # misread a match. A failed listing fails the step (fail-closed).
+          open_heads="$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].head.sha')"
+          if grep -qx "$HEAD_SHA" <<<"$open_heads"; then
+            echo "head $HEAD_SHA is the head of an open PR; not cancelling"
+            exit 0
+          fi
+          run_ids="$(for status in queued in_progress waiting requested pending; do
+            gh api --paginate "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&status=$status&per_page=100" \
+              --jq '.workflow_runs[] | select(.event == "pull_request" or .event == "pull_request_target") | .id'
+          done | sort -u)"
+          while read -r id; do
+            [[ -n "$id" ]] || continue
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null \
+              || echo "::warning::run $id could not be cancelled (it may have completed)"
+          done <<<"$run_ids"
