@@ -129,6 +129,9 @@ in_proc '
 ' | grep -q SAFE \
   && ok "publish tolerates pin==latest" || fail_t "publish broke when pinned to latest path"
 
+# ── 9. ok-path verdict + summary embed HEAD commit (#2906) ───────────────────
+grep -qE 'RESULT=ok .*commit=\$\(git -C "\$PROJECT_ROOT" rev-parse HEAD' "$WORKSPACE/ops/ios_test.sh" && grep -qE 'all tests passed .*commit=\$\(git -C' "$WORKSPACE/ops/ios_test.sh" && ok "ok verdict and success summary embed HEAD commit" || fail_t "ok-path output lacks HEAD commit"
+
 # ── result ────────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════"
