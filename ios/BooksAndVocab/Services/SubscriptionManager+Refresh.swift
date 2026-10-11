@@ -9,7 +9,7 @@ extension SubscriptionManager {
     /// 讓回應順序語義能以確定性替身測試（#2800）。
     func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async {
         guard authManager.isLoggedIn else {
-            entitlements = Self.defaultEntitlements
+            commitEntitlements(Self.defaultEntitlements)
             lastError = nil
             expiryTimer?.cancel()
             expiryTimer = nil
@@ -25,8 +25,7 @@ extension SubscriptionManager {
         }
         let previousRefreshTime = lastRefreshTime
         lastRefreshTime = Date()
-        refreshGeneration += 1
-        let generation = refreshGeneration
+        let generation = claimEntitlementsGeneration()
 
         // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
         let requestUserId = authManager.userId
@@ -37,9 +36,9 @@ extension SubscriptionManager {
         do {
             var remote = try await service.fetchEntitlements()
 
-            // 已有更新的世代套用過：本回應已過期（無論到達順序）
-            guard generation > lastAppliedRefreshGeneration else {
-                AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(lastAppliedRefreshGeneration)")
+            // 已有更新的世代套用過（refresh 或樂觀／同步寫入）：本回應已過期（無論到達順序）
+            guard generation > lastAppliedEntitlementsGeneration else {
+                AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(lastAppliedEntitlementsGeneration)")
                 return
             }
 
@@ -65,19 +64,17 @@ extension SubscriptionManager {
                     )
                 }
             }
-            // StoreKit 查詢也是 await 點，期間可能已有更新的 refresh 發出
-            guard generation > lastAppliedRefreshGeneration else { return }
-            entitlements = remote
-            lastAppliedRefreshGeneration = generation
+            // StoreKit 查詢也是 await 點，期間可能已有更新的寫入發出；由 applyEntitlements 再守一次
+            guard applyEntitlements(remote, generation: generation) else { return }
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
         } catch is CancellationError {
             // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh。
             // 過期請求不得還原，否則會蓋掉較新請求寫入的冷卻時間。
-            if generation == refreshGeneration { lastRefreshTime = previousRefreshTime }
+            if generation == entitlementsGeneration { lastRefreshTime = previousRefreshTime }
         } catch {
             // 過期請求的錯誤不得蓋掉較新請求的狀態
-            guard generation > lastAppliedRefreshGeneration else { return }
+            guard generation > lastAppliedEntitlementsGeneration else { return }
             lastError = error.localizedDescription
         }
     }

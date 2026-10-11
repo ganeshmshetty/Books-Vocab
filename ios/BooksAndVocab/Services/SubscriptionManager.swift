@@ -86,11 +86,12 @@ final class SubscriptionManager: SubscriptionManaging {
     }
 
     var lastRefreshTime: Date?
-    /// 每個真正發出的 refresh 遞增；async 返回時只有仍為最新世代者可寫入狀態（#2800）。
-    var refreshGeneration = 0
-    /// 已真正套用到 `entitlements` 的最新世代；只有更新於此者才可寫入（#2800）。
-    /// 以「已套用」而非「已發出」判斷，較新請求失敗時較早但有效的回應仍可套用。
-    var lastAppliedRefreshGeneration = 0
+    /// `entitlements` 寫入世代（#2800）。會寫入狀態的請求（refresh、StoreKit 同步）於發出時取號，
+    /// 同步寫入（樂觀更新、登出）亦取號；回應到達時只有號碼新於已套用世代者可寫入。
+    var entitlementsGeneration = 0
+    /// 已真正套用到 `entitlements` 的最新世代。以「已套用」而非「已發出」判斷，
+    /// 較新請求失敗時較早但有效的回應仍可套用。
+    var lastAppliedEntitlementsGeneration = 0
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?
@@ -121,6 +122,26 @@ final class SubscriptionManager: SubscriptionManaging {
                 last_synced_at: nil
             )
         )
+    }
+
+    /// 取得下一個寫入世代。請求於「發出」時呼叫，回應到達後以 `applyEntitlements` 套用（#2800）。
+    func claimEntitlementsGeneration() -> Int {
+        entitlementsGeneration += 1
+        return entitlementsGeneration
+    }
+
+    /// 只有 `generation` 仍新於已套用世代時才寫入，回傳是否套用；過期回應不論到達順序一律丟棄（#2800）。
+    @discardableResult
+    func applyEntitlements(_ value: KGEntitlements, generation: Int) -> Bool {
+        guard generation > lastAppliedEntitlementsGeneration else { return false }
+        entitlements = value
+        lastAppliedEntitlementsGeneration = generation
+        return true
+    }
+
+    /// 同步寫入（樂觀更新、登出）：取新世代並立即套用，使此前發出、尚未返回的請求全部失效（#2800）。
+    func commitEntitlements(_ value: KGEntitlements) {
+        applyEntitlements(value, generation: claimEntitlementsGeneration())
     }
 
     /// 在 app 啟動時呼叫，持續監聽 Transaction.updates 以捕捉中斷購買、續訂等事件
