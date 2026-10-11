@@ -67,14 +67,17 @@ struct TranslationVocabPresenter: View {
                 .foregroundStyle(appSkin.palette.primaryText)
                 .accessibilityIdentifier("reader.translationPanel.word")
 
-            Button(action: onSpeak) {
+            // 10pt 字形的可點區外擴到 44pt、版面不變（#3117）。
+            ReviewCardHitTargetButton(
+                action: onSpeak,
+                accessibilityIdentifier: "reader.translationPanel.speak",
+                accessibilityLabel: L10n.format("translation.vocab.speak", state.word)
+            ) {
                 Image(systemName: "speaker.wave.2")
                     .font(appSkin.typography.iconTiny)
                     .foregroundStyle(appSkin.palette.secondaryText)
                     .symbolEffect(.bounce, value: state.isSpeaking)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(L10n.format("translation.vocab.speak", state.word))
 
             Spacer()
 
