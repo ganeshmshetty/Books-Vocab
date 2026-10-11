@@ -110,6 +110,13 @@ final class ReaderFlowUITests: UITestCase {
         )
         captureStep("translation-shown", app: app)
 
+        // #3117: the panel's speaker glyph stays 10pt; its hit area must be >= 44pt.
+        let speak = app.descendants(matching: .any)
+            .matching(identifier: "reader.translationPanel.speak").firstMatch
+        XCTAssertTrue(speak.waitUntilExists(timeout: 5), "翻譯面板必須有發音按鈕 reader.translationPanel.speak")
+        XCTAssertGreaterThanOrEqual(speak.frame.width, 44, "Reader vocab speaker hit target 寬度必須 >= 44pt，實際 \(speak.frame.width)")
+        XCTAssertGreaterThanOrEqual(speak.frame.height, 44, "Reader vocab speaker hit target 高度必須 >= 44pt，實際 \(speak.frame.height)")
+
         // ── 4. 關閉面板（真狀態收回）────────────────────────────────────────
         try step("translation-dismissed", app: app) {
             XCTAssertTrue(reader.dismissTranslation(), "點 dismiss 後翻譯面板必須收回")
