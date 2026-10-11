@@ -152,7 +152,9 @@ final class TodayReviewGapUITests: UITestCase {
 
     /// #3117: the fold chevron must expose a >= 44pt accessibility frame. The
     /// visual stays 48×30; the hit area grows only vertically (7pt per side),
-    /// never wider than the pill, so it cannot steal horizontal card taps.
+    /// never wider than the pill. The band stays inside the 28pt face padding
+    /// (ReviewFoldChevronHitBandTests pins that geometry), and the front flip is
+    /// disabled whenever the band is live, so the band never competes with a flip.
     /// The hero speaker lives on the word detail document, covered in
     /// WordDetailFlowUITests (review backs no longer mount CardDocumentView).
     @MainActor
@@ -195,6 +197,16 @@ final class TodayReviewGapUITests: UITestCase {
         XCTAssertLessThanOrEqual(
             fold.height, 44,
             "fold chevron hit 高度應只向上下各外擴 7pt（<=44），實際 \(fold.height)"
+        )
+        // A tap inside the enlarged band but above the 48×30 visual (4pt below the
+        // frame top sits ~18pt above the seam) is the chevron's own target and must
+        // collapse the answer.
+        review.foldCollapseButton
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 4.0 / 44.0))
+            .tap()
+        XCTAssertTrue(
+            review.cardBack.waitUntilGone(timeout: 5),
+            "點在命中帶上緣（pill 外、44pt 框內）必須收合答案"
         )
     }
 
