@@ -463,6 +463,76 @@ class TestPushReviewStatesFakes:
         assert abs(c1.next_review_at - reset_at) < timedelta(seconds=5)
         assert c1.last_reviewed_at == server_time  # history is not rewritten
 
+    def test_override_reset_writes_schedule_fields_when_server_newer(self):
+        """Server-newer override must reset interval/streak/feedback like the client-newer branch."""
+        server_time = datetime.now(UTC)
+        c1 = _ReviewCard(
+            id="c1",
+            content="cat",
+            last_reviewed_at=server_time,
+            review_count=10,
+            lapse_count=3,
+            review_interval_hours=96.0,
+            review_streak=5,
+            last_review_feedback=1,
+        )
+        store = _FakeCardsStore([c1])
+        entry = _entry(
+            word="cat",
+            last_reviewed_at=_iso(server_time - timedelta(hours=1)),
+            review_count=0,
+            lapse_count=0,
+            review_interval_hours=12.0,
+            review_streak=0,
+            last_review_feedback=-1,
+            override=True,
+        )
+
+        push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert c1.review_interval_hours == 12.0
+        assert c1.review_streak == 0
+        assert c1.last_review_feedback == -1
+
+    def test_override_schedule_is_independent_of_clock_order(self):
+        """Same override entry must yield the same schedule whichever side of the clock is newer."""
+        base = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+        reset_at = base + timedelta(hours=12)
+        kwargs = dict(
+            review_count=0,
+            lapse_count=0,
+            review_interval_hours=12.0,
+            review_streak=0,
+            last_review_feedback=-1,
+            next_review_at=_iso(reset_at),
+            override=True,
+        )
+
+        def _run(server_last: datetime, client_last: datetime) -> _ReviewCard:
+            card = _ReviewCard(
+                id="c1",
+                content="cat",
+                last_reviewed_at=server_last,
+                review_count=10,
+                lapse_count=3,
+                review_interval_hours=96.0,
+                review_streak=5,
+                last_review_feedback=1,
+            )
+            push_review_states(
+                [_entry(word="cat", last_reviewed_at=_iso(client_last), **kwargs)],
+                cards_store=_FakeCardsStore([card]),
+                logger=logging.getLogger(),
+            )
+            return card
+
+        server_newer = _run(base + timedelta(hours=1), base)
+        client_newer = _run(base, base + timedelta(hours=1))
+
+        for field in ("review_count", "lapse_count", "review_interval_hours", "review_streak", "last_review_feedback"):
+            assert getattr(server_newer, field) == getattr(client_newer, field), field
+        assert server_newer.next_review_at == client_newer.next_review_at == reset_at
+
     def test_override_resets_counts_when_client_newer(self):
         """Override is exact on the client-newer branch too; max() would undo the reset."""
         server_time = datetime.now(UTC) - timedelta(hours=2)

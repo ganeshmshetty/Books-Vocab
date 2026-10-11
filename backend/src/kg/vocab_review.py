@@ -57,7 +57,13 @@ def _merge_card_review_state(
     """
     server_last = parse_datetime(card.last_reviewed_at)
     if entry.override and server_last and server_last >= client_last:
-        patch: dict[str, Any] = dict(review_count=entry.review_count, lapse_count=entry.lapse_count)
+        patch: dict[str, Any] = dict(
+            review_count=entry.review_count,
+            lapse_count=entry.lapse_count,
+            review_interval_hours=entry.review_interval_hours,
+            review_streak=entry.review_streak,
+            last_review_feedback=entry.last_review_feedback,
+        )
         override_next = _clamp_next_review(parse_datetime(entry.next_review_at))
         if override_next is not None:
             patch["next_review_at"] = override_next
