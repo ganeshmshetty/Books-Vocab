@@ -1517,9 +1517,26 @@ def _agent_lane_lock(
     return lock
 
 
-def _branch_tip(workspace: Path, branch: str) -> str | None:
+PROBE_TIMEOUT_SECONDS = 10
+# Refs whose ancestry marks a registered lane tip as already landed.
+MERGED_BASE_REFS = ("refs/heads/main", "refs/remotes/origin/main")
+
+
+def _probe_timeout(deadline: float | None) -> float:
+    """Per-probe git timeout: the fixed cap, never past the measurement deadline."""
+
+    remaining = _remaining_timeout(deadline)  # raises once the deadline has passed
+    if remaining is None:
+        return PROBE_TIMEOUT_SECONDS
+    return min(PROBE_TIMEOUT_SECONDS, remaining)
+
+
+def _branch_tip(
+    workspace: Path, branch: str, *, deadline: float | None = None
+) -> str | None:
     """Return the commit a local branch points at, or None when unreadable."""
 
+    timeout = _probe_timeout(deadline)
     try:
         completed = subprocess.run(
             [
@@ -1534,16 +1551,19 @@ def _branch_tip(workspace: Path, branch: str) -> str | None:
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return completed.stdout.strip() or None if completed.returncode == 0 else None
 
 
-def _is_ancestor(workspace: Path, ancestor: str, descendant: str) -> bool:
-    """True when ``ancestor`` is reachable from ``descendant``; False when unknown."""
+def _is_ancestor(
+    workspace: Path, ancestor: str, descendant: str, *, deadline: float | None = None
+) -> bool | None:
+    """Whether ``ancestor`` is reachable from ``descendant``; None when the probe failed."""
 
+    timeout = _probe_timeout(deadline)
     try:
         completed = subprocess.run(
             [
@@ -1558,21 +1578,35 @@ def _is_ancestor(workspace: Path, ancestor: str, descendant: str) -> bool:
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None
     return completed.returncode == 0
 
 
-def _grown_from_registered_branch(workspace: Path, item: dict[str, Any]) -> bool:
-    """True when a lane's physical HEAD descends from its registered branch tip."""
+def _grown_from_registered_branch(
+    workspace: Path, item: dict[str, Any], *, deadline: float | None = None
+) -> bool:
+    """True when a lane's physical HEAD is a fix grown from its registered branch.
 
-    registered_tip = _branch_tip(workspace, str(item.get("branch")))
+    The registered tip must be an ancestor of the physical HEAD and must not have
+    landed on main: a branch cut from an already-merged lane contains that tip too,
+    but it is unrelated to the open lane (#3092 acceptance b). A failed probe is
+    unknown, so it never proves a fix: it stays on the blocking path.
+    """
+
+    registered_tip = _branch_tip(workspace, str(item.get("branch")), deadline=deadline)
     head = item.get("head")
     if registered_tip is None or not head:
         return False
-    return _is_ancestor(workspace, registered_tip, str(head))
+    descendant = _is_ancestor(workspace, registered_tip, str(head), deadline=deadline)
+    if descendant is not True:
+        return False
+    return all(
+        _is_ancestor(workspace, registered_tip, base, deadline=deadline) is False
+        for base in MERGED_BASE_REFS
+    )
 
 
 def _stale_agent_cleanup_hint(path: Path, lock: dict[str, Any], branch: str) -> str:
@@ -2283,17 +2317,25 @@ def build_report(
         and item.get("observed_branch") != item.get("branch")
     ]
     # #3092: a physical branch grown from the registered one (registered tip is an
-    # ancestor of the physical HEAD) has lost no commit; the registry only lags.
-    # Warn by path instead of blocking every lane; unrelated branches still block.
-    descendant_fix_branches = sorted(
-        str(item["path"])
-        for item in mismatched_lanes
-        if _grown_from_registered_branch(workspace, item)
-    )
+    # ancestor of the physical HEAD, and that tip has not landed on main) has lost no
+    # commit; the registry only lags. Warn by path instead of blocking every lane;
+    # unrelated branches still block. A probe that the deadline cut short leaves its
+    # lane unclassified: it is neither a warning nor an identity mismatch, and the
+    # report is marked measurement-incomplete below.
+    budget_unclassified: set[str] = set()
+    descendant_fix_branches: list[str] = []
+    for item in mismatched_lanes:
+        try:
+            if _grown_from_registered_branch(workspace, item, deadline=deadline):
+                descendant_fix_branches.append(str(item["path"]))
+        except _MeasurementBudgetExceeded:
+            budget_unclassified.add(str(item["path"]))
+    descendant_fix_branches.sort()
     physical_identity_mismatches = sorted(
         str(item["path"])
         for item in mismatched_lanes
         if str(item["path"]) not in descendant_fix_branches
+        and str(item["path"]) not in budget_unclassified
     )
     detached_candidates = [
         item
@@ -2306,15 +2348,21 @@ def build_report(
     ]
     # A clean lane detached exactly at its branch tip loses nothing: warn,
     # do not block every unrelated lane.
-    detached_at_tip = sorted(
-        str(item["path"])
-        for item in detached_candidates
-        if _branch_tip(workspace, str(item.get("branch"))) == item.get("head")
-    )
+    detached_at_tip: list[str] = []
+    for item in detached_candidates:
+        try:
+            tip = _branch_tip(workspace, str(item.get("branch")), deadline=deadline)
+        except _MeasurementBudgetExceeded:
+            budget_unclassified.add(str(item["path"]))
+            continue
+        if tip == item.get("head"):
+            detached_at_tip.append(str(item["path"]))
+    detached_at_tip.sort()
     detached_registered = sorted(
         str(item["path"])
         for item in detached_candidates
         if str(item["path"]) not in detached_at_tip
+        and str(item["path"]) not in budget_unclassified
     )
     branch_by_path = {
         str(item["path"]): str(item.get("branch")) for item in physical_lanes
@@ -2372,6 +2420,8 @@ def build_report(
                 if _is_budget_error(inspection_error)
                 else "worktree-inspection-incomplete"
             )
+    if budget_unclassified:
+        measurement_incomplete_reasons.add(MEASUREMENT_BUDGET_ERROR)
     measurement_budget_exhausted = (
         MEASUREMENT_BUDGET_ERROR in measurement_incomplete_reasons
     )

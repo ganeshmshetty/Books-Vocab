@@ -2866,6 +2866,31 @@ def test_sibling_agent_lanes_neither_block_each_other_nor_mask_an_orphan(
     )
 
 
+def test_branch_probes_never_outlive_the_measurement_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CR P3: the tip and ancestry probes used a fixed 10s timeout that ignored the
+    # report's measurement deadline. A probe is now capped by the remaining budget,
+    # and a passed deadline raises before another git process starts.
+    repo, _ = _repo_with_worktree(tmp_path)
+    timeouts: list[object] = []
+    real_run = subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        timeouts.append(kwargs.get("timeout"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(disk_usage.subprocess, "run", recording_run)
+    disk_usage._branch_tip(repo, "main", deadline=time.monotonic() + 2)
+    disk_usage._branch_tip(repo, "main")
+    with pytest.raises(disk_usage._MeasurementBudgetExceeded):
+        disk_usage._branch_tip(repo, "main", deadline=time.monotonic() - 1)
+
+    assert len(timeouts) == 2
+    assert isinstance(timeouts[0], float) and 0 < timeouts[0] <= 2
+    assert timeouts[1] == disk_usage.PROBE_TIMEOUT_SECONDS
+
+
 def _detached_lane_report(
     tmp_path: Path, *, advance_branch: bool
 ) -> tuple[int, dict, Path]:
@@ -2976,6 +3001,50 @@ def test_unrelated_branch_in_a_lane_still_blocks_as_identity_mismatch(
     assert "physical-identity-mismatch" in policy["blocking_reasons"]
     assert str(worktree) in policy["physical_identity_mismatches"]
     assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+
+
+def test_unrelated_branch_cut_from_main_after_lane_merged_still_blocks(
+    tmp_path: Path,
+) -> None:
+    # #3092 (b), CR P2: once the registered lane tip has landed on main (--no-ff),
+    # a branch cut from main contains that tip, yet it is unrelated to the open lane,
+    # not a fix grown from it. It must still block as identity mismatch.
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(repo, "merge", "--no-ff", "-m", "land lane-one", "lane-one")
+    _run_git(worktree, "switch", "-c", "lane-two", "main")
+    (worktree / "sibling.txt").write_text("sibling\n", encoding="utf-8")
+    _run_git(worktree, "add", "sibling.txt")
+    _run_git(worktree, "commit", "-m", "sibling branch off merged main")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+
+
+def test_timed_out_landing_probe_never_downgrades_a_lane_to_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A probe that times out cannot prove the registered tip is unlanded, so the
+    # branch must block (fail closed), not warn as a descendant fix.
+    repo, _ = _repo_with_worktree(tmp_path)
+    tip = disk_usage._branch_tip(repo, "lane-one")
+    real_run = subprocess.run
+
+    def run_timing_out_on_main(
+        *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess:
+        if "refs/heads/main" in args[0]:
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(disk_usage.subprocess, "run", run_timing_out_on_main)
+    assert not disk_usage._grown_from_registered_branch(
+        repo, {"branch": "lane-one", "head": tip}
+    )
 
 
 def test_detached_head_grown_from_registered_branch_still_blocks(
