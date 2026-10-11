@@ -159,11 +159,14 @@ actor BackgroundSyncActor {
             if let existingEntry = matchedEntry {
                 // Delete if marked as soft-deleted
                 if card.isDeleted == true {
-                    AppLog.sync.info("Remote soft-delete received: \(existingEntry.word)")
+                    // Read identity fields before delete: a deleted @Model must not be touched.
+                    let deletedWord = existingEntry.word
+                    let deletedNotebookId = existingEntry.notebookId
+                    AppLog.sync.info("Remote soft-delete received: \(deletedWord)")
                     modelContext.delete(existingEntry)
                     // Evict the deleted row so later cards in this batch cannot resolve to it.
                     localByCardID[card.id] = nil
-                    let deletedKey = self.mergeKey(existingEntry.word, notebookId: existingEntry.notebookId)
+                    let deletedKey = self.mergeKey(deletedWord, notebookId: deletedNotebookId)
                     if localDict[deletedKey] === existingEntry {
                         localDict[deletedKey] = nil
                     }
