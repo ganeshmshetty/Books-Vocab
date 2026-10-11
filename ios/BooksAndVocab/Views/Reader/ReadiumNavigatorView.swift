@@ -401,19 +401,13 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
                 publishNavigatorSettingsReceipt(from: epubNavigator, source: .locationDidChange)
             }
             guard acceptsNavigator(navigator, generation: callbackGeneration) else { return }
-            let matchingTOCRequestID = activeTOCRequestID.flatMap { requestID in
-                tocNavigationGate.matchesCurrent(
-                    requestID,
-                    locatorHref: locator.href.string,
-                    locatorFragments: locator.locations.fragments
-                )
-                    ? requestID
-                    : nil
-            }
+            let observedTOCRequestID = activeTOCRequestID
             parent.onLocationChanged(locator)
             guard acceptsNavigator(navigator, generation: callbackGeneration) else { return }
             triggerRecoveryNavigation()
-            if let requestID = matchingTOCRequestID,
+            // Every report goes through finish: it also consumes a superseded
+            // jump's owed report, which completes nothing.
+            if let requestID = observedTOCRequestID,
                tocNavigationGate.finish(
                    requestID,
                    ifMatchingLocatorHref: locator.href.string,

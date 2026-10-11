@@ -52,11 +52,12 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     private(set) var activeExpectedFragments: [String] = []
     /// Set once Readium's `go(to:)` returned true for the active request.
     private(set) var isNavigationAccepted = false
-    /// Set when this request replaced a live, unfinished request. Readium may
-    /// still deliver the replaced jump's late callbacks, and they name no
-    /// request, so an anchored replacement must then be completed by a report
-    /// that names its own anchor.
-    private(set) var replacesUnsettledRequest = false
+    /// Resource hrefs of live jumps this request superseded. Readium delivers
+    /// one anchorless location report per jump it performs, naming neither its
+    /// request nor its anchor, so each superseded jump owes one report to its
+    /// resource. Until that report is consumed it cannot be told apart from
+    /// this request's own report, so it is consumed first.
+    private(set) var owedSupersededHrefs: [String] = []
 
     /// `expectedFragments` are the anchors the TOC entry targets inside
     /// `expectedLocatorHref`. Empty means resource-level expectation only.
@@ -65,7 +66,13 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         expectedLocatorHref: String? = nil,
         expectedFragments: [String] = []
     ) {
-        replacesUnsettledRequest = activeRequestID != nil && activeRequestID != requestID
+        // The superseded jump owes its report whether or not Readium has
+        // accepted it yet: an accepted jump delivers one, and an unaccepted
+        // one may still be performed. A stale entry costs one report, so the
+        // request ends at its timeout instead of completing early.
+        if let activeRequestID, activeRequestID != requestID, let activeExpectedLocatorHref {
+            owedSupersededHrefs.append(activeExpectedLocatorHref)
+        }
         activeRequestID = requestID
         activeExpectedLocatorHref = expectedLocatorHref
         activeExpectedFragments = expectedFragments
@@ -77,7 +84,7 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         activeExpectedLocatorHref = nil
         activeExpectedFragments = []
         isNavigationAccepted = false
-        replacesUnsettledRequest = false
+        owedSupersededHrefs = []
     }
 
     func isCurrent(_ requestID: UUID) -> Bool {
@@ -103,40 +110,40 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         isCurrent(requestID)
             && isNavigationAccepted
             && activeExpectedLocatorHref == locatorHref
+            && owedSupersededIndex(locatorHref: locatorHref, locatorFragments: locatorFragments) == nil
             && Self.fragmentsAccept(
                 expected: activeExpectedFragments,
-                reported: locatorFragments,
-                requiresOwnAnchor: replacesUnsettledRequest
+                reported: locatorFragments
             )
+    }
+
+    /// The owed superseded report an anchorless report for an anchored request
+    /// is, if one is owed for its resource. Named reports are never owed, and a
+    /// resource-level request owes nothing: its anchorless completion is
+    /// unchanged.
+    private func owedSupersededIndex(locatorHref: String, locatorFragments: [String]) -> Int? {
+        guard !activeExpectedFragments.isEmpty, locatorFragments.isEmpty else { return nil }
+        return owedSupersededHrefs.firstIndex(of: locatorHref)
     }
 
     /// Readium 3.11 idle location callbacks carry empty `locations.fragments`,
     /// and no callback is guaranteed to name a jump's anchor. An accepted
-    /// anchored request therefore completes on a report for its resource that
-    /// names no anchor or names its own anchor; requiring the anchor would time
-    /// out every fragment TOC tap. A report that names only other anchors is a
-    /// late callback of a superseded jump and is refused. A resource-level
-    /// request has no anchor of its own, so it refuses every named report.
-    /// `requiresOwnAnchor` closes the anchorless case for a replacement of a
-    /// live request: that jump's late anchorless callback is indistinguishable
-    /// from the replacement's, so only a report naming the replacement's own
-    /// anchor may complete it. Both sides are percent-decoded first, so an
-    /// encoded TOC href and a decoded callback fragment still match.
+    /// anchored request therefore completes on an anchorless report for its
+    /// resource once no superseded report is owed (see `owedSupersededHrefs`);
+    /// requiring the anchor would time out every fragment TOC tap. A report that
+    /// names only other anchors is a late callback of a superseded jump and is
+    /// refused. A resource-level request has no anchor of its own, so it refuses
+    /// every named report. Both sides are percent-decoded first, so an encoded
+    /// TOC href and a decoded callback fragment still match.
     /// Residual (#3043, split to a follow-up): a jump whose request already
     /// timed out or failed is no longer live, so its anchorless late callback
     /// can still complete a later anchored request. Readium exposes no request
     /// identity that would exclude it.
-    static func fragmentsAccept(
-        expected: [String],
-        reported: [String],
-        requiresOwnAnchor: Bool = false
-    ) -> Bool {
+    static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
         let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
         let expectedAnchors = Set(expected.map(normalized))
         let reportedAnchors = Set(reported.map(normalized))
-        guard !reportedAnchors.isEmpty else {
-            return !(requiresOwnAnchor && !expectedAnchors.isEmpty)
-        }
+        guard !reportedAnchors.isEmpty else { return true }
         return !expectedAnchors.isDisjoint(with: reportedAnchors)
     }
 
@@ -148,15 +155,22 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     }
 
     /// A Readium location callback has no request ID. It may be a late event
-    /// from a cancelled request, so only a callback observed after the active
-    /// request was accepted, for its expected href and a compatible anchor, may
-    /// consume the token.
+    /// from a cancelled or superseded request, so only a callback observed after
+    /// the active request was accepted, for its expected href and a compatible
+    /// anchor, may consume the token. An anchorless report owed to a superseded
+    /// jump is consumed here and completes nothing, so every location callback
+    /// for the active request must be passed through this method.
     @discardableResult
     mutating func finish(
         _ requestID: UUID,
         ifMatchingLocatorHref locatorHref: String,
         locatorFragments: [String] = []
     ) -> Bool {
+        guard isCurrent(requestID) else { return false }
+        if let owedIndex = owedSupersededIndex(locatorHref: locatorHref, locatorFragments: locatorFragments) {
+            owedSupersededHrefs.remove(at: owedIndex)
+            return false
+        }
         guard matchesCurrent(
             requestID,
             locatorHref: locatorHref,
