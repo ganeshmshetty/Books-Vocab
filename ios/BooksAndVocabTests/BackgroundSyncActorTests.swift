@@ -777,6 +777,37 @@ struct BackgroundSyncActorTests {
         #expect(try after.fetchCount(FetchDescriptor<Notebook>()) == 0)
     }
 
+    // #2745: logout deletes every VocabularyEntry, so the logout gate must count
+    // every row the server has not confirmed (pending 0 and failed 2), and must
+    // report zero when everything is synced so logout proceeds without a prompt.
+    @Test func unsyncedEntryCount_countsPendingAndFailedButNotSynced() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let pendingA = VocabularyEntry(word: "pendingA", translation: "m", context: "ctx", bookTitle: "Book")
+        let pendingB = VocabularyEntry(word: "pendingB", translation: "m", context: "ctx", bookTitle: "Book")
+        let synced = VocabularyEntry(word: "synced", translation: "m", context: "ctx", bookTitle: "Book")
+        synced.markSynced()
+        let failed = VocabularyEntry(word: "failed", translation: "m", context: "ctx", bookTitle: "Book")
+        failed.syncStatus = 2
+        [pendingA, pendingB, synced, failed].forEach { context.insert($0) }
+        try context.save()
+
+        #expect(try BackgroundSyncActor.unsyncedEntryCount(in: context) == 3)
+    }
+
+    @Test func unsyncedEntryCount_isZeroWhenEverythingSynced() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let synced = VocabularyEntry(word: "synced", translation: "m", context: "ctx", bookTitle: "Book")
+        synced.markSynced()
+        context.insert(synced)
+        try context.save()
+
+        #expect(try BackgroundSyncActor.unsyncedEntryCount(in: context) == 0)
+    }
+
     @Test func buildReviewEventsPushPayload_encodesLocalRecords() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
