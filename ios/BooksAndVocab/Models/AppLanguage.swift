@@ -62,8 +62,11 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         }
     }
 
-    static func resolvedSystemLanguage() -> AppLanguage {
-        guard let preferred = Locale.preferredLanguages.first?.lowercased() else {
+    /// `preferredLanguages` 預設為系統偏好；測試以此注入不支援的裝置語系（如 fr）。
+    static func resolvedSystemLanguage(
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> AppLanguage {
+        guard let preferred = preferredLanguages.first?.lowercased() else {
             return .english
         }
 
@@ -218,9 +221,14 @@ final class AppLanguageStore: ObservableObject {
 
     /// The formatting counterpart to `stringBundle(for:)`; explicit callers
     /// receive a stable locale even if the app's selected language changes.
-    func formatLocale(for language: AppLanguage) -> Locale {
+    /// `.system` 必須與字串解析共用同一個 `resolvedSystemLanguage`，否則不支援的
+    /// 裝置語系會出現英文字串配上裝置語系分隔符（#2997）。
+    func formatLocale(
+        for language: AppLanguage,
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> Locale {
         let resolvedLanguage = language == .system
-            ? AppLanguage.resolvedSystemLanguage()
+            ? AppLanguage.resolvedSystemLanguage(preferredLanguages: preferredLanguages)
             : language
         return resolvedLanguage.locale
     }
