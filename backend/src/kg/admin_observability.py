@@ -357,8 +357,8 @@ def _retention_status(oldest: str | None, kind: str) -> dict[str, Any]:
 def _log_db_health() -> dict[str, Any]:
     """Per-table row_count, oldest timestamp and retention status of every log DB.
 
-    Covers every table ``log_retention.run_all`` prunes (scheduled daily by
-    ops/launchd/com.kg.log-retention.plist). ``overdue`` means the oldest row
+    Covers every table ``log_retention.run_all`` prunes (scheduled daily
+    in-process by ``log_retention_scheduler.LogRetentionScheduler``). ``overdue`` means the oldest row
     is older than ``_OVERDUE_WINDOWS`` × the table's retention window, i.e.
     the scheduled prune is not running.
     Note: pipeline_runs keys its timestamp as ``started_at``; the others use

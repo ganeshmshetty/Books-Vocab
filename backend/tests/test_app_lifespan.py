@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -8,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from kg import worker_guard
 from kg.app_lifespan import AppLifespanDependencies, build_app_lifespan_from_dependencies
+from kg.log_retention_scheduler import LogRetentionScheduler
 from kg.settings import KGSettings
 
 
@@ -335,3 +339,131 @@ def test_create_app_startup_reaps_orphaned_staged_copy_via_settings_catalog_path
         pass
 
     assert NotebookStore(user_dir / "notebooks.db").staged_ids() == [logged.id]
+
+
+def test_lifespan_cancels_log_retention_loop_before_releasing_lock(tmp_path):
+    """The daily retention loop is cancelled before the worker lock or runtime root is released (#2091)."""
+    events: list[object] = []
+
+    async def _log_retention_loop() -> None:
+        events.append("log_retention_loop_started")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("log_retention_loop_cancelled")
+            raise
+
+    deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=_log_retention_loop)
+    app = FastAPI(lifespan=build_app_lifespan_from_dependencies(dependencies=deps))
+
+    with TestClient(app):
+        pass
+
+    assert "log_retention_loop_started" in events
+    cancelled = events.index("log_retention_loop_cancelled")
+    assert cancelled < events.index(("release_runtime_data_root", tmp_path))
+    assert cancelled < events.index("release_worker_lock")
+    # The loop only starts once the worker lock is held and the runtime root is bound.
+    assert events.index(("bind_runtime_data_root", tmp_path)) < events.index("log_retention_loop_started")
+
+
+def test_lifespan_waits_for_retention_worker_thread_before_releasing_lock(tmp_path):
+    """Shutdown must not release the lock while a retention DELETE still runs in its worker thread (#2091)."""
+    events: list[object] = []
+    started = threading.Event()
+    gate = threading.Event()
+
+    def _run_all(*, should_stop) -> dict[str, dict[str, int]]:
+        started.set()
+        gate.wait(5)
+        events.append("run_all_returned")
+        return {}
+
+    taipei = timezone(timedelta(hours=8), "Asia/Taipei")
+    now = [datetime(2026, 10, 11, 4, 16, 0, tzinfo=taipei)]
+    sleep_calls = 0
+
+    async def _sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            await asyncio.Event().wait()
+        now[0] += timedelta(seconds=seconds)
+
+    scheduler = LogRetentionScheduler(
+        run_all_fn=_run_all,
+        clock=lambda: now[0],
+        sleep_fn=_sleep,
+    )
+    deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=scheduler.run_forever)
+    app = FastAPI(lifespan=build_app_lifespan_from_dependencies(dependencies=deps))
+
+    with TestClient(app):
+        assert started.wait(5)
+        threading.Timer(0.3, gate.set).start()
+
+    assert "run_all_returned" in events
+    assert events.index("run_all_returned") < events.index("release_worker_lock")
+
+
+def test_second_cancel_during_teardown_still_waits_for_retention_thread(tmp_path):
+    """A second cancel while teardown waits must not release the lock under a live DELETE (#2091)."""
+    events: list[object] = []
+    started = threading.Event()
+    gate = threading.Event()
+
+    def _run_all(*, should_stop) -> dict[str, dict[str, int]]:
+        started.set()
+        gate.wait(5)
+        events.append("run_all_returned")
+        return {}
+
+    taipei = timezone(timedelta(hours=8), "Asia/Taipei")
+    now = [datetime(2026, 10, 11, 4, 16, 0, tzinfo=taipei)]
+    sleep_calls = 0
+
+    async def _sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            await asyncio.Event().wait()
+        now[0] += timedelta(seconds=seconds)
+
+    scheduler = LogRetentionScheduler(run_all_fn=_run_all, clock=lambda: now[0], sleep_fn=_sleep)
+    deps = replace(_dependencies(tmp_path, events), log_retention_loop_fn=scheduler.run_forever)
+    lifespan = build_app_lifespan_from_dependencies(dependencies=deps)
+
+    async def _drive() -> None:
+        context = lifespan(FastAPI())
+        await context.__aenter__()
+        assert await asyncio.to_thread(started.wait, 5)
+        teardown = asyncio.ensure_future(context.__aexit__(None, None, None))
+        await asyncio.sleep(0.05)
+        teardown.cancel()
+        await asyncio.sleep(0.05)
+        teardown.cancel()
+        threading.Timer(0.3, gate.set).start()
+        with pytest.raises(asyncio.CancelledError):
+            await teardown
+
+    asyncio.run(_drive())
+
+    assert "run_all_returned" in events
+    assert events.index("run_all_returned") < events.index("release_worker_lock")
+
+
+def test_create_app_starts_the_in_process_log_retention_loop(tmp_path, monkeypatch):
+    from kg.api import create_app
+
+    _clear_llm_env(monkeypatch)
+    started: list[object] = []
+
+    async def _fake_run_forever(self) -> None:
+        started.append(self)
+
+    monkeypatch.setattr(LogRetentionScheduler, "run_forever", _fake_run_forever)
+
+    with TestClient(create_app(_settings(tmp_path))):
+        pass
+
+    assert len(started) == 1
