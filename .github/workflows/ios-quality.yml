@@ -1,8 +1,11 @@
 name: ios-quality
 
 # Real iOS validation belongs on a GitHub-hosted macOS/Xcode runner. This
-# workflow is reusable from pr-gate, while push/manual runs keep the same
-# commands available for post-merge and operator verification.
+# workflow is reusable from two callers: pr-gate, which compiles only
+# (run_tests=false, so a PR is never tested twice), and merge-group-required,
+# which runs the full suite once on the exact tree the merge queue lands
+# (run_tests=true). Owner decision 2026-10-11. A daily run on main re-validates
+# runner and Xcode drift; ops/main_watch.py opens a fix issue when it is red.
 
 on:
   workflow_call:
@@ -27,6 +30,26 @@ on:
         required: false
         default: 'true'
         type: string
+      # Only an explicit 'false' (pr-gate) drops every simulator test job, leaving
+      # the compile check. Absent (schedule, dispatch) or 'true' runs the suite.
+      run_tests:
+        description: Whether the simulator test jobs run (true) or only the ios-build compile check (false)
+        required: false
+        default: 'true'
+        type: string
+    # Each job result, read from ios-verdict. A reusable-workflow caller reports
+    # one aggregate result, so callers that must prove a specific job ran (the
+    # PR confidence verdict) read these instead.
+    outputs:
+      build_result:
+        description: Result of ios-build
+        value: ${{ jobs.ios-verdict.outputs.build_result }}
+      tests_result:
+        description: Aggregate result of the ios-tests matrix
+        value: ${{ jobs.ios-verdict.outputs.tests_result }}
+      targeted_result:
+        description: Result of the ios-targeted job
+        value: ${{ jobs.ios-verdict.outputs.targeted_result }}
   workflow_dispatch:
     inputs:
       runner:
@@ -37,36 +60,19 @@ on:
         options:
           - macos-26
           - macos-26-intel
-  push:
-    branches: [main]
-    paths:
-      - 'ios/**'
-      - 'ops/ios_*.sh'
-      - 'ops/lib/ios_*.sh'
-      - 'ops/lib/signal_traps.sh'
-      - 'ops/lib/project_python.sh'
-      - 'ops/lib/fixture_dataset_env.sh'
-      - 'ops/lib/userland_compat.sh'
-      - 'ops/lib/provenance.py'
-      - 'ops/ios_*.py'
-      - 'ops/lib/streaming_command.py'
-      - 'ops/lib/exit_codes.py'
-      - 'ops/lib/lock_wait.py'
-      - 'ops/lib/heavy_slots.sh'
-      - 'ops/fixtures/ui_worlds/**'
-      - 'ops/ui_world_manifest.py'
-      - 'ops/review_calendar_clock.py'
-      - '.github/workflows/ios-quality.yml'
-      - '.github/workflows/pr-gate.yml'
+  # Daily full run on main (owner decision 2026-10-11) for runner and Xcode drift
+  # and flakes. There is no push trigger: the merge queue already validated the
+  # exact tree that main received.
+  schedule:
+    - cron: '17 19 * * *'
 
 permissions:
   contents: read
 
-# Only pull_request runs cancel a superseded run. Push-to-main and manual runs
-# share one group but must run to completion: with cancel-in-progress false
-# GitHub keeps one running plus one pending run (a newer pending replaces an
-# older pending), so merges landing every few minutes never cancel the
-# post-merge run and the latest main commit is always validated.
+# Only pull_request runs cancel a superseded run. Merge-queue runs (their own
+# gh-readonly-queue ref), scheduled runs on main and manual runs must run to
+# completion: a merge-queue entry is a gate and must not be cancelled, and with
+# cancel-in-progress false GitHub keeps one running plus one pending run per group.
 concurrency:
   group: ios-quality-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -124,9 +130,11 @@ jobs:
   ios-build:
     name: ios-build
     needs: [plan, ios-targeted]
-    # Full path unless a validated targeted run accepted its own result. A
+    # The PR compile check (run_tests=false) always runs. With tests on, a
+    # targeted run accepted its own result skips it: ios-targeted's
+    # `ios_ops.sh test --ui` builds the same targets. Full path otherwise; a
     # skipped or failed plan leaves mode empty, which is also full.
-    if: ${{ always() && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}
+    if: ${{ always() && (inputs.run_tests == 'false' || needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}
     # PRs use macos-26. A maintainer may manually benchmark the documented
     # Intel alternative before changing the default; the dispatch choice
     # admits only the two documented GitHub-hosted labels.
@@ -227,8 +235,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # Only the scheduled run on main writes this cache: PRs restore caches from
+      # main, and merge-queue refs are not visible to PRs. A Package.resolved change
+      # is therefore seeded by the next daily run, not by the merge that changed it.
       - name: Save SwiftPM source cache from trusted main
-        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
+        if: ${{ success() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/kg-ios-swiftpm
@@ -237,7 +248,7 @@ jobs:
   ios-tests:
     name: ios-tests (${{ matrix.scope }})
     needs: [plan, ios-targeted]
-    if: ${{ always() && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}
+    if: ${{ always() && inputs.run_tests != 'false' && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}
     runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
     timeout-minutes: 25
     permissions:
@@ -378,7 +389,7 @@ jobs:
   ios-targeted:
     name: ios-targeted
     needs: plan
-    if: ${{ needs.plan.outputs.mode == 'targeted' }}
+    if: ${{ needs.plan.outputs.mode == 'targeted' && inputs.run_tests != 'false' }}
     runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
     timeout-minutes: 25
     permissions:
@@ -535,3 +546,32 @@ jobs:
             ${{ runner.temp }}/ios-targeted-artifacts/**
           if-no-files-found: warn
           retention-days: 7
+
+  # Republishes each iOS job result as a job output, which workflow_call exposes
+  # as build_result, tests_result and targeted_result. The confidence verdict and
+  # the merge gate read those values, because one aggregate caller result cannot
+  # prove that the compile check ran.
+  ios-verdict:
+    name: ios-verdict
+    needs: [ios-build, ios-tests, ios-targeted]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      build_result: ${{ steps.verdict.outputs.build_result }}
+      tests_result: ${{ steps.verdict.outputs.tests_result }}
+      targeted_result: ${{ steps.verdict.outputs.targeted_result }}
+    steps:
+      - name: Record each iOS job result
+        id: verdict
+        env:
+          BUILD_RESULT: ${{ needs.ios-build.result }}
+          TESTS_RESULT: ${{ needs.ios-tests.result }}
+          TARGETED_RESULT: ${{ needs.ios-targeted.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'build_result=%s\ntests_result=%s\ntargeted_result=%s\n' \
+            "$BUILD_RESULT" "$TESTS_RESULT" "$TARGETED_RESULT" >> "$GITHUB_OUTPUT"
+          printf 'ios-build=%s ios-tests=%s ios-targeted=%s\n' \
+            "$BUILD_RESULT" "$TESTS_RESULT" "$TARGETED_RESULT"

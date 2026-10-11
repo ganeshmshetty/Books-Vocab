@@ -217,10 +217,13 @@ jobs:
       contents: read
       actions: read
     # Empty/unknown values are resolved to the full path by ios-quality's plan job.
+    # PRs compile only (the ~11-minute ios-build, so compile errors surface before
+    # review); the merge queue runs the iOS test suites once on the tree it lands.
     with:
       ios_mode: ${{ needs.changed-paths.outputs.ios_mode }}
       ios_selectors: ${{ needs.changed-paths.outputs.ios_selectors }}
       ui_smoke: ${{ needs.changed-paths.outputs.ui_smoke }}
+      run_tests: 'false'
 
   required:
     name: required
