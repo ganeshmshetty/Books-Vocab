@@ -787,7 +787,7 @@ grep -q 'supervision-checkout' "$state" && ok "guard state records exact exclusi
 grep -q '"lane_usage_verdict":"pass"' "$state" && ok "guard accepts exact supervision exclusion" || bad "guard blocks exact supervision exclusion"
 grep -q '"lane_usage_rc":0' "$state" && ok "supervision exclusion keeps guard exit compatible" || bad "supervision exclusion changed guard exit"
 
-echo "── lane usage: unregistered physical checkout is a hard block ──"
+echo "── lane usage: an unregistered dirty checkout under budget warns by path (issue #2905) ──"
 root="$TMP/unregistered-physical"; state="$root/guard.json"; registry="$root/registry.json"; lane_state="$root/lane-disk-usage.json"; unregistered="$TMP/unregistered-checkout"
 mkdir -p "$root"
 git -C "$root" init -b main >/dev/null 2>&1
@@ -802,10 +802,11 @@ printf '%s\n' '{"schema":"kg.worktree.registry.v2","records":[]}' > "$registry"
 KG_DISK_GUARD_WORKSPACE="$root" KG_DISK_GUARD_STATE="$state" KG_DISK_GUARD_REGISTRY_STATE="$registry" \
   KG_DISK_GUARD_LANE_USAGE_STATE="$lane_state" KG_DISK_GUARD_FREE_BYTES=$((30*1073741824)) \
   KG_DISK_GUARD_ACTIVE_BUILD=0 "$SCRIPT" >/dev/null 2>&1
-grep -q '"unregistered-physical-worktree"' "$lane_state" && ok "unregistered checkout is visible" || bad "unregistered checkout missing"
-grep -q '"verdict": "block"' "$lane_state" && ok "unregistered checkout blocks" || bad "unregistered checkout did not block"
-grep -q '"lane_usage_verdict":"block"' "$state" && ok "guard state carries unregistered block" || bad "guard state missed unregistered block"
-grep -q '"lane_usage_rc":75' "$state" && ok "guard state carries hard-block exit" || bad "guard state missed hard-block exit"
+grep -q '"unregistered-physical-worktree:' "$lane_state" && ok "unregistered checkout is named by path" || bad "unregistered checkout missing"
+grep -q '"verdict": "warning"' "$lane_state" && ok "unregistered checkout warns under budget" || bad "unregistered checkout did not warn"
+grep -q '"blocking_reasons": \[\]' "$lane_state" && ok "unregistered checkout blocks nothing under budget" || bad "unregistered checkout blocked under budget"
+grep -q '"lane_usage_verdict":"warning"' "$state" && ok "guard state carries the unregistered warning" || bad "guard state missed unregistered warning"
+grep -q '"lane_usage_rc":0' "$state" && ok "guard state keeps exit 0 for an unregistered checkout" || bad "guard state changed exit for an unregistered checkout"
 
 echo "── lane usage: a tick run from a linked worktree copy is rooted at the canonical checkout ──"
 # Regression (2026-10-07): an agent ran ./ops/kg_disk_guard.sh from its own
@@ -857,12 +858,16 @@ if [[ -f "$lane_state" ]] && command -v jq >/dev/null 2>&1; then
   jq -e --arg p "$lane_real" '[.lanes[] | select(.path == $p)] | length == 1 and .[0].ownership == "registered"' "$lane_state" >/dev/null \
     && ok "the lane holding the script copy stays a registered lane" \
     || bad "script-holding lane misclassified: $(jq -c --arg p "$lane_real" '[.lanes[] | select(.path == $p) | {lane_kind, ownership}]' "$lane_state")"
-  # Positive control: a genuinely orphaned checkout must still hard-block.
+  # Positive control: a genuinely orphaned checkout is still named, as a warning
+  # that carries its path (issue #2905), and it does not block unrelated lanes.
   jq -e --arg p "$orphan_real" '.policy.unregistered_physical_worktrees | index($p)' "$lane_state" >/dev/null \
-    && ok "orphaned checkout is still an unregistered blocker" \
+    && ok "orphaned checkout is still in the unregistered list" \
     || bad "orphaned checkout escaped the unregistered list: $(jq -c '.policy.unregistered_physical_worktrees' "$lane_state")"
-  grep -q '"lane_usage_rc":75' "$state" \
-    && ok "orphaned checkout still blocks the guard" || bad_state "orphaned checkout did not block the guard" "$state"
+  jq -e --arg p "$orphan_real" '.policy.warning_reasons | index("unregistered-physical-worktree:" + $p)' "$lane_state" >/dev/null \
+    && ok "orphaned checkout is named by path in the warnings" \
+    || bad "orphaned checkout missing from warnings: $(jq -c '.policy.warning_reasons' "$lane_state")"
+  grep -q '"lane_usage_rc":0' "$state" \
+    && ok "orphaned checkout warns without blocking the guard" || bad_state "orphaned checkout blocked the guard" "$state"
 else
   bad "worktree-run tick wrote no lane usage report (or jq unavailable)"
 fi
@@ -1053,7 +1058,7 @@ while (($#)); do
   esac
 done
 cp "${FAKE_REPORT_FILE:?}" "$out"
-exit 0
+exit "${FAKE_UV_RC:-0}"
 EOF
   chmod +x "$fake_uv"
   KG_DISK_GUARD_WORKSPACE="$root" KG_DISK_GUARD_STATE="$state" \
@@ -1068,6 +1073,17 @@ grep -q '"xctest_devices_verdict":"block"' "$state" && ok "an incomplete walk st
 grep -q '"xctest_devices_manual_review":0' "$state" && ok "a walk that only ran out of time is not manual review" || bad_state "time-limited walk was escalated to manual review" "$state"
 grep -q '"reason":"xctest-devices-measurement-incomplete"' "$state" && grep -q '"action":"retry-next-tick"' "$state" \
   && ok "a time-limited walk names itself and says the next tick retries" || bad_state "time-limited walk reason/action" "$state"
+grep -q '"xctest_devices_time_limited":1' "$state" && ok "the time-limited walk is recorded as its own field" || bad_state "time-limited field missing" "$state"
+# Issue #2905: the lane report exits 75 for any block, and that overwrites the
+# guard reason.  The XCTestDevices time-limit must survive in its own field, or
+# the in-lock preflight misreports the temporary walk as a budget overrun.
+export FAKE_UV_RC=75
+fake_report_case timed-out-report '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["measurement-time-budget-exceeded"], "physical_measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'
+unset FAKE_UV_RC
+grep -q '"reason":"lane-usage-report-blocked"' "$state" && grep -q '"lane_usage_rc":75' "$state" \
+  && ok "a lane report that exits 75 still overwrites the guard reason" || bad_state "lane report rc 75 reason" "$state"
+grep -q '"xctest_devices_time_limited":1' "$state" && grep -q '"xctest_devices_manual_review":0' "$state" \
+  && ok "the time-limit survives the lane-report override" || bad_state "time-limit lost behind the lane-report override" "$state"
 fake_report_case budget-exceeded '{"exists": true, "measurement_complete": true, "metadata_complete": true, "budget_exceeded": true, "measurement_errors": [], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "manual-review"}}'
 grep -q '"xctest_devices_manual_review":1' "$state" && ok "positive control: a real budget overrun is manual review" || bad_state "budget overrun lost manual review" "$state"
 fake_report_case unreadable '{"exists": true, "measurement_complete": false, "metadata_complete": true, "budget_exceeded": null, "measurement_errors": ["/x/dev: PermissionError"], "device_count": 1, "allocated_bytes": 1, "reclaim": {"status": "not-requested"}}'

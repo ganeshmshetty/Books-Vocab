@@ -2212,12 +2212,15 @@ def build_report(
         and item.get("ownership") == "registered"
         and item.get("registry_status") == "active"
     )
+    # An unregistered dirty checkout is attributed by its own usage line and
+    # warned about by path (see `unregistered` below), not blocked as dirt.
     blocking_dirty_physical = sorted(
         str(item["path"])
         for item in physical_lanes
         if item.get("worktree_state") == "dirty"
         and not item.get("excluded")
-        and item.get("ownership") not in {"ephemeral-agent", "stale-agent"}
+        and item.get("ownership")
+        not in {"ephemeral-agent", "stale-agent", "unregistered"}
         and not (
             item.get("ownership") == "registered"
             and item.get("registry_status") == "active"
@@ -2371,8 +2374,17 @@ def build_report(
         warning_reasons.append("ephemeral-agent-lane")
     if stale_agent:
         warning_reasons.append("stale-agent-worktree")
-    if unregistered:
-        blocking_reasons.append("unregistered-physical-worktree")
+    # Issue #2905: one stray checkout must not make every lane non-retryable.  It
+    # keeps its own usage line, so it blocks only through the measured quota
+    # (lane-budget-exceeded:<path>); on its own it warns and names its path.
+    unregistered_remedies = [
+        f"{path}: adopt it with ./ops/worktree_orchestrate.py adopt, or once its "
+        f"work is saved remove it with git -C {workspace} worktree remove {path}"
+        for path in unregistered
+    ]
+    warning_reasons.extend(
+        f"unregistered-physical-worktree:{path}" for path in unregistered
+    )
     if dirty_supervision:
         blocking_reasons.append("dirty-supervision-worktree")
     if unknown_supervision:
@@ -2623,6 +2635,7 @@ def build_report(
             "missing_active_lanes": missing_active,
             "missing_terminal_lanes": missing_terminal,
             "unregistered_physical_worktrees": unregistered,
+            "unregistered_physical_remedies": unregistered_remedies,
             "ephemeral_agent_worktrees": ephemeral_agent,
             "stale_agent_worktrees": stale_agent,
             "dirty_physical_worktrees": dirty_physical,

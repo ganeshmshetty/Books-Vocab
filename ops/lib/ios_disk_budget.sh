@@ -159,14 +159,16 @@ kg_ios_disk_guard_diagnose() {
 
 # A guard block that no amount of waiting or cache cleaning clears.  Two sources:
 # the guard itself asks for manual review (XCTestDevices / simulator runtime), or
-# a FRESH lane-attribution report names a worktree problem (unregistered, dirty,
-# unknown, duplicate, identity mismatch, invalid registry).  The guard reason
+# a FRESH lane-attribution report names a worktree problem (dirty, unknown,
+# duplicate, identity mismatch, invalid registry).  An unregistered worktree is
+# not on this list: it warns by path and blocks only through the quota (issue
+# #2905).  The guard reason
 # "lane-usage-report-blocked" alone is NOT enough: it is also emitted for lane
 # quota overruns, incomplete measurement and a timed-out/crashed report, all of
 # which clear on the next tick or after eviction (temporary, exit 75).
 kg_ios_disk_structural_lane_reason() {
   case "$1" in
-    unregistered-physical-worktree|dirty-*|unknown-*|duplicate-*|physical-identity-mismatch|registry-records-invalid|supervision-path-registered|*-manual-review-required) return 0 ;;
+    dirty-*|unknown-*|duplicate-*|physical-identity-mismatch|registry-records-invalid|supervision-path-registered|*-manual-review-required) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -235,7 +237,7 @@ kg_ios_disk_budget_guard_state() {
   local state="${KG_IOS_DISK_GUARD_STATE:-$KG_IOS_DISK_GUARD_STATE_DEFAULT}"
   local enforce="${KG_IOS_DISK_GUARD_ENFORCE_XCTEST:-0}"
   local max_age="${KG_IOS_DISK_GUARD_MAX_AGE_SECONDS:-900}"
-  local schema verdict xctest_verdict manual_review at epoch now age
+  local schema verdict xctest_verdict manual_review time_limited at epoch now age
 
   KG_IOS_DISK_GUARD_STALE_LANE_REPORT=0
   [[ "$enforce" == "1" ]] || enforce=0
@@ -251,6 +253,7 @@ kg_ios_disk_budget_guard_state() {
   verdict="$(kg_ios_disk_guard_json_string "$state" verdict)"
   xctest_verdict="$(kg_ios_disk_guard_json_string "$state" xctest_devices_verdict)"
   manual_review="$(sed -nE 's/.*"xctest_devices_manual_review"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$state" | head -1)"
+  time_limited="$(sed -nE 's/.*"xctest_devices_time_limited"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$state" | head -1)"
   at="$(kg_ios_disk_guard_json_string "$state" at)"
 
   if [[ "$schema" != "kg.disk.guard.v1" ]]; then
@@ -267,9 +270,13 @@ kg_ios_disk_budget_guard_state() {
       echo "[ios] BLOCKED (structural, exit $KG_IOS_DISK_STRUCTURAL_EXIT, retryable=no): XCTestDevices needs manual review; waiting will not clear it. Do not poll." >&2
       return "$KG_IOS_DISK_STRUCTURAL_EXIT"
     fi
-    # A walk that only ran out of time is temporary and says so; the guard names
-    # it, everything else here is the budget overrun.
-    if [[ "$(kg_ios_disk_guard_json_string "$state" reason)" == xctest-devices-measurement-incomplete ]]; then
+    # A walk that only ran out of time is temporary and says so.  The guard
+    # records that as its own field, because a lane report that exits 75 replaces
+    # the guard reason (issue #2905); the reason string is only the fallback for
+    # guard states written before the field existed.  Everything else is the
+    # budget overrun.
+    if [[ "$time_limited" == "1" ]] \
+      || [[ "$(kg_ios_disk_guard_json_string "$state" reason)" == xctest-devices-measurement-incomplete ]]; then
       echo "schema=kg.ios.disk-budget.v1 operation=$operation verdict=block exit=$KG_IOS_DISK_BUDGET_EXIT retryable=yes reason=xctest-devices-measurement-incomplete state=$state" >&2
     else
       echo "schema=kg.ios.disk-budget.v1 operation=$operation verdict=block reason=xctest-devices-budget-exceeded state=$state" >&2

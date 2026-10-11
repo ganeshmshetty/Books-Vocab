@@ -621,9 +621,12 @@ def test_codex_supervision_checkout_is_observed_without_product_lane_block(
     )
 
 
-def test_codex_non_supervision_checkout_remains_unregistered_block(
+def test_codex_non_supervision_checkout_remains_unregistered_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Issue #2905: an unregistered codex checkout is still a named finding, but
+    under budget it warns instead of blocking every lane."""
+
     repo, worktree = _repo_with_worktree(tmp_path)
     codex_root = tmp_path / ".codex" / "worktrees"
     unregistered = codex_root / "abcd" / "other"
@@ -647,13 +650,18 @@ def test_codex_non_supervision_checkout_remains_unregistered_block(
 
     assert (
         main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
-        == BLOCKED_EXIT
+        == 0
     )
 
     report = json.loads(output.read_text(encoding="utf-8"))
     entry = next(item for item in report["lanes"] if item["path"] == str(unregistered))
     assert entry["ownership"] == "unregistered"
     assert report["policy"]["unregistered_physical_worktrees"] == [str(unregistered)]
+    assert report["policy"]["blocking_reasons"] == []
+    assert (
+        f"unregistered-physical-worktree:{unregistered}"
+        in report["policy"]["warning_reasons"]
+    )
 
 
 def test_active_registered_dirty_worktree_is_attributed_without_blocking(
@@ -847,9 +855,7 @@ def test_registered_worktree_branch_identity_mismatch_is_a_hard_block(
     assert str(worktree) in report["policy"]["physical_identity_mismatches"]
 
 
-def test_unregistered_physical_worktree_is_a_hard_block(
-    tmp_path: Path,
-) -> None:
+def _unregistered_dirty_worktree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     repo, worktree = _repo_with_worktree(tmp_path)
     unregistered = tmp_path / "unregistered"
     _run_git(repo, "worktree", "add", "-b", "unregistered", str(unregistered), "main")
@@ -868,17 +874,58 @@ def test_unregistered_physical_worktree_is_a_hard_block(
             }
         ],
     )
+    return repo, unregistered, state, output
+
+
+def test_unregistered_dirty_worktree_under_budget_warns_and_names_path(
+    tmp_path: Path,
+) -> None:
+    """Issue #2905: one stray dirty worktree must not block unrelated lanes.
+    Under budget it is a non-blocking warning that names its path, with a
+    one-line remedy, and its bytes stay on their own usage line."""
+
+    repo, unregistered, state, output = _unregistered_dirty_worktree(tmp_path)
 
     assert (
         main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
-        == 75
+        == 0
     )
     report = json.loads(output.read_text(encoding="utf-8"))
     entry = next(item for item in report["lanes"] if item["path"] == str(unregistered))
     assert entry["ownership"] == "unregistered"
     assert entry["physical_state"] == "present-unregistered"
-    assert report["policy"]["verdict"] == "block"
-    assert "unregistered-physical-worktree" in report["policy"]["reasons"]
+    assert entry["accounted_in_aggregate"] is True
+    assert entry["allocated_bytes"] > 0
+    policy = report["policy"]
+    assert policy["verdict"] == "warning"
+    assert policy["blocking_reasons"] == []
+    assert policy["blocking_dirty_physical_worktrees"] == []
+    assert f"unregistered-physical-worktree:{unregistered}" in policy["warning_reasons"]
+    remedies = policy["unregistered_physical_remedies"]
+    assert len(remedies) == 1
+    assert str(unregistered) in remedies[0]
+    assert f"git -C {repo} worktree remove {unregistered}" in remedies[0]
+
+
+def test_unregistered_worktree_over_budget_blocks_on_its_own_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #2905: the block comes from the measured usage line, not from the
+    mere presence of an unregistered worktree, and it names that line's path."""
+
+    repo, unregistered, state, output = _unregistered_dirty_worktree(tmp_path)
+    monkeypatch.setenv("KG_DISK_GUARD_LANE_BUDGET_GIB", "0")
+
+    assert (
+        main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
+        == BLOCKED_EXIT
+    )
+    policy = json.loads(output.read_text(encoding="utf-8"))["policy"]
+    assert f"lane-budget-exceeded:{unregistered}" in policy["blocking_reasons"]
+    assert not any(
+        reason.startswith("unregistered-physical-worktree")
+        for reason in policy["blocking_reasons"]
+    )
 
 
 def test_terminal_registered_residue_is_visible_but_not_active(
@@ -2418,12 +2465,15 @@ def test_claude_root_lane_identity_needs_harness_provenance(
         assert policy[key] == ([str(lane)] if key == listed else [])
     classifications = report["lane_attribution"]["classifications"]
     assert classifications[classified]["paths"] == [str(lane)]
-    assert reason in policy["reasons"]
     if ownership == "unregistered":
-        assert code == BLOCKED_EXIT
-        assert "dirty-physical-worktree" in policy["blocking_reasons"]
+        # Issue #2905: an unregistered checkout warns by path under budget and
+        # never blocks the host for its dirt or its identity.
+        assert code == 0
+        assert policy["blocking_reasons"] == []
+        assert f"{reason}:{lane}" in policy["warning_reasons"]
         assert "agent_lock" not in entry
         return
+    assert reason in policy["reasons"]
     assert code == 0
     assert policy["blocking_reasons"] == []
     if lock is _LIVE:
@@ -2662,11 +2712,12 @@ def test_ps_probe_timeout_is_capped_by_the_time_left(
 
 
 @pytest.mark.parametrize("lock", [_LIVE, None])
-def test_harness_lane_outside_claude_root_still_blocks(
+def test_harness_lane_outside_claude_root_is_unregistered_not_blocking(
     tmp_path: Path, lock: object
 ) -> None:
     """Positive control: identity is only granted directly under the root (the
-    names are harness-shaped so the unlocked case fails on location alone)."""
+    names are harness-shaped so the unlocked case fails on location alone).
+    Issue #2905: being unregistered warns by path; it does not block the host."""
 
     repo, worktree = _repo_with_worktree(tmp_path)
     elsewhere = _agent_worktree(
@@ -2681,13 +2732,18 @@ def test_harness_lane_outside_claude_root_still_blocks(
 
     code, report = _agent_root_report(tmp_path, repo, worktree)
 
-    assert code == BLOCKED_EXIT
+    assert code == 0
     assert report["policy"]["unregistered_physical_worktrees"] == sorted(
         [str(elsewhere), str(nested)]
     )
     assert report["policy"]["ephemeral_agent_worktrees"] == []
     assert report["policy"]["stale_agent_worktrees"] == []
-    assert "unregistered-physical-worktree" in report["policy"]["blocking_reasons"]
+    assert report["policy"]["blocking_reasons"] == []
+    for path in (elsewhere, nested):
+        assert (
+            f"unregistered-physical-worktree:{path}"
+            in report["policy"]["warning_reasons"]
+        )
 
 
 def test_agent_lanes_live_and_stale_still_count_toward_lane_quota(
@@ -2718,12 +2774,15 @@ def test_sibling_agent_lanes_neither_block_each_other_nor_mask_an_orphan(
 
     code, report = _agent_root_report(tmp_path, repo, worktree)
 
-    assert code == BLOCKED_EXIT
+    # Issue #2905: the orphan is a named warning, not a host-wide block.
+    assert code == 0
     policy = report["policy"]
     assert policy["ephemeral_agent_worktrees"] == sorted(str(a) for a in agents)
     assert policy["unregistered_physical_worktrees"] == [str(orphan)]
-    # The clean orphan is the only blocker: the dirty sibling adds none.
-    assert policy["blocking_reasons"] == ["unregistered-physical-worktree"]
+    assert policy["blocking_reasons"] == []
+    assert (
+        policy["warning_reasons"].count(f"unregistered-physical-worktree:{orphan}") == 1
+    )
 
 
 def _detached_lane_report(
