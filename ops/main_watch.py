@@ -4,9 +4,9 @@
 Run by `.github/workflows/main-watch.yml` with the `workflow_run` fields in
 `WATCH_*` env vars (never interpolated into a shell):
 
-* red push-to-main run, no open issue for its area -> open one (P1, `main-red`)
-* red run, the area already has an open issue      -> link the run there
-* anything else (green, cancelled, PR, queue)      -> do nothing
+* red push-to-main or scheduled-main run, no open issue for its area -> open one (P1, `main-red`)
+* red run, the area already has an open issue                       -> link the run there
+* anything else (green, cancelled, PR, queue, dispatch)             -> do nothing
 
 Closing an issue is the fixer's call.  `--dry-run` prints the decision only.
 """
@@ -25,6 +25,10 @@ from typing import Any
 LABEL = "main-red"
 PRIORITY = "P1"
 RED = frozenset({"failure", "timed_out", "startup_failure"})
+# Runs on main that prove main is red: every push, and the scheduled runs whose
+# daily full iOS suite (and backend-quality schedule) replace the post-merge
+# push run for drift that no PR or merge-queue run can see.
+WATCHED_EVENTS = frozenset({"push", "schedule"})
 # Workflows that run on every push to main, named by the area a failure breaks.
 AREAS = {
     "backend-quality": "backend",
@@ -61,8 +65,8 @@ def _plain(text: str) -> str:
 
 
 def plan(run: Mapping[str, str], open_issues: list[dict[str, Any]]) -> dict[str, Any]:
-    if run["event"] != "push" or run["branch"] != "main":
-        return {"action": "noop", "reason": "not a main push"}
+    if run["event"] not in WATCHED_EVENTS or run["branch"] != "main":
+        return {"action": "noop", "reason": "not a main push or scheduled run"}
     if run["conclusion"] not in RED:
         return {"action": "noop", "reason": f"{run['conclusion']} is not red"}
     area, name = area_of(run["workflow"]), _plain(run["workflow"])
@@ -143,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     run = run_from_env(os.environ)
-    watched = run["event"] == "push" and run["branch"] == "main"
+    watched = run["event"] in WATCHED_EVENTS and run["branch"] == "main"
     decision = plan(run, find_open_issues(args.repo) if watched else [])
     print(json.dumps(decision, ensure_ascii=False))
     if not args.dry_run:
