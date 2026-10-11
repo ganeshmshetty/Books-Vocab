@@ -88,6 +88,9 @@ final class SubscriptionManager: SubscriptionManaging {
     var lastRefreshTime: Date?
     /// 每個真正發出的 refresh 遞增；async 返回時只有仍為最新世代者可寫入狀態（#2800）。
     var refreshGeneration = 0
+    /// 已真正套用到 `entitlements` 的最新世代；只有更新於此者才可寫入（#2800）。
+    /// 以「已套用」而非「已發出」判斷，較新請求失敗時較早但有效的回應仍可套用。
+    var lastAppliedRefreshGeneration = 0
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?

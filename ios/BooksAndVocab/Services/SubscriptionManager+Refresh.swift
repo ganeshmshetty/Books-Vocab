@@ -37,9 +37,9 @@ extension SubscriptionManager {
         do {
             var remote = try await service.fetchEntitlements()
 
-            // 回應到達前已有更新的 refresh 發出：無論到達順序，本回應都已過期
-            guard generation == refreshGeneration else {
-                AppLog.subscription.debug("Discarding superseded refresh #\(generation), latest is #\(refreshGeneration)")
+            // 已有更新的世代套用過：本回應已過期（無論到達順序）
+            guard generation > lastAppliedRefreshGeneration else {
+                AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(lastAppliedRefreshGeneration)")
                 return
             }
 
@@ -66,8 +66,9 @@ extension SubscriptionManager {
                 }
             }
             // StoreKit 查詢也是 await 點，期間可能已有更新的 refresh 發出
-            guard generation == refreshGeneration else { return }
+            guard generation > lastAppliedRefreshGeneration else { return }
             entitlements = remote
+            lastAppliedRefreshGeneration = generation
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
         } catch is CancellationError {
@@ -76,7 +77,7 @@ extension SubscriptionManager {
             if generation == refreshGeneration { lastRefreshTime = previousRefreshTime }
         } catch {
             // 過期請求的錯誤不得蓋掉較新請求的狀態
-            guard generation == refreshGeneration else { return }
+            guard generation > lastAppliedRefreshGeneration else { return }
             lastError = error.localizedDescription
         }
     }
