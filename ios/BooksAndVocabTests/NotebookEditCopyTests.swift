@@ -33,6 +33,24 @@ struct NotebookEditCopyTests {
         #expect(NotebookEditCopy.clampedName(cjk).unicodeScalars.count == 100)
     }
 
+    @Test func nameLimit_dropsClusterThatWouldCrossLimit() {
+        let ascii99 = String(repeating: "a", count: 99)
+        // Each cluster is one Character spanning 2 scalars; 99 + 2 = 101 crosses the limit.
+        #expect(NotebookEditCopy.clampedName(ascii99 + "🇯🇵") == ascii99)
+        #expect(NotebookEditCopy.clampedName(ascii99 + "👍🏽") == ascii99)
+        #expect(NotebookEditCopy.clampedName(ascii99 + "e\u{301}") == ascii99)
+    }
+
+    @Test func nameLimit_keepsExactlyLimitScalarsAndEmptyAndShortNames() {
+        let exact = String(repeating: "a", count: 100)
+        #expect(NotebookEditCopy.clampedName(exact) == exact)
+        let exactWithCluster = String(repeating: "a", count: 98) + "e\u{301}"
+        #expect(NotebookEditCopy.clampedName(exactWithCluster) == exactWithCluster)
+        #expect(NotebookEditCopy.clampedName("") == "")
+        let short = "單字本 Trip 🇯🇵"
+        #expect(NotebookEditCopy.clampedName(short) == short)
+    }
+
     @Test func photoErrorMessages_mapEachFailure() {
         #expect(NotebookEditCopy.photoErrorMessage(.loadFailed) == L10n.string("無法載入圖片"))
         #expect(NotebookEditCopy.photoErrorMessage(.unsupportedFormat) == L10n.string("圖片格式不支援"))
