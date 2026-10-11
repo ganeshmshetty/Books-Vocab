@@ -83,7 +83,7 @@ def _lock_path(repo: Path) -> Path:
 
 
 class OperationLock:
-    """Acquire one non-blocking mutation lease for a canonical repository."""
+    """Acquire one mutation lease, polling up to the resolved wait before refusing."""
 
     def __init__(
         self, repo: Path, *, command: str, wait_seconds: float | None = None

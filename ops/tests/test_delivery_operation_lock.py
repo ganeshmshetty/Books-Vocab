@@ -194,13 +194,15 @@ def test_wait_env_timeout_yields_identical_busy_message(
         holder.wait(timeout=10)
 
 
-def test_wait_default_is_on_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wait_default_is_on_when_env_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from delivery_control.adapters import operation_lock as module
 
     monkeypatch.delenv("KG_DELIVERY_LOCK_WAIT_SECONDS", raising=False)
     monkeypatch.delenv(module.LOCK_DIR_ENV, raising=False)
     assert module._wait_seconds() == module.DEFAULT_WAIT_SECONDS > 0
-    monkeypatch.setenv(module.LOCK_DIR_ENV, "/tmp/claude-lane-2871/isolated")
+    monkeypatch.setenv(module.LOCK_DIR_ENV, str(tmp_path / "isolated"))
     assert module._wait_seconds() == 0  # isolated test suite stays fail-fast
 
 
