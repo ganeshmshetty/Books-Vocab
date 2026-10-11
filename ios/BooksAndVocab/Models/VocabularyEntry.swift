@@ -302,7 +302,9 @@ extension VocabularyEntry {
     private func markWordInContext(_ text: String) -> String {
         // Whole-word boundaries, mirroring backend `_build_example` (#2725): try `[word, *inflections]`
         // in order so that e.g. "run" still bolds "runs" when the base form is absent.
-        for term in [word] + inflections where !term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // 先 trim 再比對：未 trim 的 " runs " 會把前後空白一併加粗，且 (?<!\w)/(?!\w) 的詞界語意被破壞。
+        let terms = ([word] + inflections).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        for term in terms where !term.isEmpty {
             let escaped = NSRegularExpression.escapedPattern(for: term)
             let boundaryPat = "(?<!\\w)\(escaped)(?!\\w)"
             if let regex = Self.cachedRegex(pattern: boundaryPat),

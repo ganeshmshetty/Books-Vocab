@@ -46,6 +46,14 @@ struct VocabularyEntryReviewExampleTests {
         )
     }
 
+    /// 未 trim 的 inflection（" runs "）不得把前後空白一併加粗。RED：舊碼輸出 "She** runs **daily."。
+    @Test func inflectionWithSurroundingWhitespaceBoldsOnlyTheWord() {
+        #expect(
+            Self.fallbackExample(word: "run", inflections: [" runs "], context: "She runs daily.")
+                == "She **runs** daily."
+        )
+    }
+
     @Test func inflectionDoesNotBoldInsideLongerWord() {
         #expect(
             Self.fallbackExample(word: "run", inflections: ["runs"], context: "The rerunning began.")
