@@ -38,6 +38,8 @@ final class TodayReviewState {
     var forgotFeedbackTrigger: Int { scoring.forgotFeedbackTrigger }
     var forgotCount: Int { scoring.forgotCount }
     var rememberedCount: Int { scoring.rememberedCount }
+    /// 已作答的槽位（queue index）。洗牌時釘住，答案才不會對到別張卡（#2482）。
+    private var answeredSlots: Set<Int> { Set(scoring.submittedAnswers.keys) }
 
     // MARK: - Perf (fling→front render gap self-measurement)
     nonisolated(unsafe) static var flingClock: DispatchTime?
@@ -153,7 +155,7 @@ final class TodayReviewState {
             currentCard: currentCardState,
             slots: slotModels,
             revealStage: revealStage,
-            canShuffle: session.canShuffle,
+            canShuffle: session.canShuffle(pinned: answeredSlots),
             canAutoplay: canAutoplay,
             canGoPrevious: session.canGoPrevious,
             canGoNext: session.canGoNext,
@@ -309,9 +311,9 @@ final class TodayReviewState {
     }
 
     func shuffleQueue() {
-        guard session.canShuffle else { return }
+        guard session.canShuffle(pinned: answeredSlots) else { return }
         withAnimation(AppMotion.reviewNavigationSpring) {
-            _ = session.shuffleRemaining()
+            _ = session.shuffleRemaining(pinned: answeredSlots)
         }
         syncCurrentEntryDerivedState()
         syncQueueMetadata()
@@ -448,7 +450,7 @@ final class TodayReviewState {
             return true
 
         case .shuffle:
-            guard !autoplayBlocks(.shuffle), queue.count - currentIndex > 1 else { return false }
+            guard !autoplayBlocks(.shuffle), session.canShuffle(pinned: answeredSlots) else { return false }
             shuffleQueue()
             return true
 
