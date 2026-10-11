@@ -211,15 +211,18 @@ struct KGVocabView: View {
                     onArchive: { handleBatchArchive() },
                     onDelete: { batchDeleteConfirmation.request(selectionCount: selectionState.selectionCount) }
                 )
+                // Stable selected-count identifier: UI tests assert it survives a cancelled confirmation (#2963).
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("vocabulary.selection.toolbar")
+                .accessibilityValue("\(selectionState.selectionCount)")
                 .transition(.readerPanelReveal)
             }
         }
         .animateSpring(selectionState.isSelecting)
         // Alert, not confirmationDialog: in the UI test the confirmationDialog rendered as a
         // popover that showed only the destructive action, so its Cancel button was not
-        // hittable and the cancel path was unreachable. Batch delete therefore uses .alert.
-        // Follow-up: the single-word delete in WordDetailSheet.swift still uses
-        // .confirmationDialog, so the two destructive confirmations differ in presentation.
+        // hittable and the cancel path was unreachable. WordDetailSheet's single-word delete
+        // uses the same .alert presentation (#2963).
         .alert(
             KGVocabCopy.batchDeleteTitle(count: batchDeleteConfirmation.requestedCount),
             isPresented: $batchDeleteConfirmation.isPending

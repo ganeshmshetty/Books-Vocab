@@ -923,13 +923,18 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         XCTAssertLessThan(readerHidden.frame.minY, reviewExcluded.frame.minY)
         captureStep("word-detail-four-controls", app: app)
 
+        // #2963: single-word delete uses the same .alert presentation as batch delete.
+        // The confirmationDialog variant rendered as an action sheet, so no alert existed here.
         delete.tapWhenReady()
+        let warning = app.alerts.firstMatch
         XCTAssertTrue(
-            app.alerts.firstMatch.waitUntilExists(timeout: 5),
+            warning.waitUntilExists(timeout: 5),
             "刪除必須先顯示警訊確認視窗"
         )
-        app.buttons["取消"].tapWhenReady()
         captureStep("word-detail-delete-warning", app: app)
+        warning.buttons["取消"].tapWhenReady()
+        XCTAssertTrue(warning.waitUntilGone(timeout: 5), "取消後警訊必須關閉")
+        XCTAssertTrue(delete.waitUntilExists(timeout: 5), "取消後 Word Detail 必須保留")
     }
 
     /// #2427: the selection-toolbar trash only asks. Cancel keeps the word and
@@ -986,6 +991,10 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         XCTAssertTrue(dialog.waitUntilGone(timeout: 5), "取消後確認視窗必須關閉")
         XCTAssertTrue(page.row(word: "serendipity").exists, "取消後單字必須保留")
         XCTAssertTrue(trash.isEnabled, "取消後選取狀態必須保留")
+        // #2963: the stable selection identifier proves the selected count survives cancel.
+        let selectionToolbar = app.descendants(matching: .any)
+            .matching(identifier: "vocabulary.selection.toolbar").firstMatch
+        XCTAssertEqual(selectionToolbar.value as? String, "1", "取消後選取數必須仍為 1")
         captureStep("batch-delete-cancelled", app: app)
 
         trash.tapWhenReady()

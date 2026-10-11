@@ -150,10 +150,11 @@ struct WordDetailSheet: View {
                 onSaved: { state.refreshPresentation(for: entry, in: allEntries) }
             )
         }
-        .confirmationDialog(
+        // Alert, not confirmationDialog: matches batch delete (KGVocabView) so both
+        // destructive confirmations share one presentation (#2963).
+        .alert(
             WordDetailCopy.deleteTitle(word: entry.word),
-            isPresented: $isConfirmingDelete,
-            titleVisibility: .visible
+            isPresented: $isConfirmingDelete
         ) {
             Button(WordDetailCopy.delete, role: .destructive) { handleDelete() }
             Button(WordDetailCopy.cancel, role: .cancel) {}
