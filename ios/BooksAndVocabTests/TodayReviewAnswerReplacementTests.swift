@@ -295,6 +295,50 @@ struct TodayReviewAnswerReplacementTests {
         #expect(entry.lastReviewFeedbackRaw == ReviewFeedback.forgot.rawValue)
     }
 
+    /// #2482: answered slots are pinned on shuffle. Answers are keyed by queue
+    /// index, so a shuffle that moved slot 1 or 2 would grade the wrong cards on flush.
+    @Test func shuffleAfterBackKeepsAnsweredSlotsAndTheirGradingTargets() async throws {
+        TodayReviewSessionSnapshotStore.clear(for: "replace-user")
+        ReviewSessionStore.clear(userID: "replace-user")
+        defer {
+            TodayReviewSessionSnapshotStore.clear(for: "replace-user")
+            ReviewSessionStore.clear(userID: "replace-user")
+        }
+        let entries = makeEntries(6)
+        let (container, _) = try makeContainer(entries)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: "replace-user")
+
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.submit(.forgot, container: container, reviewSettings: .default)
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.goPrevious()
+        state.goPrevious()
+        let answeredBefore = Array(state.queue[0...2])
+        for _ in 0..<5 {
+            state.shuffleQueue()
+        }
+
+        #expect(zip(answeredBefore, state.queue[0...2]).allSatisfy { pair in pair.0 === pair.1 })
+        #expect(state.submittedAnswers.keys.sorted() == [0, 1, 2])
+
+        state.flushPendingAnswers(container: container, reviewSettings: .default)
+        for index in 0..<3 {
+            try await waitForFlush(state, index: index)
+        }
+
+        let fresh = ModelContext(container)
+        let feedbackByCard = Dictionary(
+            try fresh.fetch(FetchDescriptor<ReviewRecord>()).compactMap { record in
+                record.kgCardId.map { ($0, record.feedback) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        #expect(feedbackByCard[entries[0].kgCardId ?? ""] == ReviewFeedback.remembered.rawValue)
+        #expect(feedbackByCard[entries[1].kgCardId ?? ""] == ReviewFeedback.forgot.rawValue)
+        #expect(feedbackByCard[entries[2].kgCardId ?? ""] == ReviewFeedback.remembered.rawValue)
+        #expect(feedbackByCard.count == 3)
+    }
+
     private struct FetchFailure: Error {}
 
     /// #2796: a failed `ReviewRecord` lookup must NOT be read as "no record yet" (would insert a
