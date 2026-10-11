@@ -50,6 +50,9 @@ REFERENCE_AREA = "ios/"
 # Only authored text counts.  Fixtures, plists and recordings are data: regenerating
 # one is not a change in complexity and must not be able to turn the gate red.
 COUNTED_SUFFIXES = (".py", ".sh", ".md", ".yml", ".yaml", ".swift")
+# Headroom a lift leaves above measured: the minimal margin every manual raise in the budget note used.
+# Deliberately not the ratchet's ``slack`` (ops 2000), which would loosen the ceiling by thousands of lines.
+LIFT_MARGIN = 5
 
 
 class BudgetError(Exception):
@@ -272,6 +275,38 @@ def ratcheted(measured: dict[str, int], budget: dict[str, Any]) -> dict[str, int
         )
         for name in AREAS
     }
+
+
+def lift(repo: Path, base: str | None = None) -> dict[str, tuple[int, int, int]]:
+    """Rebase resolver: raise each area the lane is over its own room to measured + ``LIFT_MARGIN``.
+
+    The lane is charged against the base headroom alone, never a fork point: the reflog that names
+    a fork is local, and CI (``--no-fork-points`` in the merge group) cannot see it.  So an area left
+    alone here passes the gate whichever view judges it, and a raised area is absolute at a ceiling
+    above measured.  Nothing is raised when HEAD is the base (or no base is readable): there is no
+    lane to charge, and a raise there would hide a red trunk.  Returns {area: (old, new, measured)};
+    the budget file is written only when something was raised.
+    """
+    budget_path = repo / BUDGET_FILE
+    budget = load_budget(budget_path)
+    measured = measure(repo)
+    ref = merge_base(repo, base)
+    if ref is None or ref == head_sha(repo):
+        return {}
+    snapshot = base_snapshot(repo, ref, [])
+    if snapshot is None:
+        return {}
+    raised = {}
+    for row in evaluate(measured, budget, snapshot):
+        if row["over"]:
+            name = row["area"]
+            new = measured[name] + LIFT_MARGIN
+            raised[name] = (int(budget["ceilings"][name]), new, measured[name])
+    if raised:
+        for name, (_old, new, _now) in raised.items():
+            budget["ceilings"][name] = new
+        budget_path.write_text(json.dumps(budget, indent=2) + "\n", encoding="utf-8")
+    return raised
 
 
 def ratio(measured: dict[str, int]) -> float | None:

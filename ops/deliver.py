@@ -56,6 +56,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import complexity
 from delivery_control.adapters.operation_lock import OperationLock
 from delivery_control.domain.check_states import FAILURE_STATES, SUCCESS_STATES
 from delivery_control.domain.errors import DeliverySourceError, PolicyViolation
@@ -720,7 +721,20 @@ class Delivery:
         behind = self.git("rev-list", "--count", f"HEAD..{TRUNK}", stage="preflight")
         if behind == "0":
             return
+        replay = int(
+            self.git("rev-list", "--count", f"{TRUNK}..HEAD", stage="preflight")
+        )
+        before = self.git("rev-parse", "HEAD", stage="preflight")
         done = self.runner(["git", "rebase", TRUNK], self.work)
+        budget_only = False
+        # Each budget-only step settles one lane commit, so ``replay`` bounds the loop.
+        for _ in range(replay):
+            if done.returncode == 0 or self.unmerged_paths() != [
+                complexity.BUDGET_FILE
+            ]:
+                break
+            budget_only = True
+            done = self.take_trunk_budget()
         if done.returncode != 0:
             self.runner(["git", "rebase", "--abort"], self.work)
             raise DeliverError(
@@ -728,6 +742,70 @@ class Delivery:
                 f"cleanly (rebase aborted):\n{failure_detail(done) or 'no output'}"
             )
         self.say(f"rebased onto {TRUNK} ({behind} commit(s))")
+        if budget_only:
+            self.lift_budget(before)
+
+    def unmerged_paths(self) -> list[str]:
+        return self.git(
+            "diff", "--name-only", "--diff-filter=U", stage="rebase"
+        ).split()
+
+    def take_trunk_budget(self) -> Proc:
+        """Settle one budget-only conflict step on trunk's ceilings and move the rebase on.
+
+        Mid-rebase ``--ours`` is the base (trunk plus the lane commits already replayed), so it is
+        the trunk side.  A step whose only change was the ceiling line stages nothing once that is
+        taken, and is skipped: trunk already carries it.
+        """
+        for argv in (
+            ["git", "checkout", "--ours", "--", complexity.BUDGET_FILE],
+            ["git", "add", "--", complexity.BUDGET_FILE],
+        ):
+            done = self.runner(argv, self.work)
+            if done.returncode != 0:
+                return done
+        staged = self.runner(["git", "diff", "--cached", "--quiet"], self.work)
+        action = "--skip" if staged.returncode == 0 else "--continue"
+        # --continue commits the lane's own message, which needs no editor.  GIT_EDITOR is set
+        # explicitly because it outranks core.editor, and a dumb terminal with no EDITOR (CI) fails
+        # the commit instead of reusing that message.
+        return self.runner(
+            ["env", "GIT_EDITOR=true", "git", "rebase", action], self.work
+        )
+
+    def lift_budget(self, before: str) -> None:
+        """After a budget-only rebase, raise the ceilings the lane is over, in one named commit.
+
+        Runs once the rebase has settled, not per step: a step measures only the commits replayed
+        so far, so a later commit's growth would slip past the ceiling set there.  The rebase and
+        its raise land together or not at all: any failure, Ctrl-C included, resets the lane to
+        ``before``, budget file included, so a rerun still sees it behind and redoes the step.
+        Otherwise a rebased lane whose raise was lost would look current and never be lifted.
+        """
+        try:
+            raised = complexity.lift(self.work, TRUNK)
+            if not raised:
+                return
+            lines = [
+                f"- {area}: {old:,} -> {new:,} (measured {now:,} + {complexity.LIFT_MARGIN})"
+                for area, (old, new, now) in raised.items()
+            ]
+            message = (
+                "chore(ops): raise complexity ceiling after rebase onto origin/main\n\n"
+                + "\n".join(lines)
+                + "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+            )
+            self.git("add", "--", complexity.BUDGET_FILE, stage="budget commit")
+            self.git("commit", "-m", message, stage="budget commit")
+        except BaseException as exc:
+            self.git("reset", "--hard", before, stage="budget rollback")
+            if not isinstance(exc, Exception):
+                raise
+            raise DeliverError(
+                f"complexity budget lift failed; the rebase was rolled back to "
+                f"{before[:12]} (rerun to retry): {exc}"
+            ) from exc
+        self.say(f"budget: raised {', '.join(raised)} after rebase")
 
     def format_changed_python(self) -> None:
         """Format the changed Python files with the pr-gate's pinned ruff; commit any rewrite.
