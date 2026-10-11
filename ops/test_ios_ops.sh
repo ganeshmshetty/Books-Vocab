@@ -2111,6 +2111,11 @@ xcodebuild_call="$(grep -n 'xcodebuild "\${XCARGV\[@\]}"' "$WORKSPACE/ops/ios_bu
 [[ -n "$xcodebuild_call" ]] \
   && ok "the real build consumes xcodebuild_argv rather than an inline flag list" \
   || fail_t "ops/ios_build.sh no longer invokes xcodebuild via XCARGV — plan and run can diverge again"
+section "ui-smoke launch smoke is hermetic"
+smoke_body="$(sed -n '/func testLaunchShowsAllTabs()/,/^    }/p' "$WORKSPACE/ios/BooksAndVocabUITests/BooksAndVocabUITests.swift")"
+grep -q 'launchIsolatedApp(' <<<"$smoke_body" && ! grep -q 'launchApp(' <<<"$smoke_body" \
+  && ok "testLaunchShowsAllTabs launches through the isolated seam" \
+  || fail_t "testLaunchShowsAllTabs uses non-isolated launchApp (non-isolated launch wedged testmanagerd, #3002)"
 
 echo ""
 echo "══════════════════════════════"
