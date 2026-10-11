@@ -62,7 +62,6 @@ enum ReviewSessionPersistence {
         queueCount: Int,
         queuePersistenceIDs: [String],
         queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline],
-        queueEntryIDs: [UUID] = [],
         submittedAnswers: [Int: TodayReviewState.SubmittedAnswer]
     ) {
         guard !queuePersistenceIDs.isEmpty else {
@@ -78,11 +77,10 @@ enum ReviewSessionPersistence {
                 flushed: answer.flushed
             )
         }
-        let queueItems = zip(queuePersistenceIDs, queueBaselines).enumerated().map { index, pair in
+        let queueItems = zip(queuePersistenceIDs, queueBaselines).map { persistenceID, baseline in
             TodayReviewSessionSnapshotStore.Snapshot.QueueItem(
-                persistenceID: pair.0,
-                baseline: pair.1,
-                entryID: index < queueEntryIDs.count ? queueEntryIDs[index] : nil
+                persistenceID: persistenceID,
+                baseline: baseline
             )
         }
 
@@ -128,30 +126,29 @@ enum ReviewSessionPersistence {
             uniqueEntries.map { (persistenceID(for: $0), $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let entryByID = Dictionary(
-            uniqueEntries.map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
 
-        // 逐一比對快照佇列。每列先以列 UUID 找回（sync 可能在快照寫入後把該列 re-key），
-        // 無 UUID 或找不到才退回 persistenceID，與 fetchQueuedEntry 同一順序。
-        // 缺席的卡、以及快照內解析到同一列的第二次起都視為遺失。
+        // 逐一比對快照佇列。缺席的卡、以及快照內重複出現的 persistenceID（第二次起）都視為遺失。
         // kept 保留 (舊 index, entry)；oldToNew 把舊 index 重映射到新佇列位置。
-        var seenEntryIDs = Set<UUID>()
+        var seenIDs = Set<String>()
         var kept: [(oldIndex: Int, entry: VocabularyEntry)] = []
         var oldToNew: [Int: Int] = [:]
         for (oldIndex, item) in snapshot.queue.enumerated() {
-            let resolved = item.entryID.flatMap { entryByID[$0] } ?? entryMap[item.persistenceID]
-            guard let entry = resolved,
-                  seenEntryIDs.insert(entry.id).inserted else { continue }
+            guard let entry = entryMap[item.persistenceID],
+                  seenIDs.insert(item.persistenceID).inserted else { continue }
             oldToNew[oldIndex] = kept.count
             kept.append((oldIndex, entry))
         }
 
         // 只有在有卡遺失、且遺失的卡之外仍有「未 flush」答案時才 partial restore；
         // 否則維持舊行為：任何不一致即清除快照。
-        // Drop log runs before the clear branch below: an unflushed answer for a missing card
-        // is lost on that path too, so it must be logged there as well (#3123).
+        if kept.count != snapshot.queue.count {
+            let atRisk = snapshot.submissions.contains { oldToNew[$0.key] != nil && !$0.value.flushed }
+            guard atRisk else {
+                TodayReviewSessionSnapshotStore.clear(for: userId)
+                return nil
+            }
+        }
+
         let droppedAnswers = snapshot.submissions.keys.filter { oldToNew[$0] == nil }
         if !droppedAnswers.isEmpty {
             let droppedUnflushed = droppedAnswers.filter { !(snapshot.submissions[$0]?.flushed ?? true) }.count
@@ -162,20 +159,12 @@ enum ReviewSessionPersistence {
             }
         }
 
-        if kept.count != snapshot.queue.count {
-            let atRisk = snapshot.submissions.contains { oldToNew[$0.key] != nil && !$0.value.flushed }
-            guard atRisk else {
-                TodayReviewSessionSnapshotStore.clear(for: userId)
-                return nil
-            }
-        }
-
-        // 還原列採用其「目前」persistenceID：被 re-key 的列以新卡號重新進入佇列，之後的快照寫入才不會沿用舊 key。
+        let restoredIDs = kept.map { snapshot.queue[$0.oldIndex].persistenceID }
         let restoredQueue = kept.map { $0.entry }
-        let restoredEntryIDs = Set(restoredQueue.map(\.id))
-        let appendedEntries = uniqueEntries.filter { !restoredEntryIDs.contains($0.id) }
+        let restoredIDSet = Set(restoredIDs)
+        let appendedEntries = uniqueEntries.filter { !restoredIDSet.contains(persistenceID(for: $0)) }
         let queue = restoredQueue + appendedEntries
-        let persistenceIDs = restoredQueue.map(persistenceID(for:)) + appendedEntries.map(persistenceID(for:))
+        let persistenceIDs = restoredIDs + appendedEntries.map(persistenceID(for:))
         let baselines = kept.map { snapshot.queue[$0.oldIndex].baseline } + appendedEntries.map(makeBaseline(from:))
 
         var submittedAnswers: [Int: TodayReviewState.SubmittedAnswer] = [:]
@@ -391,9 +380,9 @@ enum ReviewSessionPersistence {
     /// Resolves the row a queued answer grades. The queue's own row (`VocabularyEntry.id`) is
     /// tried first: `BackgroundSyncActor` can re-key a queued row's `kgCardId` mid-session, which
     /// makes the persistence id stale while the row still holds the answered card (#3123). The
-    /// persistence-id lookup is the fallback for sessions restored from a snapshot (no UUID kept)
-    /// and for a row recreated under the same card id. Only when neither resolves is the entry
-    /// deleted.
+    /// persistence-id lookup is the fallback when no row id is known (`entryID` nil, i.e. an index
+    /// beyond `queueEntryIDs`) and for a row recreated under the same card id. Only when neither
+    /// resolves is the entry deleted.
     static func fetchQueuedEntry(
         entryID: UUID?,
         persistenceID: String,

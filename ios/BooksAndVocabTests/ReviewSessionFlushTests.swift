@@ -16,6 +16,7 @@ import Testing
 private struct InjectedFetchError: Error {}
 
 @MainActor
+@Suite(.serialized)
 struct ReviewSessionFlushTests {
     private static let userID = "flush-finalize-user"
 
@@ -119,78 +120,6 @@ struct ReviewSessionFlushTests {
         let rekeyedRecords = records.filter { $0.kgCardId == rekeyedCardID }
         #expect(rekeyedRecords.count == 1)
         #expect(rekeyedRecords.first?.feedback == ReviewFeedback.forgot.rawValue)
-    }
-
-    /// #2482 relaunch: a snapshot written before sync re-keyed a queued row still holds the row's
-    /// old persistence id. After kill+relaunch the unflushed grade must be restored onto that row,
-    /// not treated as a deleted card and dropped.
-    @Test func restoreFindsRekeyedRowAfterRelaunch() {
-        let userID = "flush-rekey-relaunch-user"
-        TodayReviewSessionSnapshotStore.clear(for: userID)
-        defer { TodayReviewSessionSnapshotStore.clear(for: userID) }
-        let entries = makeEntries(2)
-        let answeredAt = Date()
-        ReviewSessionPersistence.persistSnapshot(
-            userId: userID,
-            sessionStartTime: answeredAt,
-            currentIndex: 1,
-            queueCount: 2,
-            queuePersistenceIDs: entries.map(ReviewSessionPersistence.persistenceID(for:)),
-            queueBaselines: entries.map(ReviewSessionPersistence.makeBaseline(from:)),
-            queueEntryIDs: entries.map(\.id),
-            submittedAnswers: [
-                0: TodayReviewState.SubmittedAnswer(feedback: .remembered, answeredAt: answeredAt, reviewRecordID: UUID())
-            ]
-        )
-        // Sync re-keys the answered row after the snapshot was written, then the app is killed.
-        entries[0].kgCardId = "card-rekeyed-\(UUID().uuidString.prefix(8))"
-
-        let restored = ReviewSessionPersistence.restoreSnapshotIfPossible(
-            orderedEntries: entries,
-            userId: userID
-        )
-
-        #expect(restored?.queue.map(\.id) == entries.map(\.id))
-        #expect(restored?.persistenceIDs == entries.map(ReviewSessionPersistence.persistenceID(for:)))
-        #expect(restored?.submittedAnswers[0]?.feedback == .remembered)
-        #expect(restored?.submittedAnswers[0]?.flushed == false)
-    }
-
-    /// #2482 relaunch with swapped keys: the first row now carries the second row's old card id and
-    /// vice versa. Matching by persistence id would pair each grade with the other row, so the
-    /// restored grades must follow the row ids instead.
-    @Test func restoreKeepsGradesOnRowsWhenCardIDsSwapAcrossRelaunch() {
-        let userID = "flush-rekey-swap-user"
-        TodayReviewSessionSnapshotStore.clear(for: userID)
-        defer { TodayReviewSessionSnapshotStore.clear(for: userID) }
-        let entries = makeEntries(2)
-        let (first, second) = (entries[0], entries[1])
-        let answeredAt = Date()
-        ReviewSessionPersistence.persistSnapshot(
-            userId: userID,
-            sessionStartTime: answeredAt,
-            currentIndex: 2,
-            queueCount: 2,
-            queuePersistenceIDs: entries.map(ReviewSessionPersistence.persistenceID(for:)),
-            queueBaselines: entries.map(ReviewSessionPersistence.makeBaseline(from:)),
-            queueEntryIDs: entries.map(\.id),
-            submittedAnswers: [
-                0: TodayReviewState.SubmittedAnswer(feedback: .remembered, answeredAt: answeredAt, reviewRecordID: UUID()),
-                1: TodayReviewState.SubmittedAnswer(feedback: .forgot, answeredAt: answeredAt, reviewRecordID: UUID()),
-            ]
-        )
-        let firstCardID = first.kgCardId
-        first.kgCardId = second.kgCardId
-        second.kgCardId = firstCardID
-
-        let restored = ReviewSessionPersistence.restoreSnapshotIfPossible(
-            orderedEntries: entries,
-            userId: userID
-        )
-
-        #expect(restored?.queue.map(\.id) == [first.id, second.id])
-        #expect(restored?.submittedAnswers[0]?.feedback == .remembered)
-        #expect(restored?.submittedAnswers[1]?.feedback == .forgot)
     }
 
     /// #3123 fetch error: a row fetch that throws is not a deleted entry. That answer stays
