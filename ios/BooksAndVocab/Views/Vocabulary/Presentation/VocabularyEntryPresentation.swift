@@ -116,7 +116,7 @@ enum VocabularyEntryPresentation {
         let reviewCounts = Dictionary(uniqueKeysWithValues: VocabularyReviewState.allCases.map { state in
             (state, classified.count(for: state))
         })
-        let reviewVisible = entries.filter(\.shouldAppearInReview)
+        let reviewVisible = uniqueByServerCard(entries.filter(\.shouldAppearInReview))
         let reviewQueue = VocabularyReviewQueue(
             due: reviewVisible.filter { $0.reviewState(at: now) == .due },
             unlearned: reviewVisible.filter { $0.reviewState(at: now) == .unlearned }
@@ -134,6 +134,16 @@ enum VocabularyEntryPresentation {
                 reviewStates: effectiveQuery.reviewStates
             )
         )
+    }
+
+    /// 同一張 server 卡至多保留一列（#3059 (1)）：sync 競態可能留下共享 `kgCardId` 的重複列，
+    /// 複習佇列不得重複出題。無 `kgCardId`（server 尚未確認）的列彼此獨立，全數保留。
+    static func uniqueByServerCard(_ entries: [VocabularyEntry]) -> [VocabularyEntry] {
+        var seenCardIds = Set<String>()
+        return entries.filter { entry in
+            guard entry.hasServerCard, let cardId = entry.kgCardId else { return true }
+            return seenCardIds.insert(cardId).inserted
+        }
     }
 
     /// 多選模式下實際可被選取的 row id。
