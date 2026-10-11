@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterCommandError, AdapterPayloadError
 
+_GRAPHQL_NON_QUERY_OPERATION = re.compile(r"\b(?:mutation|subscription)\b")
 _READ_ONLY_JSON_COMMANDS = frozenset(
     {
         ("repo", "view"),
@@ -19,6 +21,9 @@ _READ_ONLY_JSON_COMMANDS = frozenset(
         ("label", "list"),
     }
 )
+# Non-mutating reads that must reach the network every time: required-check status
+# gates merges, so a cached "success" must never be replayed. They evict nothing either.
+_LIVE_READ_COMMANDS = frozenset({("pr", "checks")})
 _TRANSIENT_ERROR_MARKERS = (
     "tls handshake timeout",
     "connection reset",
@@ -153,7 +158,7 @@ def _graphql_query(argv: tuple[str, ...]) -> str | None:
     return query_values[0]
 
 
-def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
+def is_read_only_json_query(argv: tuple[str, ...]) -> bool:
     if (
         len(argv) >= 3
         and argv[0] == "gh"
@@ -167,6 +172,10 @@ def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
         query = _graphql_query(argv)
         if query is None:
             return False
+        # A document may hold several operations; one mutation or subscription anywhere
+        # makes the whole request a non-read, whatever the first operation is.
+        if _GRAPHQL_NON_QUERY_OPERATION.search(query):
+            return False
         operation = query.lstrip()
         return operation.startswith(("query ", "query\t", "query\n", "query{", "{"))
     if endpoint is None:
@@ -175,6 +184,12 @@ def _is_read_only_json_query(argv: tuple[str, ...]) -> bool:
     if method is not None:
         return method.upper() == "GET"
     return not _has_gh_api_input(argv)
+
+
+def is_live_read_command(argv: tuple[str, ...]) -> bool:
+    return (
+        len(argv) >= 3 and argv[0] == "gh" and (argv[1], argv[2]) in _LIVE_READ_COMMANDS
+    )
 
 
 def _is_transient_failure(result: CommandResult) -> bool:
@@ -201,7 +216,7 @@ class GitHubCliClient:
         attempts = [CommandAttempt(argv=argv, cwd=self.repo, result=result)]
         if (
             retry_read_only
-            and _is_read_only_json_query(argv)
+            and is_read_only_json_query(argv)
             and _is_transient_failure(result)
         ):
             result = self.runner.run(argv, cwd=self.repo)

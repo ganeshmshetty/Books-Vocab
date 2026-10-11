@@ -338,6 +338,15 @@ branch-audit 的 branch-scoped source problem 會同步投影到該 branch actio
 
 `branch-audit` 的 `raw_active_registry_records` 與 metrics 採同一 cardinality 契約：它等於可解析的 active claim，加上 malformed active record 的唯一 `(identity_kind, identity, record_status)` identity。`malformed_registry_records`、`registry_record_problem_actions` 與 `registry_record_problem_status_counts` 則保留每一筆 diagnostic entry；同一 raw record 的多個 reason 不得被靜默刪除，也不得被誤加總成多筆 active record。diagnostic 數與 record cardinality 必須分開閱讀。
 
+GitHub API 預算 governor（`ops/delivery_control/adapters/github_quota.py`）由 `GitHubCliAdapter` 建構時把其 runner 包成 `github_governed_runner.py` 的 decorator，該 adapter 發出的 `gh` argv 都只經過一次；git argv 不受影響。`ops/deliver.py` 的直接 `gh` 呼叫不經此 governor（不在本 lane Scope，尚未受治理）。預算以兩個真實 probe 的 `X-RateLimit-*` response header 為準：`gh api -i graphql`（graphql resource）與 `gh api -i user`（core resource），取較小 `remaining`；不讀 `gh api rate_limit`（#2647）。probe 每 60 秒最多一次，兩次皆為計入預算的請求並各記一行 spend log。
+
+- 三種 call kind：`cached-read`（gh JSON 查詢與 GraphQL 唯讀）會被 cache；`live-read`（目前只有 `gh pr checks`，required status 直接 gate merge）每次都走網路、不 cache、不 stale serve，且因為沒有改動任何東西所以**不清 cache**；`mutation`（其餘所有未能證明為唯讀的 gh argv，fail safe）一律走網路並清空 cache，即使呼叫 raise 也清。
+- `remaining < 800`：非 authoritative 的 `cached-read` 結果可由 process 內 cache 服務，但僅限 300 秒內取得的 entry；超過 TTL 即重打網路，且每次寫入 cache 時會順便移除已過期 entry。
+- `remaining < 50`：等到該資源 reset 後再執行，最多等 3 次；仍不足則拋 `GitHubQuotaExhausted`（`AdapterError` 子類，fail closed）。
+- authoritative scope：mutation 與其 pre/post 驗證讀（含 `_read_until_head` 的 read-after-write retry），以及 required-check observation（`required_check_snapshot` 的 batch、before／after head 讀與 checks 讀）、merge-queue 守衛讀（`merge_queue_entry_id`、`merge_queue_entry_snapshot` 與其 open-queue batch `prime_open_observations`，供 abandon 與 legacy cleanup 拒絕已入佇列的 PR）一律走網路、不走 stale cache，但仍受預算等待約束。required-check 的 before／after head 若讀到舊 cache，checks 會被綁到錯的 head，所以這組讀不可省。git push 不經 gh，governor 看不到，因此這些讀不能信任 cache。
+- 每個受治理的 gh 呼叫（含 probe）追加一行 NDJSON 到 `<repo>/.cache/github_spend.ndjson`，欄位為 `ts`、`endpoint`、`remaining`、`outcome`（`probe`／`network`／`stale-cache`／`waited`）、`exit_code`，`waited` 另有 `wait_seconds`。寫入失敗 fail open（呼叫照常執行，該行遺失）。檔案達 256 KiB 時只保留最新 1000 行。
+- 這些 `.cache` 紀錄只供本機用量觀測，不是交付狀態，也不授權任何 GitHub 寫入。
+
 ## 遷移後的判斷準則
 
 保留真正產品程式碼與測試、backend／iOS 測試入口、GitHub Actions、PR template／required checks、deployment safety wrapper、生產批准／health gate／rollback、CloudKit／資料庫／域名／App Store／TestFlight SOP、docs registry／impact／lint、薄型本地 coordinator，以及長任務 process-safety ledger。凡是只為模擬 GitHub Issue、Project、PR、review、merge 或狀態追蹤而存在的本地描述、資料庫、看板與流程，都不屬於這個模型。
