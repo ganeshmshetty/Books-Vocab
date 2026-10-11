@@ -244,6 +244,9 @@ final class ReviewCardLayoutStore {
         accountID: String? = nil
     ) {
         let normalizedAccountID = AccountPreferenceNamespace.normalizedAccountID(accountID)
+        // Launch-time backfill for a device that adopted before the KVS marker existed, so it is
+        // published even when the store starts logged out (#2434).
+        AccountPreferenceNamespace.publishLocalAdoptionToCloud(feature: Self.legacyFeature, defaults: defaults, cloud: cloud)
         if let normalizedAccountID {
             Self.migrateLegacyPreferences(defaults: defaults, cloud: cloud, accountID: normalizedAccountID)
         }
