@@ -337,8 +337,9 @@ struct AddLinkSheet: View {
                 expandedCandidateIDs.insert(entry.id)
             }
         } label: {
+            // Reuses existing localized keys (展開 / todayReview.fold.collapse) so no new strings ship.
             Label(
-                L10n.string(isExpanded ? "addLink.candidate.collapse" : "addLink.candidate.expand"),
+                L10n.string(isExpanded ? "todayReview.fold.collapse" : "展開"),
                 systemImage: isExpanded ? "chevron.up" : "chevron.down"
             )
         }
@@ -346,11 +347,8 @@ struct AddLinkSheet: View {
         // Same lock as the row button: one link at a time.
         .disabled(coordinator.linkingTargetCardID != nil)
         // Every row shares the visible title, so VoiceOver names the word it belongs to.
-        .accessibilityLabel(
-            L10n.format(isExpanded ? "addLink.candidate.collapse.named" : "addLink.candidate.expand.named", entry.word)
-        )
+        .accessibilityLabel("\(entry.word), \(L10n.string(isExpanded ? "todayReview.fold.collapse" : "展開"))")
         .accessibilityIdentifier(AddLinkCoordinator.detailExpandIdentifier(for: entry))
-        .accessibilityValue(isExpanded ? "expanded" : "collapsed")
     }
 
     /// Collapsed rows show the first sense (part of speech + definition) only; examples,
