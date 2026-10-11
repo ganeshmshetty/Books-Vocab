@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,10 @@ class GitHubCliAdapter:
     def _json(self, argv: tuple[str, ...], *, allow_nonzero: bool = False) -> Any:
         return self._client.load_json(argv, allow_nonzero=allow_nonzero)
 
+    def _authoritative(self) -> AbstractContextManager[None]:
+        """Scope for mutations and their guard/verification reads; stale serve is off here."""
+        return nullcontext() if self.quota is None else self.quota.authoritative_reads()
+
     @staticmethod
     def _pull_request(payload: Mapping[str, Any]) -> PullRequestSnapshot:
         return parse_pull_request(payload)
@@ -138,13 +143,16 @@ class GitHubCliAdapter:
         return self._issue_queries.list_open_issues()
 
     def admit_candidate(self, **kwargs: Any) -> DemandIssue:
-        return self._issue_commands.admit_candidate(**kwargs)
+        with self._authoritative():
+            return self._issue_commands.admit_candidate(**kwargs)
 
     def create_issue(self, **kwargs: Any) -> IssueIntakeReceipt:
-        return self._issue_commands.create_issue(**kwargs)
+        with self._authoritative():
+            return self._issue_commands.create_issue(**kwargs)
 
     def close_issue(self, **kwargs: Any) -> IssueCloseReceipt:
-        return self._issue_commands.close_issue(**kwargs)
+        with self._authoritative():
+            return self._issue_commands.close_issue(**kwargs)
 
     def list_open_pull_requests(self) -> PullRequestInventory:
         self.queue.clear_observed_snapshots()
@@ -249,12 +257,13 @@ class GitHubCliAdapter:
         base_sha: str,
         head_sha: str,
     ) -> RequiredTriggerOutcome:
-        return self._commands.trigger_required(
-            number=number,
-            branch=branch,
-            base_sha=base_sha,
-            head_sha=head_sha,
-        )
+        with self._authoritative():
+            return self._commands.trigger_required(
+                number=number,
+                branch=branch,
+                base_sha=base_sha,
+                head_sha=head_sha,
+            )
 
     def trigger_readiness(
         self,
@@ -263,16 +272,20 @@ class GitHubCliAdapter:
         branch: str,
         head_sha: str,
     ) -> tuple[str, ...]:
-        return self._commands.trigger_readiness(
-            number=number,
-            branch=branch,
-            head_sha=head_sha,
-        )
+        with self._authoritative():
+            return self._commands.trigger_readiness(
+                number=number,
+                branch=branch,
+                head_sha=head_sha,
+            )
 
     def create_pull_request(
         self, *, branch: str, title: str, body: str
     ) -> PullRequestSnapshot:
-        return self._commands.create_pull_request(branch=branch, title=title, body=body)
+        with self._authoritative():
+            return self._commands.create_pull_request(
+                branch=branch, title=title, body=body
+            )
 
     def update_pull_request(
         self,
@@ -283,16 +296,18 @@ class GitHubCliAdapter:
         expected_head_sha: str,
     ) -> PullRequestSnapshot:
         self._pull_request_snapshot_cache.pop(number, None)
-        return self._commands.update_pull_request(
-            number=number,
-            title=title,
-            body=body,
-            expected_head_sha=expected_head_sha,
-        )
+        with self._authoritative():
+            return self._commands.update_pull_request(
+                number=number,
+                title=title,
+                body=body,
+                expected_head_sha=expected_head_sha,
+            )
 
     def mark_ready(self, number: int) -> PullRequestSnapshot:
         self._pull_request_snapshot_cache.pop(number, None)
-        return self._commands.mark_ready(number)
+        with self._authoritative():
+            return self._commands.mark_ready(number)
 
     def close_pull_request(
         self,
@@ -303,12 +318,13 @@ class GitHubCliAdapter:
         expected_body: str,
     ) -> PullRequestSnapshot:
         self._pull_request_snapshot_cache.pop(number, None)
-        return self._commands.close_pull_request(
-            number=number,
-            expected_base_sha=expected_base_sha,
-            expected_head_sha=expected_head_sha,
-            expected_body=expected_body,
-        )
+        with self._authoritative():
+            return self._commands.close_pull_request(
+                number=number,
+                expected_base_sha=expected_base_sha,
+                expected_head_sha=expected_head_sha,
+                expected_body=expected_body,
+            )
 
     def reopen_pull_request(
         self,
@@ -319,12 +335,13 @@ class GitHubCliAdapter:
         expected_body: str,
     ) -> PullRequestSnapshot:
         self._pull_request_snapshot_cache.pop(number, None)
-        return self._commands.reopen_pull_request(
-            number=number,
-            expected_base_sha=expected_base_sha,
-            expected_head_sha=expected_head_sha,
-            expected_body=expected_body,
-        )
+        with self._authoritative():
+            return self._commands.reopen_pull_request(
+                number=number,
+                expected_base_sha=expected_base_sha,
+                expected_head_sha=expected_head_sha,
+                expected_body=expected_body,
+            )
 
     def enqueue(
         self,
@@ -334,9 +351,10 @@ class GitHubCliAdapter:
         expected_head_sha: str,
         expected_body: str,
     ) -> None:
-        self._commands.enqueue(
-            number=number,
-            expected_base_sha=expected_base_sha,
-            expected_head_sha=expected_head_sha,
-            expected_body=expected_body,
-        )
+        with self._authoritative():
+            self._commands.enqueue(
+                number=number,
+                expected_base_sha=expected_base_sha,
+                expected_head_sha=expected_head_sha,
+                expected_body=expected_body,
+            )
