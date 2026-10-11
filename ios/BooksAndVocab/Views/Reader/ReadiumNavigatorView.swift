@@ -405,8 +405,7 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
             parent.onLocationChanged(locator)
             guard acceptsNavigator(navigator, generation: callbackGeneration) else { return }
             triggerRecoveryNavigation()
-            // Every report goes through finish: it also consumes a superseded
-            // jump's owed report, which completes nothing.
+            // The gate decides whether this report completes the active request.
             if let requestID = observedTOCRequestID,
                tocNavigationGate.finish(
                    requestID,
