@@ -79,14 +79,29 @@ extension ReadiumNavigatorView.Coordinator {
             activeTOCNavigationTask?.cancel()
             activeTOCTimeoutTask?.cancel()
             activeTOCTimeoutTask = nil
-            tocNavigationGate.begin(requestID, expectedLocatorHref: locator.href.string)
+            tocNavigationGate.begin(
+                requestID,
+                expectedLocatorHref: locator.href.string,
+                expectedFragments: locator.locations.fragments
+            )
             let bridge = ReaderTOCNavigationBridge(
                 navigator: ReadiumNavigatorDriver(navigator: navigator),
                 timeoutNanoseconds: ReaderMetrics.tocNavigationTimeoutNanoseconds
             )
+            // Arms the gate in the turn go() reports acceptance. Callbacks
+            // emitted before acceptance predate the jump and stay
+            // unattributed; ones after it must not be lost.
+            let markAccepted: @MainActor () -> Void = { [weak self] in
+                guard let self else { return }
+                self.tocNavigationGate.markNavigationAccepted(requestID)
+            }
             activeTOCNavigationTask = Task { @MainActor [weak self] in
                 AppLog.reader.debug("Attempting navigation to: \(String(describing: locator.href))")
-                let event = await bridge.navigate(requestID: requestID, locator: locator)
+                let event = await bridge.navigate(
+                    requestID: requestID,
+                    locator: locator,
+                    onAccepted: markAccepted
+                )
                 guard let self else { return }
                 guard self.tocNavigationGate.isCurrent(requestID) else { return }
                 if case .goAccepted = event {

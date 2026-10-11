@@ -55,6 +55,8 @@ struct ReaderTOCNavigationTests {
         #expect(!staleLocationFinished)
         #expect(gate.isCurrent(replacementRequest))
         #expect(gate.activeExpectedLocatorHref == "OEBPS/chapter-b.xhtml")
+        let accepted = gate.markNavigationAccepted(replacementRequest)
+        #expect(accepted)
         let replacementLocationFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-b.xhtml"
@@ -62,6 +64,191 @@ struct ReaderTOCNavigationTests {
         #expect(replacementLocationFinished)
         #expect(gate.activeRequestID == nil)
         #expect(gate.activeExpectedLocatorHref == nil)
+    }
+
+    /// Readium 3.11 idle location callbacks carry empty `locations.fragments`.
+    /// A named anchor of another TOC entry must not complete this request, even
+    /// after acceptance. An anchorless report after acceptance does complete it;
+    /// see the anchorless-completion test below.
+    @Test
+    func lateSameResourceCallbackNamingEarlierAnchorCannotCompleteLaterRequest() {
+        let firstRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        // Two TOC entries share one XHTML resource but target different anchors.
+        gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+
+        // An idle callback of the first jump, delivered before Readium accepted
+        // the replacement, carries no anchor and must not complete the replacement.
+        let lateFirstFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!lateFirstFinished)
+        #expect(gate.isCurrent(replacementRequest))
+        #expect(gate.activeExpectedFragments == ["b"])
+
+        let accepted = gate.markNavigationAccepted(replacementRequest)
+        #expect(accepted)
+
+        // The first request's pending-jump locator names its own anchor.
+        let pendingFirstFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["a"]
+        )
+        #expect(!pendingFirstFinished)
+        #expect(gate.isCurrent(replacementRequest))
+
+        let replacementFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["b"]
+        )
+        #expect(replacementFinished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    /// Readium names no anchor in its idle callbacks, so an accepted anchored
+    /// request completes on the resource report. Requiring the anchor would time
+    /// out every fragment TOC tap. Before acceptance the same report is refused.
+    @Test
+    func anchoredRequestCompletesOnAnchorlessCallbackAfterAcceptance() {
+        let requestID = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        let beforeAcceptance = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!beforeAcceptance)
+        let accepted = gate.markNavigationAccepted(requestID)
+        #expect(accepted)
+
+        let anchorlessFinished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(anchorlessFinished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
+    func anchoredRequestCompletesOnItsOwnAnchorAfterAcceptance() {
+        let requestID = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        let accepted = gate.markNavigationAccepted(requestID)
+        #expect(accepted)
+
+        let finished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["b"]
+        )
+        #expect(finished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
+    func resourceLevelRequestStillCompletesOnAnchorlessCallback() {
+        let requestID = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        // A TOC entry without a fragment expects the resource only. Readium
+        // idle callbacks carry no anchor, so once the jump is accepted the
+        // anchorless callback must still complete it (no refused legitimate
+        // taps).
+        gate.begin(requestID, expectedLocatorHref: "OEBPS/chapter-1.xhtml")
+        let accepted = gate.markNavigationAccepted(requestID)
+        #expect(accepted)
+
+        let finished = gate.finish(
+            requestID,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(finished)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    @Test
+    func staleAcceptanceCannotArmReplacementRequest() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+
+        let accepted = gate.markNavigationAccepted(replacedRequest)
+        #expect(!accepted)
+        #expect(!gate.isNavigationAccepted)
+        let finished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!finished)
+    }
+
+    @Test
+    func encodedAnchorMatchesDecodedCallbackFragment() {
+        // Readium may report an anchor percent-encoded (TOC href) while the
+        // location callback reports it decoded, or the reverse. Both sides are
+        // normalized, so a legitimate tap is not refused until timeout.
+        #expect(ReaderTOCNavigationRequestGate.fragmentsAccept(
+            expected: ["caf%C3%A9"],
+            reported: ["café"]
+        ))
+        #expect(ReaderTOCNavigationRequestGate.fragmentsAccept(
+            expected: ["café"],
+            reported: ["caf%C3%A9"]
+        ))
+        #expect(!ReaderTOCNavigationRequestGate.fragmentsAccept(
+            expected: ["caf%C3%A9"],
+            reported: ["cafe"]
+        ))
+    }
+
+    /// An anchorless request must not accept a report that names another
+    /// request's anchor of the same resource.
+    @Test
+    func anchorlessLaterRequestRefusesEarlierAnchorCallback() {
+        let firstRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(firstRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: [])
+
+        #expect(gate.isCurrent(replacementRequest))
+        let accepted = gate.markNavigationAccepted(replacementRequest)
+        #expect(accepted)
+
+        let lateFirstFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: ["a"]
+        )
+        #expect(!lateFirstFinished)
+        #expect(gate.isCurrent(replacementRequest))
+
+        // After acceptance the replacement's own anchorless report completes it.
+        let resourceFinished = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(resourceFinished)
+        #expect(gate.activeRequestID == nil)
     }
 
     @Test
@@ -91,6 +278,29 @@ struct ReaderTOCNavigationTests {
 
         #expect(event == .goAccepted(requestID: requestID, locatorHref: "OEBPS/chapter-b.xhtml"))
         #expect(navigator.requestedLocator?.href.string == "OEBPS/chapter-b.xhtml")
+    }
+
+    @Test @MainActor
+    func acceptanceHookRunsBeforeNavigateReturnsOnlyForAcceptedJump() async throws {
+        let locator = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+        let acceptedRequestID = UUID()
+        let accepted = AcceptanceCounter()
+        let acceptedEvent = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .accepted),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: acceptedRequestID, locator: locator, onAccepted: { accepted.count += 1 })
+
+        // The gate must already be armed when the caller resumes, so a
+        // location callback delivered right after acceptance is not dropped.
+        #expect(accepted.count == 1)
+        #expect(acceptedEvent == .goAccepted(requestID: acceptedRequestID, locatorHref: "OEBPS/chapter-b.xhtml"))
+
+        let rejected = AcceptanceCounter()
+        _ = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .rejected),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: UUID(), locator: locator, onAccepted: { rejected.count += 1 })
+        #expect(rejected.count == 0)
     }
 
     @Test @MainActor
@@ -128,6 +338,8 @@ struct ReaderTOCNavigationTests {
         #expect(state.accessibilityValue.contains("phase=success"))
     }
 
+    /// Same contract as the gate: an accepted anchored request completes on a
+    /// resource report that names no anchor (ReaderTOCNavigationRequestGate).
     @Test @MainActor
     func fragmentBearingTOCHrefMatchesFragmentFreeNavigatorLocation() {
         let requestID = UUID()
@@ -673,6 +885,11 @@ struct ReaderTOCNavigationTests {
 @MainActor
 private final class ReaderNavigationTaskBox {
     var task: Task<ReaderTOCNavigationEvent, Never>?
+}
+
+@MainActor
+private final class AcceptanceCounter {
+    var count = 0
 }
 
 @MainActor

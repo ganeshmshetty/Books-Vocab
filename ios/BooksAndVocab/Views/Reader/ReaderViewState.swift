@@ -49,46 +49,111 @@ enum ReaderTOCNavigationEvent: Equatable, Sendable {
 struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
     private(set) var activeRequestID: UUID?
     private(set) var activeExpectedLocatorHref: String?
+    private(set) var activeExpectedFragments: [String] = []
+    /// Set once Readium's `go(to:)` returned true for the active request.
+    private(set) var isNavigationAccepted = false
 
-    mutating func begin(_ requestID: UUID, expectedLocatorHref: String? = nil) {
+    /// `expectedFragments` are the anchors the TOC entry targets inside
+    /// `expectedLocatorHref`. Empty means resource-level expectation only.
+    mutating func begin(
+        _ requestID: UUID,
+        expectedLocatorHref: String? = nil,
+        expectedFragments: [String] = []
+    ) {
         activeRequestID = requestID
         activeExpectedLocatorHref = expectedLocatorHref
+        activeExpectedFragments = expectedFragments
+        isNavigationAccepted = false
     }
 
     mutating func invalidate() {
         activeRequestID = nil
         activeExpectedLocatorHref = nil
+        activeExpectedFragments = []
+        isNavigationAccepted = false
     }
 
     func isCurrent(_ requestID: UUID) -> Bool {
         activeRequestID == requestID
     }
 
-    func matchesCurrent(_ requestID: UUID, locatorHref: String) -> Bool {
-        isCurrent(requestID) && activeExpectedLocatorHref == locatorHref
+    /// Records that Readium accepted the jump for `requestID`. From this point
+    /// on, a location callback may be attributed to the request. Readium
+    /// reports idle locations without request identity, so a callback emitted
+    /// before the jump began must not complete it.
+    /// Readium notifies only a changed location, so a superseded jump may never
+    /// report at all. The next anchorless report after this acceptance is
+    /// therefore taken as the replacement's own.
+    /// Residual (#3043): a superseded report that outlives this acceptance is
+    /// accepted as the replacement's; see `fragmentsAccept`.
+    @discardableResult
+    mutating func markNavigationAccepted(_ requestID: UUID) -> Bool {
+        guard isCurrent(requestID) else { return false }
+        isNavigationAccepted = true
+        return true
+    }
+
+    func matchesCurrent(
+        _ requestID: UUID,
+        locatorHref: String,
+        locatorFragments: [String] = []
+    ) -> Bool {
+        isCurrent(requestID)
+            && isNavigationAccepted
+            && activeExpectedLocatorHref == locatorHref
+            && Self.fragmentsAccept(
+                expected: activeExpectedFragments,
+                reported: locatorFragments
+            )
+    }
+
+    /// Readium 3.11 idle location callbacks carry empty `locations.fragments`,
+    /// and no callback is guaranteed to name a jump's anchor. An accepted
+    /// anchored request therefore completes on an anchorless report for its
+    /// resource; requiring the anchor would time out every fragment TOC tap. A
+    /// report that names only other anchors is a late callback of a superseded
+    /// jump and is refused. A resource-level request has no anchor of its own,
+    /// so it refuses every named report. Both sides are percent-decoded first, so
+    /// an encoded TOC href and a decoded callback fragment still match.
+    /// Residual (#3043, split to a follow-up): an anchorless late report of a
+    /// superseded jump that arrives after the replacement's acceptance completes
+    /// the replacement; Readium exposes no request identity that would tell the
+    /// two apart. A jump whose request already timed out or failed is no longer
+    /// live, so its anchorless late callback can likewise complete a later
+    /// anchored request.
+    static func fragmentsAccept(expected: [String], reported: [String]) -> Bool {
+        let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
+        let expectedAnchors = Set(expected.map(normalized))
+        let reportedAnchors = Set(reported.map(normalized))
+        guard !reportedAnchors.isEmpty else { return true }
+        return !expectedAnchors.isDisjoint(with: reportedAnchors)
     }
 
     @discardableResult
     mutating func finish(_ requestID: UUID) -> Bool {
         guard isCurrent(requestID) else { return false }
-        activeRequestID = nil
-        activeExpectedLocatorHref = nil
+        invalidate()
         return true
     }
 
     /// A Readium location callback has no request ID. It may be a late event
-    /// from a cancelled request, so only a callback for the active request's
-    /// expected href may consume the token.
+    /// from a cancelled or superseded request, so only a callback observed after
+    /// the active request was accepted, for its expected href and a compatible
+    /// anchor, may consume the token.
     @discardableResult
     mutating func finish(
         _ requestID: UUID,
-        ifMatchingLocatorHref locatorHref: String
+        ifMatchingLocatorHref locatorHref: String,
+        locatorFragments: [String] = []
     ) -> Bool {
-        guard matchesCurrent(requestID, locatorHref: locatorHref) else {
+        guard matchesCurrent(
+            requestID,
+            locatorHref: locatorHref,
+            locatorFragments: locatorFragments
+        ) else {
             return false
         }
-        activeRequestID = nil
-        activeExpectedLocatorHref = nil
+        invalidate()
         return true
     }
 }
@@ -138,7 +203,15 @@ final class ReaderTOCNavigationBridge {
         self.beforeContinuationInstall = beforeContinuationInstall
     }
 
-    func navigate(requestID: UUID, locator: Locator) async -> ReaderTOCNavigationEvent {
+    /// `onAccepted` runs in the same main-actor turn that Readium's `go(to:)`
+    /// reports acceptance, before the caller resumes. A location callback that
+    /// Readium delivers right after acceptance is therefore already attributable
+    /// to the request, instead of being dropped and timing out.
+    func navigate(
+        requestID: UUID,
+        locator: Locator,
+        onAccepted: (@MainActor () -> Void)? = nil
+    ) async -> ReaderTOCNavigationEvent {
         let race = ReaderTOCNavigationRace(requestID: requestID)
         let navigator = self.navigator
         let timeoutNanoseconds = self.timeoutNanoseconds
@@ -154,12 +227,16 @@ final class ReaderTOCNavigationBridge {
                         return
                     }
                     guard !Task.isCancelled else {
+                        // Cancelled before go(to:) ran: Readium never sees the jump.
                         race.finish(.cancelled(requestID: requestID))
                         return
                     }
                     guard let accepted = await navigator.go(to: locator) else {
                         race.finish(.navigatorUnavailable(requestID: requestID))
                         return
+                    }
+                    if accepted {
+                        onAccepted?()
                     }
                     race.finish(
                         accepted
