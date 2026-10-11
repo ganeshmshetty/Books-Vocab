@@ -129,37 +129,35 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 ### 2.5 停容器、備份「壞掉的」現場、解壓覆蓋
 
-**執行身份：人類，經 direct ssh 手動執行**（#2923）。agent 不得執行本節任何步驟；目前沒有 restore 子命令（待 owner 決策後另立 issue），覆寫 kg-data 不經 `devops_kg_safe.sh run`／`devops.sh run`／`container-run`（守門擋下，見 §2.5a）。人類以 `ssh -t chenliangyu@100.118.39.104` 進入 standby 互動 shell 後依下列步驟操作，每一步自行確認輸出再進行下一步。
+**唯一路徑：`./devops.sh restore <YYYY-MM-DD>`**（#2923；owner 決策 2026-10-11）。覆寫 kg-data 只能經此指令。agent 不得執行本節，也不得以 ssh、手動 `mv`／`tar`，或 `devops.sh run`／`container-run` 等任何其他方式寫入 kg-data；`devops_kg_safe.sh` 一律拒絕 `restore`。
 
-archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
+**執行身份：人類，於本機互動終端（stdin 必須是 TTY）執行**，提示時親自輸入 `yes`。非 TTY、設定 `DEVOPS_YES`，或輸入 `yes` 以外的任何字，都會拒絕或取消，且不連到遠端。
 
 ```bash
-set -e
-DATE=2026-05-31  # 同 §2.3
-DATA=~/kg-data   # 現役 standby；舊 Lightsail 為 /home/ubuntu/knowledge_graph_api/data
-ARCHIVE="/tmp/${DATE}.tar.gz"
-
-# 停容器,避免 SQLite WAL race(compose 在 ~/kg-prod/backend)
-(cd ~/kg-prod/backend && docker compose stop)
-
-# 解壓前驗證 archive 第一層 == basename(DATA)
-ROOT=$(tar tzf "$ARCHIVE" | head -1 | cut -d/ -f1)
-[ "$ROOT" = "$(basename "$DATA")" ] || { echo "root mismatch: $ROOT"; exit 1; }
-
-# 把當前 data rename 成 <DATA>.broken.<ts>(別 rm,留鑑識用);目錄存在但 mv 失敗要中止
-TS=$(date +%Y%m%d-%H%M%S)
-[ ! -e "$DATA" ] || mv "$DATA" "$DATA.broken.${TS}"
-
-# 解壓到 DATA 的上層目錄,還原出 $(basename "$DATA")/
-tar xzf "$ARCHIVE" -C "$(dirname "$DATA")"
-ls -la "$DATA/users/" | head
+# 人類在本機互動終端執行
+./devops.sh restore 2026-10-09
 ```
+
+指令內建下列步驟，任一道驗證失敗都在動到現況之前中止（exit 1）；swap 失敗會把現況搬回並重啟容器。遠端腳本為 `ops/lib/devops_restore_remote.sh`。
+
+1. **來源可信**：backup log 必須有該日 `exit=0` 紀錄，且 sha256 與 S3 物件一致。
+2. **archive 結構**：第一層必須 == `basename(DATA)`（standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`），且無絕對或上層路徑。
+3. **staging 完整性**：解壓到暫存目錄，每個 `*.db` 須 `PRAGMA quick_check = ok`。
+4. **swap**：`docker compose stop` → 現況改名成 `<DATA>.broken.<ts>`（保留為鑑識快照，不刪除）→ 新資料就位 → `docker compose up -d`。
+
+archive 不含 `-wal`／`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（指令已內建）。
+
+結果判讀：
+- `✓ restore 完成`：進入 §2.6–§2.8 修正 owner、啟動與健康檢查、抽樣驗證。`.broken.<ts>` 保留，驗證通過後才另行清理。
+- `需人工介入`（exit 2）：資料已還原但容器未啟動，或回滾失敗。停止後續步驟，保留 `.broken.<ts>` 與 backup log，回報 owner。
 
 #### 2.5a 受保護名稱與守門範圍
 
+`./devops.sh restore` 不經 `run` 守門（它是具名子命令，由遠端腳本自行驗證）。本節說明 `run`／`container-run`／`migrate-run` 守門的範圍，供排查 §2.5 相關維運指令為何被擋。
+
 守門實作：`ops/lib/devops_run_guard.sh`（`run`／`container-run`／`migrate-run` 共用）。受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app` 本身、home／root 目錄（`~`、`$HOME`、`/home/ubuntu`、`/Users/<x>`、`/root`）、docker volumes、`knowledge_graph_api`、`knowledge-graph-api_data`。
 
-下表為 §2.5 維運指令經守門的實測結果；`ops/tests/test_docs_lint.sh` 逐列以 `devops_run_is_blocked` 核對，表與守門不一致即紅燈。
+下表為 §2.5 相關維運指令經 `run` 守門的實測結果；`ops/tests/test_docs_lint.sh` 逐列以 `devops_run_is_blocked` 核對，表與守門不一致即紅燈。
 
 | 子命令 | 指令 | 結果 | 原因 |
 |---|---|---|---|
@@ -176,7 +174,7 @@ ls -la "$DATA/users/" | head
 
 守門依「目標路徑是否落在受保護名稱」判定，不依動作種類；同一動作在一般工作目錄放行、在受保護路徑下擋下。
 
-agent 與 `run`／`container-run`／`migrate-run` 守門路徑不得以 ssh 或手動 `mv`／`rm` 繞過。§2.5 由人類經 direct ssh 手動執行是唯一允許的例外，須留紀錄。若要讓被擋的操作能在守門流程內執行，需把它寫成具名子命令、附測試後由 owner 決策（尚未存在）。
+agent 與 `run`／`container-run`／`migrate-run` 守門路徑不得以 ssh 或手動 `mv`／`rm` 繞過。被擋的操作若確有需要，須由 owner 另立 issue 決策，不得在本 SOP 新增替代路徑。
 
 ### 2.6 修正 owner
 

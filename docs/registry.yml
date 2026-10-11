@@ -66,6 +66,7 @@ documents:
     sources:
       - ops/devops_kg_safe.sh
       - ops/lib/devops_run_guard.sh
+      - ops/lib/devops_restore_remote.sh
       - ops/lib/hermetic_ops_test.sh
       - ops/release.sh
       - ops/kg_reconcile.sh
@@ -498,6 +499,8 @@ documents:
     sources:
       - ops/backup*.sh
       - docs/sop/backup.md
+      - devops.sh
+      - ops/lib/devops_restore_remote.sh
 
   - id: sop.cost_review
     path: docs/sop/cost_review.md

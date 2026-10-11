@@ -5,6 +5,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=../lib/hermetic_ops_test.sh
+source "$ROOT/ops/lib/hermetic_ops_test.sh"
+hermetic_ops_test_init "$ROOT"
 
 TMP="$(mktemp -d)"
 DOC_FIXTURE_PREFIX="docs/.lint_test_$$"
@@ -150,29 +153,34 @@ if [ -n "$(ls -A "$TMP/scratch")" ]; then
   exit 1
 fi
 
-# #2923: the restore SOP must state that the kg-data overwrite is executed by a human over
-# direct ssh, must enumerate the protected names, must explain which legitimate maintenance
-# commands the guard blocks, and must not advertise a `devops.sh restore` command (no
-# such command exists; restore is an owner decision tracked in a separate issue).
-require_grep '經 direct ssh' docs/sop/backup_restore.md
+# #2923: the restore SOP must describe exactly one kg-data writer, the guarded
+# `./devops.sh restore <YYYY-MM-DD>` with a human TTY confirm. It must not document a direct-ssh
+# path, a manual overwrite recipe in §2.5, or a human exception; its §2.5a guard table must match
+# the live guard (devops_run_is_blocked).
+require_grep './devops.sh restore <YYYY-MM-DD>' docs/sop/backup_restore.md
+require_grep '互動終端' docs/sop/backup_restore.md
 require_grep '受保護名稱' docs/sop/backup_restore.md
-require_grep 'rm -rf .venv' docs/sop/backup_restore.md
-if grep -n 'devops.sh restore' docs/sop/backup_restore.md; then
-  echo "backup_restore.md advertises a devops.sh restore command (#2923 scope: docs only)" >&2
+if grep -n 'direct ssh' docs/sop/backup_restore.md; then
+  echo "backup_restore.md documents a direct-ssh path (#2923: restore has exactly one path)" >&2
   exit 1
 fi
 if grep -nE 'ssh [^#]*(tar +-?x|mv +[^ ]*kg-data)' docs/sop/backup_restore.md; then
   echo "backup_restore.md documents a one-line ssh restore/overwrite (#2923)" >&2
   exit 1
 fi
+awk '/^### 2\.5 /{f=1;next} /^#### 2\.5a /{f=0} f' docs/sop/backup_restore.md >"$TMP/sop_25.txt"
+if grep -nE '^[[:space:]]*(tar|mv|rm|cp|ssh|scp|rsync|docker|aws) ' "$TMP/sop_25.txt"; then
+  echo "backup_restore.md §2.5 carries a manual command; the only kg-data writer is devops.sh restore (#2923)" >&2
+  exit 1
+fi
 
-# #2923 (CR P3): the §2.5a table must list the two maintenance commands the guard blocks
-# that the restore path actually hits, and every 擋／允許 row must agree with the live guard.
+# #2923: the §2.5a table must list the maintenance commands the guard blocks, and every 擋／允許
+# row must agree with the live guard.
 require_grep 'rm -rf ~/kg-prod/backend/.venv' docs/sop/backup_restore.md
 require_grep 'cd ~/kg-prod/backend && cp .env.example .env' docs/sop/backup_restore.md
 # shellcheck source=../lib/devops_run_guard.sh
 source ops/lib/devops_run_guard.sh
-awk '/^#### 2\.5a /{f=1;next} /^#### /{f=0} f && /^\|/ && !/^\|---/' docs/sop/backup_restore.md >"$TMP/guard_table.txt"
+awk '/^#### 2\.5a /{f=1;next} /^#+ /{f=0} f && /^\|/ && !/^\|---/' docs/sop/backup_restore.md >"$TMP/guard_table.txt"
 guard_rows=0
 guard_mismatch=0
 while IFS='|' read -r _ sub cmd want _; do
