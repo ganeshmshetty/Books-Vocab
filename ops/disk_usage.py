@@ -1541,6 +1541,40 @@ def _branch_tip(workspace: Path, branch: str) -> str | None:
     return completed.stdout.strip() or None if completed.returncode == 0 else None
 
 
+def _is_ancestor(workspace: Path, ancestor: str, descendant: str) -> bool:
+    """True when ``ancestor`` is reachable from ``descendant``; False when unknown."""
+
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(workspace),
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _grown_from_registered_branch(workspace: Path, item: dict[str, Any]) -> bool:
+    """True when a lane's physical HEAD descends from its registered branch tip."""
+
+    registered_tip = _branch_tip(workspace, str(item.get("branch")))
+    head = item.get("head")
+    if registered_tip is None or not head:
+        return False
+    return _is_ancestor(workspace, registered_tip, str(head))
+
+
 def _stale_agent_cleanup_hint(path: Path, lock: dict[str, Any], branch: str) -> str:
     quoted = shlex.quote(str(path))
     unlock = f"git worktree unlock {quoted} && " if lock["state"] != "unlocked" else ""
@@ -2241,12 +2275,25 @@ def build_report(
         for path, matches in registry_by_path.items()
         if any(item[1].get("status") not in KNOWN_REGISTRY_STATUSES for item in matches)
     )
-    physical_identity_mismatches = sorted(
-        str(item["path"])
+    mismatched_lanes = [
+        item
         for item in physical_lanes
         if item.get("registry_status") in KNOWN_REGISTRY_STATUSES
         and item.get("observed_branch")
         and item.get("observed_branch") != item.get("branch")
+    ]
+    # #3092: a physical branch grown from the registered one (registered tip is an
+    # ancestor of the physical HEAD) has lost no commit; the registry only lags.
+    # Warn by path instead of blocking every lane; unrelated branches still block.
+    descendant_fix_branches = sorted(
+        str(item["path"])
+        for item in mismatched_lanes
+        if _grown_from_registered_branch(workspace, item)
+    )
+    physical_identity_mismatches = sorted(
+        str(item["path"])
+        for item in mismatched_lanes
+        if str(item["path"]) not in descendant_fix_branches
     )
     detached_candidates = [
         item
@@ -2388,6 +2435,9 @@ def build_report(
     ]
     warning_reasons.extend(
         f"unregistered-physical-worktree:{path}" for path in unregistered
+    )
+    warning_reasons.extend(
+        f"descendant-fix-branch-worktree:{path}" for path in descendant_fix_branches
     )
     if dirty_supervision:
         blocking_reasons.append("dirty-supervision-worktree")
@@ -2658,6 +2708,7 @@ def build_report(
             ),
             "physical_identity_repairs": physical_identity_repairs,
             "detached_at_tip_warnings": detached_at_tip,
+            "descendant_fix_branch_warnings": descendant_fix_branches,
             "terminal_physical_residue": sorted(
                 str(item["path"]) for item in terminal_physical_lanes
             ),

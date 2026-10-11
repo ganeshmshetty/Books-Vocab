@@ -2917,3 +2917,80 @@ def test_detached_lane_behind_branch_tip_blocks_and_names_repair(
     assert "physical-identity-mismatch" in policy["blocking_reasons"]
     assert str(worktree) in policy["physical_identity_mismatches"]
     assert f"git -C {worktree} switch lane-one" in policy["physical_identity_repairs"]
+
+
+def _lane_one_report(tmp_path: Path, repo: Path, worktree: Path) -> tuple[int, dict]:
+    state = tmp_path / "registry.json"
+    output = tmp_path / "lane-usage.json"
+    _write_registry(
+        state,
+        [
+            {
+                "branch": "lane-one",
+                "path": str(worktree),
+                "status": "active",
+                "claim_generation": 0,
+                "external_ids": ["DIRECT-DELIVERY-DESCENDANT"],
+            }
+        ],
+    )
+    code = main(
+        ["--workspace", str(repo), "--state", str(state), "--output", str(output)]
+    )
+    return code, json.loads(output.read_text(encoding="utf-8"))
+
+
+def test_fix_branch_grown_from_registered_branch_is_a_warning_not_a_block(
+    tmp_path: Path,
+) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "switch", "-c", "lane-two")
+    (worktree / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _run_git(worktree, "add", "fix.txt")
+    _run_git(worktree, "commit", "-m", "fix grown from the lane")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == 0
+    assert policy["verdict"] == "warning"
+    assert "physical-identity-mismatch" not in policy["blocking_reasons"]
+    assert str(worktree) not in policy["physical_identity_mismatches"]
+    assert str(worktree) in policy["descendant_fix_branch_warnings"]
+    assert f"descendant-fix-branch-worktree:{worktree}" in policy["warning_reasons"]
+
+
+def test_unrelated_branch_in_a_lane_still_blocks_as_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "switch", "-c", "lane-two", "main")
+    (worktree / "sibling.txt").write_text("sibling\n", encoding="utf-8")
+    _run_git(worktree, "add", "sibling.txt")
+    _run_git(worktree, "commit", "-m", "sibling branch off main")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+
+
+def test_detached_head_grown_from_registered_branch_still_blocks(
+    tmp_path: Path,
+) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "checkout", "--detach", "HEAD")
+    (worktree / "detached.txt").write_text("detached\n", encoding="utf-8")
+    _run_git(worktree, "add", "detached.txt")
+    _run_git(worktree, "commit", "-m", "detached progress")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
