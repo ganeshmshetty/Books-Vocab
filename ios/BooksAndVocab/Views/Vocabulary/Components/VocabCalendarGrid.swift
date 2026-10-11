@@ -76,11 +76,12 @@ struct VocabCalendarGrid: View {
         VStack(spacing: appSkin.spacing.rowMicroGap) {
             // Weekday header
             LazyVGrid(columns: columns, spacing: AppSpacing.s1) {
-                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { index, symbol in
                     Text(symbol)
                         .font(appSkin.typography.monoLabel)
                         .foregroundStyle(appSkin.palette.quaternaryText)
                         .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier(ReviewCalendarAccessibility.weekday(index))
                 }
             }
 
@@ -89,8 +90,8 @@ struct VocabCalendarGrid: View {
                 ForEach(monthDays) { cell in
                     if cell.dayNumber == 0 {
                         Color.clear
-                            .aspectRatio(1, contentMode: .fit)
                             .frame(maxWidth: .infinity)
+                            .aspectRatio(1, contentMode: .fit)
                     } else {
                         dayView(cell)
                     }
@@ -109,22 +110,27 @@ struct VocabCalendarGrid: View {
                 selectedDay = cell.dayKey
             }
         } label: {
-            VStack(spacing: 1) {
-                Text("\(cell.dayNumber)")
-                    .font(appSkin.typography.caption)
-                    .foregroundStyle(
-                        cell.isToday ? AppColors.chartHighlight :
-                        isSelected ? appSkin.palette.primaryText :
-                        appSkin.palette.secondaryText
-                    )
+            // 方形尺寸由 Color.clear 底板決定（先 maxWidth 再 aspectRatio），內容以 overlay 疊上、
+            // 不參與尺寸協商；否則 content-height 的 VStack 會讓各列高度漂移（#2861）。
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    VStack(spacing: 1) {
+                        Text("\(cell.dayNumber)")
+                            .font(appSkin.typography.caption)
+                            .foregroundStyle(
+                                cell.isToday ? AppColors.chartHighlight :
+                                isSelected ? appSkin.palette.primaryText :
+                                appSkin.palette.secondaryText
+                            )
 
-                // Activity dot
-                Circle()
-                    .fill(count > 0 ? dotColor(count) : Color.clear)
-                    .frame(width: 5, height: 5)
-            }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(1, contentMode: .fit)
+                        // Activity dot
+                        Circle()
+                            .fill(count > 0 ? dotColor(count) : Color.clear)
+                            .frame(width: 5, height: 5)
+                    }
+                }
             // 日格是 aspectRatio(1) 的方形按鈕，7 欄下短邊 ≈47pt。
             // control 給 r≈7（改制前 6），是四階裡唯一貼合的；pill 會把日格變成圓形。
             .background(

@@ -51,6 +51,12 @@ enum VocabCalendarGridScenarios {
             Scenario("Current month with today", layout: .fillH) {
                 VocabCalendarGridScene(fixture: .currentMonth)
             }
+            // 前導空白 3 的 2026-10（#2861 原始範圍）：3/8/9 有活動，驗證 row-1 空白格之後的日格仍落在正確欄位。
+            // 注意：固定 projection clock 為 2026-06-01，10 月整月在未來，日格會 disabled 並 opacity 0.45，
+            // 此場景只用於幾何結構檢視，不代表一般日格外觀；六種 offset 的對齊由 UITest 逐月走訪驗證。
+            Scenario("Leading blanks (2026-10)", layout: .fillH) {
+                VocabCalendarGridScene(fixture: .monthWithActivityDays(year: 2026, month: 10, days: [3, 8, 9]))
+            }
         }
     }
 }
@@ -62,6 +68,7 @@ private struct VocabCalendarGridScene: View {
         case heavyIntensity
         case noActivity
         case currentMonth
+        case monthWithActivityDays(year: Int, month: Int, days: [Int])
     }
 
     let fixture: Fixture
@@ -110,6 +117,13 @@ private struct VocabCalendarGridScene: View {
         case .currentMonth:
             let month = Self.projectionClock.now
             return Config(month: month, activity: Self.gradientActivity(in: month), initialSelection: nil)
+        case let .monthWithActivityDays(year, month, days):
+            let displayed = Self.month(year: year, month: month)
+            var activity: [String: Int] = [:]
+            for day in days {
+                if let key = Self.dayKey(in: displayed, day: day) { activity[key] = 3 }
+            }
+            return Config(month: displayed, activity: activity, initialSelection: nil)
         }
     }
 
@@ -123,6 +137,18 @@ private struct VocabCalendarGridScene: View {
             preconditionFailure("VocabCalendarGridScenarios requires a valid fixed month")
         }
         return month
+    }
+
+    /// Parameterized variant of `fixedMonth()` for the leading-blank scenarios.
+    private static func month(year: Int, month: Int) -> Date {
+        var comps = DateComponents(calendar: calendar, timeZone: calendar.timeZone)
+        comps.year = year
+        comps.month = month
+        comps.day = 1
+        guard let date = calendar.date(from: comps) else {
+            preconditionFailure("VocabCalendarGridScenarios requires a valid fixed month")
+        }
+        return date
     }
 
     private static func dayKey(in month: Date, day: Int) -> String? {
