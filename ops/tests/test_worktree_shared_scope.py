@@ -14,6 +14,14 @@ from lib import worktree_scope
 from lib.worktree_scope import SHARED_SCOPE_FILES
 from worktree_registry_core import records as records_module
 
+ROOT = OPS.parent
+# Derived from disk, not hand-copied: a new locale must be added to
+# SHARED_SCOPE_FILES or the tests below fail.
+LOCALIZABLE_CATALOGS = frozenset(
+    p.relative_to(ROOT).as_posix()
+    for p in ROOT.glob("ios/BooksAndVocab/*.lproj/Localizable.strings")
+)
+
 
 def _register(state: dict, name: str, tmp_path: Path, *paths: str) -> tuple[int, dict]:
     return registry._register_record(
@@ -137,17 +145,9 @@ def test_allowlist_is_exact_existing_canonical_paths() -> None:
     }
 
 
-LOCALIZABLE_CATALOGS = (
-    "ios/BooksAndVocab/en.lproj/Localizable.strings",
-    "ios/BooksAndVocab/ja.lproj/Localizable.strings",
-    "ios/BooksAndVocab/ko.lproj/Localizable.strings",
-    "ios/BooksAndVocab/zh-Hans.lproj/Localizable.strings",
-    "ios/BooksAndVocab/zh-Hant.lproj/Localizable.strings",
-)
-
-
 def test_localizable_catalogs_are_shared_and_other_ios_files_stay_exclusive() -> None:
-    for catalog in LOCALIZABLE_CATALOGS:
+    assert LOCALIZABLE_CATALOGS, "glob found no Localizable.strings catalogs"
+    for catalog in sorted(LOCALIZABLE_CATALOGS):
         assert catalog in SHARED_SCOPE_FILES, catalog
         # Two lanes that only touch catalogs do not collide ...
         assert worktree_scope.overlap_paths({catalog, "ops/a.py"}, {catalog}) == set()
