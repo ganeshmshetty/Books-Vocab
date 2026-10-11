@@ -62,6 +62,14 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 把 `.system` 解析成具體語言；其餘值原樣回傳。字串與格式化都必須只用這個結果，
+    /// 否則不支援的裝置語系會出現英文字串配裝置語系分隔符（#2997）。
+    func resolved(preferredLanguages: [String] = Locale.preferredLanguages) -> AppLanguage {
+        self == .system
+            ? AppLanguage.resolvedSystemLanguage(preferredLanguages: preferredLanguages)
+            : self
+    }
+
     /// `preferredLanguages` 預設為系統偏好；測試以此注入不支援的裝置語系（如 fr）。
     static func resolvedSystemLanguage(
         preferredLanguages: [String] = Locale.preferredLanguages
@@ -203,9 +211,7 @@ final class AppLanguageStore: ObservableObject {
     /// render paths normally use `stringBundle`; this overload keeps focused
     /// localization contracts deterministic without mutating process-wide state.
     func stringBundle(for language: AppLanguage) -> Bundle {
-        let resolvedLanguage = language == .system
-            ? AppLanguage.resolvedSystemLanguage()
-            : language
+        let resolvedLanguage = language.resolved()
         bundleCacheLock.lock()
         defer { bundleCacheLock.unlock() }
         if let cached = bundleCache[resolvedLanguage] { return cached }
@@ -227,10 +233,7 @@ final class AppLanguageStore: ObservableObject {
         for language: AppLanguage,
         preferredLanguages: [String] = Locale.preferredLanguages
     ) -> Locale {
-        let resolvedLanguage = language == .system
-            ? AppLanguage.resolvedSystemLanguage(preferredLanguages: preferredLanguages)
-            : language
-        return resolvedLanguage.locale
+        language.resolved(preferredLanguages: preferredLanguages).locale
     }
 
     func setLanguage(_ language: AppLanguage, preservingRootPresentation: Bool = false) {
