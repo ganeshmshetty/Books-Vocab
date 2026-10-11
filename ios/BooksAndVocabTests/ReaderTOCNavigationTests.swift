@@ -328,25 +328,89 @@ struct ReaderTOCNavigationTests {
         #expect(nextFinished)
     }
 
-    /// A resource-level replacement has no anchor to require, so its anchorless
-    /// completion is unchanged.
+    /// A resource-level replacement owes nothing to an anchor of its own, but the
+    /// superseded anchored jump still owes its anchorless report to the same
+    /// resource. That report cannot be told apart from the replacement's own, so
+    /// it is consumed first; completing on it would finish the replacement before
+    /// its own jump reports.
     @Test
-    func resourceLevelReplacementStillCompletesOnAnchorlessCallback() {
+    func resourceLevelReplacementConsumesSupersededReportBeforeCompleting() {
         let replacedRequest = UUID()
         let replacementRequest = UUID()
         var gate = ReaderTOCNavigationRequestGate()
 
         gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
         gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml")
+        #expect(gate.owedSupersededHrefs == ["OEBPS/chapter-1.xhtml"])
         #expect(gate.markNavigationAccepted(replacementRequest))
 
-        let finished = gate.finish(
+        let supersededReport = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
             locatorFragments: []
         )
-        #expect(finished)
+        #expect(!supersededReport)
+        #expect(gate.owedSupersededHrefs.isEmpty)
+        #expect(gate.isCurrent(replacementRequest))
+
+        let ownReport = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(ownReport)
         #expect(gate.activeRequestID == nil)
+    }
+
+    /// Readium refused the superseded jump, so it performed nothing and owes no
+    /// report. The replacement's first anchorless report is its own and completes
+    /// it, rather than waiting for a report that never comes.
+    @Test
+    func refusedSupersededJumpOwesNoReport() {
+        let replacedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(replacedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.owedSupersededHrefs == ["OEBPS/chapter-1.xhtml"])
+
+        // go(to:) for the superseded jump resolves as refused after the replacement began.
+        gate.jumpRefused(replacedRequest)
+        #expect(gate.owedSupersededHrefs.isEmpty)
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let ownReport = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(ownReport)
+        #expect(gate.activeRequestID == nil)
+    }
+
+    /// The refusal can reach the gate while the refused request is still the live
+    /// one, before its replacement begins. It then owes no report either.
+    @Test
+    func jumpRefusedBeforeReplacementBeginsOwesNoReport() {
+        let refusedRequest = UUID()
+        let replacementRequest = UUID()
+        var gate = ReaderTOCNavigationRequestGate()
+
+        gate.begin(refusedRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["a"])
+        gate.jumpRefused(refusedRequest)
+        #expect(gate.isCurrent(refusedRequest))
+
+        gate.begin(replacementRequest, expectedLocatorHref: "OEBPS/chapter-1.xhtml", expectedFragments: ["b"])
+        #expect(gate.owedSupersededHrefs.isEmpty)
+        #expect(gate.markNavigationAccepted(replacementRequest))
+
+        let ownReport = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(ownReport)
     }
 
     /// Re-issuing the active request is not a replacement of it.
@@ -464,6 +528,14 @@ struct ReaderTOCNavigationTests {
         #expect(!lateFirstFinished)
         #expect(gate.isCurrent(replacementRequest))
 
+        // The superseded anchored jump owes its anchorless report to the resource;
+        // only the report after it completes the resource-level replacement.
+        let supersededReport = gate.finish(
+            replacementRequest,
+            ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
+            locatorFragments: []
+        )
+        #expect(!supersededReport)
         let resourceFinished = gate.finish(
             replacementRequest,
             ifMatchingLocatorHref: "OEBPS/chapter-1.xhtml",
@@ -523,6 +595,29 @@ struct ReaderTOCNavigationTests {
             timeoutNanoseconds: 50_000_000
         ).navigate(requestID: UUID(), locator: locator, onAccepted: { rejected.count += 1 })
         #expect(rejected.count == 0)
+    }
+
+    /// A refused jump is reported through the hook even though the race settles
+    /// with goRejected, so a superseded request can release the report it owed.
+    @Test @MainActor
+    func refusalHookRunsOnlyForRefusedJump() async throws {
+        let locator = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+        let refusedRequestID = UUID()
+        let refused = RefusalCounter()
+        let rejectedEvent = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .rejected),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: refusedRequestID, locator: locator, onRefused: { refused.count += 1 })
+
+        #expect(refused.count == 1)
+        #expect(rejectedEvent == .goRejected(requestID: refusedRequestID))
+
+        let accepted = RefusalCounter()
+        _ = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .accepted),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: UUID(), locator: locator, onRefused: { accepted.count += 1 })
+        #expect(accepted.count == 0)
     }
 
     @Test @MainActor
@@ -1111,6 +1206,9 @@ private final class ReaderNavigationTaskBox {
 
 @MainActor
 private final class AcceptanceCounter {
+    var count = 0
+}
+private final class RefusalCounter {
     var count = 0
 }
 
