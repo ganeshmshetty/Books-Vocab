@@ -77,7 +77,7 @@ struct ReaderProgressSaverTests {
         sut.flush()
         #expect(saves.value == 1)   // immediate
 
-        // The previously-scheduled debounced save must have been cancelled.
+        // The fake keeps the scheduled action; flush() must have cleared latestSave so it is a no-op.
         debouncer.fire()
         #expect(saves.value == 1)
     }
@@ -133,8 +133,8 @@ struct ReaderProgressSaverTests {
         #expect(saves.value == 1)
     }
 
-    /// flush() cancels the pending debounce task; even if the original window
-    /// expires later, no late save fires because the task was cancelled.
+    /// flush() clears the pending save; even if the original window fires
+    /// later, no late save runs (the fake debouncer does not cancel on its own).
     @Test func flushCancelsPendingTaskSoNoLateSave() {
         let saves = Counter()
         let debouncer = TestReaderProgressDebouncer()
@@ -201,6 +201,25 @@ struct ReaderProgressSaverTests {
         #expect(saves.value == 1)
     }
 
+    /// An empty PDF (pageCount == 0) has no position to record: the model is
+    /// untouched and no save is scheduled.
+    @Test func pdfZeroPageCountIsIgnored() {
+        let saves = Counter()
+        let debouncer = TestReaderProgressDebouncer()
+        let saver = ReaderProgressSaver(flushDelay: 0.05, debouncer: debouncer)
+        let book = Book(title: "PDF", author: "Test", fileName: "a.pdf")
+        let locatorBefore = book.lastReadLocatorJSON
+        let dateBefore = book.dateLastRead
+        let sut = PDFProgressRecorder(book: book, saver: saver, persist: { saves.increment() })
+
+        sut.pageChanged(pageIndex: 0, pageCount: 0)
+        debouncer.fire()
+
+        #expect(saves.value == 0)
+        #expect(book.lastReadLocatorJSON == locatorBefore)
+        #expect(book.dateLastRead == dateBefore)
+    }
+
     @Test func pdfSinglePageHasFullProgression() {
         let saver = ReaderProgressSaver(flushDelay: 0.05, debouncer: TestReaderProgressDebouncer())
         let book = Book(title: "PDF", author: "Test", fileName: "a.pdf")
@@ -229,9 +248,10 @@ private final class TestReaderProgressDebouncer: ReaderProgressDebouncing {
         pendingAction = action
     }
 
-    func cancel() {
-        pendingAction = nil
-    }
+    /// Deliberately keeps `pendingAction`: a real debouncer can lose the race
+    /// with an in-flight fire, so a late fire after cancel must be harmless on
+    /// its own (the saver must not rely on cancel() to suppress it).
+    func cancel() {}
 
     func fire() {
         let action = pendingAction

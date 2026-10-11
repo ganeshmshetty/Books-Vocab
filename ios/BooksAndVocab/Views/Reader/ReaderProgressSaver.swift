@@ -6,7 +6,7 @@ import ReadiumShared
 ///
 /// 背景：`ReaderView.handleLocationChange` 每次翻頁都更新 `Book` 的
 /// `lastReadLocatorJSON` / `dateLastRead` / `progression`，但**從不** `save()`，
-/// 仰賴 SwiftData 非確定性 autosave。crash / OOM 被殺前未 flush 則最後位置遺失，
+/// 仰賴 SwiftData 非確定性 autosave。若 crash / OOM 發生於 flush 之前，最後位置會遺失。
 /// PDF 路徑（`PDFReaderView` 經 `PDFProgressRecorder` 委派）共用同一個 saver 與 debounce 窗口，
 /// 兩條閱讀器的落盤語意一致。
 ///
