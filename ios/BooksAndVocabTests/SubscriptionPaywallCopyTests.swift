@@ -162,7 +162,7 @@ struct SubscriptionPaywallCopyTests {
     func purchaseSyncPendingMessage_pointsToRestoreNotResync(language: AppLanguage) {
         let text = L10n.string(SubscriptionPurchaseCopy.backendSyncPendingKey, language: language)
         let restoreLabel = L10n.string("恢復購買", language: language)
-        let resyncLabel = L10n.string("重新同步", language: language)
+        let resyncLabel = L10n.string("重新同步訂閱狀態", language: language)
         #expect(text.contains(restoreLabel))
         #expect(!text.contains(resyncLabel))
     }
