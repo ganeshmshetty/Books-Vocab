@@ -150,6 +150,65 @@ final class TodayReviewGapUITests: UITestCase {
         )
     }
 
+    /// #3117: the hero speaker and the fold chevron must expose >= 44pt
+    /// accessibility frames. The visuals stay small; only the hit area grows.
+    @MainActor
+    func testHeroSpeakerAndFoldChevronExposeMinimumHitTarget() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeckVaried],
+            perfLog: "review"
+        )
+        let notebook = AppPage(app: app).goToNotebooks()
+        guard notebook.notebookCard(id: Self.notebookCardID).waitUntilExists(timeout: 10) else {
+            captureStep("hit-target-no-notebook-card", app: app)
+            XCTFail("varied review deck fixture 應種出單字本卡片 \(Self.notebookCardID)")
+            return
+        }
+        guard notebook.reviewCTAButton.waitUntilExists(timeout: 10) else {
+            captureStep("hit-target-no-review-cta", app: app)
+            XCTFail("varied deck 有未學卡片，複習 CTA 必須出現")
+            return
+        }
+        let review = notebook.startReview()
+        guard review.progressLabel.waitUntilExists(timeout: 10) else {
+            captureStep("hit-target-review-not-started", app: app)
+            XCTFail("tap CTA 後必須進入複習 session；progress label 缺席")
+            return
+        }
+        _ = review.cardFront.waitUntilExists(timeout: 8)
+        _ = review.flipCard()
+        _ = review.cardBack.waitUntilExists(timeout: 5)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+        captureStep("hit-target-back", app: app)
+
+        assertMinimumHitTarget(review.heroSpeakButton, name: "hero speaker")
+        assertMinimumHitTarget(review.foldCollapseButton, name: "fold chevron")
+    }
+
+    @MainActor
+    private func assertMinimumHitTarget(
+        _ element: XCUIElement,
+        name: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard element.waitForExistence(timeout: 5) else {
+            XCTFail("\(name) 必須存在於複習畫面", file: file, line: line)
+            return
+        }
+        let frame = element.frame
+        XCTAssertGreaterThanOrEqual(
+            frame.width, 44,
+            "\(name) hit target 寬度必須 >= 44pt，實際 \(frame.width)",
+            file: file, line: line
+        )
+        XCTAssertGreaterThanOrEqual(
+            frame.height, 44,
+            "\(name) hit target 高度必須 >= 44pt，實際 \(frame.height)",
+            file: file, line: line
+        )
+    }
+
     /// Regression for the reported screenshot: after a reveal/advance cycle,
     /// the outer review column can be recomputed at intrinsic content height.
     /// The card and grading toolbar then move upward together, leaving a large
