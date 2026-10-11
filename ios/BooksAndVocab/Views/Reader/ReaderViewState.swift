@@ -55,6 +55,21 @@ struct ReaderTOCNavigationRequestGate: Equatable, Sendable {
         activeExpectedLocatorHref = expectedLocatorHref
     }
 
+    /// Starts a request unless a request for the same resource is still
+    /// awaiting its delegate callback. Readium reports only the fragment-free
+    /// resource href, so a late callback for that in-flight request cannot be
+    /// told apart from one for a sibling fragment of the same resource. The
+    /// sibling is refused (returns false) and the token stays with the request
+    /// the callback belongs to.
+    @discardableResult
+    mutating func tryBegin(_ requestID: UUID, expectedLocatorHref: String) -> Bool {
+        if activeRequestID != nil, activeExpectedLocatorHref == expectedLocatorHref {
+            return false
+        }
+        begin(requestID, expectedLocatorHref: expectedLocatorHref)
+        return true
+    }
+
     mutating func invalidate() {
         activeRequestID = nil
         activeExpectedLocatorHref = nil
