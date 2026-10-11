@@ -113,10 +113,12 @@ enum VocabularyEntryPresentation {
             now: now
         )
 
+        // Facet counts are row-based on purpose (they match the visible rows). The review queue is
+        // card-based (`uniqueByPersistenceID`, #3059 (1)), so a duplicate pair can count twice here.
         let reviewCounts = Dictionary(uniqueKeysWithValues: VocabularyReviewState.allCases.map { state in
             (state, classified.count(for: state))
         })
-        let reviewVisible = entries.filter(\.shouldAppearInReview)
+        let reviewVisible = ReviewSessionPersistence.uniqueByPersistenceID(entries.filter(\.shouldAppearInReview))
         let reviewQueue = VocabularyReviewQueue(
             due: reviewVisible.filter { $0.reviewState(at: now) == .due },
             unlearned: reviewVisible.filter { $0.reviewState(at: now) == .unlearned }
