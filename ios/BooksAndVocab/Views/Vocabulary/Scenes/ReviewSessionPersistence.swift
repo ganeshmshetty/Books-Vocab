@@ -265,7 +265,7 @@ enum ReviewSessionPersistence {
                 let confirmed = settled
                 if let onFlushed { await onFlushed(confirmed) }
             } else {
-                AppLog.data.error("flushPendingAnswers: batch save failed for \(staged.count) answers")
+                AppLog.data.error("flushPendingAnswers: batch save failed for \(settled.count) answers")
                 if let onFailure { await onFailure() }
             }
         }
