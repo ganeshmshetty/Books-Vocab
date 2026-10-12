@@ -41,7 +41,7 @@ struct LinkedCardOverlayStack: View {
     private func linkedCardLayer(entry: VocabularyEntry, index: Int) -> some View {
         VStack(spacing: 0) {
             VocabOverlayHeader(
-                title: index == 0 ? "Linked Card" : "Nested Link",
+                title: Self.layerTitle(for: entry.word),
                 systemImage: "rectangle.stack",
                 badgeText: index > 0 ? "+\(index)" : nil,
                 onClose: { close(from: index) }
@@ -74,6 +74,12 @@ struct LinkedCardOverlayStack: View {
         .scaleEffect(max(0.94, 1 - CGFloat(index) * 0.02))
         .offset(x: CGFloat(index) * AppOverlayMetrics.linkedCardLayerOffsetX, y: CGFloat(index) * AppOverlayMetrics.linkedCardLayerOffsetY)
         .transition(.linkedOverlayCard)
+    }
+
+    /// 疊層標題就是該單字（#3129）；空白字退回本地化的「連結卡片」，不用英文字面值。
+    static func layerTitle(for word: String) -> String {
+        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? L10n.string("連結卡片") : trimmed
     }
 
     private func close(from index: Int) {
