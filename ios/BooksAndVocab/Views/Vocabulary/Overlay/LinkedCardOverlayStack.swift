@@ -54,7 +54,7 @@ struct LinkedCardOverlayStack: View {
             WordDetailSheet(
                 entry: entry,
                 allEntries: allEntries,
-                wrapInNavigation: false,
+                showsInlineChrome: false,
                 linkedCardStack: $stack
             )
         }

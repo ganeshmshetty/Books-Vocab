@@ -163,6 +163,56 @@ final class NotebookReviewFlowUITests: UITestCase {
         )
     }
 
+    /// #3126: a link tap inside a Linked Card layer must stack a second layer. The review
+    /// was opened from the notebook list, which injects a DetailRouter; the old router
+    /// branch replaced the review session with a Word Detail sheet instead.
+    /// Fixture: `multinb0` (first layer) links to `multinb1` (second layer).
+    @MainActor
+    func testLinkTapInsideLinkedLayerStacksAndKeepsReviewSession() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeckMultiNotebook],
+            extraEnvironment: ["KG_UI_TEST_SERVER_URL": "http://127.0.0.1:9"],
+            perfLog: "review"
+        )
+        let notebook = AppPage(app: app).goToNotebooks()
+        guard notebook.reviewCTAButton.waitUntilExists(timeout: 10) else {
+            captureStep("no-review-cta", app: app)
+            XCTFail("多單字本 fixture 有到期卡片，複習 CTA 必須出現")
+            return
+        }
+        let review = notebook.startReview()
+        guard review.progressLabel.waitUntilExists(timeout: 10) else {
+            captureStep("review-not-started", app: app)
+            XCTFail("tap CTA 後必須進入複習 session")
+            return
+        }
+        let progressBefore = review.progressText
+
+        // Layer 1: ↗ the first linked card of the current review card.
+        review.link(id: "multinb-000").tapWhenReady()
+        let layerLink = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@", "multinb1"))
+            .firstMatch
+        guard layerLink.waitUntilExists(timeout: 10) else {
+            captureStep("first-layer-link-missing", app: app)
+            XCTFail("第一層連結卡必須列出 multinb1 連結")
+            return
+        }
+
+        // Layer 2: tap the link row inside the first layer.
+        layerLink.tapWhenReady()
+        XCTAssertTrue(
+            app.staticTexts["+1"].waitUntilExists(timeout: 5),
+            "連結疊層內點連結必須疊出第二層（badge +1），而非取代複習"
+        )
+        XCTAssertTrue(
+            review.progressLabel.waitUntilExists(timeout: 3),
+            "複習 session 不得因連結點擊結束"
+        )
+        XCTAssertEqual(review.progressText, progressBefore, "複習進度必須維持不變")
+        captureStep("nested-linked-layer", app: app)
+    }
+
     /// "probeword003" → 3 (deck translation format: "量測卡片 3 的譯文…")
     private static func cardNumber(fromWord word: String) -> Int {
         Int(word.drop(while: { !$0.isNumber })) ?? -1
