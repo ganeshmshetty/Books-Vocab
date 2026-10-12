@@ -104,6 +104,15 @@ final class VocabularyEntry {
         return (lastReviewedAt ?? dateAdded) > syncedAt
     }
 
+    /// 使用者在 app 內改了複習方向（#2042），尚未被 server 確認（preferences PATCH 的 `mode`）。
+    /// 為真時 pull 不覆寫 `reviewMode` 與 SRS 狀態（本地意圖優先）；確認後由 `markReviewModePushed` 清除。
+    /// Lightweight migration：既有 row 預設 false。
+    var pendingReviewModePush: Bool = false
+    /// 使用者重設進度（#2042）尚未被 server 確認。推送時帶 `override: true`，server 原樣寫入 counts（不取 max）。
+    /// 為真時 pull 不 merge review state；確認（`markReviewStatesPushed` 且 `lastReviewedAt` 未再變動）後清除。
+    /// Lightweight migration：既有 row 預設 false。
+    var pendingReviewProgressReset: Bool = false
+
     var notebookId: String = "default"
     var bookId: UUID?
     var isDemoEntry: Bool = false
@@ -258,6 +267,9 @@ extension VocabularyEntry {
     // T12 edit 回 4xx（401／429 除外）：markEditRejected → edit+failed（rejectedReason 終態，不再納入 shouldUploadOnNextSync）；
     //     action 為 delete 則維持 pending delete（同 T3，#2733）。使用者再次編輯 → queueEdit 清除 rejectedReason 並重新 pending。
     //     5xx／網路錯誤維持 T4 的可重試 markSyncFailed。
+    // T13 本地改複習方向（requestReviewMode）：只排 pendingReviewModePush；mode 確認後清除（#2042）。
+    // T14 本地重設進度（resetReviewProgress）：counts 歸零、排 pendingReviewProgressReset，推送帶 override；確認後清除（#2042）。
+    //     兩者 pending 期間 pull 不覆寫 reviewMode、不 mergeReviewState（本地意圖優先，#2042）。
 
     func queueDelete() {
         // 只記錄排入前仍未送出的 edit（pending 或可重試的 failed）。被 T12 拒收的 edit 是終態，不記錄，
@@ -379,6 +391,27 @@ extension VocabularyEntry {
     var reviewMode: VocabularyCardMode {
         get { VocabularyCardMode(rawValue: reviewModeRaw) ?? .recognition }
         set { reviewModeRaw = newValue.rawValue }
+    }
+
+    /// 本地改複習方向（#2042）：SRS 狀態不動，只排入 mode 推送（T13）。
+    func requestReviewMode(_ mode: VocabularyCardMode) {
+        guard reviewMode != mode else { return }
+        reviewMode = mode
+        pendingReviewModePush = true
+    }
+
+    /// 本地重設進度（#2042）：counts 歸零、排程從 `now` 立即到期，排入 override 推送（T14）。
+    /// `lastReviewedAt = now` 是本次重設的 sent-instant 基準，確認時以它對齊（見 `markReviewStatesPushed`）。
+    /// server watermark 可能超前於裝置時鐘，故推送不靠 `needsReviewStatePush`，改由 `pendingReviewProgressReset` 保證送出。
+    func resetReviewProgress(now: Date) {
+        reviewIntervalHours = VocabularyReviewPolicy.initialIntervalHours
+        nextReviewAt = now
+        lastReviewedAt = now
+        reviewCount = 0
+        lapseCount = 0
+        reviewStreak = 0
+        lastReviewFeedbackRaw = -1
+        pendingReviewProgressReset = true
     }
 
     var primaryReviewExample: String? {

@@ -29,6 +29,16 @@ struct ReviewStatePushEntry {
     let sentAt: Date
     /// The JSON object sent to the server.
     let body: [String: Any]
+    /// Whether the body carries `override: true` (a pending progress reset, #2042).
+    var isOverride: Bool { body["override"] as? Bool == true }
+}
+
+/// A locally changed review mode waiting for the preferences PATCH (#2042).
+struct ReviewModePushEntry {
+    let id: PersistentIdentifier
+    let word: String
+    let notebookId: String
+    let mode: VocabularyCardMode
 }
 
 @ModelActor
@@ -220,7 +230,12 @@ actor BackgroundSyncActor {
                     localByCardID[card.id] = existingEntry
                     existingEntry.inflections = card.inflections ?? []
                     existingEntry.collocations = card.collocations ?? []
-                    existingEntry.reviewMode = VocabularyCardMode(rawValue: card.mode) ?? .recognition
+                    // A local review-mode change or progress reset not yet confirmed by the server is the user's
+                    // intent: the server's copy of mode and SRS state must not overwrite it (#2042).
+                    let hasPendingReviewChange = existingEntry.pendingReviewModePush || existingEntry.pendingReviewProgressReset
+                    if !hasPendingReviewChange {
+                        existingEntry.reviewMode = VocabularyCardMode(rawValue: card.mode) ?? .recognition
+                    }
                     existingEntry.reviewExamples = card.examples
                     existingEntry.graphLinksByKind = card.linksByKind ?? [:]
                     existingEntry.isArchived = card.isArchived ?? false
@@ -232,8 +247,10 @@ actor BackgroundSyncActor {
                     Self.applySource(from: card, into: existingEntry)
                     existingEntry.markSynced()
 
-                    // Merge review state from server (server newer wins)
-                    Self.mergeReviewState(from: card, into: existingEntry)
+                    // Merge review state from server (server newer wins); skipped while a local change is pending.
+                    if !hasPendingReviewChange {
+                        Self.mergeReviewState(from: card, into: existingEntry)
+                    }
                 }
             } else {
                 // If it's softly deleted but we don't have it locally, ignore it
@@ -458,7 +475,11 @@ actor BackgroundSyncActor {
         let descriptor = FetchDescriptor<VocabularyEntry>(
             predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 }
         )
-        let entries = try modelContext.fetch(descriptor).filter(\.needsReviewStatePush)
+        // A pending progress reset is sent even when the watermark says the server has this state: the
+        // watermark may sit ahead of the device clock, and the reset must not be silently dropped (#2042).
+        let entries = try modelContext.fetch(descriptor).filter {
+            $0.needsReviewStatePush || $0.pendingReviewProgressReset
+        }
 
         var payload: [ReviewStatePushEntry] = []
         for entry in entries {
@@ -476,6 +497,9 @@ actor BackgroundSyncActor {
             if let cardId = entry.kgCardId, !cardId.isEmpty {
                 item["card_id"] = cardId
             }
+            if entry.pendingReviewProgressReset {
+                item["override"] = true
+            }
             payload.append(ReviewStatePushEntry(id: entry.persistentModelID, sentAt: lastReviewed, body: item))
         }
         return payload
@@ -490,6 +514,7 @@ actor BackgroundSyncActor {
     func markReviewStatesPushed(_ sent: [ReviewStatePushEntry]) throws {
         guard !sent.isEmpty else { return }
         let sentAt = Dictionary(sent.map { ($0.id, $0.sentAt) }, uniquingKeysWith: { max($0, $1) })
+        let overrideIDs = Set(sent.filter(\.isOverride).map(\.id))
         let descriptor = FetchDescriptor<VocabularyEntry>(
             predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 }
         )
@@ -498,11 +523,38 @@ actor BackgroundSyncActor {
             guard let instant = sentAt[entry.persistentModelID] else { continue }
             // Never move the watermark backwards: a pull may have acknowledged a newer server state meanwhile.
             entry.reviewStateSyncedAt = max(entry.reviewStateSyncedAt ?? .distantPast, instant)
+            // The reset is acknowledged only if the card was not reset or reviewed again after it was sent (#2042).
+            if overrideIDs.contains(entry.persistentModelID), entry.lastReviewedAt == instant {
+                entry.pendingReviewProgressReset = false
+            }
             marked += 1
         }
         guard marked > 0 else { return }
         try modelContext.save()
         AppLog.sync.info("markReviewStatesPushed: acknowledged \(marked) card review states")
+    }
+
+    /// Locally changed review modes the server has not confirmed (#2042, T13). Only cards the server already
+    /// holds: a pending add has no card id yet, so its mode waits until that add lands.
+    func buildReviewModePushPayload() throws -> [ReviewModePushEntry] {
+        let descriptor = FetchDescriptor<VocabularyEntry>(
+            predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 && $0.pendingReviewModePush }
+        )
+        return try modelContext.fetch(descriptor).filter(\.hasServerCard).map {
+            ReviewModePushEntry(id: $0.persistentModelID, word: $0.word, notebookId: $0.notebookId, mode: $0.reviewMode)
+        }
+    }
+
+    /// Clears the pending mode once the server confirmed it. A mode changed again while the PATCH was in
+    /// flight stays pending and goes out on the next sync.
+    func markReviewModePushed(_ sent: ReviewModePushEntry) throws {
+        let descriptor = FetchDescriptor<VocabularyEntry>(
+            predicate: #Predicate<VocabularyEntry> { $0.pendingReviewModePush }
+        )
+        guard let entry = try modelContext.fetch(descriptor).first(where: { $0.persistentModelID == sent.id }),
+              entry.reviewMode == sent.mode else { return }
+        entry.pendingReviewModePush = false
+        try modelContext.save()
     }
 
     private static let dayFormatter = AppDateFormatters.dayKey

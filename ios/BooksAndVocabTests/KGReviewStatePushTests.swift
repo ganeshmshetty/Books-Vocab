@@ -144,6 +144,30 @@ struct KGReviewStatePushTests {
 
         #expect(try patchBody(transport).keys.sorted() == ["reader_hidden"])
     }
+
+    /// A mode the user set locally is pushed as a mode-only preferences PATCH.
+    /// The flag clears only after the server answers, so a failed push retries.
+    @Test func pendingReviewModeIsSentViaUpdateCardPreferences() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "deft", translation: "t", context: "c", bookTitle: "b")
+        entry.markSynced()
+        entry.kgCardId = "c1"
+        entry.requestReviewMode(.production)
+        context.insert(entry)
+        try context.save()
+
+        let transport = ReviewPushRecordingTransport(responseBody: Self.cardResponseJSON)
+        try await makeService(transport).pushPendingReviewModes(container: container)
+
+        #expect(transport.requests.count == 1)
+        #expect(transport.requests.first?.url?.path == "/api/vocab/deft/preferences")
+        let body = try patchBody(transport)
+        #expect(body.keys.sorted() == ["mode"])
+        #expect(body["mode"] as? String == "production")
+        let stored = try #require(try ModelContext(container).fetch(FetchDescriptor<VocabularyEntry>()).first)
+        #expect(stored.pendingReviewModePush == false)
+    }
 }
 
 /// Recording transport for the review-state PATCH. `onRequest` runs inside the
