@@ -263,6 +263,73 @@ struct SyncAddConvergenceTests {
         #expect(!entry.shouldUploadOnNextSync)
     }
 
+    @Test("未送出的編輯後被刪除再撤銷 → 回到 pending edit，保留編輯內容待上傳，不 markSynced（#3059 (5)）")
+    func undo_of_delete_on_unsent_edit_restores_pending_edit() {
+        let entry = makePendingAdd("edited-undo")
+        entry.kgCardId = "card-e"
+        entry.markSynced()
+        // WordEditSheet.commitEdit：synced → pending+edit，kgCardId 保留。
+        entry.syncAction = .edit
+        entry.syncState = .pending
+        entry.queueDelete()
+        #expect(entry.isPendingDelete)
+
+        entry.undoQueuedDelete()
+
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+        #expect(entry.kgCardId == "card-e")
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("編輯列連續排入刪除兩次再撤銷 → 仍還原為 pending edit（第二次 queueDelete 不覆寫排入前的 action）")
+    func undo_after_repeated_queue_delete_still_restores_pending_edit() {
+        let entry = makePendingAdd("edited-twice")
+        entry.kgCardId = "card-t"
+        entry.markSynced()
+        entry.syncAction = .edit
+        entry.syncState = .pending
+        entry.queueDelete()
+        entry.queueDelete()
+
+        entry.undoQueuedDelete()
+
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+    }
+
+    @Test("已被 server 拒收的編輯後被刪除再撤銷 → 不復活為 pending edit，不重送被拒內容（T12 終態）")
+    func undo_of_delete_on_rejected_edit_does_not_resend() {
+        let entry = makePendingAdd("edited-rejected")
+        entry.kgCardId = "card-r"
+        entry.markSynced()
+        entry.queueEdit()
+        entry.markEditRejected(reason: "invalid")
+        #expect(entry.isRejectedEdit)
+
+        entry.queueDelete()
+        entry.undoQueuedDelete()
+
+        #expect(!entry.shouldUploadOnNextSync)
+        #expect(entry.kgCardId == "card-r")
+    }
+
+    @Test("編輯上傳失敗（可重試）後被刪除再撤銷 → 回到 pending edit 待重試，不 markSynced")
+    func undo_of_delete_on_retryable_failed_edit_restores_pending_edit() {
+        let entry = makePendingAdd("edited-failed")
+        entry.kgCardId = "card-f"
+        entry.markSynced()
+        entry.queueEdit()
+        entry.markSyncFailed()
+
+        entry.queueDelete()
+        entry.undoQueuedDelete()
+
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
     @Test("撤銷只作用於 delete 列；其他 action 為 no-op")
     func undo_is_noop_for_non_delete_rows() {
         let entry = makePendingAdd("plain")

@@ -81,7 +81,7 @@ iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performC
 4. 唯一入口：所有使用者刪除（閱讀器 `VocabularyContextStore.deleteEntry`、`SyncView` 待同步確認刪除、`WordDetailSheet`）都經 `VocabularyEntry.deleteLocally(in:)`，不得直接 `modelContext.delete(entry)`
 5. **I3（不變式）**：列被擷取（`isUploadInFlight`）期間，使用者的撤銷與閱讀器重新擷取都不得改寫其 `syncAction`。`undoQueuedDelete()` 為 no-op；`restoreExistingEntryForSave` 對 in-flight 的 delete 回 `nil`，由呼叫端新增一筆 `pending + add`；`SyncView` 忽略該列的「還原」點擊。唯一允許的使用者轉移是 → delete。因此擷取時為 delete 的列，在 batch 回應或逐卡 fallback 抵達時仍是 delete；post-await 只做防禦性重查（`syncAction == .delete` 且仍在 in-flight），不需撤銷競態分支。
 6. 反例（已修，#2484 撤銷競態）：撤銷發生在 batch delete 往返期間，曾把仍有 `kgCardId` 的列標成 synced；server 刪除成功後，回應被守門忽略，接著的 full pull 把它當 orphan 刪除，撤銷等於遺失卡片。逐卡 fallback 的 `deleteCard` 期間撤銷，曾在請求返回後無條件硬刪。兩者皆因 I3 不可達。
-7. **retryPendingDeletes 守門（#2733、#3059）**：待刪 banner 的第二條 drain（`KGVocabCoordinator.retryPendingDeletes`）在 engine 之外發送 batch／逐卡 delete。本地收斂一律經 `settleResolvedDelete`：`isUploadInFlight` 的列保留給進行中 sync 的回應收斂（I3）並計為延後，延後時不宣稱「已同步」；await 之後重驗 `syncAction`：仍為 delete 則硬刪；撤銷過的列（已回到 add）清除失效的 `kgCardId` 後改回 pending add（T7，不留 synced 的失效列）。
+7. **retryPendingDeletes 守門（#2733、#3059）**：待刪 banner 的第二條 drain（`KGVocabCoordinator.retryPendingDeletes`）在 engine 之外發送 batch／逐卡 delete。本地收斂一律經 `settleResolvedDelete`：`isUploadInFlight` 的列保留給進行中 sync 的回應收斂（I3）並計為延後，延後時不宣稱「已同步」；await 之後重驗 `syncAction`：仍為 delete 則硬刪；撤銷過的列（已非 delete，為 add 或 #3059 還原的 edit）清除失效的 `kgCardId` 後改回 pending add（T7，不留 synced 的失效列；server 卡已被本次 delete 移除，本地內容由下一輪 batchAdd 重建）。
 8. **編輯守門（#3248）**：`WordEditSheet.commitEdit` 對 `isUploadInFlight` 的列拒絕儲存（`EditValidationError.uploadInFlight`，草稿保留）。edit 的回應收斂以送出快照比對：送出後又被改寫的列維持 `pending + edit`，不標 synced、也不標 rejected，交下一輪上傳較新內容。**已知殘餘（另案）**：(c) 登出／重設的 `clearUserData` 可硬刪進行中的列，sync 的 post-await 會讀到已刪列（見下節「logout-cleanup gate」的 accepted residual）。
 
 ### 已同步單字被刪除
@@ -94,7 +94,7 @@ iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performC
 ### 撤銷尚未送出的刪除（SyncView「還原」）
 
 1. `pending + delete` 列以 `VocabularyEntry.undoQueuedDelete()` 撤銷
-2. `kgCardId` 非空（server 已確認持有卡）→ `synced + add`
+2. `kgCardId` 非空（server 已確認持有卡）：排入刪除前為未送出的編輯（`actionBeforeDeleteRaw == edit`）→ `pending + edit`，保留編輯內容待上傳（#3059 (5)，不得 `markSynced` 丟掉編輯）；否則 → `synced + add`。`queueDelete` 只在列尚非 delete 且排入前為未送出的 edit（pending 或可重試的 failed）時記錄 `actionBeforeDeleteRaw = edit`；被 server 拒收的 edit（T12 終態）不記錄，撤銷後不重送被拒內容；重複排入不覆寫
 3. `kgCardId` 為空（server 從未確認，例如上傳中的新增被刪）→ `pending + add`，下一輪 sync 上傳；**不得**變成 `synced`（synced 無 server 卡會在 full pull 的 orphan cleanup 被刪，#2484）
 4. 進行中（in-flight）的列不可撤銷（I3）：撤銷為 no-op、列保持 `pending + delete`，由回應決定去留（deleted／not_found 硬刪、failed 保留）；sync 返回後仍存在的 delete 列才可撤銷。`applyBatchDeleteResponse` 與逐卡 fallback 的 `syncAction == .delete` 守門保留作防禦
 5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T11）
