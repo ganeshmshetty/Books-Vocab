@@ -1931,6 +1931,73 @@ def test_github_adapter_reports_required_workflow_rerun_failure() -> None:
 _HOSTILE_VALUES = ("null", "true", "2026", "@x")
 
 
+@pytest.mark.parametrize(
+    ("stderr", "in_progress"),
+    [
+        ("HTTP 403: This workflow run is already running", True),
+        ("HTTP 403: Resource not accessible by integration", False),
+    ],
+)
+def test_a_rerun_refused_for_a_run_already_running_is_in_progress_not_an_error(
+    stderr: str, in_progress: bool
+) -> None:
+    head_sha = "b" * 40
+    list_command = (
+        "gh",
+        "run",
+        "list",
+        "--workflow",
+        "pr-gate.yml",
+        "--branch",
+        "feat/one",
+        "--event",
+        "pull_request",
+        "--commit",
+        head_sha,
+        "--limit",
+        "20",
+        "--json",
+        "databaseId,headBranch,headSha,event,status,conclusion,createdAt,startedAt,updatedAt",
+    )
+    rerun_command = ("gh", "run", "rerun", "--failed", "12345")
+    listed = json.dumps(
+        [
+            {
+                "databaseId": 12345,
+                "headBranch": "feat/one",
+                "headSha": head_sha,
+                "event": "pull_request",
+                "status": "completed",
+                "conclusion": "failure",
+                "createdAt": "2026-08-29T00:00:00Z",
+            }
+        ]
+    )
+    runner = StaticRunner(
+        [
+            CommandResult(list_command, 0, listed, ""),
+            CommandResult(rerun_command, 1, "", stderr),
+        ]
+    )
+    adapter = GitHubCliAdapter(runner=runner)
+
+    def trigger():
+        return adapter.trigger_required(
+            number=12, branch="feat/one", base_sha="a" * 40, head_sha=head_sha
+        )
+
+    if not in_progress:
+        with pytest.raises(AdapterCommandError, match="403"):
+            trigger()
+        return
+    command = trigger()
+    assert not command.dispatched
+    assert command.command == ()
+    assert command.action == "wait"
+    assert "already running" in command.reason
+    assert runner.calls == [list_command, rerun_command]
+
+
 def _gh_fields(argv: tuple[str, ...]) -> list[tuple[str, str]]:
     """(flag, "name=value") pairs for every -f/-F field of a gh api argv."""
     return [

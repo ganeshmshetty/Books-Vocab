@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3193,
+  "raise": {
+    "ops": 111
+  },
+  "note": "#3193/#3208 rebased onto main: this lane adds the 403 already-running wait in the github adapter (+17 code, +67 adapter tests) and the no-queue-head ejection pin (+28); the P0/P1 review-body refusal and the head check-runs gate already on main are not re-added. Net ops +110 over the merge-base headroom."
+}
