@@ -261,17 +261,20 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             return false
         }
         guard localDataCleaner.hasPendingLocalWipe else { return true }
-        // Past the retry cap another retry cannot succeed. Only the store rebuild may finish the wipe (#3229).
-        guard !localDataCleaner.pendingWipeNeedsStoreRebuild else {
-            refuseSignInUntilLocalWipeSucceeds()
-            return false
-        }
+        // Every sign-in retries, also past the retry cap: a transient failure may have cleared (#3289).
+        // Only the destructive store rebuild is capped, and the user confirms it (#3229).
         if let container = modelContainer {
             let finished = await localDataCleaner.retryPendingLocalWipe(container: container, signedInUserId: userId)
             if finished { return true }
         }
         refuseSignInUntilLocalWipeSucceeds()
         return false
+    }
+
+    /// The sign-in sheet offers the store rebuild only while a wipe is stuck past the retry cap and this
+    /// process has not rebuilt yet (#3229).
+    var canRecoverStuckLocalWipe: Bool {
+        localDataCleaner.pendingWipeNeedsStoreRebuild && !localWipeRequiresRestart
     }
 
     /// Store-rebuild recovery for a wipe stuck past the retry cap (#3229). Deletes the on-disk store and
@@ -314,11 +317,10 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     }
 
     private func refuseSignInUntilLocalWipeSucceeds() {
-        // Past the retry cap, retrying cannot succeed: the only escape is a store rebuild, which has no
-        // in-app entry yet. Telling the user to retry later would be a false promise (#3229).
+        // Past the retry cap the message names the in-app store rebuild (#3229), not a plain "retry later".
         if localDataCleaner.pendingWipeNeedsStoreRebuild {
             AppLog.auth.error("sign-in refused: pending local wipe is stuck past the retry cap")
-            authError = L10n.string("本機資料無法清除，請重新安裝 App 後再登入")
+            authError = L10n.string("本機資料無法清除，請使用「重設本機資料」後再登入")
             return
         }
         AppLog.auth.error("sign-in refused: previous account's local wipe is still pending")

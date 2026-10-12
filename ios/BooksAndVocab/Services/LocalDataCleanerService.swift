@@ -11,8 +11,8 @@ final class LocalDataCleanerService: LocalDataClearing {
     /// pending-wipe marker. It outlives the process, and sign-in refuses to complete while it is set,
     /// so no account can write into those rows before the wipe succeeds (#2717).
     static let pendingWipeOwnerKey = "kg_pending_local_wipe_owner"
-    /// Consecutive failed row wipes under the current marker. At `pendingWipeFailureLimit` retrying is
-    /// no longer a recovery path: only a store rebuild can clear the rows (#3229).
+    /// Consecutive failed row wipes under the current marker. At `pendingWipeFailureLimit` the store rebuild
+    /// is offered as the recovery (#3229). Sign-in keeps retrying the wipe regardless (#3289).
     static let pendingWipeFailureCountKey = "kg_pending_local_wipe_failures"
     static let pendingWipeFailureLimit = 5
     /// Set when a failed account-switch wipe deferred the derived-state purge (#3229). Cleared by the wipe
@@ -166,7 +166,7 @@ final class LocalDataCleanerService: LocalDataClearing {
     }
 
     /// True once the row wipe has failed `pendingWipeFailureLimit` times under the current marker.
-    /// Sign-in then stops retrying and waits for `rebuildStoreAndDiscardPendingWipe` (#3229).
+    /// Only gates the in-app store-rebuild offer; sign-in still retries the wipe (#3229, #3289).
     var pendingWipeNeedsStoreRebuild: Bool {
         defaults.integer(forKey: Self.pendingWipeFailureCountKey) >= Self.pendingWipeFailureLimit
     }
