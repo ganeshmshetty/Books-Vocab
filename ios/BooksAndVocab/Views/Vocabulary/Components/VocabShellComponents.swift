@@ -187,19 +187,23 @@ struct VocabChromeIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            if borderless {
-                Image(systemName: systemImage)
-                    .font(appSkin.typography.iconSmall)
-                    .foregroundStyle(tone ?? appSkin.palette.tertiaryText)
-            } else {
-                VocabChromeSurface(
-                    fill: appSkin.palette.cardBackground,
-                    border: appSkin.palette.cardBorder
-                ) {
+            // Group 包住 if/else：否則 `.frame` 與 `.contentShape` 換行後會被 result builder
+            // 當成獨立語句解析，swiftc 報 "cannot infer contextual base"（編譯失敗）。
+            Group {
+                if borderless {
                     Image(systemName: systemImage)
-                        .font(appSkin.typography.iconMedium)
-                        .foregroundStyle(tone ?? appSkin.palette.secondaryText)
-                        .frame(width: appSkin.metrics.chromeButtonSize, height: appSkin.metrics.chromeButtonSize)
+                        .font(appSkin.typography.iconSmall)
+                        .foregroundStyle(tone ?? appSkin.palette.tertiaryText)
+                } else {
+                    VocabChromeSurface(
+                        fill: appSkin.palette.cardBackground,
+                        border: appSkin.palette.cardBorder
+                    ) {
+                        Image(systemName: systemImage)
+                            .font(appSkin.typography.iconMedium)
+                            .foregroundStyle(tone ?? appSkin.palette.secondaryText)
+                            .frame(width: appSkin.metrics.chromeButtonSize, height: appSkin.metrics.chromeButtonSize)
+                    }
                 }
             }
             // 視覺維持 32pt（VocabChromeSurface），僅外擴觸控目標到 HIG 44pt 下限。
