@@ -129,9 +129,6 @@ struct ReaderTopChrome: View, Equatable {
         HStack(spacing: AppSpacing.s2) {
             Spacer()
 
-            progressBadge
-                .appFloatingChromeItem(union: "nav", in: glass, interactive: false)
-
             AppFloatingChromeButton(
                 accessibilityLabel: L10n.string("展開標題列"),
                 accessibilityIdentifier: "reader.header.expandButton",
@@ -146,53 +143,6 @@ struct ReaderTopChrome: View, Equatable {
         }
     }
 
-    // 格式 `%.1f%%` 與 identifier 是 UITest 契約：ReaderPage.progressPercent() 靠剝掉
-    // "%" 再餵 Double(_:)（C-locale 解析），ReaderFlowUITests 拿它當翻頁證據。
-    // locale-aware 化要連同 ReaderPage 的解析一起改，走獨立 PR。
-    private var progressBadge: some View {
-        HStack(spacing: AppSpacing.s1) {
-            Image(systemName: progressIcon)
-                .font(appSkin.typography.iconSmall)
-            if let progressText {
-                Text(progressText)
-                    .font(appSkin.typography.monoLabel)
-                    .accessibilityIdentifier("reader.header.progressBadge")
-            } else {
-                Text(progressLabel)
-                    .font(appSkin.typography.caption)
-            }
-        }
-        .foregroundStyle(appSkin.palette.secondaryText)
-        .padding(.horizontal, AppSpacing.s2)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(model.progressState.readerProgressAccessibilityIdentifier)
-    }
-
-    private var progressIcon: String {
-        switch model.progressState {
-        case .restoreFailure: return "exclamationmark.triangle"
-        case .unknown: return "questionmark"
-        case .zero, .middle, .complete: return "book.closed"
-        }
-    }
-
-    private var progressText: String? {
-        switch model.progressState {
-        case .zero, .middle, .complete:
-            guard let progression = model.totalProgression else { return nil }
-            return String(format: "%.1f%%", progression * 100)
-        case .unknown, .restoreFailure:
-            return nil
-        }
-    }
-
-    private var progressLabel: String {
-        switch model.progressState {
-        case .unknown: return L10n.string("閱讀進度未知")
-        case .restoreFailure: return L10n.string("閱讀進度無法還原")
-        case .zero, .middle, .complete: return ""
-        }
-    }
 }
 
 extension ReaderViewPresenter {

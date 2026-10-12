@@ -178,7 +178,7 @@ struct BookCard: View {
             .frame(height: AppBookshelfMetrics.progressBarHeight)
             .clipShape(AppRoundedRect(roundness: AppRoundness.pill))
 
-            Text("\(Int(clamped * 100))%")
+            Text(ReadingProgressFormatter.percentText(clamped))
                 .font(AppFonts.monoNumbers(size: 10))
                 .foregroundStyle(appTheme.palette.tertiaryText)
                 .opacity(clamped > 0 ? 1 : 0)
