@@ -27,6 +27,7 @@ final class WordDetailSceneState {
         case archive
         case preferences
         case link
+        case collocation
     }
 
     /// 封存的 in-flight 旗標。放在狀態物件而非 view，是為了讓這個單元自己安全：
@@ -219,7 +220,12 @@ final class WordDetailSceneState {
         var collocations = TodayReviewCollocationState()
         collocations.sync(from: entry)
         collocations.update(explanation, for: collocation, entry: entry)
-        modelContext.safeSave()
+        // 存檔失敗走同一條 actionError banner（WordDetailSheet 轉成頂端 toast），與本檔其他卡片動作一致。
+        if modelContext.safeSave() {
+            clearActionError(for: .collocation)
+        } else {
+            setActionError(L10n.string("儲存失敗"), kind: .collocation)
+        }
     }
 
     func linkedEntry(
