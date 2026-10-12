@@ -55,6 +55,27 @@ struct ReviewCardActions {
 
 /// Geometry observation must include card identity: a resident slot can replace
 /// its content without changing the measured front height.
+/// 連結列「+N」／「收合」的膠囊版面（#3295）。獨立成 view，讓命中帶與單元測試渲染的是同一顆膠囊。
+struct ReviewCardLinkOverflowLabel: View {
+    @Environment(\.appSkin) private var appSkin
+    let title: String
+    let isExpanded: Bool
+
+    var body: some View {
+        HStack(spacing: AppSpacing.s1) {
+            Text(title)
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                .font(appSkin.typography.iconTiny)
+                .accessibilityHidden(true)
+        }
+        .font(appSkin.typography.caption)
+        .foregroundStyle(appSkin.palette.secondaryText)
+        .padding(.horizontal, AppSpacing.s2)
+        .padding(.vertical, AppSpacing.s1)
+        .background(AppRoundedRect(roundness: appSkin.roundness.pill).fill(appSkin.palette.cardBorder))
+    }
+}
+
 struct ReviewCardFrontMeasurement: Equatable {
     let height: CGFloat
     let cardKey: String
@@ -1007,16 +1028,17 @@ struct ReviewCardView: View {
     }
 
     /// "+N" (collapsed) / "收合" (expanded), drawn as a chevron capsule so it reads as a
-    /// control. The touch band overlays the capsule without growing the row (#3114), and is
-    /// capped at `TodayReviewMetrics.linkOverflowHitTarget` (capsule + 2×s1) so it stays
-    /// within the row gap instead of the 44pt default (#3226/#3253).
+    /// control. The touch band overlays the capsule without growing the row (#3114). It is
+    /// derived from the capsule's rendered height (`verticalBand` = s1 on each side, #3295),
+    /// so it stays within the row gap at every Dynamic Type size instead of the 44pt default
+    /// (#3226/#3253).
     private func linkOverflowToggle(
         _ group: ReviewCardLinkGroup,
         row: ReviewCardLinkStripLayout.Row,
         isExpanded: Bool
     ) -> some View {
         return ReviewCardHitTargetButton(
-            minimumSide: TodayReviewMetrics.linkOverflowHitTarget,
+            verticalBand: TodayReviewMetrics.linkOverflowHitBand,
             action: {
                 actions.toggleLinkGroup?(group.id)
             },
@@ -1025,17 +1047,10 @@ struct ReviewCardView: View {
             accessibilityLabel: isExpanded ? nil : L10n.format("todayReview.card.link.overflow.a11y", "\(row.overflowCount)"),
             accessibilityValue: isExpanded ? "expanded" : "collapsed"
         ) {
-            HStack(spacing: AppSpacing.s1) {
-                Text(isExpanded ? L10n.string("todayReview.card.link.collapse") : "+\(row.overflowCount)")
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(appSkin.typography.iconTiny)
-                    .accessibilityHidden(true)
-            }
-            .font(appSkin.typography.caption)
-            .foregroundStyle(appSkin.palette.secondaryText)
-            .padding(.horizontal, AppSpacing.s2)
-            .padding(.vertical, AppSpacing.s1)
-            .background(AppRoundedRect(roundness: appSkin.roundness.pill).fill(appSkin.palette.cardBorder))
+            ReviewCardLinkOverflowLabel(
+                title: isExpanded ? L10n.string("todayReview.card.link.collapse") : "+\(row.overflowCount)",
+                isExpanded: isExpanded
+            )
         }
     }
 
