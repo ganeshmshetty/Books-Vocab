@@ -68,6 +68,18 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
         }
     }
 
+    /// #3227：收合時 VoiceOver 讀「顯示其餘 N 個連結」，不讀符號「+N」。文案隨語系變動，只釘住隱藏數 N。
+    @MainActor
+    private func assertCollapsedLabelAnnouncesHidden(
+        _ toggle: XCUIElement,
+        _ hidden: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNotEqual(toggle.label, "+\(hidden)", "收合時 VoiceOver 不讀符號「+N」(#3227)", file: file, line: line)
+        XCTAssertTrue(toggle.label.contains("\(hidden)"), "收合時 a11y label 必須帶隱藏連結數 \(hidden)", file: file, line: line)
+    }
+
     @MainActor
     func testPlusNExpandsEveryLinkAndCollapsesBack() throws {
         let app = launchIsolatedApp(fixtures: [.notebookReviewDeckMultiNotebook], perfLog: "review")
@@ -80,7 +92,7 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
             return
         }
         XCTAssertEqual(toggle.value as? String, "collapsed")
-        XCTAssertEqual(toggle.label, "+2", "收合時顯示被藏起來的連結數")
+        assertCollapsedLabelAnnouncesHidden(toggle, 2)
         // #3226/#3253：命中帶不得越過列距（4pt），否則會蓋到上一列的連結。
         XCTAssertLessThanOrEqual(toggle.frame.height, 32, "命中帶高度由列距決定，不再是 44pt (#3226)")
         XCTAssertTrue(waitForDrawnLinkCount(review, 2), "收合時組名旁只有兩個連結")
@@ -97,7 +109,7 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
         toggle.tapWhenReady()
         XCTAssertTrue(waitForDrawnLinkCount(review, 2), "再點一次回到兩個連結")
         XCTAssertEqual(toggle.value as? String, "collapsed")
-        XCTAssertEqual(toggle.label, "+2")
+        assertCollapsedLabelAnnouncesHidden(toggle, 2)
     }
 
     @MainActor
