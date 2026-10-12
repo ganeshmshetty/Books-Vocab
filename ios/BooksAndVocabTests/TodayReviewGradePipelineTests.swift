@@ -63,12 +63,33 @@ struct TodayReviewGradePipelineTests {
         #expect(buffer.takeAtSettle() == nil)
     }
 
-    @Test func laterGradeDuringTheSameFlingReplacesTheBufferedOne() {
+    @Test func laterGradeDuringTheSameFlingIsKeptAndAppliedInArrivalOrder() {
         var buffer = FlingGradeBuffer()
         buffer.receive(remember: true)
         buffer.receive(remember: false)
 
+        #expect(buffer.takeAtSettle() == true)
         #expect(buffer.takeAtSettle() == false)
+        #expect(buffer.takeAtSettle() == nil)
+    }
+
+    @Test func bufferIsBoundedAndDropsOnlyBeyondCapacity() {
+        var buffer = FlingGradeBuffer()
+        for _ in 0..<(FlingGradeBuffer.capacity + 3) {
+            buffer.receive(remember: true)
+        }
+
+        var applied = 0
+        while buffer.takeAtSettle() != nil { applied += 1 }
+        #expect(applied == FlingGradeBuffer.capacity)
+    }
+
+    @Test func discardAllClearsEveryPendingGrade() {
+        var buffer = FlingGradeBuffer()
+        buffer.receive(remember: true)
+        buffer.receive(remember: false)
+        buffer.discardAll()
+
         #expect(buffer.takeAtSettle() == nil)
     }
 

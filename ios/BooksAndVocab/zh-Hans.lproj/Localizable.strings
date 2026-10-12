@@ -1128,6 +1128,8 @@
 "reviewCardLayout.field.explanation" = "解释";
 "reviewCardLayout.field.collocations" = "搭配词";
 "reviewCardLayout.reset" = "恢复默认";
+"reviewCardLayout.scope.editing" = "正在编辑：%@ 的版面";
+"reviewCardLayout.scope.useGlobal" = "改用全局版面";
 "reviewCardLayout.reset.all" = "恢复全部默认";
 "reviewCardLayout.footer" = "空间不够时，卡片会先精简例句、解释与搭配词；题目、答案、词性与难度不会被隐藏。";
 "todayReview.layoutEditor.open" = "调整复习卡片";

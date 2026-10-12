@@ -392,7 +392,7 @@ extension TodayReviewPresenter {
     }
 
     /// 按鈕 / 鍵盤評分入口（#3127）：與滑動放手走同一條甩出（同一 plan、同一回饋、同一 settle）。
-    /// 甩出中到達的評分暫存一筆，settle 後套用一次：不靜默丟棄，也不在甩出中同步 submit。
+    /// 甩出中到達的評分依序暫存（有界 FIFO），每次 settle 套用一筆：不覆蓋先到者，也不在甩出中同步 submit。
     func gradeFromControl(remember: Bool, source: String) {
         guard dismissPhase == .idle else {
             bufferedGrade.receive(remember: remember)
@@ -405,9 +405,14 @@ extension TodayReviewPresenter {
         )
     }
 
-    /// settle 後套用甩出中暫存的評分（至多一次）。自動播放中或已無卡片時丟棄。
+    /// settle 後套用甩出中暫存的評分：每次 settle 只取最早一筆（FIFO，#3278），
+    /// 下一筆由該次甩出的 settle 再取出。自動播放中或已無卡片時整批丟棄。
     func applyBufferedGrade() {
-        guard let remember = bufferedGrade.takeAtSettle(), swipeEnabled, state.currentCard != nil else { return }
+        guard let remember = bufferedGrade.takeAtSettle() else { return }
+        guard swipeEnabled, state.currentCard != nil else {
+            bufferedGrade.discardAll()
+            return
+        }
         gradeFromControl(remember: remember, source: "buffered")
     }
 

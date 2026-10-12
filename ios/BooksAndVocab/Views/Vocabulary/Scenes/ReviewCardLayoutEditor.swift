@@ -27,20 +27,27 @@ struct ReviewCardLayoutEditor: View {
     /// Notebook settings injects a scoped binding. When nil, the existing
     /// global store remains the source of truth.
     private let scopedProfile: Binding<ReviewCardLayoutProfile>?
+    /// #3124：編輯的是某單字本的 override 時帶上它的名稱，頂部顯示範圍並提供「改用全域版面」。
+    private let notebookName: String?
     private let onScopedReset: (() -> Void)?
 
     init(
         previewCard: TodayReviewPresenterState.CurrentCard? = nil,
         profile: Binding<ReviewCardLayoutProfile>? = nil,
+        notebookName: String? = nil,
         onReset: (() -> Void)? = nil
     ) {
         self.previewCard = previewCard
         self.scopedProfile = profile
+        self.notebookName = notebookName
         self.onScopedReset = onReset
     }
 
     var body: some View {
         Form {
+            if let notebookName {
+                notebookScopeSection(notebookName)
+            }
             ForEach(VocabularyCardMode.allCases, id: \.rawValue) { mode in
                 directionSection(mode)
             }
@@ -51,6 +58,23 @@ struct ReviewCardLayoutEditor: View {
             ToolbarItem(placement: .primaryAction) { resetMenu }
         }
         .enableInjection()
+    }
+
+    // MARK: - Notebook scope
+
+    /// 範圍說明 + 退回全域。退回與「全部恢復」同一個動作：拿掉這本的 override。
+    private func notebookScopeSection(_ name: String) -> some View {
+        Section {
+            Button(L10n.string("reviewCardLayout.scope.useGlobal")) {
+                onScopedReset?()
+            }
+            .accessibilityIdentifier("reviewCardLayout.scope.useGlobal")
+        } header: {
+            SettingsSectionHeader(
+                title: L10n.format("reviewCardLayout.scope.editing", name),
+                icon: "books.vertical"
+            )
+        }
     }
 
     // MARK: - Direction
@@ -157,24 +181,33 @@ struct ReviewCardLayoutEditorSheet: View {
     /// Notebook settings supplies a scoped profile; the review toolbar leaves
     /// both scoped values nil and continues to use the global store.
     let profile: Binding<ReviewCardLayoutProfile>?
+    /// #3124：只有工具列編輯某單字本的 override 時非 nil。
+    let notebookName: String?
     let onReset: (() -> Void)?
     let onDone: () -> Void
 
     init(
         previewCard: TodayReviewPresenterState.CurrentCard? = nil,
         profile: Binding<ReviewCardLayoutProfile>? = nil,
+        notebookName: String? = nil,
         onReset: (() -> Void)? = nil,
         onDone: @escaping () -> Void
     ) {
         self.previewCard = previewCard
         self.profile = profile
+        self.notebookName = notebookName
         self.onReset = onReset
         self.onDone = onDone
     }
 
     var body: some View {
         NavigationStack {
-            ReviewCardLayoutEditor(previewCard: previewCard, profile: profile, onReset: onReset)
+            ReviewCardLayoutEditor(
+                previewCard: previewCard,
+                profile: profile,
+                notebookName: notebookName,
+                onReset: onReset
+            )
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button(L10n.string("完成"), action: onDone)
