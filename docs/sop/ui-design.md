@@ -176,9 +176,8 @@ Books & Vocab 的 motion system 不接受各頁自由書寫 `.spring(...)` / `.e
 | `feedbackPulse` | 成功保存、數字跳動、局部確認 | Translation save、Sync step、Review feedback、Toast |
 | `contentFade` | 短暫內容淡出 | Reader progress / transient overlay |
 | `loadingState` | loading 文案、loading overlay 的 state swap | Reader loading |
-| `reviewRevealSpring` | review front/back/details 展開 | Today Review |
-| `reviewNavigationSpring` | review 上一張 / 下一張 / 洗牌 | Today Review |
-| `reviewCardSwapSpring` | review 回答後換卡 | Today Review |
+| `reviewRevealSpring` | review front/back 展開、精簡卡暫時詳細 | Today Review |
+| `reviewNavigationSpring` | review 上一張 / 下一張 / 洗牌 / 回答後換卡（`advanceAfterSubmission`） | Today Review |
 | `panelState` + `AnyTransition.bannerReveal` | toast pill 進出（Reduce Motion 改 `overlayFade`） | AppToast（全 app，見「暫時性提示」） |
 | `emphasizedDecelerate` | 非對稱進場曲線（Material 3） | AppOfflineBanner、未來 sheet/panel 進場 |
 | `emphasizedAccelerate` | 非對稱退場曲線（Material 3） | 未來 sheet/panel 退場 |
@@ -210,7 +209,7 @@ Books & Vocab 的 motion system 不接受各頁自由書寫 `.spring(...)` / `.e
 - Reader：
   `panelState`、`panelSnapBack`、`headerState`、`loadingState`、`feedbackBadge`
 - Review：
-  `reviewRevealSpring`、`reviewNavigationSpring`、`reviewCardSwapSpring`、`overlayFade`
+  `reviewRevealSpring`、`reviewNavigationSpring`、`overlayFade`、`feedbackButtonSpring`、`swipeFling`、`swipeTrackingSpring`、`swipeSnapBackSpring`、`celebrationBounce`、`panelState`
 - Sync：
   `phaseChange`、`feedbackPulse`、`blurReplace`
 - Settings：
