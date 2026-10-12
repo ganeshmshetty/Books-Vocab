@@ -3064,9 +3064,7 @@ def test_unknown_base_ref_is_unknown_not_proof_the_tip_never_landed(
     _run_git(worktree, "add", "fix.txt")
     _run_git(worktree, "commit", "-m", "lane-two grown fix")
     head = disk_usage._branch_tip(repo, "lane-two")
-    monkeypatch.setattr(
-        disk_usage, "MERGED_BASE_REFS", ("refs/heads/does-not-exist",)
-    )
+    monkeypatch.setattr(disk_usage, "MERGED_BASE_REFS", ("refs/heads/does-not-exist",))
 
     assert disk_usage._is_ancestor(repo, "refs/heads/does-not-exist", tip) is None
     assert not disk_usage._grown_from_registered_branch(
