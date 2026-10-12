@@ -35,6 +35,8 @@ struct TodayReviewPresenterState {
     /// #2041：目前「暫時看詳細」的那張卡（`CardPresentation.reviewCardKey`），nil ＝
     /// 全部依設定。session 記憶體，換卡即清。
     var temporaryDetailCardKey: String? = nil
+    /// #3127：鍵盤評分請求（與按鈕、滑動同一條甩出路徑）。變化即由 view 觸發一次 `flingCard`。
+    var keyboardGrade: KeyboardGradeRequest? = nil
 }
 
 /// reference box：可被 onGeometryChange 逐幀寫入而不觸發 SwiftUI 失效。
@@ -74,7 +76,11 @@ struct TodayReviewPresenter: View {
     // 0 = promote 起始姿態（scale 0.96 / yOff 22），1 = identity。只屬於
     // active role；onAppear 以 spring 推到 1，之後恆 1（slot 常駐不再插入）。
     @State var introProgress: CGFloat = 0
-    @State var flingHapticTrigger = 0
+    // 甩出回饋的觸發計數（#3127）：記得／忘記 各自一個，haptic 類別與聲音由 AppFeedbackEvent.reviewGrade 決定。
+    @State var flingRememberedTrigger = 0
+    @State var flingForgotTrigger = 0
+    /// 甩出中到達的評分暫存（只留一筆，settle 後套用一次；#3127）。
+    @State var bufferedGrade = FlingGradeBuffer()
     @State private var celebrationTriggered = false
     @State private var lastAutoplaySpokenCardKey: String?
     // Per-slot 隨機微旋轉（index 對齊 slot）。slot 存活期間持久 —— 角色輪替
@@ -422,7 +428,13 @@ struct TodayReviewPresenter: View {
             .onChange(of: state.progressText) { _, _ in
                 if lastAutoplaySpokenCardKey != nil { lastAutoplaySpokenCardKey = nil }
             }
-            .appFeedback(.impactLight, trigger: flingHapticTrigger)
+            .onChange(of: state.keyboardGrade) { _, request in
+                // 鍵盤評分（#3127）：與按鈕同一入口，甩出中則暫存、settle 後套用。
+                guard let request else { return }
+                gradeFromControl(remember: request.remember, source: "keyboard")
+            }
+            .appFeedback(.gradeRemembered, trigger: flingRememberedTrigger)
+            .appFeedback(.gradeForgot, trigger: flingForgotTrigger)
             .animation(AppMotion.panelState, value: isHelpPresented)
         }
         .task {

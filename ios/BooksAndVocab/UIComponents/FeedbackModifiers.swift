@@ -6,6 +6,10 @@ enum AppFeedbackEvent: Equatable {
     case success
     case warning
     case error
+    /// 複習評分「記得」的甩出回饋：success 類觸感，聲音沿用複習音效（#3127）。
+    case gradeRemembered
+    /// 複習評分「忘記」的甩出回饋：warning 類觸感，聲音沿用複習音效（#3127）。
+    case gradeForgot
 
     var sensoryFeedback: SensoryFeedback {
         switch self {
@@ -13,9 +17,9 @@ enum AppFeedbackEvent: Equatable {
             return .selection
         case .impactLight:
             return .impact(weight: .light)
-        case .success:
+        case .success, .gradeRemembered:
             return .success
-        case .warning:
+        case .warning, .gradeForgot:
             return .warning
         case .error:
             return .error
@@ -26,7 +30,7 @@ enum AppFeedbackEvent: Equatable {
         switch self {
         case .selection:
             return .tap
-        case .impactLight:
+        case .impactLight, .gradeRemembered, .gradeForgot:
             return .review
         case .success:
             return .success
@@ -35,6 +39,11 @@ enum AppFeedbackEvent: Equatable {
         case .error:
             return .error
         }
+    }
+
+    /// 評分甩出的回饋事件：記得 / 忘記 的觸感類別不同，聲音不變（#3127）。
+    static func reviewGrade(remember: Bool) -> AppFeedbackEvent {
+        remember ? .gradeRemembered : .gradeForgot
     }
 }
 

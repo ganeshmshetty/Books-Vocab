@@ -330,8 +330,6 @@ struct ReviewToolbarControls: View, Equatable {
 
     private var feedbackButtons: some View {
         let spring = AppMotion.feedbackButtonSpring
-        let buttonsDisabled = false
-
         return HStack(spacing: appSkin.metrics.sectionHeaderGap) {
             Button(action: onForgotTap) {
                 HStack(spacing: AppSpacing.s1) {
@@ -343,9 +341,8 @@ struct ReviewToolbarControls: View, Equatable {
                 }
                 .frame(minWidth: TodayReviewMetrics.actionMinWidth)
             }
-            .buttonStyle(.vocabAction(.destructive))
+            .buttonStyle(.vocabAction(.destructive, pressFeedback: false))
             .accessibilityIdentifier("todayReview.feedback.forgot")
-            .disabled(buttonsDisabled)
             .overlay(alignment: .center) {
                 if forgotButtonGlow > 0 {
                     AppRoundedRect(roundness: appSkin.roundness.control)
@@ -368,9 +365,8 @@ struct ReviewToolbarControls: View, Equatable {
                 }
                 .frame(minWidth: TodayReviewMetrics.actionMinWidth)
             }
-            .buttonStyle(.vocabAction(.success))
+            .buttonStyle(.vocabAction(.success, pressFeedback: false))
             .accessibilityIdentifier("todayReview.feedback.remembered")
-            .disabled(buttonsDisabled)
             .overlay(alignment: .center) {
                 if rememberedButtonGlow > 0 {
                     AppRoundedRect(roundness: appSkin.roundness.control)
@@ -442,8 +438,8 @@ extension TodayReviewPresenter {
                     isCardInteractive: isCardInteractive,
                     swipeIntensity: swipeIntensity
                 ),
-                onForgotTap: { flingCard(direction: -1, source: "button", callback: onForgot) },
-                onRememberedTap: { flingCard(direction: 1, source: "button", callback: onRemembered) },
+                onForgotTap: { gradeFromControl(remember: false, source: "button") },
+                onRememberedTap: { gradeFromControl(remember: true, source: "button") },
                 onPrevious: onPrevious,
                 onNext: onNext,
                 onToggleAutoPlayPause: onToggleAutoPlayPause,

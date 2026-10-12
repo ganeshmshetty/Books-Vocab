@@ -391,6 +391,26 @@ extension TodayReviewPresenter {
         )
     }
 
+    /// 按鈕 / 鍵盤評分入口（#3127）：與滑動放手走同一條甩出（同一 plan、同一回饋、同一 settle）。
+    /// 甩出中到達的評分暫存一筆，settle 後套用一次：不靜默丟棄，也不在甩出中同步 submit。
+    func gradeFromControl(remember: Bool, source: String) {
+        guard dismissPhase == .idle else {
+            bufferedGrade.receive(remember: remember)
+            return
+        }
+        flingCard(
+            direction: remember ? 1 : -1,
+            source: source,
+            callback: remember ? onRemembered : onForgot
+        )
+    }
+
+    /// settle 後套用甩出中暫存的評分（至多一次）。自動播放中或已無卡片時丟棄。
+    func applyBufferedGrade() {
+        guard let remember = bufferedGrade.takeAtSettle(), swipeEnabled, state.currentCard != nil else { return }
+        gradeFromControl(remember: remember, source: "buffered")
+    }
+
     /// 統一的甩出動畫 — swipe 放手、按鈕、ReviewProbe 共用**同一條過渡**（#2027）：
     /// 終點 / 凍結 intensity / spring 時長全由 `TodayReviewFling.plan` 算出，
     /// 入口之間只差起點 offset 與手指速度（按鈕 / probe 為 nil → 名目速度）。
@@ -407,7 +427,7 @@ extension TodayReviewPresenter {
         recordSwipeMarkerPeak(to: plan.targetOffset)
         dismissPhase = .animatingOut
         frozenSwipeIntensity = plan.frozenIntensity
-        flingHapticTrigger += 1
+        if direction > 0 { flingRememberedTrigger += 1 } else { flingForgotTrigger += 1 }
         let _flingStart = DispatchTime.now()
         let velocityText = velocity.map { "\(Int($0))" } ?? "nil"
         PerfLog.review.mark(
@@ -458,6 +478,7 @@ extension TodayReviewPresenter {
                         frozenSwipeIntensity = 0
                     }
                 }
+                applyBufferedGrade()
             }
         }
 

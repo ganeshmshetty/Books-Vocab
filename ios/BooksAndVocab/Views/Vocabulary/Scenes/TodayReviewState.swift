@@ -1,6 +1,27 @@
 import SwiftUI
 import SwiftData
 
+/// 鍵盤評分請求（#3127）。每次請求 `sequence` 遞增，view 以 onChange 觸發一次甩出。
+struct KeyboardGradeRequest: Equatable {
+    let sequence: Int
+    let remember: Bool
+}
+
+/// 甩出動畫中到達的評分暫存區（#3127）。只留一筆：甩出中後到的評分取代前一筆（以最後的意圖為準），
+/// settle 時取出一次後清空，因此同一評分不會套用兩次，也不會在甩出中被無條件丟棄。純值，供單元測試。
+struct FlingGradeBuffer: Equatable {
+    private(set) var pendingRemember: Bool?
+
+    mutating func receive(remember: Bool) {
+        pendingRemember = remember
+    }
+
+    mutating func takeAtSettle() -> Bool? {
+        defer { pendingRemember = nil }
+        return pendingRemember
+    }
+}
+
 @Observable @MainActor
 final class TodayReviewState {
     struct SubmittedAnswer {
@@ -25,6 +46,9 @@ final class TodayReviewState {
     private var temporaryDetail = ReviewCardTemporaryDetail()
     var linkedCardStack: [VocabularyEntry] = []
     var tappedLink: KGCardLinkSummary?
+    /// #3127：最近一次鍵盤評分請求（見 `requestKeyboardGrade`）。session 記憶體，不持久化。
+    private(set) var keyboardGrade: KeyboardGradeRequest?
+    private var keyboardGradeSequence = 0
     static let cacheLookaheadLimit = 3
 
     // MARK: - Delegated concerns
@@ -174,7 +198,8 @@ final class TodayReviewState {
             autoplayProgress: queue.isEmpty ? 0 : Double(currentIndex) / Double(queue.count),
             autoplaySpeed: autoplaySpeed,
             autoplaySoundEnabled: autoplaySoundEnabled,
-            temporaryDetailCardKey: temporaryDetail.detailedCardKey
+            temporaryDetailCardKey: temporaryDetail.detailedCardKey,
+            keyboardGrade: keyboardGrade
         )
     }
 
@@ -441,6 +466,15 @@ final class TodayReviewState {
 
     func autoplayBlocks(_ intent: ReviewIntent) -> Bool {
         Self.autoplayBlocks(intent, isAutoPlaying: isAutoPlaying)
+    }
+
+    /// 鍵盤評分（#3127）：只登記請求，不在此同步 submit。實際甩出與 settle 由 view 的
+    /// `gradeFromControl` 完成，與按鈕、滑動走同一條路徑。守衛與 `performReviewIntent` 的 forgot／remembered 一致。
+    func requestKeyboardGrade(remember: Bool) -> Bool {
+        guard !autoplayBlocks(remember ? .remembered : .forgot), currentEntry != nil else { return false }
+        keyboardGradeSequence += 1
+        keyboardGrade = KeyboardGradeRequest(sequence: keyboardGradeSequence, remember: remember)
+        return true
     }
 
     @discardableResult

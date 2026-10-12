@@ -146,6 +146,9 @@ struct VocabTimelineRow<Trailing: View>: View {
 struct VocabActionButtonStyle: ButtonStyle {
     @Environment(\.appSkin) private var appSkin
     let tone: VocabActionTone
+    /// 按下瞬間的 selection 觸感＋點擊音。會與該動作自己的回饋（例如複習評分的甩出）重複，
+    /// 那種動作傳 `false`，只保留視覺按壓縮放（#3127）。
+    var pressFeedback: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
         let palette = stylePalette
@@ -166,7 +169,7 @@ struct VocabActionButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .animation(AppMotion.pressFeedback, value: configuration.isPressed)
-            .appFeedback(.selection, trigger: configuration.isPressed) { _, newValue in newValue }
+            .appFeedback(.selection, trigger: configuration.isPressed) { _, newValue in pressFeedback && newValue }
     }
 
     private var stylePalette: (foreground: Color, background: Color, border: Color) {
@@ -227,7 +230,7 @@ private enum VocabActionButtonPalette {
 }
 
 extension ButtonStyle where Self == VocabActionButtonStyle {
-    static func vocabAction(_ tone: VocabActionTone = .primary) -> VocabActionButtonStyle {
-        VocabActionButtonStyle(tone: tone)
+    static func vocabAction(_ tone: VocabActionTone = .primary, pressFeedback: Bool = true) -> VocabActionButtonStyle {
+        VocabActionButtonStyle(tone: tone, pressFeedback: pressFeedback)
     }
 }
