@@ -71,6 +71,8 @@ SCHEMA = "kg.deliver.v1"
 TRUNK = "origin/main"
 OPS = Path(__file__).resolve().parent
 PR_GATE = OPS.parent / ".github" / "workflows" / "pr-gate.yml"
+# headRefOid is what next_stage() compares the lane head with (#3311).
+PR_LOOKUP_FIELDS = "number,state,url,headRefOid"
 # Raised by delivery_control/adapters/operation_lock.py (a test pins the text).
 LOCK_BUSY = "delivery mutation already in progress"
 LOCK_RETRY_SECONDS = 5.0
@@ -350,10 +352,28 @@ def ruff_format_command(workflow: str) -> list[str]:
     ]
 
 
-def next_stage(record: dict[str, Any] | None, pr: dict[str, Any] | None) -> str:
-    """Where a (re)run has to start, given what the registry and GitHub already hold."""
+def next_stage(
+    record: dict[str, Any] | None,
+    pr: dict[str, Any] | None,
+    *,
+    head: str | None = None,
+    branch: str = "",
+) -> str:
+    """Where a (re)run has to start, given what the registry and GitHub already hold.
+
+    ``head`` is the lane branch's local tip (None when the branch is gone).  A
+    merged PR only licenses cleanup when that tip is the PR's head: a branch
+    name reused after a merge carries commits the merged PR never had (#3311).
+    """
     if pr is not None:
         if pr.get("state") == "MERGED":
+            if head is not None and head != pr.get("headRefOid"):
+                raise DeliverError(
+                    f"branch {branch or '<unknown>'} is at {head} but its merged "
+                    f"PR #{pr.get('number')} ends at {pr.get('headRefOid')}: the "
+                    "branch name was reused after a merge; open a fresh lane (-rK) "
+                    "instead of cleanup"
+                )
             return "cleanup"
         if pr.get("state") == "OPEN":
             # A publish that died after creating the PR leaves the lane short
@@ -704,6 +724,14 @@ class Delivery:
         ]
         return live[-1] if live else None
 
+    def lane_head(self, branch: str) -> str | None:
+        """The lane branch's local tip; None when the branch no longer exists."""
+        proc = self.runner(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            self.home,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
     def pull_request(self, repo: str, branch: str) -> dict[str, Any] | None:
         out = must(
             self.runner,
@@ -718,7 +746,7 @@ class Delivery:
                 "--state",
                 "all",
                 "--json",
-                "number,state,url",
+                PR_LOOKUP_FIELDS,
                 "-q",
                 "sort_by(.number) | reverse",
             ],
@@ -980,7 +1008,7 @@ class Delivery:
             raise DeliverError(
                 f"PR #{pr.get('number')} already merged; start a new lane from {TRUNK}"
             )
-        stage = next_stage(record, pr)
+        stage = next_stage(record, pr, head=self.lane_head(branch), branch=branch)
         lane = self.args.lane or (
             record["external_ids"][0] if record and record.get("external_ids") else None
         )

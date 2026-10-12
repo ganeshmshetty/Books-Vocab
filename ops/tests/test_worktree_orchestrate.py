@@ -517,6 +517,56 @@ def test_open_refuses_missing_scope_or_owner_before_any_mutation(
     assert not (tmp_path / "registry.json").exists()
 
 
+def test_open_refuses_a_branch_name_that_already_carries_a_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # #3311: a slug reused after its PR merged must not open a lane on that name
+    monkeypatch.setattr(coordinator, "_require_unfrozen", lambda command: None)
+    monkeypatch.setattr(coordinator, "_branch_pull_requests", lambda *_a: (3201,))
+    for name in ("_resolve_commit", "_registry_register", "_git"):
+        monkeypatch.setattr(
+            coordinator,
+            name,
+            lambda *_a, **_k: pytest.fail("refusal must precede every mutation"),
+        )
+
+    args = _open_refusal_args(tmp_path, slug="issue-2042-r2")
+
+    assert coordinator.cmd_open(args) == coordinator.EXIT_BLOCK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["action"] == "refused"
+    assert "debug/issue-2042-r2" in payload["reason"]
+    assert "#3201" in payload["reason"]
+    assert "-rK" in payload["reason"]
+    assert not (tmp_path / "worktree").exists()
+    assert not (tmp_path / "registry.json").exists()
+
+
+def test_open_fails_closed_when_the_branch_pr_inventory_is_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def unreadable(*_a: object) -> tuple[int, ...]:
+        raise ReanchorRefused("branch PR inventory could not be read")
+
+    monkeypatch.setattr(coordinator, "_require_unfrozen", lambda command: None)
+    monkeypatch.setattr(coordinator, "_branch_pull_requests", unreadable)
+    for name in ("_resolve_commit", "_registry_register", "_git"):
+        monkeypatch.setattr(
+            coordinator,
+            name,
+            lambda *_a, **_k: pytest.fail("unreadable inventory must refuse first"),
+        )
+
+    assert coordinator.cmd_open(_open_refusal_args(tmp_path)) == coordinator.EXIT_BLOCK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"].startswith("branch PR inventory could not be read")
+    assert not (tmp_path / "worktree").exists()
+
+
 def test_open_accepts_external_id_for_owner_bound_open(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -525,6 +575,7 @@ def test_open_accepts_external_id_for_owner_bound_open(
     base_sha = "a" * 40
     registered: dict[str, object] = {}
     monkeypatch.setattr(coordinator, "_require_unfrozen", lambda command: None)
+    monkeypatch.setattr(coordinator, "_branch_pull_requests", lambda *_a: ())
     monkeypatch.setattr(coordinator, "_resolve_commit", lambda *_args: base_sha)
     monkeypatch.setattr(
         coordinator,
@@ -587,6 +638,7 @@ def test_open_uses_exact_base_for_failed_provisioning_compensation(
     compensation: list[str] = []
     git_calls: list[list[str]] = []
     monkeypatch.setattr(coordinator, "_require_unfrozen", lambda command: None)
+    monkeypatch.setattr(coordinator, "_branch_pull_requests", lambda *_a: ())
     monkeypatch.setattr(coordinator, "_resolve_commit", lambda path, ref: base_sha)
     monkeypatch.setattr(
         coordinator,
@@ -652,6 +704,7 @@ def test_open_compensates_against_existing_branch_head_after_add_failure(
     branch_sha = "b" * 40
     compensation: list[str] = []
     monkeypatch.setattr(coordinator, "_require_unfrozen", lambda command: None)
+    monkeypatch.setattr(coordinator, "_branch_pull_requests", lambda *_a: ())
     resolved = iter((base_sha, branch_sha))
     monkeypatch.setattr(
         coordinator, "_resolve_commit", lambda path, ref: next(resolved)
