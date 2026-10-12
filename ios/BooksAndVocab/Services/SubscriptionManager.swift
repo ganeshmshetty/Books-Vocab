@@ -166,7 +166,11 @@ final class SubscriptionManager: SubscriptionManaging {
     @discardableResult
     func applySyncResponse(_ value: KGEntitlements, requestedAt generation: Int, owner: String? = nil) -> Bool {
         guard lastLocalWriteGeneration < generation else { return false }
-        return applyEntitlements(value, generation: claimEntitlementsGeneration(), owner: owner)
+        guard applyEntitlements(value, generation: claimEntitlementsGeneration(), owner: owner) else { return false }
+        // 已套用的權威結果取代先前的失敗訊息，並依新權益重建到期排程（#3223）
+        lastError = nil
+        scheduleExpiryRefresh(for: value.pro)
+        return true
     }
 
     /// 在 app 啟動時呼叫，持續監聽 Transaction.updates 以捕捉中斷購買、續訂等事件

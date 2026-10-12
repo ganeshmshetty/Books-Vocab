@@ -603,6 +603,61 @@ struct SubscriptionManagerTests {
         #expect(!mgr.hasProAccess)
     }
 
+    // MARK: - sync failure reporting (#3223)
+
+    @MainActor
+    @Test func failed_latest_sync_request_surfaces_error_over_superseded_refresh_failure() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = 較早發出的非強制 refresh，掛起後失敗；之後發出的 StoreKit 同步（最新請求）同樣失敗。
+        let service = GatedSubscriptionService(responses: [:], suspended: [1])
+        let auth = RefreshOrderAuthStub()
+        let older = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        _ = try? await mgr.applySyncRequest(owner: "test_user") { throw UnexpectedSubscriptionCall() }
+        #expect(mgr.lastError != nil)
+
+        // 較早的 refresh 最後失敗：已被較新的同步取代，不得清除或覆寫其錯誤。
+        service.release(1)
+        await older.value
+        #expect(mgr.lastError != nil)
+    }
+
+    @MainActor
+    @Test func applied_sync_response_clears_stale_error_and_reschedules_expiry() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastError = savedError
+            mgr.expiryTimer?.cancel()
+            mgr.expiryTimer = nil
+        }
+        mgr.lastError = "stale"
+
+        // 已取消續訂但仍有效，到期時間為未來：套用後必須排程到期刷新。
+        let expiry = Date().addingTimeInterval(3600).ISO8601Format()
+        let pro = status(isActive: true, status: "active", willRenew: false, expiresAt: expiry, source: "app_store")
+        let generation = mgr.claimEntitlementsGeneration()
+        let applied = mgr.applySyncResponse(KGEntitlements(pro: pro), requestedAt: generation, owner: "test_user")
+
+        #expect(applied)
+        #expect(mgr.lastError == nil)
+        #expect(mgr.expiryTimer != nil)
+    }
+
     // MARK: - account switch ownership (#2592)
 
     @MainActor
