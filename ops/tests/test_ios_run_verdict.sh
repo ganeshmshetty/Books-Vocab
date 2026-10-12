@@ -145,11 +145,15 @@ got="$(GIT_CEILING_DIRECTORIES="$TMP" in_proc "kg_ios_verdict_commit_kv '$TMP'" 
 [[ "$got" == "commit=unknown tree=unknown" ]] && ok "non-repo root degrades to commit=unknown tree=unknown" || fail_t "non-repo commit kv: '$got'"
 # wiring: every RESULT= verdict line in the iOS entry points (echo or printf) carries the helper.
 # ios_test.sh and ios_build.sh name the repo root PROJECT_ROOT; ios_release.sh names it ROOT.
+# The root variable is pinned per file: a wrong name (e.g. an undefined $ROOT in build) must fail.
 ios_test="$WORKSPACE/ops/ios_test.sh"
 ios_entrypoints=("$ios_test" "$WORKSPACE/ops/ios_build.sh" "$WORKSPACE/ops/ios_release.sh")
+ios_root_vars=("PROJECT_ROOT" "PROJECT_ROOT" "ROOT")
 unwired=0
-for ios_script in "${ios_entrypoints[@]}"; do
-  n="$(grep -E 'RESULT=(ok|fail|inconclusive) ' "$ios_script" | grep -vcE 'kg_ios_verdict_commit_kv "\$[A-Z_]*ROOT"' || true)"
+for i in "${!ios_entrypoints[@]}"; do
+  ios_script="${ios_entrypoints[$i]}"
+  root_call="kg_ios_verdict_commit_kv \"\$${ios_root_vars[$i]}\""
+  n="$(grep -E 'RESULT=(ok|fail|inconclusive) ' "$ios_script" | grep -vcF "$root_call" || true)"
   unwired=$((unwired + n))
 done
 [[ "$unwired" == 0 ]] && grep -q 'all tests passed.*kg_ios_verdict_commit_kv "\$PROJECT_ROOT"' "$ios_test" \
