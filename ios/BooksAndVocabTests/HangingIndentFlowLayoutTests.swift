@@ -47,15 +47,29 @@ struct HangingIndentFlowLayoutTests {
         }
     }
 
-    @Test func anOversizedFirstItemDoesNotStartAnEmptyLine() {
-        let wide = CGSize(width: 200, height: 16)
-        let result = HangingIndentFlow.place(
-            sizes: [Self.label, wide, Self.chip],
-            spacing: Self.gap,
-            maxWidth: 130
-        )
-        #expect(result.frames[1].minY == 0, "the first item stays on the label row even when it overflows")
-        #expect(result.frames[2].minY > 0, "the next item wraps instead of sharing the overflow")
+    /// #3227：超過值欄寬的項目必須在值欄內換行（不得溢出卡片），後續項目回到值欄。
+    /// Red：舊實作以自然寬 200 放置，frame.maxX = 64 + 200 = 264 > 130。
+    @Test func anOversizedFirstItemWrapsInsideTheValueColumn() {
+        let maxWidth: CGFloat = 130
+        let indent = Self.label.width + Self.gap
+        let result = HangingIndentFlow.place(count: 3, spacing: Self.gap, maxWidth: maxWidth) { index, width in
+            if index == 0 { return Self.label }
+            if index == 1 { return Self.wrapping(natural: CGSize(width: 200, height: 16), at: width) }
+            return Self.chip
+        }
+        #expect(result.frames[1].minY == 0, "the oversized item stays on the label row")
+        #expect(result.frames[1].minX == indent, "it starts in the value column")
+        #expect(result.frames[1].maxX <= maxWidth, "it is clamped to the value column, never past the card")
+        #expect(result.frames[1].height > 16, "its text wraps to more lines, so its row grows")
+        #expect(result.frames[2].minY >= result.frames[1].maxY, "the next item starts below the wrapped text")
+        #expect(result.frames[2].minX == indent, "the next item returns to the value column")
+    }
+
+    /// 模擬文字量測：寬度不足時換行，高度依行數增加。
+    private static func wrapping(natural: CGSize, at width: CGFloat?) -> CGSize {
+        guard let width, width > 0, width < natural.width else { return natural }
+        let lines = (natural.width / width).rounded(.up)
+        return CGSize(width: width, height: natural.height * lines)
     }
 
     @Test func emptyInputHasNoGeometry() {
