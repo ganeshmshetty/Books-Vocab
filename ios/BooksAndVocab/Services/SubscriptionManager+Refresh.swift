@@ -2,8 +2,14 @@ import Foundation
 
 extension SubscriptionManager {
     func refresh(using kgService: any KGServing, authManager: any AuthManaging, force: Bool = false) async {
+        await refreshEntitlements(using: kgService, authManager: authManager, force: force)
+    }
+
+    /// 核心 refresh 只需要 `fetchEntitlements`，依窄能力協定 `SubscriptionServing` 實作，
+    /// 讓回應順序語義能以確定性替身測試（#2800）。
+    func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async {
         guard authManager.isLoggedIn else {
-            entitlements = Self.defaultEntitlements
+            commitEntitlements(Self.defaultEntitlements)
             lastError = nil
             expiryTimer?.cancel()
             expiryTimer = nil
@@ -19,6 +25,7 @@ extension SubscriptionManager {
         }
         let previousRefreshTime = lastRefreshTime
         lastRefreshTime = Date()
+        let generation = claimEntitlementsGeneration()
 
         // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
         let requestUserId = authManager.userId
@@ -27,11 +34,11 @@ extension SubscriptionManager {
         defer { endLoading() }
 
         do {
-            var remote = try await kgService.fetchEntitlements()
+            var remote = try await service.fetchEntitlements()
 
-            // async 返回後帳號可能已切換，丟棄過期回應
-            guard authManager.userId == requestUserId else {
-                AppLog.subscription.warning("Discarding stale refresh: requested for \(requestUserId ?? "nil"), current is \(authManager.userId ?? "nil")")
+            // 已有更新的世代套用過（refresh 或樂觀／同步寫入）：本回應已過期（無論到達順序）
+            guard generation > lastAppliedEntitlementsGeneration else {
+                AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(self.lastAppliedEntitlementsGeneration)")
                 return
             }
 
@@ -51,13 +58,24 @@ extension SubscriptionManager {
                     )
                 }
             }
-            entitlements = remote
+            // 所有 await（含上方 StoreKit 查詢）之後才判斷帳號：查詢期間可能已登出或切換帳號，
+            // 而登出不取世代，僅靠 applyEntitlements 的世代守衛會把舊帳號的權益寫回。
+            guard authManager.userId == requestUserId else {
+                AppLog.subscription.warning("Discarding stale refresh: requested for \(requestUserId ?? "nil"), current is \(authManager.userId ?? "nil")")
+                return
+            }
+            // 期間可能已有更新的寫入發出；由 applyEntitlements 再守一次世代
+            guard applyEntitlements(remote, generation: generation) else { return }
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
         } catch is CancellationError {
-            // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh
-            lastRefreshTime = previousRefreshTime
+            // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh。
+            // 過期請求不得還原，否則會蓋掉較新請求寫入的冷卻時間。
+            if generation == entitlementsGeneration { lastRefreshTime = previousRefreshTime }
         } catch {
+            // 只有最新發出的請求可寫入錯誤：較早請求的失敗若較新請求仍在途或已套用，即已被取代，
+            // 不得寫入 lastError（否則 paywall 會對已過時的請求顯示重試）。
+            guard generation == entitlementsGeneration else { return }
             lastError = error.localizedDescription
         }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import BooksAndVocab
 
@@ -16,9 +17,9 @@ import Testing
 ///   them, so they are deliberately left out rather than faked with tautologies.
 ///
 /// - `refresh(...)` / `resyncAfterManagement(...)` interleave a `KGServing` network
-///   call with StoreKit `queryWillAutoRenew()`. The network half has a protocol seam
-///   (`KGServing`) but the StoreKit half does not, so the full method cannot be
-///   exercised deterministically. The *pure model logic* it depends on
+///   call with StoreKit `queryWillAutoRenew()`. The network half is exercised through
+///   the `SubscriptionServing` seam (`refreshEntitlements`, see the #2800 tests below);
+///   the StoreKit half has no injection seam and is not covered. The *pure model logic* it depends on
 ///   (`KGSubscriptionStatus.isExpired` / `.isCancelledButActive` / `.parseExpiryDate`)
 ///   is what gates its branches — and that is fully covered below.
 ///
@@ -26,6 +27,7 @@ import Testing
 /// `stableUUID(for:)`, `purchaseOptions(for:)`, `merge(...)`, `inferredStatus(for:)`,
 /// and the `KGSubscriptionStatus` expiry/cancellation predicates that drive
 /// local downgrade and expiry-timer scheduling.
+@Suite(.serialized)
 struct SubscriptionManagerTests {
 
     // MARK: - Fixtures
@@ -360,4 +362,315 @@ struct SubscriptionManagerTests {
         #expect(SubscriptionManager.proProductID == BrandIdentity.proProductID)
         #expect(SubscriptionManager.shared.proProductIdentifier == SubscriptionManager.proProductID)
     }
+
+    // MARK: - refresh response ordering (#2800)
+    //
+    // `source: "admin"` keeps the StoreKit `queryWillAutoRenew()` branch out of these
+    // tests; the response-ordering contract lives entirely in the network half.
+
+    @MainActor
+    @Test func refresh_discards_older_response_arriving_after_newer_request() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+
+        // 1 = 非強制 launch refresh，掛起；2 = 較晚發出的強制 refresh，立即回 active。
+        let service = GatedSubscriptionService(
+            responses: [
+                1: KGEntitlements(pro: status(status: "inactive")),
+                2: KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            ],
+            suspended: [1]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(mgr.entitlements.pro.is_active)
+
+        // 較早發出的 free 回應最後到達，必須被丟棄。
+        service.release(1)
+        await launch.value
+        #expect(mgr.entitlements.pro.is_active)
+    }
+
+    @MainActor
+    @Test func refresh_applies_older_valid_response_when_newer_request_fails() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = 非強制 launch refresh，掛起且回 active；2 = 較晚發出的強制 refresh，
+        // 不在 responses 內，因此 fetch 拋錯（模擬網路錯誤）。
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))],
+            suspended: [1]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(mgr.lastError != nil)
+
+        // 較早發出但有效的回應後到：尚未被套用過，必須套用並清除較新請求留下的錯誤。
+        service.release(1)
+        await launch.value
+        #expect(mgr.entitlements.pro.is_active)
+        #expect(mgr.lastError == nil)
+    }
+
+    @MainActor
+    @Test func refresh_superseded_failure_does_not_write_error_while_newer_request_pending() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = 較早發出的非強制 refresh，掛起後因不在 responses 內而失敗；
+        // 2 = 較晚發出的強制 refresh，同樣掛起，之後回 active。
+        let service = GatedSubscriptionService(
+            responses: [2: KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))],
+            suspended: [1, 2]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let older = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+        let newer = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: true) }
+        try #require(await service.waitUntilParked(2))
+
+        // 較早請求失敗時，較新請求仍在途中：該失敗已被取代，不得寫入 lastError（否則 paywall 會顯示重試）。
+        service.release(1)
+        await older.value
+        #expect(mgr.lastError == nil)
+
+        // 較新請求成功後照常套用，並維持無錯誤狀態。
+        service.release(2)
+        await newer.value
+        #expect(mgr.entitlements.pro.is_active)
+        #expect(mgr.lastError == nil)
+    }
+
+    @MainActor
+    @Test func refresh_applies_response_when_no_newer_request_exists() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.entitlements = KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
+
+        // 對照組：沒有更新的請求時，唯一的回應必須照常套用（證明守衛不是無條件丟棄）。
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: []
+        )
+        await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: false)
+        #expect(!mgr.entitlements.pro.is_active)
+    }
+
+    @MainActor
+    @Test func refresh_discards_stale_free_response_after_optimistic_write() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = launch refresh 掛起，之後才回 free；2 = 強制 refresh，不在 responses 內 → 拋錯（模擬網路失敗）。
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: [1]
+        )
+        let auth = RefreshOrderAuthStub()
+
+        let launch = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        // 購買的樂觀寫入發生在 launch refresh 發出之後：必須使其回應失效。
+        mgr.commitEntitlements(KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")))
+
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(mgr.lastError != nil)
+        #expect(mgr.hasProAccess)
+
+        // 過期的 free 回應最後到達：不得把付費用戶降為 free。
+        service.release(1)
+        await launch.value
+        #expect(mgr.hasProAccess)
+    }
+
+    @MainActor
+    @Test func refresh_issued_after_optimistic_write_still_applies() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+
+        // 對照組：寫入之後才發出的 refresh 不受影響，必須照常套用（證明 funnel 不是無條件阻擋）。
+        mgr.commitEntitlements(KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")))
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: []
+        )
+        await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: false)
+        #expect(!mgr.hasProAccess)
+    }
+
+    // MARK: - App Store sync response authority (#2800)
+    //
+    // 伺服器可能先處理較晚發出的 refresh GET（尚未含本次交易），該 GET 不得擋住同步回應。
+    // `syncTransaction` 需要 StoreKit `Transaction`，無法在單元測試建構，因此決策拆為 `applySyncResponse` 直接測。
+
+    @MainActor
+    @Test func sync_response_applies_after_newer_refresh_already_applied() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        defer { mgr.entitlements = savedEntitlements }
+
+        // 同步請求先發出；較晚發出的 refresh GET 先回 free 並套用；同步回應（active）後到，必須套用。
+        let syncGeneration = mgr.claimEntitlementsGeneration()
+        let refreshGeneration = mgr.claimEntitlementsGeneration()
+        mgr.applyEntitlements(KGEntitlements(pro: status(status: "inactive")), generation: refreshGeneration)
+        #expect(!mgr.hasProAccess)
+
+        let applied = mgr.applySyncResponse(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            requestedAt: syncGeneration
+        )
+        #expect(applied)
+        #expect(mgr.hasProAccess)
+    }
+
+    @MainActor
+    @Test func sync_response_discarded_when_local_write_followed_request() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        defer { mgr.entitlements = savedEntitlements }
+
+        // 同步請求發出後發生本地決策寫入（登出／樂觀更新）：同步回應必須失效，不得寫回舊權益。
+        let syncGeneration = mgr.claimEntitlementsGeneration()
+        mgr.commitEntitlements(KGEntitlements(pro: status(status: "inactive")))
+
+        let applied = mgr.applySyncResponse(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            requestedAt: syncGeneration
+        )
+        #expect(!applied)
+        #expect(!mgr.hasProAccess)
+    }
+}
+
+/// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
+@MainActor
+private final class GatedSubscriptionService: SubscriptionServing {
+    private let responses: [Int: KGEntitlements]
+    private let suspended: Set<Int>
+    private var calls = 0
+    private var parked: [Int: CheckedContinuation<KGEntitlements, Error>] = [:]
+
+    init(responses: [Int: KGEntitlements], suspended: Set<Int>) {
+        self.responses = responses
+        self.suspended = suspended
+    }
+
+    func fetchEntitlements() async throws -> KGEntitlements {
+        calls += 1
+        let call = calls
+        if suspended.contains(call) {
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<KGEntitlements, Error>) in
+                parked[call] = continuation
+            }
+        }
+        return try response(for: call)
+    }
+
+    func syncAppStoreSubscription(_ snapshot: KGAppStoreSubscriptionSyncRequest) async throws -> KGEntitlements {
+        throw UnexpectedSubscriptionCall()
+    }
+
+    func waitUntilParked(_ call: Int) async -> Bool {
+        for _ in 0..<10_000 {
+            if parked[call] != nil { return true }
+            await Task.yield()
+        }
+        return false
+    }
+
+    func release(_ call: Int) {
+        guard let continuation = parked.removeValue(forKey: call) else { return }
+        continuation.resume(with: Result { try response(for: call) })
+    }
+
+    private func response(for call: Int) throws -> KGEntitlements {
+        guard let value = responses[call] else { throw UnexpectedSubscriptionCall() }
+        return value
+    }
+}
+
+private struct UnexpectedSubscriptionCall: Error {}
+
+private final class RefreshOrderAuthStub: AuthManaging {
+    var isLoggedIn: Bool = true
+    var userId: String? = "test_user"
+    var token: String? = "test_token"
+    var displayName: String?
+    var userEmail: String?
+    var avatarURL: URL?
+    var authError: String?
+    var isAuthenticating: Bool = false
+    var isDemoMode: Bool = false
+
+    func enterDemoMode(modelContainer: ModelContainer) {}
+    func exitDemoMode(modelContainer: ModelContainer) {}
+    func refreshSessionIfNeeded() {}
+    func login(userId: String, token: String) {}
+    func login(customToken: String) async {}
+    func logout(modelContainer: ModelContainer?, reason: String) {}
+    func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?) {}
+    func loginWithGoogle(modelContainer: ModelContainer?) {}
+    func loginWithApple(modelContainer: ModelContainer?) {}
 }
