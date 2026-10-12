@@ -720,6 +720,85 @@ struct SubscriptionManagerTests {
 
     // MARK: - session end (#2592, #3222)
 
+    // MARK: - account binding of sync responses (#3232) and refresh error reporting (#3233)
+
+    /// A sync response for account A that returns after the session moved to account B must not write
+    /// A's entitlements into B. Switching accounts does not pass through logout, so no local write
+    /// generation invalidates the request.
+    @MainActor
+    @Test func sync_response_for_previous_account_is_discarded_after_account_switch() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedAuth = mgr._authManager
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr._authManager = savedAuth
+        }
+        mgr.commitEntitlements(SubscriptionManager.defaultEntitlements)
+
+        let auth = RefreshOrderAuthStub()
+        auth.userId = "test_user"
+        mgr._authManager = auth
+
+        _ = try? await mgr.applySyncRequest(owner: "test_user") {
+            auth.userId = "other_user"
+            return KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
+        }
+
+        #expect(!mgr.hasProAccess, "A's response must not be written after the session switched to B")
+    }
+
+    @MainActor
+    @Test func sync_response_for_current_account_still_applies() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedAuth = mgr._authManager
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr._authManager = savedAuth
+        }
+        mgr.commitEntitlements(SubscriptionManager.defaultEntitlements)
+
+        let auth = RefreshOrderAuthStub()
+        auth.userId = "test_user"
+        mgr._authManager = auth
+
+        try await mgr.applySyncRequest(owner: "test_user") {
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
+        }
+
+        #expect(mgr.hasProAccess)
+    }
+
+    /// The refresh's own network error must reach `lastError` even when a sync claimed the shared
+    /// generation while the refresh was in flight. Only a newer refresh or a newer error may supersede it.
+    @MainActor
+    @Test func refresh_error_surfaces_when_a_sync_started_during_the_refresh() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        let service = GatedSubscriptionService(responses: [:], suspended: [1])
+        let auth = RefreshOrderAuthStub()
+        let refresh = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: true) }
+        try #require(await service.waitUntilParked(1))
+
+        // 同步在 refresh GET 途中開始並取號（推進共用世代）；它本身沒有失敗，不應影響 refresh 的錯誤。
+        _ = mgr.claimEntitlementsGeneration()
+
+        service.release(1)
+        await refresh.value
+        #expect(mgr.lastError != nil, "a sync claiming the shared generation must not drop the refresh's own error")
+    }
+
     @MainActor
     @Test func session_end_resets_pro_and_discards_sync_requested_before_logout() {
         let mgr = SubscriptionManager.shared
