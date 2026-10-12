@@ -117,9 +117,17 @@ struct WordEditSheet: View {
         } catch {
             // 一次性失敗通知走頂端 pill；重試入口就是工具列上的「儲存」，草稿仍保留在表單裡，
             // 不需要另開面板。
-            toastCoordinator.error(L10n.string("儲存失敗，請再試一次"))
+            toastCoordinator.error(Self.saveFailureMessage(for: error))
             isSaving = false
         }
+    }
+
+    /// #3288：同步擷取中的列拒絕編輯時給出專屬訊息（使用者知道要等同步完成，而非誤以為儲存壞了）；其餘失敗沿用通用文案。
+    static func saveFailureMessage(for error: Error) -> String {
+        if let validation = error as? EditValidationError, validation == .uploadInFlight {
+            return L10n.string("此單字正在同步中，請稍後再試")
+        }
+        return L10n.string("儲存失敗，請再試一次")
     }
 
     /// 與後端 `VocabContentUpdateRequest` 的欄位上限一致（meaning 1..1000、note ≤ 5000，

@@ -299,5 +299,19 @@ struct WordEditSheetSaveTests {
         #expect(entry.translation == "新翻譯")
         #expect(entry.explanation == nil)
     }
+
+    /// #3288：同步擷取中的列被拒絕儲存時，必須顯示專屬訊息，不可落入通用「儲存失敗」文案。
+    @Test func uploadInFlightSaveFailureShowsDedicatedMessage() {
+        let message = WordEditSheet.saveFailureMessage(for: WordEditSheet.EditValidationError.uploadInFlight)
+
+        #expect(message == L10n.string("此單字正在同步中，請稍後再試"))
+        #expect(message != L10n.string("儲存失敗，請再試一次"))
+    }
+
+    @Test func otherSaveFailuresKeepGenericMessage() {
+        let message = WordEditSheet.saveFailureMessage(for: SaveFailure())
+
+        #expect(message == L10n.string("儲存失敗，請再試一次"))
+    }
 }
 #endif
