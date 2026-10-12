@@ -63,6 +63,7 @@ struct AuthManagerAccountSwitchTests {
         private(set) var discardCount = 0
         var failClear = false
         var failRetry = false
+        var failRebuild = false
         var pendingLocalWipeOwner: String?
         /// Failed sign-in retries of the same marker; the cap mirrors `LocalDataCleanerService` (#3229).
         private(set) var stuckRetryFailures = 0
@@ -70,7 +71,7 @@ struct AuthManagerAccountSwitchTests {
         private(set) var rebuildCount = 0
         var pendingWipeNeedsStoreRebuild: Bool { stuckRetryFailures >= Self.stuckRetryCap }
         func rebuildStoreAndDiscardPendingWipe() async -> Bool {
-            guard pendingWipeNeedsStoreRebuild else { return false }
+            guard pendingWipeNeedsStoreRebuild, !failRebuild else { return false }
             rebuildCount += 1
             stuckRetryFailures = 0
             pendingLocalWipeOwner = nil
@@ -420,6 +421,25 @@ struct AuthManagerAccountSwitchTests {
         #expect(await manager.recoverFromStuckLocalWipe())
         #expect(!manager.canRecoverStuckLocalWipe, "the rebuilt store is pending a restart, not recoverable again")
         #expect(manager.authError == L10n.string("本機資料已重建，請重新啟動 App 後再登入"))
+    }
+
+    /// #3309: a failed store rebuild must surface an error. Without one the recovery button is a silent no-op.
+    @Test func stuck_wipe_store_rebuild_failure_surfaces_error() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        cleaner.failRetry = true
+        cleaner.failRebuild = true
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        for _ in 0..<RecordingCleaner.stuckRetryCap {
+            await manager.login(customToken: "user-b")
+        }
+        #expect(manager.canRecoverStuckLocalWipe)
+        #expect(manager.authError != L10n.string("本機資料重建失敗，請稍後再試"))
+
+        #expect(await manager.recoverFromStuckLocalWipe() == false)
+        #expect(manager.authError == L10n.string("本機資料重建失敗，請稍後再試"))
+        #expect(manager.canRecoverStuckLocalWipe, "a failed rebuild leaves the recovery available for retry")
     }
 
     /// #3289: past the retry cap a sign-in still retries the wipe in-process. Once the failure clears,
