@@ -286,32 +286,55 @@ struct OverviewPage {
         XCTAssertEqual(element.value as? String, value, file: file, line: line)
     }
 
+    /// #2859 contract. Standard sizes: `dueToday` is a full-width hero above a two-column
+    /// row (`totalCards` | `currentStreak`); the row's columns share top edge and width.
+    /// `twoColumns: false` is the accessibility reflow: every block stacks at one shared
+    /// left edge and width.
     func assertMetricCardsHaveUniformGeometry(
+        twoColumns: Bool = true,
         file: StaticString = #filePath,
         line: UInt = UInt(#line)
     ) {
-        let cards = ["totalCards", "reviewedToday", "dueToday"].map { metric($0) }
-        for (name, card) in zip(["totalCards", "reviewedToday", "dueToday"], cards) {
-            card.assertExists(timeout: 10, file: file, line: line)
-            XCTAssertFalse(card.frame.isEmpty, "overview.metric.\(name) must expose a rendered frame", file: file, line: line)
+        let names = ["dueToday", "reviewedToday", "totalCards", "currentStreak", "longestStreak"]
+        for name in names {
+            metric(name).assertExists(timeout: 10, file: file, line: line)
+            XCTAssertFalse(metric(name).frame.isEmpty, "overview.metric.\(name) must expose a rendered frame", file: file, line: line)
         }
+        let hero = metric("dueToday").frame
+        let total = metric("totalCards").frame
+        let streak = metric("currentStreak").frame
+        let reviewed = metric("reviewedToday").frame
 
-        let heights = cards.map { $0.frame.height }
-        let tops = cards.map { $0.frame.minY }
-        XCTAssertLessThan(
-            (heights.max() ?? 0) - (heights.min() ?? 0),
-            1,
-            "overview metric cards must share one row height; a wrapped number changes the card geometry",
-            file: file,
-            line: line
-        )
-        XCTAssertLessThan(
-            (tops.max() ?? 0) - (tops.min() ?? 0),
-            1,
-            "overview metric cards must share one top edge",
-            file: file,
-            line: line
-        )
+        XCTAssertLessThan(hero.minY, reviewed.minY, "today hero must sit above its secondary figure", file: file, line: line)
+        if twoColumns {
+            XCTAssertGreaterThan(
+                hero.width - total.width,
+                1,
+                "today hero must span wider than one grid column",
+                file: file,
+                line: line
+            )
+            XCTAssertLessThan(
+                abs(total.minY - streak.minY),
+                1,
+                "two-column row must share one top edge; mismatched columns read as a spreadsheet",
+                file: file,
+                line: line
+            )
+            XCTAssertLessThan(
+                abs(total.width - streak.width),
+                1,
+                "two-column row must share one column width",
+                file: file,
+                line: line
+            )
+        } else {
+            XCTAssertLessThan(abs(total.minX - streak.minX), 1, "reflowed tiles must share one left edge", file: file, line: line)
+            XCTAssertLessThan(abs(total.width - streak.width), 1, "reflowed tiles must share one width", file: file, line: line)
+            XCTAssertLessThan(abs(hero.minX - total.minX), 1, "reflowed hero must share the same left edge", file: file, line: line)
+            XCTAssertLessThan(total.minY, streak.minY, "reflowed tiles stack in reading order", file: file, line: line)
+            XCTAssertLessThan(reviewed.minY, total.minY, "reflowed hero stays above the grid", file: file, line: line)
+        }
     }
 
     func forecastRange(_ days: Int) -> XCUIElement {

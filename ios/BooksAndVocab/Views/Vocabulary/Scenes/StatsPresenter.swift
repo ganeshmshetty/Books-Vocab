@@ -32,6 +32,7 @@ enum StatsScenePhase: Equatable {
 struct StatsPresenter: View {
     @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.kgService) private var kgService
     @Environment(\.authManager) private var authManager
     @Environment(\.statsProjectionClock) private var projectionClock
@@ -124,7 +125,6 @@ struct StatsPresenter: View {
                             metricsSection(summary)
                             heatmapSection(summary)
                             forecastSection(summary)
-                            totalsFooter(summary)
                         }
                         .padding(.horizontal, appSkin.metrics.pageHorizontalInset)
                         .padding(.top, appSkin.metrics.pageTopInset)
@@ -348,47 +348,29 @@ struct StatsPresenter: View {
 
     private func metricsSection(_ summary: StatsPresentation.Summary) -> some View {
         VStack(spacing: appSkin.spacing.sectionGap) {
-            HStack(spacing: appSkin.spacing.sectionGap) {
-                statCard(
-                    title: StatsCopy.totalCardsTitle,
-                    value: summary.formattedCount(summary.totalCards),
-                    unit: StatsCopy.cardUnit,
-                    systemImage: "rectangle.stack",
-                    identifier: "overview.metric.totalCards"
-                )
-                statCard(
-                    title: StatsCopy.reviewedTodayTitle,
-                    value: summary.formattedCount(summary.reviewedToday),
-                    unit: StatsCopy.cardUnit,
-                    systemImage: "checkmark.circle",
-                    identifier: "overview.metric.reviewedToday"
-                )
-                statCard(
-                    title: StatsCopy.dueTodayTitle,
-                    value: summary.formattedCount(summary.dueToday),
-                    unit: StatsCopy.cardUnit,
-                    systemImage: "clock",
-                    identifier: "overview.metric.dueToday"
-                )
+            VocabStatHeroSurface {
+                VStack(spacing: 0) {
+                    VocabStatReadout(
+                        title: StatsCopy.dueTodayTitle,
+                        value: summary.formattedCount(summary.dueToday),
+                        unit: StatsCopy.cardUnit,
+                        systemImage: "clock",
+                        identifier: "overview.metric.dueToday",
+                        isHero: true
+                    )
+                    AppAirDivider()
+                    VocabStatReadout(
+                        title: StatsCopy.reviewedTodayTitle,
+                        value: summary.formattedCount(summary.reviewedToday),
+                        unit: StatsCopy.cardUnit,
+                        systemImage: "checkmark.circle",
+                        identifier: "overview.metric.reviewedToday"
+                    )
+                }
             }
-            HStack(spacing: appSkin.spacing.sectionGap) {
-                statCard(
-                    title: StatsCopy.currentStreakTitle,
-                    value: summary.formattedCount(summary.currentStreak),
-                    unit: StatsCopy.dayUnit,
-                    systemImage: "flame",
-                    identifier: "overview.metric.currentStreak"
-                )
-                statCard(
-                    title: StatsCopy.longestStreakTitle,
-                    value: summary.formattedCount(summary.longestStreak),
-                    unit: StatsCopy.dayUnit,
-                    systemImage: "trophy",
-                    identifier: "overview.metric.longestStreak"
-                )
-            }
+            metricGrid(summary)
         }
-        // Keep the section anchor while preserving the metric cards as live
+        // Keep the section anchor while preserving the metric readouts as live
         // descendants in the iOS 26 accessibility tree. A bare identifier on
         // the VStack can collapse its children, leaving the rendered numbers
         // visible but making overview.metric.* unqueryable.
@@ -405,45 +387,42 @@ struct StatsPresenter: View {
         }
     }
 
-    private func statCard(
-        title: String,
-        value: String,
-        unit: String,
-        systemImage: String,
-        identifier: String
-    ) -> some View {
-        VocabCard {
-            VStack(alignment: .leading, spacing: appSkin.spacing.rowMicroGap) {
-                HStack(spacing: appSkin.spacing.rowMicroGap) {
-                    Image(systemName: systemImage)
-                        .font(appSkin.typography.iconSmall)
-                        .foregroundStyle(appSkin.palette.tertiaryText)
-                    Text(title)
-                        .font(appSkin.typography.caption)
-                        .foregroundStyle(appSkin.palette.tertiaryText)
-                }
-                HStack(alignment: .firstTextBaseline, spacing: AppSpacing.microGap) {
-                    Text(value)
-                        .font(appSkin.typography.numericHero)
-                        .monospacedDigit()
-                        .lineLimit(StatsMetricValueLayout.maximumLines)
-                        .minimumScaleFactor(StatsMetricValueLayout.minimumScaleFactor)
-                        .allowsTightening(StatsMetricValueLayout.allowsTightening)
-                        .layoutPriority(1)
-                        .foregroundStyle(appSkin.palette.primaryText)
-                        .contentTransition(.numericText())
-                    Text(unit)
-                        .font(appSkin.typography.caption)
-                        .lineLimit(StatsMetricValueLayout.maximumLines)
-                        .fixedSize(horizontal: StatsMetricValueLayout.unitIsFixedWidth, vertical: false)
-                        .foregroundStyle(appSkin.palette.tertiaryText)
+    /// Two columns share one stack, so their edges align by construction (#2859).
+    /// Dynamic Type's accessibility sizes swap the same children into one column.
+    private func metricGrid(_ summary: StatsPresentation.Summary) -> some View {
+        let layout = VocabStatTileLayout.columnCount(for: dynamicTypeSize) == 2
+            ? AnyLayout(HStackLayout(alignment: .top, spacing: appSkin.spacing.sectionGap))
+            : AnyLayout(VStackLayout(spacing: appSkin.spacing.sectionGap))
+        return layout {
+            VocabStatSurface {
+                VocabStatReadout(
+                    title: StatsCopy.totalCardsTitle,
+                    value: summary.formattedCount(summary.totalCards),
+                    unit: StatsCopy.cardUnit,
+                    systemImage: "rectangle.stack",
+                    identifier: "overview.metric.totalCards"
+                )
+            }
+            VocabStatSurface {
+                VStack(spacing: 0) {
+                    VocabStatReadout(
+                        title: StatsCopy.currentStreakTitle,
+                        value: summary.formattedCount(summary.currentStreak),
+                        unit: StatsCopy.dayUnit,
+                        systemImage: "flame",
+                        identifier: "overview.metric.currentStreak"
+                    )
+                    AppAirDivider()
+                    VocabStatReadout(
+                        title: StatsCopy.longestStreakTitle,
+                        value: summary.formattedCount(summary.longestStreak),
+                        unit: StatsCopy.dayUnit,
+                        systemImage: "trophy",
+                        identifier: "overview.metric.longestStreak"
+                    )
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier(identifier)
-        .accessibilityValue(value)
     }
 
     /// 20 weeks in production. Already overflows the heatmap viewport: the probe measured
@@ -556,18 +535,6 @@ struct StatsPresenter: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("overview.forecast")
-    }
-
-    private func totalsFooter(_ summary: StatsPresentation.Summary) -> some View {
-        Text(L10n.format(
-            "%@ · %@ · %@",
-            L10n.format("vocab_total_cards_plural", Int64(summary.totalCards)),
-            L10n.format("vocab_due_cards_plural", Int64(summary.dueToday)),
-            L10n.format("vocab_reviewed_cards_plural", Int64(summary.reviewedToday))
-        ))
-            .font(appSkin.typography.monoLabel)
-            .foregroundStyle(appSkin.palette.quaternaryText)
-            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func sectionHeader(title: String, systemImage: String) -> some View {
