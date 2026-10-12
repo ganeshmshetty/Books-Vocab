@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3208,
+  "raise": {
+    "ops": 154
+  },
+  "note": "Issue #3208: the deliver gate grows by the review-body P0/P1 refusal (review_body_findings, one per-token rule) and the area read from head check-runs (filter=all). Net ops +154 lines over merge-base headroom +5; the bulk is the three regression tests the issue asks for (one per item), plus the fake check-run routing they need. Nothing on the touched paths is deletable without weakening those tests."
+}
