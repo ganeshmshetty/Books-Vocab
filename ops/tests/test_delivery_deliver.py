@@ -1532,6 +1532,34 @@ def test_a_merge_group_failure_names_the_failing_check_from_the_queue_head() -> 
     assert group_failure["html_url"] in result["error"]
 
 
+def test_an_ejection_without_a_queue_head_names_the_failing_check_on_the_pr_head() -> (
+    None
+):
+    # No merge-group commit was seen, so the dequeue names the failing check
+    # from the PR head's own checks.
+    failing = _check(
+        "ops-suite / Linux ops shard 3",
+        "FAILURE",
+        "2026-10-10T10:00:00Z",
+        "https://github.com/o/r/actions/runs/77/job/3",
+    )
+    world = FakeWorld(
+        checks=[[_REQUIRED_OK, failing]],
+        area_runs=[_as_check_run(_check("ops-suite / Linux ops shard 3", "SUCCESS"))],
+        pr_state=["OPEN"],
+        prs_by_branch={"other/branch": [{"number": 77, "state": "OPEN"}]},
+        pr_guard=[
+            {"mergeQueueEntry": {"id": "q", "headCommit": None}},
+            {"mergeQueueEntry": None},
+        ],
+    )
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1, result
+    assert "dequeued" in result["error"]
+    assert "ops-suite / Linux ops shard 3" in result["error"]
+    assert failing["link"] in result["error"]
+
+
 def test_a_pr_merged_between_the_state_and_queue_reads_is_not_an_ejection() -> None:
     world = FakeWorld(
         pr_state=["OPEN", "MERGED"],  # the poll's state read, then the re-read
