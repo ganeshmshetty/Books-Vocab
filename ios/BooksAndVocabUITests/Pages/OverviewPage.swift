@@ -37,6 +37,27 @@ struct OverviewPage {
         return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top))
     }
 
+    /// Drag the Overview ScrollView so the opener's centre moves toward the middle of the
+    /// actionable band (#2886). Element-relative swipes start and end at fixed fractions of the
+    /// ScrollView frame, which extends under the navigation bar and tab bar, so a gesture can be
+    /// consumed by a bar and never scroll, or fling past the band in one step. This drag has both
+    /// endpoints inside the band, caps the travel at half the band height, and holds before release
+    /// so no fling momentum carries content out of the band.
+    private func dragOverviewContent(scrollView: XCUIElement, band: CGRect, openerMidY: CGFloat) {
+        // UIKit does not begin scrolling for drags shorter than its pan slop.
+        let minimumTravel: CGFloat = 24
+        let maximumTravel = band.height * 0.5
+        let needed = band.midY - openerMidY
+        let magnitude = min(max(abs(needed), minimumTravel), maximumTravel)
+        // Positive travel moves the finger down, which moves content down.
+        let travel = needed < 0 ? -magnitude : magnitude
+        let origin = scrollView.coordinate(withNormalizedOffset: .zero)
+        let x = band.midX - scrollView.frame.minX
+        let start = origin.withOffset(CGVector(dx: x, dy: band.midY - travel / 2 - scrollView.frame.minY))
+        let end = origin.withOffset(CGVector(dx: x, dy: band.midY + travel / 2 - scrollView.frame.minY))
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.3)
+    }
+
     /// Move the real Overview ScrollView until the calendar opener is both
     /// visible and hittable. The opener is below the first viewport in the
     /// production layout; existence alone is therefore not an actionable
@@ -57,10 +78,6 @@ struct OverviewPage {
                 let button = query.element(boundBy: 0)
                 // The actionable band is the part of the ScrollView that is not covered by the
                 // large navigation bar (which overlays content while scrolling) or the tab bar.
-                // A default-velocity swipe is a fling that can carry the opener from below the
-                // band to above it in one step, so the hittable window is never observed and
-                // the helper oscillates between swipeUp and swipeDown until the deadline.
-                // Slow swipes keep each step inside the band (#2886).
                 let band = scrollQuery.count == 1 && scrollView.exists
                     ? actionableBand(scrollView: scrollView)
                     : CGRect.null
@@ -74,8 +91,8 @@ struct OverviewPage {
                     return
                 }
 
-                if scrollQuery.count == 1, scrollView.exists, !button.frame.isEmpty, button.frame.minY < band.minY {
-                    scrollView.swipeDown(velocity: .slow)
+                if scrollQuery.count == 1, scrollView.exists, !button.frame.isEmpty, band.height > 0 {
+                    dragOverviewContent(scrollView: scrollView, band: band, openerMidY: button.frame.midY)
                 } else if scrollQuery.count == 1, scrollView.exists {
                     scrollView.swipeUp(velocity: .slow)
                 } else {
