@@ -18,6 +18,9 @@ class MergedPullRequestProof:
     head_sha: str
     base_branch: str = "main"
     pr_state: str = "MERGED"
+    # Set only when the merged PR head moved past the lane tip (GitHub "Update
+    # branch"); head_sha stays the lane tip the registry terminalizes.
+    merged_head_sha: str | None = None
 
     def __post_init__(self) -> None:
         _require_text("lane_id", self.lane_id)
@@ -27,3 +30,7 @@ class MergedPullRequestProof:
             raise InvalidReceipt("pr_number must be a positive integer")
         if self.base_branch != "main" or self.pr_state != "MERGED":
             raise InvalidReceipt("merged PR proof must target main and be MERGED")
+        if self.merged_head_sha is not None:
+            _require_sha("merged_head_sha", self.merged_head_sha)
+            if self.merged_head_sha == self.head_sha:
+                raise InvalidReceipt("merged_head_sha must differ from head_sha")

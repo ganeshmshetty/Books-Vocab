@@ -16,6 +16,7 @@ from delivery_control.application_services import DeliveryApplication
 from delivery_control.domain.errors import (
     CompareAndSwapConflict,
     DeliverySourceError,
+    InvalidReceipt,
     PolicyViolation,
 )
 from delivery_control.domain.models import HandbackReceipt, Scope
@@ -30,12 +31,14 @@ from delivery_control.domain.observations import (
     WorktreeSnapshot,
 )
 from delivery_control.domain.states import HoldKind
+from delivery_control.domain.terminal_proof_models import MergedPullRequestProof
 from delivery_control.services.cleanup import CleanupService
 from delivery_control.services.pr_contract import render_pull_request_body
 from delivery_control.services.sync_main import MainSyncService
 
 BASE = "a" * 40
 HEAD = "b" * 40
+MERGED_HEAD = "d" * 40
 BRANCH = "feat/cleanup"
 PATH = Path("/tmp/cleanup")
 
@@ -108,10 +111,18 @@ def _pull_request(
     )
 
 
+def _merged_pull_request(
+    receipt: HandbackReceipt, head_sha: str
+) -> PullRequestSnapshot:
+    # GitHub "Update branch" moves the head but never rewrites the PR body receipt.
+    return replace(_pull_request(receipt, state="MERGED"), head_sha=head_sha)
+
+
 class FakeRegistry:
     def __init__(self, record: RegistrySnapshot) -> None:
         self.record = record
         self.transitions: list[str] = []
+        self.terminal_proofs: list[MergedPullRequestProof | None] = []
 
     def list_records(self) -> RegistryInventory:
         return RegistryInventory((self.record,))
@@ -178,6 +189,7 @@ class FakeRegistry:
             assert terminal_proof.pr_number == 9
         else:
             assert terminal_proof is None
+        self.terminal_proofs.append(terminal_proof)
         self.transitions.append(disposition)
         self.record = replace(self.record, status=disposition)
 
@@ -227,7 +239,9 @@ class FakeGit:
         canonical_branch: str = "main",
         canonical_clean: bool = True,
         replacement_worktree_after_remove: PhysicalWorktree | None = None,
+        ancestors: frozenset[tuple[str, str]] = frozenset(),
     ) -> None:
+        self.ancestors = ancestors
         self.snapshot = snapshot or _snapshot(receipt)
         self.worktrees = (
             (
@@ -299,6 +313,9 @@ class FakeGit:
         assert expected_head_sha == self.remote_sha
         self.actions.append("delete-remote")
         self.remote_sha = None
+
+    def is_ancestor(self, ancestor_sha: str, descendant_sha: str) -> bool:
+        return (ancestor_sha, descendant_sha) in self.ancestors
 
     def local_main_sha(self) -> str:
         return self.local_main
@@ -851,6 +868,185 @@ def test_merged_cleanup_rechecks_pr_before_terminal_disposition() -> None:
     assert registry.transitions == ["cleanup_pending"]
     assert registry.record.status == "cleanup_pending"
     assert git.actions == ["delete-remote"]
+
+
+def test_merged_cleanup_accepts_a_merged_head_that_contains_the_lane_tip() -> None:
+    # #3323: "Update branch" moves the merged head past the lane tip.  Cleanup
+    # proceeds on the real service; the proof keeps the lane head and records
+    # the merged head beside it.
+    receipt = _receipt()
+    registry = FakeRegistry(_record(receipt, status="published"))
+    git = FakeGit(
+        receipt,
+        has_worktree=False,
+        local_sha=None,
+        remote_sha=MERGED_HEAD,
+        ancestors=frozenset({(HEAD, MERGED_HEAD)}),
+    )
+    service = CleanupService(
+        registry_query=registry,
+        registry_command=registry,
+        git_query=git,
+        git_command=git,
+        github=FakeGitHub(_merged_pull_request(receipt, MERGED_HEAD), receipt),
+    )
+
+    result = service.finalize_merged(receipt=receipt, pull_request_number=9)
+
+    assert registry.transitions == ["cleanup_pending", "merged"]
+    assert git.actions == ["delete-remote"]
+    assert result.remote_branch_absent
+    proof = registry.terminal_proofs[-1]
+    assert proof is not None
+    assert proof.head_sha == HEAD
+    assert proof.merged_head_sha == MERGED_HEAD
+
+
+def test_merged_cleanup_refuses_a_merged_head_outside_the_lane_tip_history() -> None:
+    receipt = _receipt()
+    registry = FakeRegistry(_record(receipt, status="published"))
+    git = FakeGit(receipt, has_worktree=False, local_sha=None, remote_sha=MERGED_HEAD)
+    service = CleanupService(
+        registry_query=registry,
+        registry_command=registry,
+        git_query=git,
+        git_command=git,
+        github=FakeGitHub(_merged_pull_request(receipt, MERGED_HEAD), receipt),
+    )
+
+    with pytest.raises(PolicyViolation, match="exact handback"):
+        service.finalize_merged(receipt=receipt, pull_request_number=9)
+
+    # Refused before the cleanup lease: no registry transition, no local asset touched.
+    assert registry.transitions == []
+    assert git.actions == []
+
+
+def test_merged_cleanup_refuses_remote_moved_past_the_merged_head() -> None:
+    receipt = _receipt()
+    registry = FakeRegistry(_record(receipt, status="published"))
+    git = FakeGit(
+        receipt,
+        has_worktree=False,
+        local_sha=None,
+        remote_sha="e" * 40,
+        ancestors=frozenset({(HEAD, MERGED_HEAD)}),
+    )
+    service = CleanupService(
+        registry_query=registry,
+        registry_command=registry,
+        git_query=git,
+        git_command=git,
+        github=FakeGitHub(_merged_pull_request(receipt, MERGED_HEAD), receipt),
+    )
+
+    with pytest.raises(PolicyViolation, match="remote branch changed"):
+        service.finalize_merged(receipt=receipt, pull_request_number=9)
+
+    assert registry.transitions == ["cleanup_pending"]
+    assert git.actions == []
+
+
+def test_open_pr_release_keeps_the_exact_handback_head() -> None:
+    # Containment licenses merged cleanup only; an OPEN PR must still be the
+    # exact handback, even when its head contains the lane tip.
+    receipt = _receipt()
+    registry = FakeRegistry(_record(receipt, status="published"))
+    git = FakeGit(receipt, ancestors=frozenset({(HEAD, MERGED_HEAD)}))
+    open_pull_request = replace(
+        _pull_request(receipt, state="OPEN"), head_sha=MERGED_HEAD
+    )
+    service = CleanupService(
+        registry_query=registry,
+        registry_command=registry,
+        git_query=git,
+        git_command=git,
+        github=FakeGitHub(open_pull_request, receipt),
+    )
+
+    with pytest.raises(PolicyViolation, match="exact handback"):
+        service.release_after_publish(receipt=receipt, pull_request_number=9)
+
+    assert registry.transitions == []
+    assert git.actions == []
+
+
+def test_merged_proof_rejects_a_merged_head_equal_to_the_lane_tip() -> None:
+    with pytest.raises(InvalidReceipt, match="merged_head_sha"):
+        MergedPullRequestProof(
+            lane_id="DIRECT-1",
+            pr_number=9,
+            branch=BRANCH,
+            head_sha=HEAD,
+            merged_head_sha=HEAD,
+        )
+
+
+def _bridged_application(
+    current: HandbackReceipt, git: FakeGit, registry: FakeRegistry
+) -> DeliveryApplication:
+    previous = replace(
+        current,
+        claim_generation=1,
+        content_digest="d" * 64,
+        scope=Scope.from_paths(modify=("ops/a.py", "ops/b.py")),
+    )
+    github = FakeGitHub(
+        replace(
+            _pull_request(
+                current,
+                state="MERGED",
+                body=render_pull_request_body(previous),
+            ),
+            head_sha=MERGED_HEAD,
+        ),
+        current,
+    )
+    return DeliveryApplication(
+        repo=Path("/repo"),
+        git=git,
+        github=github,
+        registry=registry,
+        runtime=Mock(),
+        telemetry=Mock(),
+    )
+
+
+def test_application_cleanup_bridges_a_merged_head_that_contains_the_lane_tip() -> None:
+    current = _receipt()
+    registry = FakeRegistry(_record(current, status="active"))
+    git = FakeGit(
+        current,
+        has_worktree=False,
+        local_sha=None,
+        remote_sha=MERGED_HEAD,
+        ancestors=frozenset({(HEAD, MERGED_HEAD)}),
+    )
+
+    result = _bridged_application(current, git, registry).cleanup_merged(9)
+
+    assert result["cleanup"].disposition == "merged"
+    assert registry.transitions == ["cleanup_pending", "merged"]
+    assert git.actions == ["delete-remote"]
+
+
+def test_application_cleanup_refuses_a_bridged_merged_head_outside_lane_history() -> (
+    None
+):
+    current = _receipt()
+    registry = FakeRegistry(_record(current, status="active"))
+    git = FakeGit(
+        current,
+        has_worktree=False,
+        local_sha=None,
+        remote_sha=MERGED_HEAD,
+    )
+
+    with pytest.raises(PolicyViolation, match="cannot bridge"):
+        _bridged_application(current, git, registry).cleanup_merged(9)
+
+    assert registry.transitions == []
+    assert git.actions == []
 
 
 class LeaseRecorder:

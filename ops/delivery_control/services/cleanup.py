@@ -128,13 +128,20 @@ class CleanupService:
         )
         terminal_proof = None
         if disposition == "merged":
+            # The registry terminalizes the lane tip; a merged head that moved
+            # past it is recorded beside it, never in place of it.
             terminal_proof = MergedPullRequestProof(
                 lane_id=receipt.lane_id,
                 pr_number=pull_request.number,
                 branch=pull_request.branch,
-                head_sha=pull_request.head_sha,
+                head_sha=receipt.head_sha,
                 base_branch=pull_request.base_branch,
                 pr_state=pull_request.state,
+                merged_head_sha=(
+                    None
+                    if pull_request.head_sha == receipt.head_sha
+                    else pull_request.head_sha
+                ),
             )
         with self.lease("cleanup:registry-terminal"):
             self.registry_command.resolve(
@@ -167,7 +174,9 @@ class CleanupService:
             pull_request.state != expected_state
             or pull_request.base_branch != "main"
             or pull_request.branch != receipt.branch
-            or pull_request.head_sha != receipt.head_sha
+            or not self._head_matches(
+                receipt, pull_request, expected_state=expected_state
+            )
             or parsed_receipt != expected_body_receipt
             or not receipt.scope.allows_changed_paths(self.github.changed_paths(number))
             or (
@@ -179,6 +188,27 @@ class CleanupService:
         ):
             raise PolicyViolation("PR does not prove the exact handback disposition")
         return pull_request
+
+    def _head_matches(
+        self,
+        receipt: HandbackReceipt,
+        pull_request: PullRequestSnapshot,
+        *,
+        expected_state: str,
+    ) -> bool:
+        """Exact lane head; for a MERGED PR, a head that contains the lane tip.
+
+        GitHub "Update branch" (or a rebase pushed after publish) moves the PR
+        head past the handback tip.  The merged history then still holds every
+        local commit, so cleanup stays safe (#3323).  OPEN PRs stay strict: they
+        are published exactly as handed back.
+        """
+
+        if pull_request.head_sha == receipt.head_sha:
+            return True
+        return expected_state == "MERGED" and self.git_query.is_ancestor(
+            receipt.head_sha, pull_request.head_sha
+        )
 
     @staticmethod
     def _compatible_previous_receipt(
@@ -379,16 +409,19 @@ class CleanupService:
         )
         remote_sha = self.git_query.remote_branch_sha(receipt.branch)
         if remote_sha is not None:
-            if remote_sha != receipt.head_sha:
-                raise PolicyViolation("remote branch changed after merged HEAD")
-            self._pull_request(
+            # The remote must still be the exact merged PR head, which may sit
+            # past the lane tip after "Update branch"; re-read it right before
+            # the delete and delete exactly that observed head.
+            merged = self._pull_request(
                 receipt,
                 pull_request_number,
                 expected_state="MERGED",
                 body_receipt=body_receipt,
             )
+            if remote_sha != merged.head_sha:
+                raise PolicyViolation("remote branch changed after merged HEAD")
             self.git_command.delete_remote_branch(
-                receipt.branch, expected_head_sha=receipt.head_sha
+                receipt.branch, expected_head_sha=remote_sha
             )
         self._complete_cleanup_lease(
             receipt,

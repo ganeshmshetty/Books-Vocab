@@ -112,6 +112,7 @@ def _receipt_from_current_claim_for_cleanup(
     previous: models.HandbackReceipt,
     record: observations.RegistrySnapshot,
     pull_request: observations.PullRequestSnapshot,
+    merged_head_contains_handback: bool,
     changed_paths: tuple[str, ...],
 ) -> models.HandbackReceipt:
     """Bridge one older PR body to a later, exact owner claim for cleanup.
@@ -120,8 +121,9 @@ def _receipt_from_current_claim_for_cleanup(
     refreshes its registry claim before terminal cleanup.  The bridge is
     intentionally narrower than a general metadata repair: it requires a
     newer generation, stable lane/owner/branch/path/head identity, the
-    current claim's valid handback seal, and observed PR changes within the
-    current Scope.
+    current claim's valid handback seal, a merged head equal to or containing
+    the handed-back tip (#3323), and observed PR changes within the current
+    Scope.
     """
 
     current_files = set(record.scope.files)
@@ -145,7 +147,7 @@ def _receipt_from_current_claim_for_cleanup(
         or pull_request.base_branch != "main"
         or pull_request.base_sha != previous.base_sha
         or pull_request.branch != record.branch
-        or pull_request.head_sha != record.handed_back_sha
+        or not merged_head_contains_handback
         or not record.scope.allows_changed_paths(changed_paths)
     ):
         raise errors.PolicyViolation(
@@ -1254,11 +1256,25 @@ class DeliveryApplication:
                 previous=body_receipt,
                 record=current,
                 pull_request=pull_request,
+                merged_head_contains_handback=self._merged_head_contains(
+                    current.handed_back_sha, pull_request.head_sha
+                ),
                 changed_paths=self.github.changed_paths(pull_request.number),
             ),
             current,
             body_receipt,
         )
+
+    def _merged_head_contains(
+        self, handed_back_sha: str | None, merged_head_sha: str
+    ) -> bool:
+        """Whether the merged PR head is the handed-back tip or contains it (#3323)."""
+
+        if handed_back_sha is None:
+            return False
+        if merged_head_sha == handed_back_sha:
+            return True
+        return self.git.is_ancestor(handed_back_sha, merged_head_sha)
 
     def _record_for_receipt(
         self, receipt: models.HandbackReceipt
