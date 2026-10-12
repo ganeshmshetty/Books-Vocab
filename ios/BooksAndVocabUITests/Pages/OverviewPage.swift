@@ -20,6 +20,23 @@ struct OverviewPage {
         exactlyOne(app.buttons.matching(identifier: "reviewCalendar.open"), "reviewCalendar.open")
     }
 
+    /// Region of the Overview ScrollView not covered by the navigation bar or tab bar.
+    /// Caller must ensure the ScrollView exists (property access on a missing element throws).
+    private func actionableBand(scrollView: XCUIElement) -> CGRect {
+        let frame = scrollView.frame
+        var top = frame.minY
+        let navigationBar = app.navigationBars.firstMatch
+        if navigationBar.exists, !navigationBar.frame.isEmpty {
+            top = max(top, navigationBar.frame.maxY)
+        }
+        var bottom = frame.maxY
+        let tabBar = app.tabBars.firstMatch
+        if tabBar.exists, !tabBar.frame.isEmpty {
+            bottom = min(bottom, tabBar.frame.minY)
+        }
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top))
+    }
+
     /// Move the real Overview ScrollView until the calendar opener is both
     /// visible and hittable. The opener is below the first viewport in the
     /// production layout; existence alone is therefore not an actionable
@@ -38,24 +55,34 @@ struct OverviewPage {
         while Date() < deadline {
             if query.count == 1 {
                 let button = query.element(boundBy: 0)
+                // The actionable band is the part of the ScrollView that is not covered by the
+                // large navigation bar (which overlays content while scrolling) or the tab bar.
+                // A default-velocity swipe is a fling that can carry the opener from below the
+                // band to above it in one step, so the hittable window is never observed and
+                // the helper oscillates between swipeUp and swipeDown until the deadline.
+                // Slow swipes keep each step inside the band (#2886).
+                let band = scrollQuery.count == 1 && scrollView.exists
+                    ? actionableBand(scrollView: scrollView)
+                    : CGRect.null
                 if button.exists,
                    !button.frame.isEmpty,
                    scrollQuery.count == 1,
                    scrollView.exists,
                    scrollView.frame.intersects(button.frame),
+                   band.contains(button.frame),
                    button.isHittable {
                     return
                 }
 
-                if scrollQuery.count == 1, scrollView.exists, !button.frame.isEmpty, button.frame.minY < scrollView.frame.minY {
-                    scrollView.swipeDown()
+                if scrollQuery.count == 1, scrollView.exists, !button.frame.isEmpty, button.frame.minY < band.minY {
+                    scrollView.swipeDown(velocity: .slow)
                 } else if scrollQuery.count == 1, scrollView.exists {
-                    scrollView.swipeUp()
+                    scrollView.swipeUp(velocity: .slow)
                 } else {
-                    app.swipeUp()
+                    app.swipeUp(velocity: .slow)
                 }
             } else {
-                app.swipeUp()
+                app.swipeUp(velocity: .slow)
             }
             swipes += 1
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
