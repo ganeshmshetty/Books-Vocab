@@ -1414,3 +1414,5 @@
 /* #2862: tap-to-expand hint for a truncated toast pill */
 "toast.expand.hint" = "輕點展開完整訊息";
 "翻譯需為 1 至 1000 字，教學筆記最多 5000 字" = "翻譯需為 1 至 1000 字，教學筆記最多 5000 字";
+/* #3129: linked-card overlay title fallback when the word is empty */
+"連結卡片" = "連結卡片";

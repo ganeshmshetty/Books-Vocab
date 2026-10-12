@@ -163,6 +163,82 @@ final class NotebookReviewFlowUITests: UITestCase {
         )
     }
 
+    /// #3126: a link tap inside a Linked Card layer must stack a second layer. The review
+    /// was opened from the notebook list, which injects a DetailRouter; the old router
+    /// branch replaced the review session with a Word Detail sheet instead.
+    /// Fixture: `multinb0` (first layer) links to `multinb1` (second layer).
+    @MainActor
+    func testLinkTapInsideLinkedLayerStacksAndKeepsReviewSession() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeckMultiNotebook],
+            extraEnvironment: ["KG_UI_TEST_SERVER_URL": "http://127.0.0.1:9"],
+            perfLog: "review"
+        )
+        let notebook = AppPage(app: app).goToNotebooks()
+        guard notebook.reviewCTAButton.waitUntilExists(timeout: 10) else {
+            captureStep("no-review-cta", app: app)
+            XCTFail("多單字本 fixture 有到期卡片，複習 CTA 必須出現")
+            return
+        }
+        let review = notebook.startReview()
+        guard review.progressLabel.waitUntilExists(timeout: 10) else {
+            captureStep("review-not-started", app: app)
+            XCTFail("tap CTA 後必須進入複習 session")
+            return
+        }
+        let progressBefore = review.progressText
+
+        // Layer 1: ↗ the first linked card of the current review card. The strip draws
+        // only two of the card's four links (order is shuffled per cache build); the
+        // other two sit behind "+2", so expand the group before looking for multinb-000.
+        let overflowToggle = review.linkOverflowToggle(group: "shares_usage")
+        guard overflowToggle.waitUntilExists(timeout: 10) else {
+            captureStep("link-overflow-toggle-missing", app: app)
+            XCTFail("四個連結、每組只顯示兩個 → 「+2」必須存在，才能展開到 multinb-000")
+            return
+        }
+        overflowToggle.tapWhenReady()
+        let firstLink = review.link(id: "multinb-000")
+        guard firstLink.waitUntilExists(timeout: 5) else {
+            captureStep("first-link-missing", app: app)
+            XCTFail("展開後複習卡必須列出 multinb-000 連結")
+            return
+        }
+        firstLink.tapWhenReady()
+
+        // The review strip underneath also draws a "multinb1" button (multinb-001), so
+        // layer 1's link row is searched only inside its Word Detail content container.
+        let layerContent = app.descendants(matching: .any)
+            .matching(identifier: "wordDetail.content")
+            .firstMatch
+        guard layerContent.waitUntilExists(timeout: 10) else {
+            captureStep("first-layer-content-missing", app: app)
+            XCTFail("第一層連結卡必須出現 Word Detail 內容")
+            return
+        }
+        let layerLink = layerContent.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@", "multinb1"))
+            .firstMatch
+        guard layerLink.waitUntilExists(timeout: 10) else {
+            captureStep("first-layer-link-missing", app: app)
+            XCTFail("第一層連結卡必須列出 multinb1 連結")
+            return
+        }
+
+        // Layer 2: tap the link row inside the first layer.
+        layerLink.tapWhenReady()
+        XCTAssertTrue(
+            app.staticTexts["+1"].waitUntilExists(timeout: 5),
+            "連結疊層內點連結必須疊出第二層（badge +1），而非取代複習"
+        )
+        XCTAssertTrue(
+            review.progressLabel.waitUntilExists(timeout: 3),
+            "複習 session 不得因連結點擊結束"
+        )
+        XCTAssertEqual(review.progressText, progressBefore, "複習進度必須維持不變")
+        captureStep("nested-linked-layer", app: app)
+    }
+
     /// "probeword003" → 3 (deck translation format: "量測卡片 3 的譯文…")
     private static func cardNumber(fromWord word: String) -> Int {
         Int(word.drop(while: { !$0.isNumber })) ?? -1

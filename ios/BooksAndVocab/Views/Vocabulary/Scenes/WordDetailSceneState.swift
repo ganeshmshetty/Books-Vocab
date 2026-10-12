@@ -27,6 +27,7 @@ final class WordDetailSceneState {
         case archive
         case preferences
         case link
+        case collocation
     }
 
     /// 封存的 in-flight 旗標。放在狀態物件而非 view，是為了讓這個單元自己安全：
@@ -205,6 +206,25 @@ final class WordDetailSceneState {
                 }
             }
             modelContext.safeSave()
+        }
+    }
+
+    /// 寫入或清除單一搭配的解釋。沿用複習的持久化路徑（`TodayReviewCollocationState`），
+    /// 兩個宿主寫進同一份 `VocabularyEntry.collocationExplanations`（#3125）。
+    func updateCollocationExplanation(
+        _ explanation: String?,
+        for collocation: String,
+        entry: VocabularyEntry,
+        modelContext: ModelContext
+    ) {
+        var collocations = TodayReviewCollocationState()
+        collocations.sync(from: entry)
+        collocations.update(explanation, for: collocation, entry: entry)
+        // 存檔失敗走同一條 actionError banner（WordDetailSheet 轉成頂端 toast），與本檔其他卡片動作一致。
+        if modelContext.safeSave() {
+            clearActionError(for: .collocation)
+        } else {
+            setActionError(L10n.string("儲存失敗"), kind: .collocation)
         }
     }
 

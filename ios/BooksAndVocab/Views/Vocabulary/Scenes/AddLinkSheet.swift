@@ -117,7 +117,9 @@ struct AddLinkSheet: View {
         )
         let lookup = lookupState(snapshot)
         let returnBehavior = AddLinkReturnBehavior.resolve(snapshot)
-        NavigationStack {
+        // Staged on purpose: one modifier chain over the whole body exceeds the
+        // type checker's budget ("unable to type-check", AddLinkSheet.swift:204).
+        let stack = NavigationStack {
             VStack(spacing: 0) {
                 Text(lookup.accessibilityValue)
                     .font(.caption2)
@@ -201,61 +203,69 @@ struct AddLinkSheet: View {
             .animation(AppMotion.phaseChange, value: creationCoordinator.phase)
             .navigationTitle(L10n.string("新增連結"))
             .inlineNavigationBarTitle()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L10n.string("取消")) { dismiss() }
-                        .accessibilityIdentifier("addLink.cancel")
+            .toolbar { cancelToolbarContent }
+        }
+        let withPhaseHandlers = stack
+            .onChange(of: coordinator.actionPhase) { _, phase in
+                if phase == .failed, awaitingActionOutcome, let error = coordinator.actionError {
+                    toastCoordinator.show(AddLinkToastEvent.actionFailed(error))
+                }
+                if phase != .linking { awaitingActionOutcome = false }
+                if phase == .succeeded {
+                    onLinked()
+                    dismiss()
                 }
             }
-        }
-        .onChange(of: coordinator.actionPhase) { _, phase in
-            if phase == .failed, awaitingActionOutcome, let error = coordinator.actionError {
-                toastCoordinator.show(AddLinkToastEvent.actionFailed(error))
-            }
-            if phase != .linking { awaitingActionOutcome = false }
-            if phase == .succeeded {
+            .onChange(of: creationCoordinator.phase) { _, phase in
+                announceCreationOutcome()
+                // Only a full success closes on its own. A warning keeps the sheet
+                // open (retry / done) so a partial result is never swallowed.
+                guard phase == .succeeded, !didCompleteCreation else { return }
+                didCompleteCreation = true
                 onLinked()
                 dismiss()
             }
+            .onAppear {
+                // Offline from the start: say so now, not after a failed round trip (#2039).
+                if let notice = connectivity.noticeMessage { toastCoordinator.warning(notice) }
+            }
+        let withConnectionHandlers = withPhaseHandlers
+            // A warning retry keeps the phase, so its outcome arrives as the retry ending.
+            .onChange(of: creationCoordinator.isRetryingWarnings) { _, _ in
+                announceCreationOutcome()
+            }
+            .onChange(of: networkMonitor.isConnected) { old, new in
+                guard let message = AddLinkConnectivity.transitionMessage(
+                    from: AddLinkConnectivity(isConnected: old),
+                    to: AddLinkConnectivity(isConnected: new)
+                ) else { return }
+                if new { toastCoordinator.success(message) } else { toastCoordinator.warning(message) }
+            }
+            .onDisappear {
+                createHighlightTask?.cancel()
+                coordinator.cancel()
+                // A running creation is deliberately NOT cancelled: the hub owns it,
+                // finishes the local projection, and the source card shows it as a
+                // pending link meanwhile.
+            }
+            .onChange(of: searchText) { _, _ in
+                rowDisclosure.send(.queryChanged)
+            }
+        withConnectionHandlers
+            .toastSheet(item: $openedCardEntry) { entry in
+                WordDetailSheet(entry: entry, allEntries: allEntries)
+            }
+            .enableInjection()
+    }
+
+    /// Own @ToolbarContentBuilder, so the toolbar closure is not solved inside the
+    /// body's modifier chain.
+    @ToolbarContentBuilder
+    private var cancelToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button(L10n.string("取消")) { dismiss() }
+                .accessibilityIdentifier("addLink.cancel")
         }
-        .onChange(of: creationCoordinator.phase) { _, phase in
-            announceCreationOutcome()
-            // Only a full success closes on its own. A warning keeps the sheet
-            // open (retry / done) so a partial result is never swallowed.
-            guard phase == .succeeded, !didCompleteCreation else { return }
-            didCompleteCreation = true
-            onLinked()
-            dismiss()
-        }
-        .onAppear {
-            // Offline from the start: say so now, not after a failed round trip (#2039).
-            if let notice = connectivity.noticeMessage { toastCoordinator.warning(notice) }
-        }
-        // A warning retry keeps the phase, so its outcome arrives as the retry ending.
-        .onChange(of: creationCoordinator.isRetryingWarnings) { _, _ in
-            announceCreationOutcome()
-        }
-        .onChange(of: networkMonitor.isConnected) { old, new in
-            guard let message = AddLinkConnectivity.transitionMessage(
-                from: AddLinkConnectivity(isConnected: old),
-                to: AddLinkConnectivity(isConnected: new)
-            ) else { return }
-            if new { toastCoordinator.success(message) } else { toastCoordinator.warning(message) }
-        }
-        .onDisappear {
-            createHighlightTask?.cancel()
-            coordinator.cancel()
-            // A running creation is deliberately NOT cancelled: the hub owns it,
-            // finishes the local projection, and the source card shows it as a
-            // pending link meanwhile.
-        }
-        .onChange(of: searchText) { _, _ in
-            rowDisclosure.send(.queryChanged)
-        }
-        .toastSheet(item: $openedCardEntry) { entry in
-            WordDetailSheet(entry: entry, allEntries: allEntries, wrapInNavigation: true)
-        }
-        .enableInjection()
     }
 
     private func localSection(

@@ -34,4 +34,15 @@ struct LinkedCardOverlayStackPushTests {
         stack.pushLinkedCard(b)
         #expect(stack.map(\.id) == [a.id, b.id])
     }
+
+    /// #3129 — the layer title is the linked word itself, never an English literal;
+    /// an empty word falls back to the localized 連結卡片.
+    @Test func layerTitleShowsWordWithLocalizedFallback() {
+        #expect(LinkedCardOverlayStack.layerTitle(for: "abrasive") == "abrasive")
+        #expect(LinkedCardOverlayStack.layerTitle(for: "  abrasive ") == "abrasive")
+        #expect(LinkedCardOverlayStack.layerTitle(for: "") == L10n.string("連結卡片"))
+        #expect(LinkedCardOverlayStack.layerTitle(for: " \n") == L10n.string("連結卡片"))
+        // 上面兩句在 key 缺失時也成立（兩邊都回 key 原文），所以另以英文值證明 key 真的存在於 bundle。
+        #expect(L10n.string("連結卡片", language: .english) == "Linked Card")
+    }
 }

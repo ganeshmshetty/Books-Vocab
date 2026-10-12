@@ -142,7 +142,7 @@ enum WordDetailScenarios {
             // showsLifecycleActions: false — 封存／刪除是卡片管理動作，不屬於
             // pure content inspection state；預設會連 destructive 色的刪除列一起
             // 顯示。頂列 chrome 保留
-            //（不可改用 wrapInNavigation: false，那會連 chrome 一起關掉）。
+            //（不可改用 showsInlineChrome: false，那會連 chrome 一起關掉）。
             WordDetailSheet(
                 entry: entries[0],
                 allEntries: entries,

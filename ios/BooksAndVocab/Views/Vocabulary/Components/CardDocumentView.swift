@@ -5,6 +5,33 @@ enum CardDocumentCollocationState {
         guard let explanation = explanations[item] else { return false }
         return !explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    enum MenuAction: Hashable {
+        case view
+        case copy
+        case explain
+        case delete
+    }
+
+    /// 搭配 pill 的 context menu 項目。只列出有 handler 的動作（複製恆有，不需 handler），
+    /// 讓沒有接線的宿主不會出現點了沒反應的選項（#3125）。
+    static func menuActions(
+        hasExplanation: Bool,
+        canExplain: Bool,
+        canView: Bool,
+        canDelete: Bool
+    ) -> [MenuAction] {
+        var actions: [MenuAction] = []
+        if hasExplanation {
+            if canView { actions.append(.view) }
+            actions.append(.copy)
+            if canDelete { actions.append(.delete) }
+        } else {
+            if canExplain { actions.append(.explain) }
+            actions.append(.copy)
+        }
+        return actions
+    }
 }
 
 struct CardDocumentView: View {
@@ -323,13 +350,25 @@ struct CardDocumentCollocationsBlock: View {
                     )
             }
             .contextMenu {
-                if hasExplanation {
-                    Button("查看".localized, systemImage: "text.bubble") { onView?(item) }
-                    Button("複製".localized, systemImage: "doc.on.doc") { PlatformClipboard.copy(item) }
-                    Button("刪除".localized, systemImage: "trash", role: .destructive) { onDelete?(item) }
-                } else {
-                    Button("解釋".localized, systemImage: "text.bubble") { onExplain?(item) }
-                    Button("複製".localized, systemImage: "doc.on.doc") { PlatformClipboard.copy(item) }
+                ForEach(
+                    CardDocumentCollocationState.menuActions(
+                        hasExplanation: hasExplanation,
+                        canExplain: onExplain != nil,
+                        canView: onView != nil,
+                        canDelete: onDelete != nil
+                    ),
+                    id: \.self
+                ) { action in
+                    switch action {
+                    case .view:
+                        Button("查看".localized, systemImage: "text.bubble") { onView?(item) }
+                    case .copy:
+                        Button("複製".localized, systemImage: "doc.on.doc") { PlatformClipboard.copy(item) }
+                    case .explain:
+                        Button("解釋".localized, systemImage: "text.bubble") { onExplain?(item) }
+                    case .delete:
+                        Button("刪除".localized, systemImage: "trash", role: .destructive) { onDelete?(item) }
+                    }
                 }
             }
     }
