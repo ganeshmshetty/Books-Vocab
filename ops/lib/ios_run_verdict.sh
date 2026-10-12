@@ -56,8 +56,20 @@ kg_ios_verdict_identity_kv() {
 }
 
 # Names the commit under test on every verdict line (#2906); unknown outside a repo.
+# tree=dirty|clean says whether that commit is what the run actually saw (#3218):
+# uncommitted changes make a clean-looking commit= a lie. Same rule as
+# ios_test.sh write_json_verdict: a `git status` that cannot answer is not "clean".
 kg_ios_verdict_commit_kv() {
-  printf 'commit=%s' "$(git -C "${1:-$PWD}" rev-parse HEAD 2>/dev/null || echo unknown)"
+  local root="${1:-$PWD}" sha tree status_out
+  sha="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [[ "$sha" == unknown ]]; then
+    tree=unknown
+  elif status_out="$(git -C "$root" status --porcelain 2>/dev/null)"; then
+    if [[ -n "$status_out" ]]; then tree=dirty; else tree=clean; fi
+  else
+    tree=unknown
+  fi
+  printf 'commit=%s tree=%s' "$sha" "$tree"
 }
 
 kg_ios_verdict_publish() {

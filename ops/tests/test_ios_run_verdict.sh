@@ -134,10 +134,15 @@ section "commit in verdict"
 repo="$TMP/commit-repo"; mkdir -p "$repo"; git -C "$repo" init -q
 git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
 got="$(in_proc "kg_ios_verdict_commit_kv '$repo'" 2>/dev/null || true)"
-[[ "$got" == "commit=$(git -C "$repo" rev-parse HEAD)" && "$got" =~ ^commit=[0-9a-f]{40}$ ]] \
-  && ok "commit kv is commit=<40-hex HEAD of project root>" || fail_t "commit kv wrong: '$got'"
+[[ "$got" == "commit=$(git -C "$repo" rev-parse HEAD) tree=clean" && "$got" =~ ^commit=[0-9a-f]{40}\ tree=clean$ ]] \
+  && ok "clean repo: commit=<40-hex HEAD> tree=clean" || fail_t "clean commit kv wrong: '$got'"
+echo x > "$repo/untracked-dirty-marker"
+got="$(in_proc "kg_ios_verdict_commit_kv '$repo'" 2>/dev/null || true)"
+[[ "$got" =~ ^commit=[0-9a-f]{40}\ tree=dirty$ ]] \
+  && ok "dirty repo (untracked file): tree=dirty after commit=" || fail_t "dirty commit kv wrong: '$got'"
+rm -f "$repo/untracked-dirty-marker"
 got="$(GIT_CEILING_DIRECTORIES="$TMP" in_proc "kg_ios_verdict_commit_kv '$TMP'" 2>/dev/null || true)"
-[[ "$got" == "commit=unknown" ]] && ok "non-repo root degrades to commit=unknown" || fail_t "non-repo commit kv: '$got'"
+[[ "$got" == "commit=unknown tree=unknown" ]] && ok "non-repo root degrades to commit=unknown tree=unknown" || fail_t "non-repo commit kv: '$got'"
 # wiring: every RESULT= verdict line in ios_test.sh (echo or printf) carries the helper
 ios_test="$WORKSPACE/ops/ios_test.sh"
 unwired="$(grep -E 'RESULT=(ok|fail|inconclusive) ' "$ios_test" | grep -vc 'kg_ios_verdict_commit_kv "\$PROJECT_ROOT"' || true)"
