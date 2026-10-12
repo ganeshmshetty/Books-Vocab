@@ -55,9 +55,7 @@ final class ReaderSettingsUITests: UITestCase {
 
     @MainActor
     func testReaderSettingsTypographyAndHighlightControlsExposeBoundedInputs() throws {
-        // Pin English so the exact VoiceOver labels below are deterministic (#2752).
         let app = launchIsolatedApp(
-            extraArgs: ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
             fixtures: [.readerRealBookLibrary],
             perfLog: "reader-settings-typography-highlight-controls"
         )
@@ -83,15 +81,26 @@ final class ReaderSettingsUITests: UITestCase {
         XCTAssertFalse(String(describing: fontRow.value ?? "").isEmpty)
         XCTAssertTrue(reader.fontSizeDecrementButton.exists)
         XCTAssertTrue(reader.fontSizeIncrementButton.exists)
-        XCTAssertEqual(
-            reader.fontSizeDecrementButton.label,
-            "Decrease Text Size",
-            "icon-only font-size decrement must expose its localized VoiceOver label"
+        // The marketing_demo UI World pins app_language_selection (zh-Hant), which
+        // overrides any -AppleLanguages launch pin, so exact English wording is not
+        // deterministic in this class. Per-locale wording is pinned by
+        // ReaderSettingsReleaseContractTests.typographyAdjustmentButtonsHaveDistinctLocalizedLabelsInEveryLanguage;
+        // here assert the wiring: each icon-only stepper carries the row title and
+        // the decrement and increment labels differ.
+        let decrementLabel = reader.fontSizeDecrementButton.label
+        let incrementLabel = reader.fontSizeIncrementButton.label
+        XCTAssertTrue(
+            decrementLabel.contains(fontRow.label),
+            "icon-only font-size decrement must expose a localized label carrying the row title: \(decrementLabel)"
         )
-        XCTAssertEqual(
-            reader.fontSizeIncrementButton.label,
-            "Increase Text Size",
-            "icon-only font-size increment must expose its localized VoiceOver label"
+        XCTAssertTrue(
+            incrementLabel.contains(fontRow.label),
+            "icon-only font-size increment must expose a localized label carrying the row title: \(incrementLabel)"
+        )
+        XCTAssertNotEqual(
+            decrementLabel,
+            incrementLabel,
+            "font-size decrement and increment must expose distinct VoiceOver labels"
         )
         XCTAssertGreaterThanOrEqual(reader.fontSizeIncrementButton.frame.height, 44)
         XCTAssertGreaterThanOrEqual(reader.fontSizeDecrementButton.frame.height, 44)

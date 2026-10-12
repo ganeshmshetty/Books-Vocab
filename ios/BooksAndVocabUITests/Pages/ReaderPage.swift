@@ -73,7 +73,6 @@ struct ReaderPage {
     }
     var resetMenu: XCUIElement { app.buttons["reader.settings.resetMenu"] }
     var resetAllButton: XCUIElement { app.buttons["reader.settings.reset.all"] }
-    var progressBadge: XCUIElement { app.staticTexts["reader.header.progressBadge"] }
 
     // MARK: - Query definitions
 
@@ -164,10 +163,6 @@ struct ReaderPage {
 
     private var resetAllButtonQuery: XCUIElementQuery {
         app.buttons.matching(identifier: "reader.settings.reset.all")
-    }
-
-    private var progressBadgeQuery: XCUIElementQuery {
-        app.staticTexts.matching(identifier: "reader.header.progressBadge")
     }
 
     var tableOfContentsButton: XCUIElement {
@@ -805,35 +800,41 @@ struct ReaderPage {
 
     // MARK: - Progress
 
-    /// Parse the compact-header progress badge ("12.3%") into a Double.
-    /// Returns nil while the numeric badge is not applicable (unknown/restore
-    /// failure or chrome hidden behind an overlay).
-    func progressPercent() -> Double? {
-        guard let progressBadge = exactlyOneIfPresent(
-            progressBadgeQuery,
-            named: "Reader progress badge"
-        ) else { return nil }
-        let label = progressBadge.label
-        return Double(label.replacingOccurrences(of: "%", with: ""))
+    /// Exact progression fraction (0...1) from the runtime-state evidence key
+    /// `progression=`. The visible value is whole-percent, too coarse for
+    /// page-turn evidence (a page is ~0.3%).
+    func progressionFraction() -> Double? {
+        guard runtimeStateCount == 1,
+              let raw = runtimeState.value as? String
+        else { return nil }
+        return Self.progression(in: raw)
     }
 
-    /// Poll the progress badge until it reports a value strictly greater
-    /// than `threshold` (real page-turn evidence, not just a gesture).
+    /// Poll the runtime-state progression until it is strictly greater than
+    /// `threshold` (real page-turn evidence, not just a gesture).
     @discardableResult
-    func waitUntilProgressExceeds(_ threshold: Double, timeout: TimeInterval) -> Bool {
+    func waitUntilProgressionExceeds(_ threshold: Double, timeout: TimeInterval) -> Bool {
         UITestWaits.wait(
             for: NSPredicate { [app] _, _ in
-                let badges = app.staticTexts.matching(identifier: "reader.header.progressBadge")
-                let badge = badges.element
-                guard badges.count == 1,
-                      badge.exists,
-                      let value = Double(badge.label.replacingOccurrences(of: "%", with: ""))
+                let states = app.otherElements.matching(identifier: "reader.runtime.state")
+                guard states.count == 1,
+                      let raw = states.element.value as? String,
+                      let value = Self.progression(in: raw)
                 else { return false }
                 return value > threshold
             },
             on: app,
             timeout: timeout
         )
+    }
+
+    private static func progression(in runtimeStateValue: String) -> Double? {
+        let key = "progression="
+        guard let token = runtimeStateValue
+            .split(separator: ";")
+            .first(where: { $0.hasPrefix(key) })
+        else { return nil }
+        return Double(token.dropFirst(key.count))
     }
 
     // MARK: - Actions

@@ -922,4 +922,92 @@ private final class FakeReaderNavigator: ReaderNavigatorDriving {
         }
     }
 }
+// #2865：目錄列表的「目前章節」標記與 unlinked group heading 判定。
+// 純函式（只吃 href 字串），不需要 EPUB 或 Readium Link。
+struct ReaderTOCCurrentEntryTests {
+    private let readingOrder = [
+        "OEBPS/cover.xhtml",
+        "OEBPS/ch1.xhtml",
+        "OEBPS/ch2.xhtml",
+        "OEBPS/ch3.xhtml"
+    ]
+
+    @Test
+    func resolvesEntryWhoseResourceMatchesLocator() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml", "OEBPS/ch2.xhtml"],
+            locatorHref: "OEBPS/ch2.xhtml",
+            readingOrder: readingOrder
+        )
+        #expect(index == 1)
+    }
+
+    @Test
+    func fragmentsAreIgnoredOnBothSides() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml#s1", "OEBPS/ch2.xhtml#s2"],
+            locatorHref: "OEBPS/ch2.xhtml",
+            readingOrder: readingOrder
+        )
+        #expect(index == 1)
+    }
+
+    @Test
+    func locatorBetweenEntriesUsesLastEntryBeforeIt() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml", "OEBPS/ch3.xhtml"],
+            locatorHref: "OEBPS/ch2.xhtml",
+            readingOrder: readingOrder
+        )
+        #expect(index == 0)
+    }
+
+    @Test
+    func sharedResourceFallsBackToFirstEntry() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml#a", "OEBPS/ch1.xhtml#b", "OEBPS/ch2.xhtml"],
+            locatorHref: "OEBPS/ch1.xhtml",
+            readingOrder: readingOrder
+        )
+        #expect(index == 0)
+    }
+
+    @Test
+    func nilLocatorHasNoCurrentEntry() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml"],
+            locatorHref: nil,
+            readingOrder: readingOrder
+        )
+        #expect(index == nil)
+    }
+
+    @Test
+    func locatorBeforeFirstEntryHasNoCurrentEntry() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml", "OEBPS/ch2.xhtml"],
+            locatorHref: "OEBPS/cover.xhtml",
+            readingOrder: readingOrder
+        )
+        #expect(index == nil)
+    }
+
+    @Test
+    func unknownLocatorResourceHasNoCurrentEntry() {
+        let index = ReaderTOCCurrentEntry.index(
+            itemHrefs: ["OEBPS/ch1.xhtml"],
+            locatorHref: "OEBPS/elsewhere.xhtml",
+            readingOrder: readingOrder
+        )
+        #expect(index == nil)
+    }
+
+    @Test
+    func unlinkedGroupHeadingIsRecognisedByEmptyResource() {
+        #expect(ReaderTOCHierarchy.isGroupHeading(href: "#"))
+        #expect(ReaderTOCHierarchy.isGroupHeading(href: "#section-2"))
+        #expect(!ReaderTOCHierarchy.isGroupHeading(href: "OEBPS/ch1.xhtml"))
+        #expect(!ReaderTOCHierarchy.isGroupHeading(href: "OEBPS/ch1.xhtml#s1"))
+    }
+}
 #endif

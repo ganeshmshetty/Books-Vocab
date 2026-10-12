@@ -63,9 +63,63 @@ extension ReaderViewPresenter {
                 overlayPanelChrome(translationPanel, placement: placement)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("reader.translationPanel")
+            } else if state.chrome.overlay == .none {
+                readerProgressLine
+                    .transition(.overlayFade)
             }
         }
         .animation(AppMotion.panelState, value: state.chrome.overlay)
+    }
+
+    /// 底部頁邊的安靜進度文字（#2864）：無玻璃、無圖示（未知／無法還原除外）。
+    /// 位於 Readium 底部 inset 內，不改變 web view 高度；`allowsHitTesting(false)`
+    /// 讓點擊穿透到頁面，不與翻頁／長按查詞搶手勢。
+    private var readerProgressLine: some View {
+        HStack(spacing: AppSpacing.s1) {
+            if let icon = progressIcon {
+                Image(systemName: icon)
+                    .font(appSkin.typography.iconSmall)
+            }
+            progressContent
+        }
+        .foregroundStyle(appSkin.palette.secondaryText)
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, AppSpacing.s2)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(state.progressState.readerProgressAccessibilityIdentifier)
+    }
+
+    @ViewBuilder
+    private var progressContent: some View {
+        switch state.progressState {
+        case .zero, .middle, .complete:
+            if let progression = state.totalProgression {
+                let text = ReadingProgressFormatter.percentText(progression)
+                Text(text)
+                    .font(appSkin.typography.monoLabel)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animateContentFade(text)
+                    .accessibilityLabel(L10n.string("閱讀進度"))
+                    .accessibilityValue(text)
+                    .accessibilityIdentifier("reader.header.progressBadge")
+            }
+        case .unknown:
+            Text(L10n.string("閱讀進度未知"))
+                .font(appSkin.typography.caption)
+        case .restoreFailure:
+            Text(L10n.string("閱讀進度無法還原"))
+                .font(appSkin.typography.caption)
+        }
+    }
+
+    private var progressIcon: String? {
+        switch state.progressState {
+        case .restoreFailure: return "exclamationmark.triangle"
+        case .unknown: return "questionmark"
+        case .zero, .middle, .complete: return nil
+        }
     }
 
     private func overlayPanelChrome<Content: View>(
@@ -89,8 +143,17 @@ extension ReaderViewPresenter {
             .accessibilityElement(children: .ignore)
             .accessibilityIdentifier("reader.runtime.state")
             .accessibilityLabel(L10n.string("閱讀器狀態"))
-            .accessibilityValue(state.runtimeStateAccessibilityValue)
+            .accessibilityValue(runtimeStateValue)
     }
 
+    /// 頁面翻動證據用的精確值。可見進度是整數百分比（每頁約 0.3%，數字常不變），
+    /// 所以 UITest 改讀這個 `progression=` 鍵，不靠 header 的顯示文字。
+    private var runtimeStateValue: String {
+        guard let progression = state.totalProgression else {
+            return state.runtimeStateAccessibilityValue
+        }
+        return state.runtimeStateAccessibilityValue
+            + ";progression=" + String(format: "%.4f", progression)
+    }
 }
 #endif

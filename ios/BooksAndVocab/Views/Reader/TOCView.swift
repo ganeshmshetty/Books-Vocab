@@ -13,21 +13,30 @@ struct TOCView: View {
     @ObserveInjection private var inject
 
     let publication: Publication
+    /// Readium locator 的 resource href（目前閱讀位置），用來標示「目前章節」。
+    let currentLocatorHref: String?
     @Binding var navigationState: ReaderTOCNavigationState
     let onSelect: (ReaderTOCItem) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var appTheme
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var tocLinks: [ReadiumShared.Link] = []
+    // 載入時攤平一次（原本每次 body 重算並線性搜尋）。
+    @State private var tocItems: [ReaderTOCItem] = []
+    @State private var readingOrderHrefs: [String] = []
     @State private var loadState: LoadState = .loading
     @State private var loadRequestID = 0
-    private var tocItems: [ReaderTOCItem] {
-        ReaderTOCHierarchy.flatten(tocLinks)
-    }
 
     private var selectedItem: ReaderTOCItem? {
         guard let selectedPath = navigationState.selectedPath else { return nil }
         return tocItems.first { $0.path == selectedPath }
+    }
+
+    private var currentItemID: String? {
+        ReaderTOCCurrentEntry.index(
+            itemHrefs: tocItems.map(\.href),
+            locatorHref: currentLocatorHref,
+            readingOrder: readingOrderHrefs
+        ).map { tocItems[$0].id }
     }
 
     private var phaseAnimationKey: String {
@@ -100,7 +109,8 @@ struct TOCView: View {
         switch result {
         case .success(let publicationTOC):
             let toc = publicationTOC
-            tocLinks = toc
+            tocItems = ReaderTOCHierarchy.flatten(toc)
+            readingOrderHrefs = publication.readingOrder.map { $0.url().string }
             loadState = toc.isEmpty ? .empty : .loaded
             AppLog.reader.info("TOC loaded: \(toc.count) items")
             for (i, link) in toc.enumerated() {
@@ -143,37 +153,69 @@ struct TOCView: View {
 
     @ViewBuilder
     private func tocLoadedList() -> some View {
-        List {
-            ForEach(tocItems) { item in
-                Button {
-                    guard navigationState.phase != .loading else { return }
-                    onSelect(item)
-                } label: {
-                    HStack {
-                        Text(item.title)
-                            .font(AppFonts.body())
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: AppSpacing.s2)
-                        if navigationState.selectedPath == item.path {
-                            Image(systemName: "checkmark")
-                                .accessibilityHidden(true)
-                        }
+        let currentID = currentItemID
+        ScrollViewReader { proxy in
+            List {
+                ForEach(tocItems) { item in
+                    if ReaderTOCHierarchy.isGroupHeading(href: item.href) {
+                        groupHeading(item)
+                    } else {
+                        chapterRow(item, isCurrent: item.id == currentID)
+                            .id(item.id)
                     }
-                    .padding(.leading, CGFloat(item.depth) * AppSpacing.s3)
-                    .contentShape(Rectangle())
                 }
-                .disabled(navigationState.phase == .loading)
-                .accessibilityIdentifier("reader.toc.chapter.\(item.id)")
-                .accessibilityValue(item.href)
-                .accessibilityAddTraits(navigationState.selectedPath == item.path ? .isSelected : [])
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .onAppear {
+                // 打開時把目前章節捲到畫面中央（無動畫，Reduce Motion 安全）。
+                if let currentID {
+                    proxy.scrollTo(currentID, anchor: .center)
+                }
+            }
+            .accessibilityIdentifier("reader.toc.chapterHierarchy")
+            .overlay(alignment: .bottom) {
+                navigationOutcome
             }
         }
-        .listStyle(.plain)
-        .accessibilityIdentifier("reader.toc.chapterHierarchy")
-        .overlay(alignment: .bottom) {
-            navigationOutcome
+    }
+
+    private func chapterRow(_ item: ReaderTOCItem, isCurrent: Bool) -> some View {
+        Button {
+            guard navigationState.phase != .loading else { return }
+            onSelect(item)
+        } label: {
+            HStack(spacing: AppSpacing.s2) {
+                Text(item.title)
+                    .font(AppFonts.body(weight: item.depth == 0 || isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? appTheme.palette.accent : appTheme.palette.primaryText)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                Spacer(minLength: AppSpacing.s2)
+                if navigationState.selectedPath == item.path {
+                    Image(systemName: "checkmark")
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.leading, CGFloat(item.depth) * AppSpacing.s3)
+            .contentShape(Rectangle())
         }
+        .disabled(navigationState.phase == .loading)
+        .accessibilityIdentifier("reader.toc.chapter.\(item.id)")
+        .accessibilityValue(item.href)
+        .accessibilityHint(isCurrent ? L10n.string("目前章節") : "")
+        .accessibilityAddTraits(navigationState.selectedPath == item.path ? .isSelected : [])
+    }
+
+    /// 無連結的群組標題：只是分組標示，不可點（點了只會得到「找不到章節位置」）。
+    private func groupHeading(_ item: ReaderTOCItem) -> some View {
+        Text(item.title)
+            .font(AppFonts.caption(weight: .semibold))
+            .foregroundStyle(appTheme.palette.secondaryText)
+            .lineLimit(2)
+            .padding(.leading, CGFloat(item.depth) * AppSpacing.s3)
+            .accessibilityAddTraits(.isHeader)
+            .listRowSeparator(.hidden)
     }
 
     @ViewBuilder

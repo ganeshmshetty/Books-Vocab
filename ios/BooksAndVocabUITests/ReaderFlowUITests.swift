@@ -126,25 +126,25 @@ final class ReaderFlowUITests: UITestCase {
         }
 
         // ── 5. 翻頁 → 進度徽章數值真前進 ────────────────────────────────────
-        guard let initialProgress = reader.progressPercent() else {
+        guard let initialProgress = reader.progressionFraction() else {
             captureStep("progress-before-missing", app: app)
-            XCTFail("翻頁前 header 進度徽章必須存在且可解析")
+            XCTFail("翻頁前 runtime state 必須帶有 progression 證據")
             return
         }
         try step("page-turned", app: app) {
             XCTAssertTrue(reader.swipeWebViewLeft())
             XCTAssertTrue(
-                reader.waitUntilProgressExceeds(initialProgress, timeout: 10),
+                reader.waitUntilProgressionExceeds(initialProgress, timeout: 10),
                 """
-                翻頁後 header 進度徽章必須顯示更高的 totalProgression \
-                （before=\(initialProgress)%, after=\(reader.progressPercent().map(String.init(describing:)) ?? "<missing>")）\
+                翻頁後 runtime state 的 progression 必須前進 \
+                （before=\(initialProgress), after=\(reader.progressionFraction().map(String.init(describing:)) ?? "<missing>")）\
                 — 沒前進 = 只滑了手勢、頁面沒真的翻
                 """
             )
         }
-        guard let progressAfter = reader.progressPercent() else {
+        guard let progressAfter = reader.progressionFraction() else {
             captureStep("progress-after-missing", app: app)
-            XCTFail("翻頁後 header 進度徽章必須存在且可解析")
+            XCTFail("翻頁後 runtime state 必須帶有 progression 證據")
             return
         }
         attachText(
