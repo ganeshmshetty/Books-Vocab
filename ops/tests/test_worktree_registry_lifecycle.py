@@ -22,18 +22,24 @@ def _published_record(tmp_path: Path) -> dict:
     }
 
 
-def _proof(record: dict, *, lane_id: str = "ISSUE-1") -> dict:
-    return registry.terminal_proof_with_digest(
-        {
-            "schema": registry.TERMINAL_PROOF_SCHEMA,
-            "lane_id": lane_id,
-            "pr_number": 42,
-            "pr_state": "MERGED",
-            "base_branch": "main",
-            "branch": record["branch"],
-            "head_sha": record["handed_back_sha"],
-        }
-    )
+def _proof(
+    record: dict,
+    *,
+    lane_id: str = "ISSUE-1",
+    merged_head_sha: str | None = None,
+) -> dict:
+    body = {
+        "schema": registry.TERMINAL_PROOF_SCHEMA,
+        "lane_id": lane_id,
+        "pr_number": 42,
+        "pr_state": "MERGED",
+        "base_branch": "main",
+        "branch": record["branch"],
+        "head_sha": record["handed_back_sha"],
+    }
+    if merged_head_sha is not None:
+        body["merged_head_sha"] = merged_head_sha
+    return registry.terminal_proof_with_digest(body)
 
 
 def _resolve_args(state_path: Path, record: dict) -> list[str]:
@@ -79,6 +85,49 @@ def test_merged_transition_requires_typed_exact_pr_proof(tmp_path: Path) -> None
     resolved = registry.load_state(state_path)["records"][0]
     assert resolved["status"] == "merged"
     assert resolved["terminal_proof"] == exact_proof
+
+
+def test_merged_transition_records_a_merged_head_beyond_the_lane_head(
+    tmp_path: Path,
+) -> None:
+    # #3323: "Update branch" leaves the merged PR head past the lane tip; the
+    # proof keeps the lane head and carries the merged head beside it.
+    record = _published_record(tmp_path)
+    state_path = tmp_path / "registry.json"
+    registry.save_state(state_path, {"schema": registry.SCHEMA, "records": [record]})
+    proof = _proof(record, merged_head_sha="c" * 40)
+
+    result = registry.main(
+        _resolve_args(state_path, record) + ["--terminal-proof", json.dumps(proof)]
+    )
+
+    assert result == registry.EXIT_OK
+    resolved = registry.load_state(state_path)["records"][0]
+    assert resolved["terminal_proof"] == proof
+    assert resolved["terminal_proof"]["merged_head_sha"] == "c" * 40
+
+
+def test_merged_transition_refuses_malformed_equal_or_tampered_merged_head(
+    tmp_path: Path,
+) -> None:
+    record = _published_record(tmp_path)
+    state_path = tmp_path / "registry.json"
+    registry.save_state(state_path, {"schema": registry.SCHEMA, "records": [record]})
+    tampered = _proof(record, merged_head_sha="c" * 40)
+    tampered["merged_head_sha"] = "e" * 40
+    refused = [
+        _proof(record, merged_head_sha="not-a-sha"),
+        _proof(record, merged_head_sha=record["handed_back_sha"]),
+        tampered,
+    ]
+
+    for proof in refused:
+        result = registry.main(
+            _resolve_args(state_path, record) + ["--terminal-proof", json.dumps(proof)]
+        )
+        assert result == registry.EXIT_CLAIMED
+
+    assert registry.load_state(state_path)["records"][0]["status"] == "published"
 
 
 def test_direct_assignment_merged_transition_uses_branch_as_lane_identity(

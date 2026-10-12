@@ -25,17 +25,18 @@ def resolve_registry(
     terminal_proof: MergedPullRequestProof | None,
 ) -> None:
     if terminal_proof is not None:
-        proof_payload = terminal_proof_with_digest(
-            {
-                "schema": TERMINAL_PROOF_SCHEMA,
-                "lane_id": terminal_proof.lane_id,
-                "pr_number": terminal_proof.pr_number,
-                "pr_state": terminal_proof.pr_state,
-                "base_branch": terminal_proof.base_branch,
-                "branch": terminal_proof.branch,
-                "head_sha": terminal_proof.head_sha,
-            }
-        )
+        body: dict[str, object] = {
+            "schema": TERMINAL_PROOF_SCHEMA,
+            "lane_id": terminal_proof.lane_id,
+            "pr_number": terminal_proof.pr_number,
+            "pr_state": terminal_proof.pr_state,
+            "base_branch": terminal_proof.base_branch,
+            "branch": terminal_proof.branch,
+            "head_sha": terminal_proof.head_sha,
+        }
+        if terminal_proof.merged_head_sha is not None:
+            body["merged_head_sha"] = terminal_proof.merged_head_sha
+        proof_payload = terminal_proof_with_digest(body)
         argv = (
             *argv,
             "--terminal-proof",

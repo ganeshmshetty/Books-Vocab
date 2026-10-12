@@ -24,6 +24,8 @@ from delivery_control.domain.superseded_handback import (
 )
 from lib.worktree_scope import SCOPE_SCHEMA, overlap_paths, scope_files, scope_problems
 
+from .constants import COMMIT_SHA_RE
+
 SCHEMA = "kg.worktree.registry.v2"
 STATUS_ACTIVE = "active"
 STATUS_CLEANUP_PENDING = "cleanup_pending"
@@ -204,6 +206,17 @@ def terminal_proof_problem(
     for key, value in expected.items():
         if body.get(key) != value:
             return f"terminal proof {key} does not match exact merged PR"
+    if "merged_head_sha" in body:
+        # Optional: "Update branch" moved the merged PR head past the lane tip.
+        # Cleanup proves that containment in git before writing the proof; the
+        # registry keeps the merged head beside the lane head it terminalizes.
+        merged_head = body["merged_head_sha"]
+        if (
+            not isinstance(merged_head, str)
+            or COMMIT_SHA_RE.fullmatch(merged_head) is None
+            or merged_head == body.get("head_sha")
+        ):
+            return "terminal proof merged head is invalid"
     if type(body.get("pr_number")) is not int or body["pr_number"] <= 0:
         return "terminal proof PR number is invalid"
     lane_id = body.get("lane_id")

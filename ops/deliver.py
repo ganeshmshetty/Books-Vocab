@@ -358,22 +358,29 @@ def next_stage(
     *,
     head: str | None = None,
     branch: str = "",
+    is_ancestor: Callable[[str, str], bool] | None = None,
 ) -> str:
     """Where a (re)run has to start, given what the registry and GitHub already hold.
 
     ``head`` is the lane branch's local tip (None when the branch is gone).  A
-    merged PR only licenses cleanup when that tip is the PR's head: a branch
-    name reused after a merge carries commits the merged PR never had (#3311).
+    merged PR only licenses cleanup when that tip is the PR's head, or an
+    ancestor of it (GitHub "Update branch" or an unpushed local rebase): nothing
+    local is lost then.  A tip outside the merged history is a branch name
+    reused after a merge that carries commits the PR never had (#3311).
+    ``is_ancestor(old, new)`` answers that ancestry question; it is needed only
+    when the tip differs from the PR head.
     """
     if pr is not None:
         if pr.get("state") == "MERGED":
-            if head is not None and head != pr.get("headRefOid"):
-                raise DeliverError(
-                    f"branch {branch or '<unknown>'} is at {head} but its merged "
-                    f"PR #{pr.get('number')} ends at {pr.get('headRefOid')}: the "
-                    "branch name was reused after a merge; open a fresh lane (-rK) "
-                    "instead of cleanup"
-                )
+            merged_head = pr.get("headRefOid")
+            if head is not None and head != merged_head:
+                if is_ancestor is None or not is_ancestor(head, merged_head):
+                    raise DeliverError(
+                        f"branch {branch or '<unknown>'} is at {head}, which is not "
+                        f"in merged PR #{pr.get('number')} (ends at {merged_head}): "
+                        "the branch name was reused after a merge; open a fresh "
+                        "lane (-rK) instead of cleanup"
+                    )
             return "cleanup"
         if pr.get("state") == "OPEN":
             # A publish that died after creating the PR leaves the lane short
@@ -732,6 +739,16 @@ class Delivery:
         )
         return proc.stdout.strip() if proc.returncode == 0 else None
 
+    def is_ancestor(self, old: str, new: str) -> bool:
+        """Whether commit ``old`` is contained in ``new``; rc 1 is a plain no."""
+        proc = self.runner(["git", "merge-base", "--is-ancestor", old, new], self.home)
+        if proc.returncode in (0, 1):
+            return proc.returncode == 0
+        raise DeliverError(
+            f"compare {old} with {new} failed (rc={proc.returncode}): "
+            f"{failure_detail(proc) or 'no output'}"
+        )
+
     def pull_request(self, repo: str, branch: str) -> dict[str, Any] | None:
         out = must(
             self.runner,
@@ -1008,7 +1025,13 @@ class Delivery:
             raise DeliverError(
                 f"PR #{pr.get('number')} already merged; start a new lane from {TRUNK}"
             )
-        stage = next_stage(record, pr, head=self.lane_head(branch), branch=branch)
+        stage = next_stage(
+            record,
+            pr,
+            head=self.lane_head(branch),
+            branch=branch,
+            is_ancestor=self.is_ancestor,
+        )
         lane = self.args.lane or (
             record["external_ids"][0] if record and record.get("external_ids") else None
         )
