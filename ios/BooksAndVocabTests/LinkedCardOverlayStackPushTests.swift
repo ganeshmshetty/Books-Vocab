@@ -42,5 +42,7 @@ struct LinkedCardOverlayStackPushTests {
         #expect(LinkedCardOverlayStack.layerTitle(for: "  abrasive ") == "abrasive")
         #expect(LinkedCardOverlayStack.layerTitle(for: "") == L10n.string("連結卡片"))
         #expect(LinkedCardOverlayStack.layerTitle(for: " \n") == L10n.string("連結卡片"))
+        // 上面兩句在 key 缺失時也成立（兩邊都回 key 原文），所以另以英文值證明 key 真的存在於 bundle。
+        #expect(L10n.string("連結卡片", language: .english) == "Linked Card")
     }
 }
