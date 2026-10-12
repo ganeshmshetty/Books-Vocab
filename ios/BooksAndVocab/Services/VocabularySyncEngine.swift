@@ -119,18 +119,21 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                             if Task.isCancelled { return cancelledResult(since: start) }
                             do {
                                 try await service.deleteCard(word: entry.word, notebookId: entry.notebookId)
-                                // Defensive recheck after the suspension (I3 keeps the held delete a delete): never
-                                // hard-delete a row that is no longer a held delete (T5).
-                                guard entry.isUploadInFlight, entry.syncAction == .delete else { continue }
-                                modelContext.delete(entry)
-                                deleted += 1
-                                emit(.stepProgress("upload_delete", current: deleted, total: queuedDeletes.count, detail: ""))
+                            } catch let KGError.httpError(statusCode: 404, _) {
+                                // 404 = server 已無此卡，刪除意圖已達成：視同已刪除、不計失敗（#2728，與 KGVocabCoordinator.retryPendingDeletes 一致）。
                             } catch {
                                 if Task.isCancelled { return cancelledResult(since: start) }
                                 entry.markSyncFailed()
                                 encounteredFailure = true
                                 failedWords.append(entry.word)
+                                continue
                             }
+                            // Defensive recheck after the suspension (I3 keeps the held delete a delete): never
+                            // hard-delete a row that is no longer a held delete (T5).
+                            guard entry.isUploadInFlight, entry.syncAction == .delete else { continue }
+                            modelContext.delete(entry)
+                            deleted += 1
+                            emit(.stepProgress("upload_delete", current: deleted, total: queuedDeletes.count, detail: ""))
                         }
                     }
                 }

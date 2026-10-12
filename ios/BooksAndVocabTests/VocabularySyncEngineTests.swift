@@ -361,6 +361,30 @@ struct VocabularySyncEngineTests {
         #expect(!next.calls.contains("add"))
     }
 
+    @Test("a per-word delete the server answers 404 is already deleted: the row is removed and not counted as failed (#2728)")
+    func perWordDelete404RemovesRowWithoutFailure() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "gone")
+        let entryId = entry.id
+        entry.kgCardId = "card-gone"
+        entry.markSynced()
+        entry.queueDelete()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.batchDeleteError = TestError.expected
+        service.deleteCardError = KGError.httpError(statusCode: 404, detail: "not found")
+        let result = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(result.terminalOutcome == .completed)
+        #expect(service.calls.contains("delete"))
+        #expect(try isRemoved(entryId, from: context))
+    }
+
     @Test("a delete issued while another notebook's add group uploads keeps the unsent add from being uploaded")
     func deleteDuringOtherGroupUploadSkipsAdd() async throws {
         let container = try makeContainer()
