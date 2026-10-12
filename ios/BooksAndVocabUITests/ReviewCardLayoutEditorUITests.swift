@@ -372,12 +372,15 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
 
         for identifier in ["todayReview.card.speak", "todayReview.card.openDetail"] {
             let matches = app.buttons.matching(identifier: identifier)
+            // `XCUIElementQuery.element` fails the test when the query is ambiguous,
+            // so the glyph is resolved without a positional pick.
+            let glyph = matches.element
             XCTAssertTrue(
-                matches.element(boundBy: 0).waitUntilExists(timeout: 8),
+                glyph.waitUntilExists(timeout: 8),
                 "正面右上角必須有可辨識的按鈕 \(identifier)"
             )
             XCTAssertEqual(matches.count, 1, "\(identifier) identifier 必須唯一")
-            let frame = matches.element(boundBy: 0).frame
+            let frame = glyph.frame
             XCTAssertGreaterThanOrEqual(frame.width, 44, "\(identifier) 觸控寬度必須 >= 44pt，實際 \(frame.width)")
             XCTAssertGreaterThanOrEqual(frame.height, 44, "\(identifier) 觸控高度必須 >= 44pt，實際 \(frame.height)")
         }
