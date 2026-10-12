@@ -131,6 +131,10 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         guard !userIdStr.isEmpty, !tokenStr.isEmpty else { return }
         // Fail closed (#2717): no account becomes current while a previous account's wipe is pending.
         // The async sign-in paths complete the wipe before reaching here; this guards direct callers.
+        guard !localWipeRequiresRestart else {
+            refuseSignInUntilRestart()
+            return
+        }
         guard !localDataCleaner.hasPendingLocalWipe else {
             refuseSignInUntilLocalWipeSucceeds()
             return
@@ -214,6 +218,11 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     @ObservationIgnored
     private var localDataCleanupGeneration = 0
 
+    /// Set after a store rebuild (#3229). The container of this process still points at the deleted
+    /// store files, so no account may become current until the app restarts.
+    @ObservationIgnored
+    private(set) var localWipeRequiresRestart = false
+
     /// Sync 開跑前的前置 gate — 等 logout 排程的本地清理收尾。
     /// 無 pending cleanup 時立即返回（正常冷啟登入不被拖慢）；
     /// 懸掛期間若又發生 logout，re-check 直到鏈上最後一個 cleanup 完成。
@@ -230,7 +239,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     /// (#2717). Sign-in refuses while a wipe is pending, so this is a fail-closed check and never wipes.
     func waitForLocalDataCleanupGate() async -> Bool {
         await awaitLogoutCleanupChain()
-        return !localDataCleaner.hasPendingLocalWipe
+        return !localDataCleaner.hasPendingLocalWipe && !localWipeRequiresRestart
     }
 
     private func awaitLogoutCleanupChain() async {
@@ -246,13 +255,34 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     /// an earlier failure must then succeed before any account becomes current. `false` = fail closed.
     private func completePreviousAccountWipe() async -> Bool {
         await awaitLogoutCleanupChain()
+        // The store was rebuilt in this process: the live container still points at the deleted files (#3229).
+        guard !localWipeRequiresRestart else {
+            refuseSignInUntilRestart()
+            return false
+        }
         guard localDataCleaner.hasPendingLocalWipe else { return true }
+        // Past the retry cap another retry cannot succeed. Only the store rebuild may finish the wipe (#3229).
+        guard !localDataCleaner.pendingWipeNeedsStoreRebuild else {
+            refuseSignInUntilLocalWipeSucceeds()
+            return false
+        }
         if let container = modelContainer {
             let finished = await localDataCleaner.retryPendingLocalWipe(container: container, signedInUserId: userId)
             if finished { return true }
         }
         refuseSignInUntilLocalWipeSucceeds()
         return false
+    }
+
+    /// Store-rebuild recovery for a wipe stuck past the retry cap (#3229). Deletes the on-disk store and
+    /// drops the pending marker. The live container still references the deleted files, so this process
+    /// refuses every sign-in; the next launch builds a fresh store and admits sign-in normally.
+    @discardableResult
+    func recoverFromStuckLocalWipe() async -> Bool {
+        guard await localDataCleaner.rebuildStoreAndDiscardPendingWipe() else { return false }
+        localWipeRequiresRestart = true
+        refuseSignInUntilRestart()
+        return true
     }
 
     /// Wipes the rows of `owner`, the account they belong to. A failure is recorded by the cleaner;
@@ -286,6 +316,11 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     private func refuseSignInUntilLocalWipeSucceeds() {
         AppLog.auth.error("sign-in refused: previous account's local wipe is still pending")
         authError = L10n.string("上一個帳號的本機資料尚未清除，請稍後再試登入")
+    }
+
+    private func refuseSignInUntilRestart() {
+        AppLog.auth.error("sign-in refused: local store was rebuilt, restart required")
+        authError = L10n.string("本機資料已重建，請重新啟動 App 後再登入")
     }
 
     func logout(modelContainer: ModelContainer? = nil, reason: String = "user_logout") {

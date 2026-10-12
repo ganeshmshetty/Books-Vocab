@@ -64,6 +64,18 @@ struct AuthManagerAccountSwitchTests {
         var failClear = false
         var failRetry = false
         var pendingLocalWipeOwner: String?
+        /// Failed sign-in retries of the same marker; the cap mirrors `LocalDataCleanerService` (#3229).
+        private(set) var stuckRetryFailures = 0
+        static let stuckRetryCap = 3
+        private(set) var rebuildCount = 0
+        var pendingWipeNeedsStoreRebuild: Bool { stuckRetryFailures >= Self.stuckRetryCap }
+        func rebuildStoreAndDiscardPendingWipe() async -> Bool {
+            guard pendingWipeNeedsStoreRebuild else { return false }
+            rebuildCount += 1
+            stuckRetryFailures = 0
+            pendingLocalWipeOwner = nil
+            return true
+        }
         func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
             clearCount += 1
             reasons.append(reason)
@@ -83,7 +95,10 @@ struct AuthManagerAccountSwitchTests {
             retrySignedInUsers.append(signedInUserId)
             guard let owner = pendingLocalWipeOwner else { return true }
             guard signedInUserId == nil || signedInUserId == owner else { return false }
-            guard !failRetry else { return false }
+            guard !failRetry else {
+                stuckRetryFailures += 1
+                return false
+            }
             pendingLocalWipeOwner = nil
             return true
         }
@@ -108,7 +123,7 @@ struct AuthManagerAccountSwitchTests {
 
     private func makeManager(
         priorUserId: String?,
-        cleaner: RecordingCleaner,
+        cleaner: any LocalDataClearing,
         lifecycle: RecordingPreferenceLifecycle? = nil
     ) -> AuthManager {
         let manager = AuthManager(
@@ -308,5 +323,107 @@ struct AuthManagerAccountSwitchTests {
         await manager.login(customToken: "new-user")
 
         #expect(defaults.string(forKey: key) == "cursor-of-old-user")
+    }
+
+    /// #3229: a refused switch keeps the previous account signed in, so its derived state (downloaded
+    /// podcast audio here) must survive. The purge is deferred while the wipe keeps failing.
+    @Test func refused_switch_keeps_previous_accounts_derived_state() async throws {
+        let fixture = try Self.makeDerivedFixture()
+        let cleaner = Self.makeRealCleaner(wipe: ScriptedWipe(failures: .max), roots: fixture.roots)
+        let manager = makeManager(priorUserId: "old-user", cleaner: cleaner)
+
+        await manager.login(customToken: "new-user")
+
+        #expect(manager.userId == "old-user")
+        #expect(manager.authError != nil)
+        #expect(FileManager.default.fileExists(atPath: fixture.sentinel.path), "A's downloads must survive a refused switch")
+    }
+
+    /// #3229: the deferred derived purge runs once the wipe that failed finally succeeds, so B never
+    /// inherits A's derived state.
+    @Test func deferred_derived_purge_runs_when_the_wipe_completes() async throws {
+        let fixture = try Self.makeDerivedFixture()
+        let cleaner = Self.makeRealCleaner(wipe: ScriptedWipe(failures: 1), roots: fixture.roots)
+        let manager = makeManager(priorUserId: "old-user", cleaner: cleaner)
+
+        await manager.login(customToken: "new-user")
+
+        #expect(manager.userId == "new-user")
+        #expect(!FileManager.default.fileExists(atPath: fixture.sentinel.path))
+    }
+
+    /// #3229: a wipe stuck past the retry cap stops retrying and refuses sign-in. The store-rebuild
+    /// recovery deletes the rows; this process still refuses sign-in, and the next launch admits it.
+    @Test func wipe_stuck_past_retry_cap_recovers_by_store_rebuild_on_next_launch() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        cleaner.failRetry = true
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        for _ in 0..<RecordingCleaner.stuckRetryCap {
+            await manager.login(customToken: "user-b")
+        }
+        #expect(cleaner.pendingWipeNeedsStoreRebuild)
+
+        let retriesAtCap = cleaner.retrySignedInUsers.count
+        await manager.login(customToken: "user-b")
+        #expect(cleaner.retrySignedInUsers.count == retriesAtCap, "past the cap no further retry runs")
+        #expect(manager.userId == nil)
+
+        #expect(await manager.recoverFromStuckLocalWipe())
+        await manager.login(customToken: "user-b")
+        #expect(manager.userId == nil, "the live container points at the rebuilt store: restart first")
+        #expect(manager.authError != nil)
+
+        let relaunched = makeManager(priorUserId: nil, cleaner: cleaner)
+        await relaunched.login(customToken: "user-b")
+        #expect(relaunched.userId == "user-b")
+        #expect(relaunched.isLoggedIn)
+    }
+
+    // MARK: - Real cleaner fixtures (#3229)
+
+    private final class ScriptedWipe: @unchecked Sendable {
+        struct WipeFailure: Error {}
+        private(set) var calls = 0
+        private let failures: Int
+        init(failures: Int) { self.failures = failures }
+        func run(_ container: ModelContainer, _ reason: String) async throws {
+            calls += 1
+            if calls <= failures { throw WipeFailure() }
+        }
+    }
+
+    @MainActor
+    private static func makeDerivedFixture() throws -> (roots: LocalDataCleanerService.DerivedLocalStateRoots, sentinel: URL) {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("auth-switch-\(UUID().uuidString)", isDirectory: true)
+        let downloads = base.appendingPathComponent("downloads", isDirectory: true)
+        let covers = base.appendingPathComponent("covers", isDirectory: true)
+        let notebookCovers = base.appendingPathComponent("notebook-covers", isDirectory: true)
+        for directory in [downloads, covers, notebookCovers] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let sentinel = downloads.appendingPathComponent("episode.mp3")
+        try Data("A".utf8).write(to: sentinel)
+        let roots = LocalDataCleanerService.DerivedLocalStateRoots(
+            notebookCovers: notebookCovers,
+            podcastCovers: covers,
+            podcastDownloads: downloads
+        )
+        return (roots, sentinel)
+    }
+
+    private static func makeRealCleaner(
+        wipe: ScriptedWipe,
+        roots: LocalDataCleanerService.DerivedLocalStateRoots
+    ) -> LocalDataCleanerService {
+        let defaults = UserDefaults(suiteName: "kg.test.authswitch.\(UUID().uuidString)")!
+        return LocalDataCleanerService(
+            wipeRows: { container, reason in try await wipe.run(container, reason) },
+            defaults: defaults,
+            derivedRoots: roots,
+            storeRebuild: { false }
+        )
     }
 }
