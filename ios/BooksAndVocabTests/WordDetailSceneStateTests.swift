@@ -476,6 +476,25 @@ struct WordDetailSceneStateTests {
         #expect(entry.collocationExplanations["take shape"] == nil)
     }
 
+    @Test func updateCollocationExplanation_restoresPreviousValueWhenSaveFails() throws {
+        let context = try makeContext()
+        let entry = makeEntry(cardId: "root-card", word: "meticulous")
+        entry.collocationExplanations = ["take shape": "舊解釋"]
+        context.insert(entry)
+
+        let state = WordDetailSceneState()
+        state.updateCollocationExplanation(
+            "新解釋",
+            for: "take shape",
+            entry: entry,
+            modelContext: context,
+            save: { _ in false }
+        )
+
+        #expect(entry.collocationExplanations["take shape"] == "舊解釋", "存檔失敗後不可保留未存的新解釋")
+        #expect(state.actionError != nil)
+    }
+
     @Test func metadataLinkCount_usesPluralKey() {
         let entry = makeEntry(cardId: "root-card", word: "meticulous")
         entry.insertLink(
