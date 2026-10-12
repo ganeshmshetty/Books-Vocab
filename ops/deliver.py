@@ -530,11 +530,55 @@ def review_findings(
     ]
 
 
+_P01_TOKEN = re.compile(r"\bP[01]\b")
+_CLAUSE_END = re.compile(r"[,;.:!?]")
+_NEGATION = re.compile(r"(?i)\b(?:no|none|zero|without|0)\b")
+
+
+def review_body_findings(
+    reviews: list[dict[str, Any]], head: str, bots: tuple[str, ...]
+) -> list[dict[str, str]]:
+    """P0/P1 findings the review bot wrote in its review bodies on this exact head.
+
+    A P0/P1 token counts unless its clause says there is none ("no P0/P1
+    issues", "0 P0 and 0 P1"); a bot review is not exempt for having no inline
+    comment (#3208).  Dismissed reviews no longer block.
+    """
+    found: list[dict[str, str]] = []
+    for review in reviews:
+        if (
+            (review.get("user") or {}).get("login") not in bots
+            or review.get("commit_id") != head
+            or review.get("state") == "DISMISSED"
+        ):
+            continue
+        for line in str(review.get("body") or "").splitlines():
+            for token in _P01_TOKEN.finditer(line):
+                clause = _CLAUSE_END.split(line[: token.start()])[-1]
+                if not _NEGATION.search(clause):
+                    found.append(
+                        {
+                            "where": "review body",
+                            "summary": line.strip(),
+                            "url": str(review.get("html_url") or ""),
+                        }
+                    )
+                    break  # one finding per line
+    return found
+
+
 def required_state(checks: list[dict[str, Any]]) -> str:
     states = [c.get("state") for c in checks if c.get("name") == "required"]
     if not states:
         return "PENDING"
     return str(states[0])
+
+
+def check_run_state(run: dict[str, Any]) -> str:
+    """The `gh pr checks` state of one check run: its conclusion once completed."""
+    if str(run.get("status") or "").casefold() != "completed":
+        return "PENDING"
+    return str(run.get("conclusion") or "PENDING").upper()
 
 
 def started_of(run: dict[str, Any]) -> str:
@@ -1139,8 +1183,8 @@ class Delivery:
             self.say(f"required passed on #{number}")
             if not self.args.merge:
                 return self.summary(branch, lane, number, "ready-to-merge")
-            self.extra["review"] = self.review_gate(repo, number)
-            self.area_quality_gate(repo, number)
+            self.extra["review"] = review = self.review_gate(repo, number)
+            self.area_quality_gate(repo, number, review["head"])
             self.mutate(
                 [*delivery, "queue", "--pr", str(number)],
                 self.home,
@@ -1226,7 +1270,20 @@ class Delivery:
         ).stdout
         return json.loads(out or "[]")
 
-    def area_quality_gate(self, repo: str, number: int) -> None:
+    def _head_check_runs(self, repo: str, head: str) -> list[dict[str, Any]]:
+        """Every check run on the exact head, reruns included, with a `state`.
+
+        `gh pr checks` keeps one row per name, so a rerun could be shadowed by
+        the run it replaced; the commit's check-runs list (filter=all) keeps all
+        of them for newest_by_name to choose from by started_at (#3208).
+        """
+        runs = self.gh_pages(
+            f"repos/{repo}/commits/{head}/check-runs?filter=all&per_page=100",
+            "check_runs",
+        )
+        return [{**run, "state": check_run_state(run)} for run in runs]
+
+    def area_quality_gate(self, repo: str, number: int, head: str) -> None:
         """Hold the queue on the exact head's area quality jobs (#2833, #2870).
 
         The newest run per full check name decides, then runs aggregate by area.
@@ -1239,7 +1296,7 @@ class Delivery:
         """
 
         def settled() -> list[str] | None:
-            checks = self._pr_checks(repo, number)
+            checks = self._head_check_runs(repo, head)
             newest = newest_by_name(checks)
             area = {
                 name: check
@@ -1487,6 +1544,7 @@ class Delivery:
                     "or pass --accept-no-review '<reason>'"
                 ) from exc
             verdict = "neutral"
+        reviews = self.gh_pages(f"repos/{repo}/pulls/{number}/reviews?per_page=100")
         if verdict == "neutral":
             if not no_review:
                 raise DeliverError(
@@ -1497,7 +1555,7 @@ class Delivery:
                 )
             if not cr_verdict_recorded(
                 self.gh_pages(f"repos/{repo}/issues/{number}/comments?per_page=100")
-                + self.gh_pages(f"repos/{repo}/pulls/{number}/reviews?per_page=100"),
+                + reviews,
                 head,
                 bots,
             ):
@@ -1509,20 +1567,23 @@ class Delivery:
                     "(docs/sop/review_discipline.md) and re-run"
                 )
             self.say(f"accepted #{number} without an exact-head review ({no_review})")
-        findings = review_findings(
+        inline = review_findings(
             self.gh_pages(f"repos/{repo}/pulls/{number}/comments?per_page=100"),
             head,
             bots,
         )
+        body = review_body_findings(reviews, head, bots)
         self.say(f"{REVIEW_CHECK} {verdict} on #{number} at {head}")
         problems = [f"{REVIEW_CHECK} failed on {head}"] if verdict == "failure" else []
-        if findings:
-            listed = "".join(
-                f"\n  {f['where']}: {f['summary']} {f['url']}" for f in findings
-            )
-            problems.append(
-                f"{len(findings)} inline review comment(s) on {head}:{listed}"
-            )
+        for kind, found in (
+            ("inline review comment(s)", inline),
+            ("review body P0/P1 finding(s)", body),
+        ):
+            if found:
+                listed = "".join(
+                    f"\n  {f['where']}: {f['summary']} {f['url']}" for f in found
+                )
+                problems.append(f"{len(found)} {kind} on {head}:{listed}")
         reason = (self.args.accept_review_findings or "").strip()
         if problems and not reason:
             raise DeliverError(
@@ -1535,7 +1596,7 @@ class Delivery:
         return {
             "head": head,
             "verdict": verdict,
-            "findings": findings,
+            "findings": inline + body,
             "accepted": reason if problems else None,
             "accepted_no_review": no_review if verdict == "neutral" else None,
         }
