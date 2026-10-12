@@ -24,6 +24,8 @@ struct WordDetailPresenter: View {
         let metadataItems: [MetadataItem]
         let navigableLinkCardIDs: Set<String>
         let reviewProgress: VocabReviewProgress?
+        /// 與複習同一份 `VocabularyEntry.collocationExplanations`（#3125）。
+        var collocationExplanations: [String: String] = [:]
 
         var shareText: String {
             card.document.plainTextExport()
@@ -58,6 +60,10 @@ struct WordDetailPresenter: View {
     let onUnhideLink: ((KGCardLinkSummary) -> Void)?
     /// A link still being created / failed / partial: opens its creation detail.
     var onPendingLinkTapped: ((KGCardLinkSummary) -> Void)? = nil
+    /// 搭配解釋的三個動作；任一為 nil 時，對應的 context-menu 項目不會出現（#3125）。
+    var onExplainCollocation: ((String) -> Void)? = nil
+    var onViewCollocationExplanation: ((String) -> Void)? = nil
+    var onDeleteCollocationExplanation: ((String) -> Void)? = nil
 
     var body: some View {
         Group {
@@ -105,7 +111,13 @@ struct WordDetailPresenter: View {
         VStack(alignment: .leading, spacing: 0) {
             VocabCard(padding: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    CardDocumentView(document: state.card.document)
+                    CardDocumentView(
+                        document: state.card.document,
+                        collocationExplanations: state.collocationExplanations,
+                        onExplainCollocation: onExplainCollocation,
+                        onViewCollocationExplanation: onViewCollocationExplanation,
+                        onDeleteCollocationExplanation: onDeleteCollocationExplanation
+                    )
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("wordDetail.document")
 

@@ -208,6 +208,20 @@ final class WordDetailSceneState {
         }
     }
 
+    /// 寫入或清除單一搭配的解釋。沿用複習的持久化路徑（`TodayReviewCollocationState`），
+    /// 兩個宿主寫進同一份 `VocabularyEntry.collocationExplanations`（#3125）。
+    func updateCollocationExplanation(
+        _ explanation: String?,
+        for collocation: String,
+        entry: VocabularyEntry,
+        modelContext: ModelContext
+    ) {
+        var collocations = TodayReviewCollocationState()
+        collocations.sync(from: entry)
+        collocations.update(explanation, for: collocation, entry: entry)
+        modelContext.safeSave()
+    }
+
     func linkedEntry(
         for link: KGCardLinkSummary,
         from entry: VocabularyEntry,

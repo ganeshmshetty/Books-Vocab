@@ -14,6 +14,7 @@ struct WordDetailSheet: View {
     @State private var showAddLink = false
     @State private var pendingLinkDetail: PendingLinkDetailRequest?
     @State private var isConfirmingDelete = false
+    @State private var explainSheetItem: CollocationExplainItem?
 
     // Long-lived owner of link creations: read so the pending rows follow the jobs
     // (appear, fail, turn into real links) even while this sheet stays open.
@@ -86,7 +87,24 @@ struct WordDetailSheet: View {
                     onUnhideLink: { link in
                         state.unhideLink(link, from: entry, allEntries: allEntries, kgService: kgService)
                     },
-                    onPendingLinkTapped: { pendingLinkDetail = PendingLinkDetailRequest(link: $0) }
+                    onPendingLinkTapped: { pendingLinkDetail = PendingLinkDetailRequest(link: $0) },
+                    onExplainCollocation: { collocation in
+                        explainSheetItem = CollocationExplainItem(
+                            collocation: collocation,
+                            context: entry.context,
+                            existingExplanation: nil
+                        )
+                    },
+                    onViewCollocationExplanation: { collocation in
+                        explainSheetItem = CollocationExplainItem(
+                            collocation: collocation,
+                            context: entry.context,
+                            existingExplanation: entry.collocationExplanations[collocation]
+                        )
+                    },
+                    onDeleteCollocationExplanation: { collocation in
+                        state.updateCollocationExplanation(nil, for: collocation, entry: entry, modelContext: modelContext)
+                    }
                 )
             } else {
                 VocabStateMessageCard(
@@ -107,7 +125,7 @@ struct WordDetailSheet: View {
             toastCoordinator.error(message)
             state.dismissActionError()
         }
-        .task(id: "\(entry.id)|\(entry.graphLinksJSON.hashValue)") {
+        .task(id: "\(entry.id)|\(entry.graphLinksJSON.hashValue)|\(entry.collocationExplanationsJSON.hashValue)") {
             // Yield once so SwiftUI can render the loading placeholder before
             // we run the (lightweight but synchronous) presentation computation.
             await Task.yield()
@@ -155,6 +173,30 @@ struct WordDetailSheet: View {
         .toastSheet(item: $pendingLinkDetail) { request in
             PendingLinkDetailSheet(link: request.link)
                 .appSheet(.medium)
+        }
+        .toastSheet(item: $explainSheetItem) { item in
+            CollocationExplainSheet(
+                collocation: item.collocation,
+                context: item.context,
+                existingExplanation: item.existingExplanation,
+                onSave: { explanation in
+                    state.updateCollocationExplanation(
+                        explanation,
+                        for: item.collocation,
+                        entry: entry,
+                        modelContext: modelContext
+                    )
+                },
+                onDelete: {
+                    state.updateCollocationExplanation(
+                        nil,
+                        for: item.collocation,
+                        entry: entry,
+                        modelContext: modelContext
+                    )
+                }
+            )
+            .appSheet(.medium)
         }
         .enableInjection()
     }

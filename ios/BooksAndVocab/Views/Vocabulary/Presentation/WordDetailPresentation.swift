@@ -26,7 +26,8 @@ enum WordDetailPresentation {
             ),
             reviewProgress: entry.shouldAppearInReview
                 ? reviewProgress(for: entry, now: reviewReferenceDate)
-                : nil
+                : nil,
+            collocationExplanations: entry.collocationExplanations
         )
     }
 
