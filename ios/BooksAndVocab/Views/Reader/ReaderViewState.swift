@@ -717,6 +717,39 @@ enum ReaderTOCHierarchy {
         append(links, parentPath: [], depth: 0)
         return items
     }
+
+    /// Readium 把沒有連結目的地的群組標題（`<span>` 父節點）包成 `#`。它
+    /// 不能 `locate()`，所以列表應呈現為不可點的標題，而不是按了顯示「找不到章節位置」。
+    static func isGroupHeading(href: String) -> Bool {
+        ReaderTOCNavigationState.resourceHref(href).isEmpty
+    }
+}
+
+/// 目錄的「目前章節」解析（#2865）：以 Readium locator 的 resource 為準，
+/// 忽略 `#fragment`，取「位於目前 resource 之前（含）」的條目中位置最後者；
+/// 多個條目共用同一 resource 時取目錄中的第一個。
+enum ReaderTOCCurrentEntry {
+    static func index(
+        itemHrefs: [String],
+        locatorHref: String?,
+        readingOrder: [String]
+    ) -> Int? {
+        guard let locatorHref else { return nil }
+        let resources = readingOrder.map(ReaderTOCNavigationState.resourceHref)
+        guard let current = resources.firstIndex(of: ReaderTOCNavigationState.resourceHref(locatorHref))
+        else { return nil }
+
+        var best: (index: Int, position: Int)?
+        for (index, href) in itemHrefs.enumerated() {
+            guard let position = resources.firstIndex(of: ReaderTOCNavigationState.resourceHref(href)),
+                  position <= current
+            else { continue }
+            if best == nil || position > best!.position {
+                best = (index, position)
+            }
+        }
+        return best?.index
+    }
 }
 
 /// 閱讀器 UI 狀態容器，整合原本散落在 ReaderView 的 @State 屬性

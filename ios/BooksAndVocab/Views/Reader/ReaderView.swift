@@ -222,9 +222,11 @@ struct ReaderView: View {
         if let publication {
             TOCView(
                 publication: publication,
+                currentLocatorHref: currentLocator?.href.string,
                 navigationState: $tocNavigationState,
                 onSelect: { item in handleTOCSelection(item, in: publication) }
             )
+            .appSheet(.adaptive)
         }
     }
 

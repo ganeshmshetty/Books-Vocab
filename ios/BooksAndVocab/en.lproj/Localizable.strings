@@ -1311,6 +1311,7 @@
 "閱讀內容尚未載入" = "Reading content has not loaded";
 "閱讀器狀態" = "Reader status";
 "閱讀進度" = "Reading progress";
+"目前章節" = "Current chapter";
 "閱讀進度未知" = "Reading progress unknown";
 "閱讀進度無法還原" = "Reading progress could not be restored";
 "預設值" = "Default";
