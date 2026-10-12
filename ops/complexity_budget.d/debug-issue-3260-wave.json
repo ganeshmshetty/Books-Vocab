@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3260,
+  "raise": {
+    "ops": 35
+  },
+  "note": "fix #3260: pick_exclusive \u6539\u4ee5 here-string \u50b3\u6392\u9664\u96c6\uff08\u907f\u958b Linux argv 128KiB \u4e0a\u9650\uff09\uff0b\u56de\u6b78\u6e2c\u8a66\u6bb5\uff08awk shim \u6a21\u64ec\u4e0a\u9650\uff09"
+}
