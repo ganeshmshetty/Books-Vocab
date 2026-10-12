@@ -163,7 +163,6 @@ Scope: `ios/BooksAndVocab`
 |------|----------|--------|------|
 | Front | `revealStage == .front` | front fold card | 已覆蓋 |
 | Back | `revealStage == .back` | answer fold | 已覆蓋 |
-| Details | `revealStage == .details` | detail fold | 已覆蓋 |
 | Completion | `currentCard == nil` | completion empty state | 已覆蓋 |
 | Remembered / forgot feedback | submit action | sound feedback（可關閉）+ haptic（可關閉）+ card swap | 已覆蓋 |
 | Save failure / persistence failure | `modelContext.save()` 失敗 | `onSaveFailure` → `toast.error(L10n.string("todayReview.saveFailure"))` | 已覆蓋 |
