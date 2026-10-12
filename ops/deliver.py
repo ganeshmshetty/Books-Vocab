@@ -530,6 +530,43 @@ def review_findings(
     ]
 
 
+_P01_TOKEN = re.compile(r"\bP[01]\b")
+_CLAUSE_END = re.compile(r"[,;.:!?]")
+_NEGATION = re.compile(r"(?i)\b(?:no|none|zero|without|0)\b")
+
+
+def review_body_findings(
+    reviews: list[dict[str, Any]], head: str, bots: tuple[str, ...]
+) -> list[dict[str, str]]:
+    """P0/P1 findings the review bot wrote in its review bodies on this exact head.
+
+    A P0/P1 token counts unless its clause says there is none ("no P0/P1
+    issues", "0 P0 and 0 P1"); a bot review is not exempt for having no inline
+    comment (#3208).  Dismissed reviews no longer block.
+    """
+    found: list[dict[str, str]] = []
+    for review in reviews:
+        if (
+            (review.get("user") or {}).get("login") not in bots
+            or review.get("commit_id") != head
+            or review.get("state") == "DISMISSED"
+        ):
+            continue
+        for line in str(review.get("body") or "").splitlines():
+            for token in _P01_TOKEN.finditer(line):
+                clause = _CLAUSE_END.split(line[: token.start()])[-1]
+                if not _NEGATION.search(clause):
+                    found.append(
+                        {
+                            "where": "review body",
+                            "summary": line.strip(),
+                            "url": str(review.get("html_url") or ""),
+                        }
+                    )
+                    break  # one finding per line
+    return found
+
+
 def required_state(checks: list[dict[str, Any]]) -> str:
     states = [c.get("state") for c in checks if c.get("name") == "required"]
     if not states:
@@ -1487,6 +1524,7 @@ class Delivery:
                     "or pass --accept-no-review '<reason>'"
                 ) from exc
             verdict = "neutral"
+        reviews = self.gh_pages(f"repos/{repo}/pulls/{number}/reviews?per_page=100")
         if verdict == "neutral":
             if not no_review:
                 raise DeliverError(
@@ -1497,7 +1535,7 @@ class Delivery:
                 )
             if not cr_verdict_recorded(
                 self.gh_pages(f"repos/{repo}/issues/{number}/comments?per_page=100")
-                + self.gh_pages(f"repos/{repo}/pulls/{number}/reviews?per_page=100"),
+                + reviews,
                 head,
                 bots,
             ):
@@ -1509,20 +1547,23 @@ class Delivery:
                     "(docs/sop/review_discipline.md) and re-run"
                 )
             self.say(f"accepted #{number} without an exact-head review ({no_review})")
-        findings = review_findings(
+        inline = review_findings(
             self.gh_pages(f"repos/{repo}/pulls/{number}/comments?per_page=100"),
             head,
             bots,
         )
+        body = review_body_findings(reviews, head, bots)
         self.say(f"{REVIEW_CHECK} {verdict} on #{number} at {head}")
         problems = [f"{REVIEW_CHECK} failed on {head}"] if verdict == "failure" else []
-        if findings:
-            listed = "".join(
-                f"\n  {f['where']}: {f['summary']} {f['url']}" for f in findings
-            )
-            problems.append(
-                f"{len(findings)} inline review comment(s) on {head}:{listed}"
-            )
+        for kind, found in (
+            ("inline review comment(s)", inline),
+            ("review body P0/P1 finding(s)", body),
+        ):
+            if found:
+                listed = "".join(
+                    f"\n  {f['where']}: {f['summary']} {f['url']}" for f in found
+                )
+                problems.append(f"{len(found)} {kind} on {head}:{listed}")
         reason = (self.args.accept_review_findings or "").strip()
         if problems and not reason:
             raise DeliverError(
@@ -1535,7 +1576,7 @@ class Delivery:
         return {
             "head": head,
             "verdict": verdict,
-            "findings": findings,
+            "findings": inline + body,
             "accepted": reason if problems else None,
             "accepted_no_review": no_review if verdict == "neutral" else None,
         }

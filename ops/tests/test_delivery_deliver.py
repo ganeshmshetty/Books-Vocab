@@ -895,6 +895,43 @@ def test_an_explicit_reason_accepts_the_review_findings_and_queues() -> None:
     assert any(reason in line for line in result["log"])
 
 
+_BODY_P1 = {
+    "user": {"login": BOT},
+    "commit_id": HEAD,
+    "state": "COMMENTED",
+    "body": "**P1 Badge** The retry loop never exits.",
+    "html_url": "https://github.com/o/r/pull/77#pullrequestreview-9",
+}
+
+
+def test_merge_refuses_on_a_review_bot_p1_in_the_review_body_without_inline_comments() -> (
+    None
+):
+    # Codex posts P0/P1 in the review body, with no inline comment on the head.
+    world = FakeWorld(pr_reviews=[_BODY_P1])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 1, result
+    assert f"1 review body P0/P1 finding(s) on {HEAD}" in result["error"]
+    assert "The retry loop never exits." in result["error"]
+    assert not _calls_at(world, _is_queue)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Codex Review: no P0/P1 issues found on this head.",
+        "Reviewed 3 files: 0 P0 and 0 P1 findings.",
+    ],
+)
+def test_review_body_boilerplate_without_a_p0_or_p1_finding_is_queued(
+    body: str,
+) -> None:
+    world = FakeWorld(pr_reviews=[{**_BODY_P1, "body": body}])
+    code, result = ship(world, "--check", "u=good", "--merge")
+    assert code == 0, result
+    assert _calls_at(world, _is_queue)
+
+
 _NEUTRAL = [_review(job=True), _review(conclusion="neutral")]
 
 
