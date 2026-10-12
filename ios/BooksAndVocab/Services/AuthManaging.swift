@@ -45,7 +45,7 @@ protocol LocalDataClearing: AnyObject {
     func discardPendingLocalWipe()
     /// Owner recorded by the outstanding failed wipe; nil when none is pending.
     var pendingLocalWipeOwner: String? { get }
-    /// The failed wipe reached its retry cap; only `rebuildStoreAndDiscardPendingWipe` can finish it (#3229).
+    /// The failed wipe reached its retry cap: the store rebuild is offered as the recovery (#3229). Retries continue (#3289).
     var pendingWipeNeedsStoreRebuild: Bool { get }
     /// Store-rebuild recovery for a capped wipe. `false` when the store could not be rebuilt.
     func rebuildStoreAndDiscardPendingWipe() async -> Bool

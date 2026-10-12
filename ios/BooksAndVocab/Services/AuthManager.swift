@@ -261,11 +261,8 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             return false
         }
         guard localDataCleaner.hasPendingLocalWipe else { return true }
-        // Past the retry cap another retry cannot succeed. Only the store rebuild may finish the wipe (#3229).
-        guard !localDataCleaner.pendingWipeNeedsStoreRebuild else {
-            refuseSignInUntilLocalWipeSucceeds()
-            return false
-        }
+        // Every sign-in retries, also past the retry cap: a transient failure may have cleared (#3289).
+        // Only the destructive store rebuild is capped, and the user confirms it (#3229).
         if let container = modelContainer {
             let finished = await localDataCleaner.retryPendingLocalWipe(container: container, signedInUserId: userId)
             if finished { return true }
@@ -320,8 +317,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     }
 
     private func refuseSignInUntilLocalWipeSucceeds() {
-        // Past the retry cap the only escape is the store rebuild, offered in-app by the sign-in sheet.
-        // Telling the user to retry later would be a false promise (#3229).
+        // Past the retry cap the message names the in-app store rebuild (#3229), not a plain "retry later".
         if localDataCleaner.pendingWipeNeedsStoreRebuild {
             AppLog.auth.error("sign-in refused: pending local wipe is stuck past the retry cap")
             authError = L10n.string("本機資料無法清除，請使用「重設本機資料」後再登入")
