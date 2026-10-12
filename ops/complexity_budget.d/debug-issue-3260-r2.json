@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3260,
+  "raise": {
+    "ops": 8
+  },
+  "note": "fix #3260 r2\uff1ashell_scan P1 \u4fee\u6b63\uff08${BIG_RC}\uff09\u8207\u5927\u6392\u9664\u96c6\u751f\u6548\u65b7\u8a00\uff0c\u6e2c\u8a66\u6a94\u6de8\u589e\u7d04 7 \u884c\uff0c\u8d85\u51fa ops \u4e0a\u9650 3 \u884c"
+}
