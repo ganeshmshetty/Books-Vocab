@@ -1267,6 +1267,12 @@ grep -Fq -- "scopes='[\"unit\"]'" "$IOS" \
   || fail "ios-quality plan cannot drop ui-smoke when the router reports ui_smoke=false"
 grep -Fq "[[ \"\$REQUESTED_UI_SMOKE\" == 'false' ]]" "$IOS" \
   || fail "ui-smoke is dropped on something other than an explicit ui_smoke=false"
+# Issue #3269: the ios-build comment must not claim UITests are compiled
+# unconditionally; the unit-only plan (ui_smoke=false) never builds them.
+grep -Fq 'UITests included' "$IOS" \
+  && fail "ios-build comment claims UITests are always compiled; the unit-only plan does not build them"
+grep -Fq 'UITests compiled only on the ui-smoke scope' "$IOS" \
+  || fail "ios-build comment does not state that UITests compile only on the ui-smoke scope"
 ruby -e 'require "yaml"; y = YAML.load_file(ARGV[0]); i = y[true]["workflow_call"]["inputs"]["ui_smoke"]
   exit 1 unless i["default"] == "true" && i["type"] == "string" && i["required"] == false' "$IOS" \
   || fail "ios-quality ui_smoke input is not an optional string defaulting to true"

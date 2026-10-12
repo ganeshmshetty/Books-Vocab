@@ -132,8 +132,9 @@ jobs:
     needs: [plan, ios-targeted]
     # The PR compile check (run_tests=false) is the only build. With tests on,
     # the test path compiles the same scheme: ios-tests (`ios_test.sh`
-    # build-for-testing over every scheme target, UITests included) or
-    # ios-targeted for an accepted targeted run. Skipping it there saves one of
+    # build-for-testing; UITests compiled only on the ui-smoke scope, so a
+    # ui_smoke=false unit-only plan does not compile them) or ios-targeted for
+    # an accepted targeted run. Skipping it there saves one of
     # three macOS jobs per merge-group entry (#3238). ios-verdict checks that a
     # skipped build is only reached on that path.
     if: ${{ always() && inputs.run_tests == 'false' }}
