@@ -957,7 +957,7 @@ write_early_failure_verdict() {
   else
     early_tree_dirty=true
   fi
-  printf 'RESULT=inconclusive EXIT=%s reason=%s caller=%s elapsed=0s %s %s\n' "$exit_code" "$reason" "$CALLER" "$(kg_ios_verdict_identity_kv)" "$(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" >"$VERDICT_FILE"
+  printf 'RESULT=inconclusive EXIT=%s reason=%s caller=%s elapsed=0s %s %s\n' "$exit_code" "$reason" "$CALLER" "$(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" "$(kg_ios_verdict_identity_kv)" >"$VERDICT_FILE"
   jq -nc \
     --arg schema "kg.ios.run-verdict.v1" \
     --arg kind "test" \
@@ -2523,7 +2523,7 @@ if [[ "$EXIT_CODE" -eq "$KG_IOS_EXIT_INFRA_UNAVAILABLE" ]]; then
   tail -10 "$TMPOUT" || true
   PRESERVE_TMPOUT=1
   [[ -n "$INCONCLUSIVE_REASON" ]] || INCONCLUSIVE_REASON="infrastructure-unavailable"
-  echo "RESULT=inconclusive EXIT=$EXIT_CODE reason=$INCONCLUSIVE_REASON caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+  echo "RESULT=inconclusive EXIT=$EXIT_CODE reason=$INCONCLUSIVE_REASON caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "inconclusive" "$EXIT_CODE" "$INCONCLUSIVE_REASON" ""
   print_timing_summary
   emit_ui_runner_lifecycle
@@ -2533,7 +2533,7 @@ if [[ "$EXIT_CODE" -eq "$KG_IOS_EXIT_INFRA_UNAVAILABLE" ]]; then
 elif [[ "$P9_PROOF_RETRIEVAL_STATUS" -ne 0 ]]; then
   echo "" >&2
   PRESERVE_TMPOUT=1
-  echo "RESULT=fail reason=p9-proof-retrieval caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+  echo "RESULT=fail reason=p9-proof-retrieval caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "fail" "1" "p9-proof-retrieval" ""
   print_timing_summary
   emit_ui_runner_lifecycle
@@ -2548,7 +2548,7 @@ elif grep -qE '^\*\* TEST( EXECUTE)? SUCCEEDED' "$TMPOUT" 2>/dev/null; then
     echo "[ios_test] ✗ FALSE GREEN: xcodebuild reported TEST SUCCEEDED but 0 tests executed" >&2
     echo "[ios_test]   (likely a stale/bogus -only-testing test ID matched nothing) — $CALLER" >&2
     emit_ui_runner_lifecycle
-    echo "RESULT=fail reason=false-green-0-executed caller=$CALLER log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+    echo "RESULT=fail reason=false-green-0-executed caller=$CALLER log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
     write_json_verdict "fail" "1" "false-green-0-executed" "0"
     rm -f "$TMPOUT"
     exit 1
@@ -2557,7 +2557,7 @@ elif grep -qE '^\*\* TEST( EXECUTE)? SUCCEEDED' "$TMPOUT" 2>/dev/null; then
     echo ""
     echo "[ios_test] ✗ coverage gate failed: $COVERAGE_REASON" >&2
     PRESERVE_TMPOUT=1
-    echo "RESULT=fail reason=$COVERAGE_REASON caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+    echo "RESULT=fail reason=$COVERAGE_REASON caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
     write_json_verdict "fail" "1" "$COVERAGE_REASON" "$EXECUTED"
     print_timing_summary
     echo "[ios_test] ✗ tests passed but coverage failed (${ELAPSED}s) — $CALLER  verdict=$VERDICT_FILE" >&2
@@ -2566,7 +2566,7 @@ elif grep -qE '^\*\* TEST( EXECUTE)? SUCCEEDED' "$TMPOUT" 2>/dev/null; then
     exit 1
   fi
   echo ""
-  echo "RESULT=ok executed=$EXECUTED caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+  echo "RESULT=ok executed=$EXECUTED caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "ok" "0" "" "$EXECUTED"
   print_timing_summary
   echo "[ios_test] ✓ all tests passed ($EXECUTED executed, ${ELAPSED}s) — $CALLER  $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")  log=$TMPOUT  xcresult=$RESULT_BUNDLE  verdict=$VERDICT_FILE"
@@ -2576,7 +2576,7 @@ elif kg_ios_test_execution_failed "$TMPOUT"; then
   grep -E 'error:|failed' "$TMPOUT" | grep -v 'xcodebuild\|Linker\|frontend' | head -20 || true
   echo ""
   PRESERVE_TMPOUT=1
-  echo "RESULT=fail reason=tests-failed caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+  echo "RESULT=fail reason=tests-failed caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "fail" "1" "tests-failed" ""
   print_timing_summary
   emit_ui_runner_lifecycle
@@ -2595,7 +2595,7 @@ else
   # distinguish "build broke" (65) from "tests failed" (1). Only coerce a
   # spurious 0 up to 1 so an inconclusive run can never exit green.
   [[ "$EXIT_CODE" -eq 0 ]] && EXIT_CODE=1
-  echo "RESULT=inconclusive EXIT=$EXIT_CODE caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv) $(kg_ios_verdict_commit_kv "$PROJECT_ROOT")" > "$VERDICT_FILE"
+  echo "RESULT=inconclusive EXIT=$EXIT_CODE caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "inconclusive" "$EXIT_CODE" "$INCONCLUSIVE_REASON" ""
   print_timing_summary
   emit_ui_runner_lifecycle
