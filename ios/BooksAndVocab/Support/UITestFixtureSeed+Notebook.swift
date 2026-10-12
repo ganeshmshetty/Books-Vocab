@@ -176,6 +176,24 @@ extension UITestFixtureSeed {
                         }
                     ]
                 }
+                if index == 0 {
+                    // Second layer for #3126: opening multinb0 from the review strip shows
+                    // one link row to multinb1, so a nested Linked Card layer can be pushed.
+                    entry.graphLinksByKind = [
+                        "shares_usage": [
+                            KGCardLinkSummary(
+                                id: "multinb-link-0-1",
+                                cardId: "multinb-001",
+                                word: "multinb1",
+                                kind: "shares_usage",
+                                label: "shares_usage",
+                                confidence: 0.9,
+                                reason: "fixture evidence",
+                                hidden: false
+                            )
+                        ]
+                    ]
+                }
                 context.insert(entry)
             }
             try context.save()
