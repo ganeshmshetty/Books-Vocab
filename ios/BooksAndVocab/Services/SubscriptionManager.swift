@@ -92,6 +92,8 @@ final class SubscriptionManager: SubscriptionManaging {
     /// 已真正套用到 `entitlements` 的最新世代。以「已套用」而非「已發出」判斷，
     /// 較新請求失敗時較早但有效的回應仍可套用。
     var lastAppliedEntitlementsGeneration = 0
+    /// 最近一次本地決策寫入（樂觀更新、登出）的世代。只有它會使較早發出的 App Store 同步回應失效（#2800）。
+    var lastLocalWriteGeneration = 0
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?
@@ -139,9 +141,19 @@ final class SubscriptionManager: SubscriptionManaging {
         return true
     }
 
-    /// 同步寫入（樂觀更新、登出）：取新世代並立即套用，使此前發出、尚未返回的請求全部失效（#2800）。
+    /// 本地決策寫入（樂觀更新、登出）：取新世代並立即套用，使此前發出、尚未返回的請求全部失效（#2800）。
     func commitEntitlements(_ value: KGEntitlements) {
-        applyEntitlements(value, generation: claimEntitlementsGeneration())
+        let generation = claimEntitlementsGeneration()
+        lastLocalWriteGeneration = generation
+        applyEntitlements(value, generation: generation)
+    }
+
+    /// App Store 同步回應是伺服器對本次交易的權威結果。較晚發出的 refresh GET 可能先被伺服器處理（尚未含本次交易），
+    /// 不得擋住它；只有發出後發生的本地寫入（登出、樂觀更新）才使其失效。回傳是否套用（#2800）。
+    @discardableResult
+    func applySyncResponse(_ value: KGEntitlements, requestedAt generation: Int) -> Bool {
+        guard lastLocalWriteGeneration < generation else { return false }
+        return applyEntitlements(value, generation: claimEntitlementsGeneration())
     }
 
     /// 在 app 啟動時呼叫，持續監聽 Transaction.updates 以捕捉中斷購買、續訂等事件
