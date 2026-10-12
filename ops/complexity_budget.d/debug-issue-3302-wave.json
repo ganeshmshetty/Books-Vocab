@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3302,
+  "raise": {
+    "ops": 100
+  },
+  "note": "#3302: lane adds per-area margin logic, composition test and rule docs (ops growth over base headroom)"
+}
