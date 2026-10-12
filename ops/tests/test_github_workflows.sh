@@ -1185,6 +1185,14 @@ grep -q "KG_IOS_SWIFTPM_CACHE_DIR=%s/kg-ios-swiftpm.*\\\$RUNNER_TEMP" "$IOS" \
 grep -q 'Package.resolved' "$IOS" || fail "iOS SwiftPM cache key is not lockfile-derived"
 grep -q "github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$IOS" \
   || fail "iOS SwiftPM cache is not written only by the trusted scheduled run on main (merge-queue refs cannot seed PR restores)"
+# ios-build skips with tests on (#3238), and the daily run has tests on, so the cache
+# save must live on a job that runs there: the unit test leg, written once.
+ruby -ryaml -e 'jobs = YAML.load_file(ARGV[0])["jobs"]
+  save = ->(job) { Array(jobs.dig(job, "steps")).select { |s| s["uses"].to_s.start_with?("actions/cache/save@") } }
+  exit 1 unless save.call("ios-build").empty?
+  s = save.call("ios-tests")
+  exit 1 unless s.size == 1 && s[0]["if"].to_s.include?("matrix.scope == \x27unit\x27") && s[0]["if"].to_s.include?("github.event_name == \x27schedule\x27")' "$IOS" \
+  || fail "SwiftPM cache save is not on the unit test leg of ios-tests (ios-build skips with tests on, so the daily run would never write the cache)"
 
 # --- iOS selector-aware routing (Issue #1051) --------------------------------
 # The router decides; ios-quality re-validates and owns the full fallback. These
@@ -1207,15 +1215,48 @@ grep -q '^  plan:' "$IOS" || fail "ios-quality has no fail-closed plan job"
 grep -q '^  ios-targeted:' "$IOS" || fail "ios-quality has no targeted job"
 # Full path is the default: both full jobs run unless a validated targeted run
 # accepted its own result, and a failed/skipped plan still means full. The
-# compile check always runs on a PR (run_tests=false); the test jobs never do.
-build_gate="if: \${{ always() && (inputs.run_tests == 'false' || needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}"
+# compile check runs only on a PR (run_tests=false). With tests on, the test
+# path compiles the same scheme (ios-tests build-for-testing, ios-targeted), so
+# ios-build is skipped (#3238: three macOS jobs per merge-group entry, not two).
+# The test jobs never run on a PR.
+build_gate="if: \${{ always() && inputs.run_tests == 'false' }}"
 tests_gate="if: \${{ always() && inputs.run_tests != 'false' && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}"
 grep -Fq "$build_gate" "$IOS" \
-  || fail "ios-build is not gated as compile-on-PR or full-unless-targeted-accepted"
+  || fail "ios-build is not gated as compile-on-PR only (tests on: the test path compiles the scheme)"
 grep -Fq "$tests_gate" "$IOS" \
   || fail "ios-tests is not gated as tests-on-only or full-unless-targeted-accepted"
 grep -Fq "if: \${{ needs.plan.outputs.mode == 'targeted' && inputs.run_tests != 'false' }}" "$IOS" \
   || fail "targeted job is not gated on a validated targeted plan with tests on"
+# Behavioural pin: run the verdict's outcome check against each job-result combination.
+# Tests on: a skipped build is correct only because a test path compiles the scheme;
+# a failed or unexpectedly skipped test path must fail closed.
+ios_verdict_run="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["ios-verdict"]["steps"].find { |s| s["name"] == "Enforce the expected iOS job outcomes" }&.fetch("run", "")' "$IOS")" \
+  || fail "cannot extract the ios-verdict outcome check"
+[[ -n "$ios_verdict_run" ]] || fail "ios-verdict has no outcome check step (Enforce the expected iOS job outcomes)"
+mkdir -p "$ROOT/.cache"
+ios_verdict_tmp="$(mktemp -d "$ROOT/.cache/test-ios-verdict-XXXXXX")"
+printf '%s\n' "$ios_verdict_run" >"$ios_verdict_tmp/step.sh"
+# $1 RUN_TESTS  $2 PLAN_MODE  $3 FALLBACK_FULL  $4 BUILD  $5 TESTS  $6 TARGETED; exit status is the verdict
+ios_verdict_case() {
+  RUN_TESTS="$1" PLAN_MODE="$2" FALLBACK_FULL="$3" BUILD_RESULT="$4" TESTS_RESULT="$5" TARGETED_RESULT="$6" \
+    bash "$ios_verdict_tmp/step.sh" >/dev/null 2>&1
+}
+ios_verdict_case false full '' success skipped skipped || fail "iOS verdict rejects a green PR compile check"
+ios_verdict_case false full '' failure skipped skipped && fail "iOS verdict passes a red PR compile check"
+ios_verdict_case false full '' skipped skipped skipped && fail "iOS verdict accepts a skipped PR compile check"
+ios_verdict_case false full '' success success skipped && fail "iOS verdict lets tests run on a PR"
+ios_verdict_case true full '' skipped success skipped || fail "iOS verdict rejects a full merge-group path with build skipped and tests green"
+ios_verdict_case true full '' skipped failure skipped && fail "iOS verdict passes a full merge-group path with red tests"
+ios_verdict_case true full '' skipped skipped skipped && fail "iOS verdict accepts unexpectedly skipped full-path tests"
+ios_verdict_case true full '' success success skipped && fail "iOS verdict lets the build run alongside tests"
+ios_verdict_case true full '' failure success skipped && fail "iOS verdict passes a red build on the test path"
+ios_verdict_case true '' '' skipped success skipped || fail "iOS verdict rejects an unplanned (fail-closed full) green test run"
+ios_verdict_case true targeted '' skipped skipped success || fail "iOS verdict rejects an accepted green targeted run"
+ios_verdict_case true targeted '' skipped skipped failure && fail "iOS verdict passes a red targeted run"
+ios_verdict_case true targeted '' skipped success success && fail "iOS verdict passes an accepted targeted run that also ran full tests"
+ios_verdict_case true targeted true skipped success success || fail "iOS verdict rejects a green full run after targeted fallback"
+ios_verdict_case true targeted true skipped skipped success && fail "iOS verdict accepts a targeted fallback without the full tests"
+rm -rf "$ios_verdict_tmp"
 # The matrix is planned (Issue #2641): the full set stays unit + ui-smoke, and
 # ui-smoke is dropped only when the router reports ui_smoke=false.
 grep -Fq "matrix.scope" "$IOS" && grep -Fq 'scope: ${{ fromJSON(needs.plan.outputs.scopes) }}' "$IOS" \
@@ -1538,8 +1579,8 @@ if hash_or_empty(jobs["plan"]).key?("if")
   out << "ios-plan is gated by a condition; it must always run"
 end
 verdict = hash_or_empty(jobs["ios-verdict"])
-unless Array(verdict["needs"]).sort == %w[ios-build ios-targeted ios-tests] && verdict["if"].to_s.include?("always()")
-  out << "ios-verdict must aggregate ios-build, ios-tests and ios-targeted under always()"
+unless Array(verdict["needs"]).sort == %w[ios-build ios-targeted ios-tests plan] && verdict["if"].to_s.include?("always()")
+  out << "ios-verdict must aggregate plan, ios-build, ios-tests and ios-targeted under always()"
 end
 
 pr_ios = hash_or_empty(hash_or_empty(pr["jobs"])["ios-quality"])
@@ -1558,12 +1599,28 @@ end
   end
 end
 
-ios_call = hash_or_empty(mg_jobs["ios-quality"])
-unless Array(ios_call["needs"]) == ["short-gate"]
-  out << "merge-group ios-quality does not need short-gate"
+route = hash_or_empty(mg_jobs["route"])
+out << "merge-group route job is missing (the iOS router decision must not wait for short-gate)" if route.empty?
+unless Array(route["needs"]).empty?
+  out << "merge-group route job must not depend on other jobs"
 end
-unless ios_call["if"].to_s.include?("needs.short-gate.outputs.ios == 'true'")
-  out << "merge-group ios-quality is not gated by the router output ios == 'true'"
+route_out = hash_or_empty(route["outputs"])
+%w[ios ios_mode ios_selectors ui_smoke].each do |key|
+  unless route_out[key].to_s == "${{ steps.scope.outputs.#{key} }}"
+    out << "merge-group route output #{key} is not read from steps.scope"
+  end
+end
+route_run = Array(route["steps"]).map { |s| s["run"].to_s }.join("\n")
+unless route_run.include?("ci_scope_router.sh --base") && route_run.include?("--format github-output")
+  out << "merge-group route job does not run the scope router"
+end
+
+ios_call = hash_or_empty(mg_jobs["ios-quality"])
+unless Array(ios_call["needs"]) == ["route"]
+  out << "merge-group ios-quality must need only route (not short-gate), so iOS starts in parallel with the short gate"
+end
+unless ios_call["if"].to_s.include?("needs.route.outputs.ios == 'true'")
+  out << "merge-group ios-quality is not gated by the route output ios == 'true'"
 end
 unless ios_call["uses"] == "./.github/workflows/ios-quality.yml"
   out << "merge-group ios-quality does not call ios-quality.yml"
@@ -1573,8 +1630,8 @@ unless call_with["run_tests"] == "true"
   out << "merge-group ios-quality does not run the test suite (run_tests: 'true')"
 end
 %w[ios_mode ios_selectors ui_smoke].each do |key|
-  unless call_with[key].to_s == "${{ needs.short-gate.outputs.#{key} }}"
-    out << "merge-group ios-quality #{key} is not forwarded from short-gate"
+  unless call_with[key].to_s == "${{ needs.route.outputs.#{key} }}"
+    out << "merge-group ios-quality #{key} is not forwarded from route"
   end
 end
 unless ios_call["permissions"] == { "contents" => "read", "actions" => "read" }

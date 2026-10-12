@@ -130,11 +130,13 @@ jobs:
   ios-build:
     name: ios-build
     needs: [plan, ios-targeted]
-    # The PR compile check (run_tests=false) always runs. With tests on, a
-    # targeted run accepted its own result skips it: ios-targeted's
-    # `ios_ops.sh test --ui` builds the same targets. Full path otherwise; a
-    # skipped or failed plan leaves mode empty, which is also full.
-    if: ${{ always() && (inputs.run_tests == 'false' || needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}
+    # The PR compile check (run_tests=false) is the only build. With tests on,
+    # the test path compiles the same scheme: ios-tests (`ios_test.sh`
+    # build-for-testing over every scheme target, UITests included) or
+    # ios-targeted for an accepted targeted run. Skipping it there saves one of
+    # three macOS jobs per merge-group entry (#3238). ios-verdict checks that a
+    # skipped build is only reached on that path.
+    if: ${{ always() && inputs.run_tests == 'false' }}
     # PRs use macos-26. A maintainer may manually benchmark the documented
     # Intel alternative before changing the default; the dispatch choice
     # admits only the two documented GitHub-hosted labels.
@@ -234,16 +236,6 @@ jobs:
             ${{ runner.temp }}/ios-build-artifacts/**
           if-no-files-found: warn
           retention-days: 7
-
-      # Only the scheduled run on main writes this cache: PRs restore caches from
-      # main, and merge-queue refs are not visible to PRs. A Package.resolved change
-      # is therefore seeded by the next daily run, not by the merge that changed it.
-      - name: Save SwiftPM source cache from trusted main
-        if: ${{ success() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/kg-ios-swiftpm
-          key: ${{ steps.swiftpm-cache.outputs.cache-primary-key }}
 
   ios-tests:
     name: ios-tests (${{ matrix.scope }})
@@ -353,6 +345,18 @@ jobs:
               FixtureDatasetUITests/testBookshelfRendersDatasetOverriddenTitle \
               2>&1 | tee "$RUNNER_TEMP/ios-ui-smoke.log"
           fi
+
+      # Only the scheduled run on main writes this cache: PRs restore caches from
+      # main, and merge-queue refs are not visible to PRs. A Package.resolved change
+      # is therefore seeded by the next daily run, not by the merge that changed it.
+      # Written by the unit leg only: ios-build skips with tests on (#3238), and
+      # both legs would otherwise race on the same key.
+      - name: Save SwiftPM source cache from trusted main
+        if: ${{ success() && matrix.scope == 'unit' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kg-ios-swiftpm
+          key: ${{ steps.swiftpm-cache.outputs.cache-primary-key }}
 
       - name: Collect test evidence on failure
         if: ${{ always() }}
@@ -553,7 +557,7 @@ jobs:
   # prove that the compile check ran.
   ios-verdict:
     name: ios-verdict
-    needs: [ios-build, ios-tests, ios-targeted]
+    needs: [plan, ios-build, ios-tests, ios-targeted]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -575,3 +579,33 @@ jobs:
             "$BUILD_RESULT" "$TESTS_RESULT" "$TARGETED_RESULT" >> "$GITHUB_OUTPUT"
           printf 'ios-build=%s ios-tests=%s ios-targeted=%s\n' \
             "$BUILD_RESULT" "$TESTS_RESULT" "$TARGETED_RESULT"
+
+      # Fail closed: every result must match the path the gates selected. A
+      # skipped build is correct only with tests on (the test path compiles the
+      # scheme); a failed or unexpectedly skipped test path fails the workflow.
+      - name: Enforce the expected iOS job outcomes
+        env:
+          RUN_TESTS: ${{ inputs.run_tests }}
+          PLAN_MODE: ${{ needs.plan.outputs.mode }}
+          FALLBACK_FULL: ${{ needs.ios-targeted.outputs.fallback_full }}
+          BUILD_RESULT: ${{ needs.ios-build.result }}
+          TESTS_RESULT: ${{ needs.ios-tests.result }}
+          TARGETED_RESULT: ${{ needs.ios-targeted.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*" >&2; exit 1; }
+          if [[ "$RUN_TESTS" == 'false' ]]; then
+            [[ "$BUILD_RESULT" == success ]] || fail "PR compile check: ios-build is $BUILD_RESULT"
+            [[ "$TESTS_RESULT" == skipped && "$TARGETED_RESULT" == skipped ]] \
+              || fail "PR compile check ran tests (ios-tests=$TESTS_RESULT ios-targeted=$TARGETED_RESULT)"
+            exit 0
+          fi
+          [[ "$BUILD_RESULT" == skipped ]] || fail "ios-build ran with tests on (result $BUILD_RESULT)"
+          # A failed or skipped plan leaves mode empty, which is the full path.
+          if [[ "$PLAN_MODE" != 'targeted' || "$FALLBACK_FULL" == 'true' ]]; then
+            [[ "$TESTS_RESULT" == success ]] || fail "full iOS tests result is $TESTS_RESULT"
+            exit 0
+          fi
+          [[ "$TARGETED_RESULT" == success && "$TESTS_RESULT" == skipped ]] \
+            || fail "accepted targeted run needs ios-targeted success and full tests skipped (targeted=$TARGETED_RESULT ios-tests=$TESTS_RESULT)"
