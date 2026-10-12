@@ -369,6 +369,11 @@ struct AuthManagerAccountSwitchTests {
         await manager.login(customToken: "user-b")
         #expect(cleaner.retrySignedInUsers.count == retriesAtCap, "past the cap no further retry runs")
         #expect(manager.userId == nil)
+        #expect(
+            manager.authError != L10n.string("上一個帳號的本機資料尚未清除，請稍後再試登入"),
+            "a capped wipe must not tell the user to retry later: retrying cannot succeed"
+        )
+        #expect(manager.authError == L10n.string("本機資料無法清除，請重新安裝 App 後再登入"))
 
         #expect(await manager.recoverFromStuckLocalWipe())
         await manager.login(customToken: "user-b")
