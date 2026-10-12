@@ -270,6 +270,15 @@ final class AddLinkCoordinator {
         return summary.joined(separator: " | ")
     }
 
+    /// One example line of the expanded row: the localized label, then the card's inline-markdown
+    /// runs, so `**word**` draws as a highlight and never as literal asterisks (#3111).
+    nonisolated static func exampleParagraph(for example: String) -> CardDocumentParagraph {
+        CardDocumentParagraph(
+            inlines: [CardDocumentInline.text(L10n.string("reviewCardLayout.field.example") + ": ")]
+                + CardMarkdownInlineParser.parseParagraph(example).inlines
+        )
+    }
+
     nonisolated static func openCardIdentifier(for entry: VocabularyEntry) -> String {
         "\(detailIdentifier(for: entry)).openCard"
     }

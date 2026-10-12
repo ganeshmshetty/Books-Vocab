@@ -410,6 +410,13 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             return
         }
         let revelationDetailID = "addLink.local.result.vocab-linked-revelation"
+        // The decode-error message and its retry live only in the expanded detail (#3111), so the
+        // row is expanded before the provider state is asserted.
+        guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
+            captureStep("add-link-revelation-expand-missing", app: app)
+            XCTFail("AddLink revelation expand control must exist before its detail is asserted")
+            return
+        }
         guard let providerErrorState = app.descendants(matching: .any)
             .matching(identifier: "\(revelationDetailID).state")
             .exactlyOneElement(timeout: 5, named: "AddLink provider decode-error state"),
@@ -433,11 +440,6 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             "provider retry must recover to a deterministic local detail"
         )
         XCTAssertTrue(providerError.waitUntilGone(timeout: 5))
-        guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
-            captureStep("add-link-revelation-expand-missing", app: app)
-            XCTFail("AddLink revelation expand control must exist before its detail is asserted")
-            return
-        }
         guard let recoveredSense = app.descendants(matching: .any)
             .matching(identifier: "\(revelationDetailID).sense.1")
             .exactlyOneElement(timeout: 5, named: "AddLink recovered revelation sense"),

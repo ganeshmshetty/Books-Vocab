@@ -33,6 +33,7 @@ struct AddLinkSheet: View {
     @Environment(\.appSkin) private var appSkin
     @Environment(\.kgService) private var kgService
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let sourceEntry: VocabularyEntry
     let allEntries: [VocabularyEntry]
@@ -317,6 +318,8 @@ struct AddLinkSheet: View {
         snapshot: AddLinkSearchSnapshot
     ) -> some View {
         let linkLocked = coordinator.linkingTargetCardID != nil
+        // One line at default Dynamic Type; accessibility sizes may wrap word, POS and meaning to two (#3111).
+        let lineCap = dynamicTypeSize.isAccessibilitySize ? 2 : 1
         return VStack(alignment: .leading, spacing: 0) {
             detailStateMarker(projection, for: entry)
             HStack(spacing: appSkin.spacing.inlineGap) {
@@ -325,20 +328,20 @@ struct AddLinkSheet: View {
                         Text(entry.word)
                             .font(appSkin.typography.rowWord)
                             .foregroundStyle(appSkin.palette.primaryText)
-                            .lineLimit(1)
+                            .lineLimit(lineCap)
                             .truncationMode(.tail)
                             .layoutPriority(1)
                         if let partOfSpeech = projection.senses.first?.partOfSpeech {
                             Text(partOfSpeech)
                                 .font(appSkin.typography.caption)
                                 .foregroundStyle(appSkin.palette.tertiaryText)
-                                .lineLimit(1)
+                                .lineLimit(lineCap)
                                 .fixedSize()
                         }
                         Text(entry.translation)
                             .font(appSkin.typography.caption)
                             .foregroundStyle(appSkin.palette.secondaryText)
-                            .lineLimit(1)
+                            .lineLimit(lineCap)
                             .truncationMode(.tail)
                         if isLinkingRow {
                             ProgressView()
@@ -530,10 +533,7 @@ struct AddLinkSheet: View {
             } else {
                 ForEach(Array(sense.examples.enumerated()), id: \.offset) { exampleIndex, example in
                     CardInlineText(
-                        paragraph: CardDocumentParagraph(
-                            inlines: [CardDocumentInline.text(L10n.string("reviewCardLayout.field.example") + ": ")]
-                                + CardMarkdownInlineParser.parseParagraph(example).inlines
-                        ),
+                        paragraph: AddLinkCoordinator.exampleParagraph(for: example),
                         style: .example
                     )
                     .accessibilityIdentifier(
