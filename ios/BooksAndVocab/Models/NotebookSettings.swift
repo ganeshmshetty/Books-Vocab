@@ -64,6 +64,12 @@ enum NotebookSettingsSource: String, Codable, Sendable {
     case user
 }
 
+/// #3124：版面編輯器的寫入目標。`.notebook` = 該單字本的 override，`.global` = 全域 store。
+enum ReviewCardLayoutEditScope: Equatable, Sendable {
+    case global
+    case notebook
+}
+
 struct NotebookSettingsResolution: Equatable, Sendable {
     let reviewPolicy: ReviewPolicy
     let cardLayout: ReviewCardLayoutProfile
@@ -132,6 +138,12 @@ struct NotebookSettingsResolver: Sendable {
             reviewPolicySource: override.reviewPolicy == nil ? .user : .notebook,
             cardLayoutSource: override.cardLayout == nil ? .user : .notebook
         )
+    }
+
+    /// #3124：複習頁工具列的版面編輯器要改哪一份設定。卡片實際畫的是 notebook override（若有），
+    /// 所以有 override 的單字本編輯它；沒有則編輯全域 profile。
+    func cardLayoutEditScope(notebookId: String) -> ReviewCardLayoutEditScope {
+        resolve(notebookId: notebookId).cardLayoutSource == .notebook ? .notebook : .global
     }
 
     func snapshot(for notebookIds: some Sequence<String>) -> NotebookSettingsSnapshot {

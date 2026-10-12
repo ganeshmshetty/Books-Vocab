@@ -99,6 +99,14 @@ struct TodayReviewView: View {
     @State private var addLinkRequest: AddLinkSheetRequest?
     @State private var pendingLinkDetail: PendingLinkDetailRequest?
     @State private var showLayoutEditor = false
+    // #3124：開啟編輯器時凍結的目標單字本（nil = 全域）。sheet 開著期間不隨卡片移動而換目標。
+    @State private var layoutEditTarget: LayoutEditTarget?
+    @State private var notebookLayoutSaver = NotebookSettingsSaver()
+
+    private struct LayoutEditTarget: Equatable {
+        let notebookId: String
+        let notebookName: String
+    }
     // 卡上單字本標示（#2040）。刻意不用 @Query：複習頁對 body 重算敏感（翻卡手感戰役），
     // Notebook 任何寫入（同步、改色、換封面）都不該讓它重算。session 開始時查一次，
     // 之後只在明確事件才重算（目前僅 session 開始，見 `refreshNotebookBadges`）。
@@ -191,6 +199,7 @@ struct TodayReviewView: View {
                 // Autoplay would keep flipping cards under the sheet; pause first
                 // and leave it paused afterwards.
                 state.pauseAutoPlayForModalInterruption()
+                layoutEditTarget = makeLayoutEditTarget(for: state.presenterState.currentCard)
                 showLayoutEditor = true
             },
             onDetailTap: { perform(.showDetail) },
@@ -313,11 +322,15 @@ struct TodayReviewView: View {
                 .appSheet(.medium)
         }
         .toastSheet(isPresented: $showLayoutEditor) {
-            // Writes straight through to the shared store, so the card behind the
-            // sheet re-lays out live. Nothing here touches reveal stage, current
-            // index or session persistence.
+            // Writes straight through to the layout the card actually draws (the
+            // notebook override when it has one, else the shared store), so the card
+            // behind the sheet re-lays out live. Nothing here touches reveal stage,
+            // current index or session persistence.
             ReviewCardLayoutEditorSheet(
                 previewCard: state.presenterState.currentCard,
+                profile: layoutEditProfileBinding,
+                notebookName: layoutEditTarget?.notebookName,
+                onReset: layoutEditResetAction,
                 onDone: { showLayoutEditor = false }
             )
         }
@@ -407,6 +420,82 @@ struct TodayReviewView: View {
         .focusedSceneValue(\.showReviewHelp, ShowReviewHelpAction { isHelpPresented = true })
         #endif
         .enableInjection()
+    }
+
+    // MARK: - Layout editor target (#3124)
+
+    /// 開編輯器時決定目標：卡片所屬單字本有 override → 編輯它；否則 nil（全域 store）。
+    private func makeLayoutEditTarget(for card: TodayReviewPresenterState.CurrentCard?) -> LayoutEditTarget? {
+        guard let notebookId = card?.card.notebookId else { return nil }
+        let resolver = NotebookSettingsResolver(
+            globalReviewStore: reviewSettingsStore,
+            globalCardLayoutStore: reviewCardLayoutStore,
+            projections: notebookSettings
+        )
+        guard resolver.cardLayoutEditScope(notebookId: notebookId) == .notebook else { return nil }
+        return LayoutEditTarget(notebookId: notebookId, notebookName: notebookDisplayName(notebookId))
+    }
+
+    /// 讀取即 @Query 的即時 override；寫入走設定頁同一條路（樂觀寫入投影 → NotebookSettingsSaver）。
+    /// nil 代表編輯全域，由 `ReviewCardLayoutEditor` 退回 `reviewCardLayoutStore`。
+    private var layoutEditProfileBinding: Binding<ReviewCardLayoutProfile>? {
+        guard let notebookId = layoutEditTarget?.notebookId else { return nil }
+        return Binding(
+            get: {
+                notebookSettings.first(where: { $0.notebookId == notebookId })?.cardLayoutOverride
+                    ?? reviewCardLayoutStore.profile
+            },
+            set: { saveNotebookCardLayout($0, notebookId: notebookId) }
+        )
+    }
+
+    private var layoutEditResetAction: (() -> Void)? {
+        guard layoutEditTarget != nil else { return nil }
+        return { resetLayoutEditTargetToGlobal() }
+    }
+
+    /// 「改用全域版面」：拿掉這本的 override。卡片隨即畫全域，編輯器也跟著切到全域。
+    private func resetLayoutEditTargetToGlobal() {
+        guard let notebookId = layoutEditTarget?.notebookId else { return }
+        saveNotebookCardLayout(nil, notebookId: notebookId)
+        layoutEditTarget = nil
+    }
+
+    private func saveNotebookCardLayout(_ profile: ReviewCardLayoutProfile?, notebookId: String) {
+        let projection = notebookProjection(for: notebookId)
+        let now = Date().timeIntervalSince1970
+        let timestamp = projection.cardLayoutUpdatedAt.map { now > $0 ? now : $0.nextUp } ?? now
+        projection.applyLocalCardLayout(profile, updatedAt: timestamp)
+        guard modelContext.safeSave() else { return }
+
+        Task { @MainActor in
+            let outcome = await notebookLayoutSaver.saveCardLayout(
+                projection: projection, profile: profile, updatedAt: timestamp, service: kgService
+            )
+            switch outcome {
+            case .superseded:
+                return
+            case .applied:
+                modelContext.safeSave()
+            case let .failed(error):
+                AppLog.kg.error("review layout notebook sync failed: \(error.localizedDescription)")
+                toastCoordinator.error(L10n.string("notebookSettings.syncFailed"))
+            }
+        }
+    }
+
+    private func notebookProjection(for notebookId: String) -> NotebookSettingsProjection {
+        if let existing = notebookSettings.first(where: { $0.notebookId == notebookId }) { return existing }
+        let created = NotebookSettingsProjection(notebookId: notebookId)
+        modelContext.insert(created)
+        return created
+    }
+
+    private func notebookDisplayName(_ notebookId: String) -> String {
+        let name = try? modelContext.fetch(
+            FetchDescriptor<Notebook>(predicate: #Predicate { $0.remoteId == notebookId })
+        ).first?.name
+        return name ?? L10n.string("notebookSettings.notebookFallback")
     }
 
     /// 判斷看的是 session 自己的卡（queue），不是 allEntries：後者是連結查詢用的

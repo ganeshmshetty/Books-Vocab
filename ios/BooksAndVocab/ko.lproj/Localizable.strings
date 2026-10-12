@@ -1126,6 +1126,8 @@
 "reviewCardLayout.field.explanation" = "설명";
 "reviewCardLayout.field.collocations" = "연어";
 "reviewCardLayout.reset" = "기본값으로";
+"reviewCardLayout.scope.editing" = "%@의 레이아웃 편집 중";
+"reviewCardLayout.scope.useGlobal" = "전체 레이아웃 사용";
 "reviewCardLayout.reset.all" = "전체 기본값으로";
 "reviewCardLayout.footer" = "공간이 부족하면 예문, 설명, 연어 순으로 줄입니다. 문제·정답·품사·난이도는 숨기지 않습니다.";
 "todayReview.layoutEditor.open" = "복습 카드 조정";

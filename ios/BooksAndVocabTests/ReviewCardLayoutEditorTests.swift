@@ -107,6 +107,39 @@ struct ReviewCardLayoutPreviewSampleTests {
     }
 }
 
+// MARK: - Review toolbar edit scope (#3124)
+
+/// 複習頁工具列開的編輯器必須改「卡片實際在用的那份」：有 notebook override 的卡改 override，
+/// 否則改全域。以前工具列永遠傳全域，有 override 的單字本上編輯等於沒作用。
+struct ReviewCardLayoutEditScopeTests {
+
+    private let notebookOverride = ReviewCardLayoutProfile(recognition: .compact, production: .compact)
+
+    private func makeResolver(overriddenNotebookId: String?) -> NotebookSettingsResolver {
+        NotebookSettingsResolver(
+            globalReviewSettings: .default,
+            globalCardLayout: .default,
+            overrides: overriddenNotebookId.map {
+                [$0: NotebookSettingsOverride(reviewPolicy: nil, cardLayout: notebookOverride)]
+            } ?? [:]
+        )
+    }
+
+    @Test func card_from_a_notebook_with_an_override_edits_that_override_not_the_global() {
+        let resolver = makeResolver(overriddenNotebookId: "nb-overridden")
+
+        #expect(resolver.cardLayoutEditScope(notebookId: "nb-overridden") == .notebook)
+        #expect(resolver.resolve(notebookId: "nb-overridden").cardLayout == notebookOverride)
+        #expect(notebookOverride != ReviewCardLayoutProfile.default)
+    }
+
+    @Test func card_from_a_notebook_without_an_override_edits_the_global_profile() {
+        let resolver = makeResolver(overriddenNotebookId: "nb-overridden")
+
+        #expect(resolver.cardLayoutEditScope(notebookId: "nb-plain") == .global)
+    }
+}
+
 // MARK: - Editor ↔ store
 
 @MainActor

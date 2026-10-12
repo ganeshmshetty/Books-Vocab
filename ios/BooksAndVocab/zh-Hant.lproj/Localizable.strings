@@ -1134,6 +1134,8 @@
 "reviewCardLayout.field.explanation" = "解釋";
 "reviewCardLayout.field.collocations" = "搭配詞";
 "reviewCardLayout.reset" = "恢復預設";
+"reviewCardLayout.scope.editing" = "正在編輯：%@ 的版面";
+"reviewCardLayout.scope.useGlobal" = "改用全域版面";
 "reviewCardLayout.reset.all" = "恢復全部預設";
 "reviewCardLayout.footer" = "空間不夠時，卡片會先精簡例句、解釋與搭配詞；題目、答案、詞性與難度不會被隱藏。";
 "todayReview.layoutEditor.open" = "調整複習卡片";

@@ -1126,6 +1126,8 @@
 "reviewCardLayout.field.explanation" = "解説";
 "reviewCardLayout.field.collocations" = "コロケーション";
 "reviewCardLayout.reset" = "デフォルトに戻す";
+"reviewCardLayout.scope.editing" = "%@ のレイアウトを編集中";
+"reviewCardLayout.scope.useGlobal" = "全体のレイアウトを使う";
 "reviewCardLayout.reset.all" = "すべてデフォルトに戻す";
 "reviewCardLayout.footer" = "スペースが足りないときは、例文・解説・コロケーションから順に短縮します。問題・答え・品詞・難易度は隠れません。";
 "todayReview.layoutEditor.open" = "復習カードを調整";

@@ -1145,6 +1145,8 @@
 "reviewCardLayout.field.explanation" = "Explanation";
 "reviewCardLayout.field.collocations" = "Collocations";
 "reviewCardLayout.reset" = "Reset";
+"reviewCardLayout.scope.editing" = "Editing the layout for %@";
+"reviewCardLayout.scope.useGlobal" = "Use the global layout";
 "reviewCardLayout.reset.all" = "Reset everything to default";
 "reviewCardLayout.footer" = "When space runs short the card shortens the example, explanation and collocations first. Prompt, answer, part of speech and difficulty are never hidden.";
 "todayReview.layoutEditor.open" = "Adjust review card";
