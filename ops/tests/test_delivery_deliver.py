@@ -127,6 +127,8 @@ class FakeWorld:
         )
         # How the new tip relates to the replaced lane's hand-back commit.
         self.old_is_ancestor: bool = state.get("old_is_ancestor", True)
+        # Whether the lane's own tip (NEW_TIP) sits in a merged PR's history (#3323).
+        self.tip_is_ancestor: bool = state.get("tip_is_ancestor", False)
         self.cherry: str = state.get("cherry", "")
         self.old_object_present: bool = state.get("old_object_present", True)
         self.calls: list[list[str]] = []
@@ -198,7 +200,10 @@ class FakeWorld:
                 self.format_pending = False
                 return ok("[branch abc1234] style: ruff format (pre-publish)\n")
             if sub[:2] == ["merge-base", "--is-ancestor"]:
-                return deliver.Proc(0 if self.old_is_ancestor else 1, "", "")
+                answer = (
+                    self.tip_is_ancestor if sub[2] == NEW_TIP else self.old_is_ancestor
+                )
+                return deliver.Proc(0 if answer else 1, "", "")
             if sub[0] == "merge-base":
                 return ok(self.fork)
             if sub[:2] == ["cat-file", "-e"]:
@@ -527,6 +532,52 @@ def test_a_reused_branch_whose_old_pr_merged_is_refused_not_cleaned() -> None:
         )
 
 
+def test_a_local_tip_behind_the_merged_head_is_cleanup_not_reuse() -> None:
+    # #3323: GitHub "Update branch" or an unpushed rebase leaves a local tip that
+    # is an ancestor of the merged PR head; nothing local is lost, so cleanup
+    local_tip = "c" * 40
+    pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
+    contained = lambda old, new: (old, new) == (local_tip, MERGED_OLD_HEAD)  # noqa: E731
+    assert (
+        deliver.next_stage(
+            {"status": "published"},
+            pr,
+            head=local_tip,
+            branch="debug/x",
+            is_ancestor=contained,
+        )
+        == "cleanup"
+    )
+
+
+def test_a_local_tip_outside_the_merged_head_history_is_refused_as_reused() -> None:
+    pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
+    with pytest.raises(deliver.DeliverError, match="reused after a merge"):
+        deliver.next_stage(
+            {"status": "active"},
+            pr,
+            head="b" * 40,
+            branch="debug/x",
+            is_ancestor=lambda old, new: False,
+        )
+
+
+def test_an_ancestry_check_that_cannot_run_fails_loudly_not_as_reuse() -> None:
+    pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
+
+    def broken(old: str, new: str) -> bool:
+        raise deliver.DeliverError("compare with merged head failed (rc=128)")
+
+    with pytest.raises(deliver.DeliverError, match="rc=128"):
+        deliver.next_stage(
+            {"status": "active"},
+            pr,
+            head="b" * 40,
+            branch="debug/x",
+            is_ancestor=broken,
+        )
+
+
 def test_a_merged_pr_with_no_local_branch_is_cleanup() -> None:
     # nothing local to drop: the branch is gone, so cleanup cannot lose commits
     pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
@@ -751,6 +802,17 @@ def test_a_cleanup_pending_lane_with_an_open_pr_is_released_before_waiting() -> 
 
 def test_a_merged_pr_goes_straight_to_cleanup() -> None:
     world = FakeWorld(prs=[{"number": 9, "state": "MERGED", "headRefOid": NEW_TIP}])
+    code, _result = ship(world, "--merge")
+    assert code == 0
+    assert world.names() == ["cleanup-merged", "sync-main"]
+
+
+def test_a_local_tip_inside_a_merged_pr_history_is_cleaned_up_end_to_end() -> None:
+    # #3323: "Update branch" left the lane tip as an ancestor of the merged head
+    world = FakeWorld(
+        prs=[{"number": 9, "state": "MERGED", "headRefOid": "f" * 40}],
+        tip_is_ancestor=True,
+    )
     code, _result = ship(world, "--merge")
     assert code == 0
     assert world.names() == ["cleanup-merged", "sync-main"]
