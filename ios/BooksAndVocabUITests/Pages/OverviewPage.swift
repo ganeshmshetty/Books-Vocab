@@ -22,16 +22,18 @@ struct OverviewPage {
 
     /// Region of the Overview ScrollView not covered by the navigation bar or tab bar.
     /// Caller must ensure the ScrollView exists (property access on a missing element throws).
+    /// A hidden bar (zero matches) is valid; a duplicate bar fails the contract instead of
+    /// silently acting on an implicit first match.
     private func actionableBand(scrollView: XCUIElement) -> CGRect {
         let frame = scrollView.frame
         var top = frame.minY
-        let navigationBar = app.navigationBars.firstMatch
-        if navigationBar.exists, !navigationBar.frame.isEmpty {
+        if let navigationBar = app.navigationBars.exactlyOneElementIfPresent(named: "overview navigation bar"),
+           !navigationBar.frame.isEmpty {
             top = max(top, navigationBar.frame.maxY)
         }
         var bottom = frame.maxY
-        let tabBar = app.tabBars.firstMatch
-        if tabBar.exists, !tabBar.frame.isEmpty {
+        if let tabBar = app.tabBars.exactlyOneElementIfPresent(named: "overview tab bar"),
+           !tabBar.frame.isEmpty {
             bottom = min(bottom, tabBar.frame.minY)
         }
         return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top))
