@@ -581,20 +581,27 @@ awk() {
   done
   command awk "$@"
 }
-BIG_EXCL="$(printf 'testSynthesizedExclusionNameNumber%05d\n' $(seq 1 4200))"
+# 基線：無排除時第一個會被挑中的 UI 裸名。大集合必須含它，排除是否生效才可觀測。
+BIG_BASE="$(pick_exclusive "$UI_FLAGS" "")"
+BIG_BASE_BARE="${BIG_BASE##*|}"
+[[ -n "$BIG_BASE_BARE" ]] \
+  && ok "基線（無排除）挑中 ${BIG_BASE}" \
+  || fail_t "基線挑不出任何 UI 裸名（BIG_BASE='$BIG_BASE'），無法驗證排除集生效"
+BIG_EXCL="$(printf 'testSynthesizedExclusionNameNumber%05d\n' $(seq 1 4200); printf '%s\n' "$BIG_BASE_BARE")"
 [[ "${#BIG_EXCL}" -ge 131072 ]] \
   && ok "合成排除集 ${#BIG_EXCL} bytes，超過 128 KiB argv 上限" \
   || fail_t "合成排除集僅 ${#BIG_EXCL} bytes，未達 128 KiB，本節失去鑑別力"
 BIG_OUT="$(pick_exclusive "$UI_FLAGS" "$BIG_EXCL" 2>"$FIX/big.err")" && BIG_RC=0 || BIG_RC=$?
 [[ "$BIG_RC" -eq 0 ]] \
   && ok "超大排除集下 pick_exclusive exit 0" \
-  || fail_t "超大排除集下 pick_exclusive rc=$BIG_RC，stderr: $(cat "$FIX/big.err")"
+  || fail_t "超大排除集下 pick_exclusive rc=${BIG_RC}，stderr: $(cat "$FIX/big.err")"
 grep -qF 'Argument list too long' "$FIX/big.err" \
   && fail_t "超大排除集下 stderr 出現 Argument list too long" \
   || ok "超大排除集下 stderr 無 Argument list too long"
-[[ "$BIG_OUT" == *"|"* ]] \
-  && ok "超大排除集仍挑出一個未被排除的 Class|bare（${BIG_OUT}）" \
-  || fail_t "超大排除集未挑出任何 Class|bare，實得：'$BIG_OUT'"
+# 排除集必須真的生效：整段被忽略時挑出值會等於基線，這裡即紅（舊版只斷言含 "|"，無法鑑別）。
+[[ "$BIG_OUT" == *"|"* && "${BIG_OUT##*|}" != "$BIG_BASE_BARE" ]] \
+  && ok "超大排除集生效：挑出 ${BIG_OUT}，跳過了基線的 ${BIG_BASE_BARE}" \
+  || fail_t "超大排除集未生效：挑出 '${BIG_OUT}'，應跳過 '${BIG_BASE_BARE}'"
 unset -f awk
 
 XS_PAIR="$(pick_exclusive "$UI_FLAGS" "$UNIT_BARES")"
