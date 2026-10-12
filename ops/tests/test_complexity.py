@@ -582,8 +582,8 @@ def test_raise_writes_a_fragment_for_the_areas_the_lane_is_over_only(
         "schema": "kg.complexity-budget-raise.v1",
         "issue": 3155,
         "raise": {
-            "ops": 25
-        },  # measured 1020 - effective 1000 + LIFT_MARGIN 5; docs and workflows fit
+            "ops": 80
+        },  # measured 1020 - effective 1000 + LIFT_MARGIN["ops"] 60; docs and workflows fit
         "note": "ops grew",
     }
     assert (
@@ -611,13 +611,55 @@ def test_raise_tops_up_the_same_lane_fragment(tmp_path: Path) -> None:
         "x",
     ]
     assert complexity.main(argv, repo=repo) == 0
-    (repo / "ops" / "a.py").write_text("1\n" * 1030)
+    (repo / "ops" / "a.py").write_text("1\n" * 1090)
     assert complexity.main(argv, repo=repo) == 0
     raised = json.loads((repo / FRAGMENTS / "lane-a.json").read_text())["raise"]
-    assert raised == {"ops": 35}  # 25 + (1030 - 1025 + 5)
+    assert raised == {"ops": 150}  # 80 + (1090 - 1080 + 60)
     assert (
-        complexity.load_budget(repo / complexity.BUDGET_FILE)["ceilings"]["ops"] == 1035
+        complexity.load_budget(repo / complexity.BUDGET_FILE)["ceilings"]["ops"] == 1150
     )
+
+
+def test_the_lift_margin_is_per_area_ops_60_docs_30_workflows_10() -> None:
+    assert complexity.LIFT_MARGIN == {"ops": 60, "docs": 30, "workflows": 10}
+    measured = {"ops": 10, "docs": 10, "workflows": 10}
+    ceilings = {"ops": 0, "docs": 0, "workflows": 0}
+    assert complexity.plan_raise(measured, ceilings) == {
+        "ops": 70,
+        "docs": 40,
+        "workflows": 20,
+    }
+
+
+def test_two_sibling_lanes_each_adding_the_ops_margin_compose_under_the_raised_ceiling(
+    tmp_path: Path,
+) -> None:
+    # Base ops sits exactly at its ceiling (headroom 0). Each sibling adds 60 ops lines (its own margin) and
+    # raises with `raise`: each lane passes alone, and the merged tree admits both without an OVER.
+    repo = _git_repo(
+        tmp_path,
+        {"ops/a.py": "1\n" * 1000, "docs/x.md": "1\n", ".github/workflows/w.yml": "1\n"},
+    )
+    _base(repo, ops=1000)
+    _git(repo, "add", "-A")
+    _commit(repo, "base")
+    trunk = _git(repo, "branch", "--show-current")
+    for lane, module in (("lane-a", "a_lane.py"), ("lane-b", "b_lane.py")):
+        _git(repo, "checkout", "-q", trunk)
+        _git(repo, "checkout", "-q", "-b", lane)
+        _add(repo, f"ops/{module}", 60)
+        _git(repo, "add", "-A")
+        _commit(repo, f"{lane}: growth")  # raise refuses while HEAD is the base
+        argv = ["raise", "--base", trunk, "--name", lane, "--note", "sibling growth"]
+        assert complexity.main(argv, repo=repo) == 0, lane
+        _git(repo, "add", "-A")
+        _commit(repo, f"{lane}: raise")
+        assert complexity.main(["check", "--base", trunk], repo=repo) == 0, lane
+    _git(repo, "checkout", "-q", trunk)
+    _git(repo, "merge", "-q", "--no-ff", "-m", "A", "lane-a")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "B", "lane-b")
+    # 1120 measured <= 1240 effective (1000 + 120 + 120): each raise covered its own 60 plus the margin
+    assert complexity.main(["check", "--strict"], repo=repo) == 0
 
 
 def test_raise_writes_nothing_when_the_lane_stays_within_its_headroom(

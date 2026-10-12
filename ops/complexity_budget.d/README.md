@@ -13,7 +13,7 @@
 
 寫法：
 
-- 超標時執行 `./ops/complexity.py raise --note "為何"`。只為本 lane 自身成長超出 merge-base headroom 的 area 寫 raise = measured − effective + 5（與 `check` 同一判斷）；檔名預設為本 branch（路徑安全化），issue 預設取 branch 的 `issue-<N>`；detached HEAD 須給 `--name`。同一 lane 再次 raise 會累加進同一檔。
+- 超標時執行 `./ops/complexity.py raise --note "為何"`。只為本 lane 自身成長超出 merge-base headroom 的 area 寫 raise = measured − effective + margin（與 `check` 同一判斷）；margin 依 area：`ops` 60、`docs` 30、`workflows` 10（`complexity.LIFT_MARGIN`，CM 2026-10-12 決定 #3302）。raise 後新 ceiling = measured + margin，故同 base 的兄弟 lane 只要自身成長不超過該 area 的 margin，合併後仍在 ceiling 內；檔名預設為本 branch（路徑安全化），issue 預設取 branch 的 `issue-<N>`；detached HEAD 須給 `--name`。同一 lane 再次 raise 會累加進同一檔。
 - 拒絕寫入：HEAD 即 main（紅 trunk 不可被 raise 掩蓋）、無可讀 base、detached HEAD 未給 `--name`。零成長的 lane 不寫 fragment，不吸收 main 既有超標。
 - 不要直接改 base 提高 ceiling。舊式寫法仍被 gate 視為「lane 自行提高」，但會與其他 lane 衝突。
 - rebase 遇超標時，`ops/deliver.py` 以同一 helper 寫 fragment。

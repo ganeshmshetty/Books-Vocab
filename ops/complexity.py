@@ -60,9 +60,11 @@ REFERENCE_AREA = "ios/"
 # Only authored text counts.  Fixtures, plists and recordings are data: regenerating
 # one is not a change in complexity and must not be able to turn the gate red.
 COUNTED_SUFFIXES = (".py", ".sh", ".md", ".yml", ".yaml", ".swift")
-# Headroom a lift leaves above measured: the minimal margin every manual raise in the budget note used.
-# Deliberately not the ratchet's ``slack`` (ops 2000), which would loosen the ceiling by thousands of lines.
-LIFT_MARGIN = 5
+# Headroom a lift leaves above measured, per area: a raise lands at measured + margin, so a sibling lane whose
+# own growth is at most the margin composes under the raised ceiling (CM decision #3302, 2026-10-12).  Sized to
+# the growth ordinary siblings produce: ops 60, docs 30, workflows 10 lines.  Deliberately not the ratchet's
+# ``slack`` (ops 2000), which would loosen the ceiling by thousands of lines.
+LIFT_MARGIN = {"ops": 60, "docs": 30, "workflows": 10}
 
 
 class BudgetError(Exception):
@@ -434,12 +436,12 @@ def plan_raise(
     ceilings: dict[str, int],
     areas: list[str] | None = None,
 ) -> dict[str, int]:
-    """For each failing area: the amount that lifts its effective ceiling to measured + ``LIFT_MARGIN``.
+    """For each failing area: the amount that lifts its effective ceiling to measured + ``LIFT_MARGIN[area]``.
 
     Only areas measured above their effective ceiling (and in ``areas``, when given) get an amount.
     """
     return {
-        area: measured[area] - ceilings[area] + LIFT_MARGIN
+        area: measured[area] - ceilings[area] + LIFT_MARGIN[area]
         for area in AREAS
         if measured[area] > ceilings[area] and (areas is None or area in areas)
     }
