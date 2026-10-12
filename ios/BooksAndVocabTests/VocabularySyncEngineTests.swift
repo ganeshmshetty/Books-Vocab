@@ -99,6 +99,39 @@ struct VocabularySyncEngineTests {
         #expect(!entry.shouldUploadOnNextSync)
     }
 
+    @Test("a note cleared on an edit reaches the content update as an explicit empty string, not omitted (#2550)")
+    func clearedNoteIsSentAsExplicitEmptyString() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit(notebookId: "notebook-a")
+        context.insert(entry)
+        try WordEditSheet.commitEdit(
+            entry: entry,
+            translation: entry.translation,
+            explanation: "   ",
+            save: {}
+        )
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry],
+            modelContext: context,
+            service: service,
+            emit: { _ in }
+        )
+
+        #expect(service.editRequests == [
+            EditRequest(
+                word: entry.word,
+                translation: entry.translation,
+                explanation: "",
+                notebookId: "notebook-a"
+            )
+        ])
+        #expect(entry.isSynced)
+    }
+
     @Test("a delete issued while its add is in flight is queued, not dropped, and removed on the next sync")
     func deleteDuringInFlightAddIsQueued() async throws {
         let container = try makeContainer()
@@ -328,6 +361,86 @@ struct VocabularySyncEngineTests {
         #expect(!next.calls.contains("add"))
     }
 
+    @Test("a per-word delete the server answers 404 is already deleted: the row is removed and not counted as failed (#2728)")
+    func perWordDelete404RemovesRowWithoutFailure() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "gone")
+        let entryId = entry.id
+        entry.kgCardId = "card-gone"
+        entry.markSynced()
+        entry.queueDelete()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.batchDeleteError = TestError.expected
+        service.deleteCardError = KGError.httpError(statusCode: 404, detail: "not found")
+        let result = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(result.terminalOutcome == .completed)
+        #expect(service.calls.contains("delete"))
+        #expect(try isRemoved(entryId, from: context))
+    }
+
+    @Test("an add cancelled after its request left is queued for a server delete, not hard-deleted (#3073)")
+    func cancelledSubmittedAddSurvivesLocalDelete() async throws {
+        let container = try makePullContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "chateau")
+        entry.restorePendingEntry()
+        let entryId = entry.id
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.addError = CancellationError()
+        let result = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+        #expect(result.terminalOutcome == .keepCancelled)
+        #expect(service.uploadedWords == ["chateau"])
+
+        // The server may have committed the add, so the local delete must still reach the server.
+        entry.deleteLocally(in: context)
+        try context.save()
+        let removed = try isRemoved(entryId, from: context)
+        #expect(!removed)
+        #expect(entry.isPendingDelete)
+    }
+
+    @Test("a pull returning the card does not resurrect a submitted-but-unconfirmed add deleted locally (#3073)")
+    func pullDoesNotResurrectSubmittedUnconfirmedDelete() async throws {
+        let container = try makePullContainer()
+        let context = ModelContext(container)
+        let entry = makeEntry(word: "chateau")
+        entry.restorePendingEntry()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.addError = CancellationError()
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+        entry.deleteLocally(in: context)
+        try context.save()
+
+        // The server did commit the add: its card comes back in the pull.
+        _ = try await BackgroundSyncActor(modelContainer: container).pullCardsToLocal(
+            fetchedCards: [try makeServerCard(id: "card-chateau", content: "chateau")],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let rows = try context.fetch(FetchDescriptor<VocabularyEntry>())
+        #expect(rows.count == 1)
+        #expect(rows.first?.syncAction == .delete)
+        #expect(rows.first?.isSynced == false)
+    }
+
     @Test("a delete issued while another notebook's add group uploads keeps the unsent add from being uploaded")
     func deleteDuringOtherGroupUploadSkipsAdd() async throws {
         let container = try makeContainer()
@@ -427,6 +540,78 @@ struct VocabularySyncEngineTests {
         #expect(entry.isSynced)
         #expect(entry.syncAction == .add)
         #expect(!entry.shouldUploadOnNextSync)
+    }
+
+    @Test("a permanently rejected edit (4xx) is terminal and is not re-sent on the next sync (#3207)")
+    func permanentlyRejectedEditIsTerminal() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 422, detail: "")
+
+        let firstResult = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(firstResult.terminalOutcome == .partial)
+        #expect(entry.isFailedEdit)
+        #expect(entry.rejectedReason != nil)
+        #expect(!entry.shouldUploadOnNextSync)
+        #expect(service.editRequests.count == 1)
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(service.editRequests.count == 1)
+        #expect(entry.isFailedEdit)
+        #expect(entry.rejectedReason != nil)
+    }
+
+    @Test("a server-side (5xx) edit failure stays retryable, not terminal (#3207)")
+    func serverErrorEditStaysRetryable() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 500, detail: "")
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(entry.isFailedEdit)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("a delete queued during a rejected edit's flight survives the terminal state (#3207, #2733)")
+    func deleteDuringRejectedEditSurvives() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 422, detail: "")
+        service.onEditInFlight = { entry.deleteLocally(in: context) }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(entry.syncAction == .delete)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+        #expect(entry.kgCardId == "card-1")
     }
 
     @Test("cancelling an edit keeps it pending for retry")
@@ -687,6 +872,31 @@ struct VocabularySyncEngineTests {
         return try ModelContainer(for: schema, configurations: [config])
     }
 
+    /// The pull merge (`BackgroundSyncActor`) touches review state, so it needs the full local schema.
+    private func makePullContainer() throws -> ModelContainer {
+        let schema = Schema([
+            VocabularyEntry.self,
+            ReviewRecord.self,
+            Notebook.self,
+            Book.self,
+            PodcastSeries.self,
+            PodcastEpisode.self,
+            PodcastProgress.self
+        ])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        return try ModelContainer(for: schema, configurations: [config])
+    }
+
+    /// Decodes through the same `JSONDecoder` path production uses (matches `VocabPullChangeDetectionTests`).
+    private func makeServerCard(id: String, content: String) throws -> KGCard {
+        let json = """
+        {"id":"\(id)","content":"\(content)","meaning":"meaning","pos":null,"difficulty":null,\
+        "difficultyTier":null,"note":null,"collocations":[],"examples":["an example"],\
+        "mode":"recognition","isDeleted":false,"isArchived":false,"notebookId":"default"}
+        """.data(using: .utf8)!
+        return try JSONDecoder().decode(KGCard.self, from: json)
+    }
+
     private func makeEntry(word: String) -> VocabularyEntry {
         VocabularyEntry(
             word: word,
@@ -728,6 +938,8 @@ private final class FakeVocabularySyncService: VocabularySyncEngineServing {
     var addResponse = KGAddResponse(created: 0, skipped: 0, duplicates: [], cardIds: [:])
     var triggerError: Error?
     var batchDeleteError: Error?
+    /// 在 batchAdd 已送出後丟出（例如 `CancellationError`），模擬回應未到達前的取消（#3073）。
+    var addError: Error?
     var editError: Error?
     var pullError: Error?
     var blockAdd = false
@@ -755,6 +967,7 @@ private final class FakeVocabularySyncService: VocabularySyncEngineServing {
             try await Task.sleep(for: .seconds(60))
         }
         onAddInFlight?(notebookId)
+        if let addError { throw addError }
         return addResponse
     }
 

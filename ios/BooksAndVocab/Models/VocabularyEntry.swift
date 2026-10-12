@@ -47,6 +47,14 @@ final class VocabularyEntry {
     /// 任何重新排入 add 的路徑（`restorePendingEntry`）或同步成功（`markSynced`）都清除。
     /// Optional，SwiftData lightweight migration 時既有 row 為 nil。
     var rejectedReason: String?
+    /// 使用者把伺服器已持有的 note 清空、尚未同步（#2550）。`explanation` 此時為 nil，PATCH 須送明確的 ""
+    /// 才會清除伺服器 note；nil 在 wire 上是「未變更」。`markSynced`（編輯成功）時清除。
+    /// Lightweight migration：既有 row 預設 false。
+    var explanationClearPending: Bool = false
+    /// 送出 batchAdd 的時點（持久化，#3073）。送出後若回應未確認（取消、失敗），server 可能已建立此卡，
+    /// 因此本地刪除必須排 server delete 而非硬刪，否則下一輪 pull 會復活卡片。server 確認（cardIds 命中、
+    /// `markSynced`）後清除。Optional，lightweight migration 時既有 row 為 nil。
+    var uploadSubmittedAt: Date?
     var difficultyTier: String?     // "core" / "intermediate" / "advanced" / "rare"
     var actionType: String = "add"  // "add" | "delete" | "edit"
     var reviewModeRaw: String = VocabularyCardMode.recognition.rawValue
@@ -128,9 +136,11 @@ final class VocabularyEntry {
     var isFailedEdit: Bool { syncState == .failed && syncAction == .edit }
     /// 後端拒收的 add（終態，見 `rejectedReason`）。
     var isRejectedAdd: Bool { isFailedAdd && rejectedReason != nil }
+    /// 後端確定性拒收的 edit（4xx，見 T12）。
+    var isRejectedEdit: Bool { isFailedEdit && rejectedReason != nil }
     var shouldUploadOnNextSync: Bool {
         isPendingAdd || isPendingDelete || isPendingEdit
-            || (isFailedAdd && !isRejectedAdd) || isFailedDelete || isFailedEdit
+            || (isFailedAdd && !isRejectedAdd) || isFailedDelete || (isFailedEdit && !isRejectedEdit)
     }
     var shouldAppearInReader: Bool { syncAction != .delete && !isArchived && !isReaderHidden }
     var shouldAppearInReview: Bool { shouldAppearInKnowledgeList && !isReviewExcluded }
@@ -227,18 +237,21 @@ extension VocabularyEntry {
     //     唯一允許的使用者轉移是 → delete（T1）。擷取時為 delete 的列，回應到達時仍為 delete，
     //     故 sync 的 post-await 只守 syncAction == .delete 與 in-flight，不需撤銷競態分支（#2484 r8）。
     //
-    // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 → queueDelete（列保留）；其餘 → 硬刪。
-    // T2 batchAdd cardIds 命中：寫 kgCardId；action 為 add 才 markSynced，為 delete 則維持 pending delete。
+    // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 ∨ uploadSubmittedAt 非 nil → queueDelete（列保留）；其餘 → 硬刪。
+    // T2 batchAdd cardIds 命中：寫 kgCardId、清 uploadSubmittedAt；action 為 add 才 markSynced，為 delete 則維持 pending delete。
     // T3 batchAdd rejected：markRejected → add+failed（rejectedReason 終態）；action 為 delete 則維持 pending delete。
-    // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete）。
+    // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete；uploadSubmittedAt 保留，server 是否已建卡未知）。
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
     // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
-    // T8 edit 成功：action 仍為 edit 才 markSynced；成功前被刪者維持 delete。
+    // T8 edit 成功：action 仍為 edit 才 markSynced（清除 explanationClearPending）；成功前被刪者維持 delete。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
     // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
     //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
     // T11 NotebookReconciler cascade 的 queueDelete 可作用於 kgCardId 為空的 add：delete+pending，交 T5 以 not_found 收斂。
+    // T12 edit 回 4xx（401／429 除外）：markEditRejected → edit+failed（rejectedReason 終態，不再納入 shouldUploadOnNextSync）；
+    //     action 為 delete 則維持 pending delete（同 T3，#2733）。使用者再次編輯 → queueEdit 清除 rejectedReason 並重新 pending。
+    //     5xx／網路錯誤維持 T4 的可重試 markSyncFailed。
 
     func queueDelete() {
         syncAction = .delete
@@ -252,7 +265,13 @@ extension VocabularyEntry {
     /// 但 kgCardId 保留，因此不能只靠 `isSynced` 判斷。
     var hasServerCard: Bool { !(kgCardId ?? "").isEmpty }
 
-    var requiresServerDelete: Bool { isSynced || isUploadInFlight || hasServerCard }
+    /// PATCH 的 note 欄位三態（#2550）：nil＝省略（伺服器值不變）；""＝明確清空；其餘＝設定值。
+    var explanationUpdateValue: String? {
+        explanationClearPending ? "" : explanation
+    }
+
+    /// `uploadSubmittedAt` 代表 add 已送出但未獲確認：server 可能持有此卡（#3073）。
+    var requiresServerDelete: Bool { isSynced || isUploadInFlight || hasServerCard || uploadSubmittedAt != nil }
 
     /// Single local delete entry point for user-initiated deletes.
     func deleteLocally(in modelContext: ModelContext) {
@@ -286,6 +305,8 @@ extension VocabularyEntry {
         syncAction = .add
         syncState = .synced
         rejectedReason = nil
+        explanationClearPending = false
+        uploadSubmittedAt = nil
     }
 
     func markSyncFailed() {
@@ -307,8 +328,25 @@ extension VocabularyEntry {
         rejectedReason = reason
     }
 
+    /// 後端確定性拒收的 edit（T12）：進終態，delete 在 in-flight 期間覆寫時保留 pending delete。
+    func markEditRejected(reason: String) {
+        guard syncAction != .delete else {
+            syncState = .pending
+            return
+        }
+        syncState = .failed
+        rejectedReason = reason
+    }
+
+    /// 使用者再次編輯已同步或已拒收的卡：重新排入 pending edit，清除上次的拒收原因（T12）。
+    func queueEdit() {
+        syncAction = .edit
+        syncState = .pending
+        rejectedReason = nil
+    }
+
     func prepareForRetryAttempt() {
-        if isFailed && !isRejectedAdd {
+        if isFailed && !isRejectedAdd && !isRejectedEdit {
             syncState = .pending
         }
     }

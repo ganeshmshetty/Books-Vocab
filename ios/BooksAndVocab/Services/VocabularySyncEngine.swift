@@ -54,6 +54,15 @@ protocol VocabularySyncExecuting: AnyObject {
 /// Owns the transport, outbox mutation and persistence ordering for an explicit vocab sync.
 @MainActor
 final class VocabularySyncEngine: VocabularySyncExecuting {
+    /// 4xx 是後端對此請求的確定性拒收，回傳終態 `rejectedReason`；401（認證）與 429（限流）屬可重試，回 nil。
+    /// 5xx 與網路錯誤亦回 nil。
+    static func permanentEditRejectionReason(_ error: Error) -> String? {
+        guard case let KGError.httpError(statusCode, _) = error,
+              (400..<500).contains(statusCode), statusCode != 401, statusCode != 429
+        else { return nil }
+        return "HTTP \(statusCode)"
+    }
+
     func execute(
         pendingEntries: [VocabularyEntry],
         modelContext: ModelContext,
@@ -119,18 +128,21 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                             if Task.isCancelled { return cancelledResult(since: start) }
                             do {
                                 try await service.deleteCard(word: entry.word, notebookId: entry.notebookId)
-                                // Defensive recheck after the suspension (I3 keeps the held delete a delete): never
-                                // hard-delete a row that is no longer a held delete (T5).
-                                guard entry.isUploadInFlight, entry.syncAction == .delete else { continue }
-                                modelContext.delete(entry)
-                                deleted += 1
-                                emit(.stepProgress("upload_delete", current: deleted, total: queuedDeletes.count, detail: ""))
+                            } catch let KGError.httpError(statusCode: 404, _) {
+                                // 404 = server 已無此卡，刪除意圖已達成：視同已刪除、不計失敗（#2728，與 KGVocabCoordinator.retryPendingDeletes 一致）。
                             } catch {
                                 if Task.isCancelled { return cancelledResult(since: start) }
                                 entry.markSyncFailed()
                                 encounteredFailure = true
                                 failedWords.append(entry.word)
+                                continue
                             }
+                            // Defensive recheck after the suspension (I3 keeps the held delete a delete): never
+                            // hard-delete a row that is no longer a held delete (T5).
+                            guard entry.isUploadInFlight, entry.syncAction == .delete else { continue }
+                            modelContext.delete(entry)
+                            deleted += 1
+                            emit(.stepProgress("upload_delete", current: deleted, total: queuedDeletes.count, detail: ""))
                         }
                     }
                 }
@@ -164,6 +176,11 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     guard !uploadable.isEmpty else { continue }
                     do {
                         uploadable.forEach { $0.prepareForRetryAttempt() }
+                        // Persist the submit marker before the request leaves: a cancel or crash after this point may
+                        // leave the card on the server, so a local delete must still reach the server (#3073).
+                        let submittedAt = Date()
+                        uploadable.forEach { $0.uploadSubmittedAt = submittedAt }
+                        modelContext.safeSave()
                         let response = try await service.batchAdd(entries: uploadable, notebookId: notebookId)
                         SyncCoordinator.convergeAddedEntries(response: response, entries: uploadable)
                         if !response.rejected.isEmpty {
@@ -204,7 +221,7 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     try await service.updateCardContent(
                         word: entry.word,
                         translation: entry.translation,
-                        explanation: entry.explanation,
+                        explanation: entry.explanationUpdateValue,
                         notebookId: entry.notebookId
                     )
                     if Task.isCancelled { return cancelledResult(since: start) }
@@ -213,7 +230,12 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                 } catch is CancellationError {
                     return cancelledResult(since: start)
                 } catch {
-                    entry.markSyncFailed()
+                    // A 4xx is the server's deterministic rejection: retrying re-sends the same request forever (#3207).
+                    if let reason = Self.permanentEditRejectionReason(error) {
+                        entry.markEditRejected(reason: reason)
+                    } else {
+                        entry.markSyncFailed()
+                    }
                     encounteredFailure = true
                 }
             }

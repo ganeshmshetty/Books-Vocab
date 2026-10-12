@@ -79,10 +79,10 @@ private struct KGCardPreferencesUpdate: Encodable {
 
 struct KGVocabContentUpdate: Encodable, Equatable {
     let meaning: String
-    /// nil is omitted from the wire and the backend reads that as "no change"; "" clears the note.
-    /// A nil local note is not known to be empty (the server note may not have been pulled yet), so it
-    /// must never be coerced to "" or an unrelated edit would wipe it. Sending "" for an explicit clear
-    /// needs a tri-state local value, tracked under #2550.
+    /// Tri-state (#2550): nil is omitted from the wire and the backend reads that as "no change"; "" clears the
+    /// note; a value sets it. Callers pass `VocabularyEntry.explanationUpdateValue`, which yields "" only for an
+    /// explicit clear. A nil local note is not known to be empty (the server note may not have been pulled yet),
+    /// so it must never be coerced to "" or an unrelated edit would wipe it.
     let explanation: String?
 }
 
