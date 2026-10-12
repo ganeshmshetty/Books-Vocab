@@ -188,9 +188,35 @@ final class NotebookReviewFlowUITests: UITestCase {
         }
         let progressBefore = review.progressText
 
-        // Layer 1: ↗ the first linked card of the current review card.
-        review.link(id: "multinb-000").tapWhenReady()
-        let layerLink = app.buttons
+        // Layer 1: ↗ the first linked card of the current review card. The strip draws
+        // only two of the card's four links (order is shuffled per cache build); the
+        // other two sit behind "+2", so expand the group before looking for multinb-000.
+        let overflowToggle = review.linkOverflowToggle(group: "shares_usage")
+        guard overflowToggle.waitUntilExists(timeout: 10) else {
+            captureStep("link-overflow-toggle-missing", app: app)
+            XCTFail("四個連結、每組只顯示兩個 → 「+2」必須存在，才能展開到 multinb-000")
+            return
+        }
+        overflowToggle.tapWhenReady()
+        let firstLink = review.link(id: "multinb-000")
+        guard firstLink.waitUntilExists(timeout: 5) else {
+            captureStep("first-link-missing", app: app)
+            XCTFail("展開後複習卡必須列出 multinb-000 連結")
+            return
+        }
+        firstLink.tapWhenReady()
+
+        // The review strip underneath also draws a "multinb1" button (multinb-001), so
+        // layer 1's link row is searched only inside its Word Detail content container.
+        let layerContent = app.descendants(matching: .any)
+            .matching(identifier: "wordDetail.content")
+            .firstMatch
+        guard layerContent.waitUntilExists(timeout: 10) else {
+            captureStep("first-layer-content-missing", app: app)
+            XCTFail("第一層連結卡必須出現 Word Detail 內容")
+            return
+        }
+        let layerLink = layerContent.buttons
             .matching(NSPredicate(format: "label CONTAINS %@", "multinb1"))
             .firstMatch
         guard layerLink.waitUntilExists(timeout: 10) else {
