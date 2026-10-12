@@ -23,9 +23,9 @@ enum BookshelfCopy {
     static var retryImportTitle: String { L10n.string("再試匯入") }
     static var closeTitle: String { L10n.string("關閉") }
 
-    static func readingProgressAccessibilityValue(_ progression: Double?) -> String {
-        let clamped = min(max(progression ?? 0, 0), 1)
-        return L10n.format("vocab.reviewProgress.percent", Int64(clamped * 100))
+    /// 與可見標籤（BookCard）同一套四捨五入格式，避免 VoiceOver 讀到的百分比與畫面不一致。
+    static func readingProgressAccessibilityValue(_ progression: Double?, locale: Locale = .current) -> String {
+        ReadingProgressFormatter.percentText(progression ?? 0, locale: locale)
     }
 
     static var emptyState: BookshelfEmptyStateCopy {
