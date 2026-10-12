@@ -423,6 +423,7 @@ final class ReviewSettingsStore {
         AccountPreferenceNamespace.migrateLegacyIfNeeded(
             accountID: accountID,
             defaults: defaults,
+            cloud: cloud,
             feature: "review-settings"
         ) {
             for key in [

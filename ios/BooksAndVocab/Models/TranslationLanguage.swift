@@ -237,6 +237,7 @@ enum TranslationLanguage: String, CaseIterable, Identifiable, Codable {
         AccountPreferenceNamespace.migrateLegacyIfNeeded(
             accountID: accountID,
             defaults: defaults,
+            cloud: cloud,
             feature: "translation-language"
         ) {
             for key in [sourceKey, targetKey, sourceUpdatedAtKey, targetUpdatedAtKey] {
