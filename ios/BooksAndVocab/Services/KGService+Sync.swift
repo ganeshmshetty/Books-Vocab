@@ -82,11 +82,18 @@ extension KGService {
 
     // MARK: - Push Review State
 
+    /// Entries per `PATCH api/vocab/review`. The backend rejects more than 5000
+    /// in one request with a whole-request 422 (`review.py`), so stay well below.
+    static let reviewStatePushBatchSize = 1000
+
     func pushReviewStates(container: ModelContainer) async throws -> (updated: Int, skipped: Int) {
+        try await pushReviewStates(container: container, batchSize: Self.reviewStatePushBatchSize)
+    }
+
+    /// Pushes dirty review states in batches and acknowledges each batch as it
+    /// lands, so a later failing batch neither un-acks earlier ones nor acks itself.
+    func pushReviewStates(container: ModelContainer, batchSize: Int) async throws -> (updated: Int, skipped: Int) {
         let actor = BackgroundSyncActor(modelContainer: container)
-        // Captured before the payload is built so a review landing mid-request
-        // stays dirty rather than being acknowledged as already-sent.
-        let boundary = Date()
         let payload = try await actor.buildReviewStatePushPayload()
         guard !payload.isEmpty else { return (0, 0) }
 
@@ -94,15 +101,23 @@ extension KGService {
             let updated: Int
             let skipped: Int
         }
-        let result = try await authenticatedDecode(
-            PushResponse.self,
-            path: "api/vocab/review",
-            method: "PATCH",
-            body: try JSONSerialization.data(withJSONObject: ["entries": payload])
-        )
-        try await actor.markReviewStatesPushed(upTo: boundary)
-        AppLog.kg.info("pushReviewStates: sent=\(payload.count), updated=\(result.updated), skipped=\(result.skipped)")
-        return (result.updated, result.skipped)
+        let step = max(batchSize, 1)
+        var totalUpdated = 0
+        var totalSkipped = 0
+        for batchStart in stride(from: 0, to: payload.count, by: step) {
+            let batch = Array(payload[batchStart..<min(batchStart + step, payload.count)])
+            let result = try await authenticatedDecode(
+                PushResponse.self,
+                path: "api/vocab/review",
+                method: "PATCH",
+                body: try JSONSerialization.data(withJSONObject: ["entries": batch.map(\.body)])
+            )
+            try await actor.markReviewStatesPushed(batch)
+            totalUpdated += result.updated
+            totalSkipped += result.skipped
+        }
+        AppLog.kg.info("pushReviewStates: sent=\(payload.count), updated=\(totalUpdated), skipped=\(totalSkipped)")
+        return (totalUpdated, totalSkipped)
     }
 
     // MARK: - Offline KG Sync logic

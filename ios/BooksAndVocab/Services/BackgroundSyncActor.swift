@@ -21,6 +21,16 @@ enum SettingsResetFailureInjectionError: LocalizedError {
 }
 #endif
 
+/// One review state as it went into a `PATCH api/vocab/review` payload.
+struct ReviewStatePushEntry {
+    let id: PersistentIdentifier
+    /// `lastReviewedAt ?? dateAdded` when the payload was built. Acknowledging
+    /// the entry records this instant, so any later review stays dirty.
+    let sentAt: Date
+    /// The JSON object sent to the server.
+    let body: [String: Any]
+}
+
 @ModelActor
 actor BackgroundSyncActor {
 
@@ -444,13 +454,13 @@ actor BackgroundSyncActor {
     /// predicate because it compares two of the entry's own optional dates,
     /// which `#Predicate` does not express. The fetch is local and bounded by
     /// the library size; the payload and the round trip were the expensive part.
-    func buildReviewStatePushPayload() throws -> [[String: Any]] {
+    func buildReviewStatePushPayload() throws -> [ReviewStatePushEntry] {
         let descriptor = FetchDescriptor<VocabularyEntry>(
             predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 }
         )
         let entries = try modelContext.fetch(descriptor).filter(\.needsReviewStatePush)
 
-        var payload: [[String: Any]] = []
+        var payload: [ReviewStatePushEntry] = []
         for entry in entries {
             let lastReviewed = entry.lastReviewedAt ?? entry.dateAdded
             var item: [String: Any] = [
@@ -466,24 +476,28 @@ actor BackgroundSyncActor {
             if let cardId = entry.kgCardId, !cardId.isEmpty {
                 item["card_id"] = cardId
             }
-            payload.append(item)
+            payload.append(ReviewStatePushEntry(id: entry.persistentModelID, sentAt: lastReviewed, body: item))
         }
         return payload
     }
 
-    /// Record that the backend accepted the review states we sent.
+    /// Record that the backend accepted the review states in `sent`.
     ///
-    /// `boundary` is captured *before* the payload is built, so a review that
-    /// lands while the request is in flight stays dirty and goes out next sync
-    /// instead of being silently acknowledged as already-sent.
-    func markReviewStatesPushed(upTo boundary: Date) throws {
+    /// Each entry is acknowledged at the instant it was sent, not at a
+    /// wall-clock boundary. A review persisted while its batch was in flight
+    /// has a later `lastReviewedAt`, so it stays dirty and goes out next sync,
+    /// even if its answer time predates the acknowledgement (#2483).
+    func markReviewStatesPushed(_ sent: [ReviewStatePushEntry]) throws {
+        guard !sent.isEmpty else { return }
+        let sentAt = Dictionary(sent.map { ($0.id, $0.sentAt) }, uniquingKeysWith: { max($0, $1) })
         let descriptor = FetchDescriptor<VocabularyEntry>(
             predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 }
         )
         var marked = 0
-        for entry in try modelContext.fetch(descriptor) where entry.needsReviewStatePush {
-            guard (entry.lastReviewedAt ?? entry.dateAdded) <= boundary else { continue }
-            entry.reviewStateSyncedAt = boundary
+        for entry in try modelContext.fetch(descriptor) {
+            guard let instant = sentAt[entry.persistentModelID] else { continue }
+            // Never move the watermark backwards: a pull may have acknowledged a newer server state meanwhile.
+            entry.reviewStateSyncedAt = max(entry.reviewStateSyncedAt ?? .distantPast, instant)
             marked += 1
         }
         guard marked > 0 else { return }

@@ -1009,7 +1009,7 @@ struct BackgroundSyncActorTests {
         let actor = BackgroundSyncActor(modelContainer: container)
         let payload = try await actor.buildReviewStatePushPayload()
 
-        #expect(payload.map { $0["word"] as? String } == ["reviewed-since"])
+        #expect(payload.map { $0.body["word"] as? String } == ["reviewed-since"])
     }
 
     /// A card the server has never been told about must be sent at least once,
@@ -1023,27 +1023,37 @@ struct BackgroundSyncActorTests {
         try context.save()
 
         let actor = BackgroundSyncActor(modelContainer: container)
-        #expect(try await actor.buildReviewStatePushPayload().count == 1)
+        let sent = try await actor.buildReviewStatePushPayload()
+        #expect(sent.count == 1)
 
-        try await actor.markReviewStatesPushed(upTo: Date())
+        try await actor.markReviewStatesPushed(sent)
         #expect(try await actor.buildReviewStatePushPayload().isEmpty)
     }
 
-    /// A review that lands *during* the push must stay dirty: the boundary is
-    /// captured before the payload is built, so anything newer is not acked.
-    @Test func markReviewStatesPushed_leavesReviewsNewerThanTheBoundaryDirty() async throws {
+    /// #2483: a review persisted after its card was put in the payload must
+    /// stay dirty. The ack covers only the instant that was sent, so a later
+    /// `lastReviewedAt` survives even when it predates the ack's wall clock.
+    @Test func markReviewStatesPushed_leavesReviewsSavedAfterTheSendDirty() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
-        let boundary = Date(timeIntervalSince1970: 1_800_000_000)
+        let sentReview = Date().addingTimeInterval(-3600)
 
         let inFlight = VocabularyEntry(word: "reviewed-mid-push", translation: "m", context: "c", bookTitle: "B")
         inFlight.markSynced()
-        inFlight.lastReviewedAt = boundary.addingTimeInterval(5)   // reviewed after the boundary
+        inFlight.lastReviewedAt = sentReview
         context.insert(inFlight)
         try context.save()
 
         let actor = BackgroundSyncActor(modelContainer: container)
-        try await actor.markReviewStatesPushed(upTo: boundary)
+        let sent = try await actor.buildReviewStatePushPayload()
+
+        // The next answer is persisted while the request is in flight.
+        let writer = ModelContext(container)
+        let next = try #require(try writer.fetch(FetchDescriptor<VocabularyEntry>()).first)
+        next.lastReviewedAt = sentReview.addingTimeInterval(30)
+        try writer.save()
+
+        try await actor.markReviewStatesPushed(sent)
 
         #expect(try await actor.buildReviewStatePushPayload().count == 1)
     }
