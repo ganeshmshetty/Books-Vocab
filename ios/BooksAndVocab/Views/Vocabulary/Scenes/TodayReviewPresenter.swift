@@ -324,6 +324,8 @@ struct TodayReviewPresenter: View {
     var onToggleTemporaryDetail: () -> Void = {}
     /// #2043／#3130：「+N」點擊 → session 切換該群組展開。預設 no-op（fixture / catalog）。
     var onToggleLinkGroup: (String) -> Void = { _ in }
+    /// #3135：評分按鈕的下次間隔文字（取代 session 計數）。nil ＝ 目前沒有可評分的卡。
+    var gradeHints: ReviewGradeIntervalHints? = nil
 
     /// 給 extension 判斷能否互動
     var isCardInteractive: Bool {

@@ -376,6 +376,15 @@ final class TodayReviewState {
         }
     }
 
+    /// #3135：目前卡兩顆評分按鈕的下次間隔提示。baseline 取 session 快照（與 flush 寫入同源）。
+    func gradeIntervalHints(settings: NotebookSettingsSnapshot) -> ReviewGradeIntervalHints? {
+        guard let entry = currentEntry, session.currentIndex < persistence.queueBaselines.count else { return nil }
+        return ReviewGradeIntervalHints(
+            baseline: persistence.queueBaselines[session.currentIndex],
+            settings: settings.reviewSettings(for: entry.notebookId)
+        )
+    }
+
     /// #3130：「+N」展開由 session 持有；動畫經 `AppMotionResolver`（Reduce Motion 下為 cross-fade）。
     func toggleLinkGroup(_ groupID: String) {
         guard let key = currentCardState?.card.reviewCardKey else { return }

@@ -982,6 +982,10 @@
 "todayReview.card.notebook.unnamed" = "名前のない単語帳";
 "todayReview.saveFailure" = "復習結果はまだ保存されていません。次に復習を開いたときに自動で再試行されます。";
 "todayReview.linkHideFailed" = "リンクを非表示にできなかったため、元に戻しました。";
+"todayReview.interval.hours" = "%@時間";
+"todayReview.interval.days" = "%@日";
+"todayReview.interval.months" = "%@か月";
+"todayReview.grade.nextInterval" = "次回の復習：%@後";
 "todayReview.autoplay.blockedHint" = "自動再生中は先に自動再生をオフにしてください";
 
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */

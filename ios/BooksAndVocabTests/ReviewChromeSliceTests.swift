@@ -27,8 +27,7 @@ struct ReviewChromeSliceTests {
         autoplaySpeedName: "1×",
         autoplayProgress: 0,
         progressText: "1 / 8",
-        forgotCount: 0,
-        rememberedCount: 0,
+        gradeHints: nil,
         canGoPrevious: false,
         canGoNext: true,
         isCardInteractive: true,
@@ -119,9 +118,12 @@ struct ReviewChromeSliceTests {
         #expect(Self.makeTopBar() == Self.makeTopBar(onShuffle: { _ = 1 }))
         #expect(Self.makeTopBar() != Self.makeTopBar(model: changed))
 
-        var counted = Self.toolbarModel
-        counted.forgotCount += 1
+        var hinted = Self.toolbarModel
+        hinted.gradeHints = ReviewGradeIntervalHints(
+            baseline: .init(reviewIntervalHours: 24, nextReviewAt: .distantPast, lastReviewedAt: nil, reviewCount: 2, lapseCount: 0, reviewStreak: 2, lastReviewFeedbackRaw: 1),
+            settings: .default
+        )
         #expect(Self.makeControls() == Self.makeControls(onForgotTap: { _ = 1 }))
-        #expect(Self.makeControls() != Self.makeControls(model: counted))
+        #expect(Self.makeControls() != Self.makeControls(model: hinted))
     }
 }

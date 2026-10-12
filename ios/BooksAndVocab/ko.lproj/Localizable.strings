@@ -982,6 +982,10 @@
 "todayReview.card.notebook.unnamed" = "이름 없는 단어장";
 "todayReview.saveFailure" = "복습 결과가 아직 저장되지 않았습니다. 다음에 복습을 열 때 자동으로 다시 시도합니다.";
 "todayReview.linkHideFailed" = "링크를 숨기지 못해 다시 표시했습니다.";
+"todayReview.interval.hours" = "%@시간";
+"todayReview.interval.days" = "%@일";
+"todayReview.interval.months" = "%@개월";
+"todayReview.grade.nextInterval" = "다음 복습: %@ 후";
 "todayReview.autoplay.blockedHint" = "자동 재생 중에는 먼저 자동 재생을 끄세요";
 
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */

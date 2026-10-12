@@ -982,6 +982,10 @@
 "todayReview.card.notebook.unnamed" = "未命名单字本";
 "todayReview.saveFailure" = "复习结果尚未存档，下次打开复习时会自动重试";
 "todayReview.linkHideFailed" = "无法隐藏链接，已还原";
+"todayReview.interval.hours" = "%@ 小时";
+"todayReview.interval.days" = "%@ 天";
+"todayReview.interval.months" = "%@ 个月";
+"todayReview.grade.nextInterval" = "下次复习：%@后";
 "todayReview.autoplay.blockedHint" = "自动播放中，请先关闭";
 
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */

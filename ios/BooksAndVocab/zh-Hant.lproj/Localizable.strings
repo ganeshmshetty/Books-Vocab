@@ -990,6 +990,10 @@
 "todayReview.card.notebook.unnamed" = "未命名單字本";
 "todayReview.saveFailure" = "複習結果尚未存檔，下次開啟複習時會自動重試";
 "todayReview.linkHideFailed" = "無法隱藏連結，已還原";
+"todayReview.interval.hours" = "%@ 小時";
+"todayReview.interval.days" = "%@ 天";
+"todayReview.interval.months" = "%@ 個月";
+"todayReview.grade.nextInterval" = "下次複習：%@後";
 "todayReview.autoplay.blockedHint" = "自動播放中，請先關閉";
 
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */

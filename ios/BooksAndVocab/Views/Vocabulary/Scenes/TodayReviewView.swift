@@ -226,7 +226,8 @@ struct TodayReviewView: View {
             collocationExplanations: state.currentCollocationExplanations,
             notebookBadges: notebookBadges,
             onToggleTemporaryDetail: { state.toggleTemporaryDetail() },
-            onToggleLinkGroup: { state.toggleLinkGroup($0) }
+            onToggleLinkGroup: { state.toggleLinkGroup($0) },
+            gradeHints: state.gradeIntervalHints(settings: notebookSettingsSnapshot)
         )
         .toastOverlay()
         .task {
