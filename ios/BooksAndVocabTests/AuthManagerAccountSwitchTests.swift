@@ -352,6 +352,23 @@ struct AuthManagerAccountSwitchTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.sentinel.path))
     }
 
+    /// A logout signs the owner out, so nothing defers its derived state: a failed logout wipe still
+    /// purges the downloads and review snapshot at once (#2717, #3228). Only a refused switch keeps them.
+    @Test func failed_logout_wipe_still_purges_derived_state() async throws {
+        let fixture = try Self.makeDerivedFixture()
+        let cleaner = Self.makeRealCleaner(wipe: ScriptedWipe(failures: .max), roots: fixture.roots)
+
+        let wiped = await cleaner.clearLocalDataReportingFailure(
+            container: Self.makeContainer(),
+            reason: "user_logout",
+            owner: "user-a",
+            deletedAccountID: nil
+        )
+
+        #expect(wiped == false)
+        #expect(!FileManager.default.fileExists(atPath: fixture.sentinel.path), "a signed-out account's downloads must not outlive its logout")
+    }
+
     /// #3229: a wipe stuck past the retry cap stops retrying and refuses sign-in. The store-rebuild
     /// recovery deletes the rows; this process still refuses sign-in, and the next launch admits it.
     @Test func wipe_stuck_past_retry_cap_recovers_by_store_rebuild_on_next_launch() async {

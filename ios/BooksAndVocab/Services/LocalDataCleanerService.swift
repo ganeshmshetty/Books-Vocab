@@ -15,8 +15,8 @@ final class LocalDataCleanerService: LocalDataClearing {
     /// no longer a recovery path: only a store rebuild can clear the rows (#3229).
     static let pendingWipeFailureCountKey = "kg_pending_local_wipe_failures"
     static let pendingWipeFailureLimit = 5
-    /// Set when a failed wipe deferred the derived-state purge (#3229). Cleared by the wipe that succeeds
-    /// or by a refused switch, whose previous account keeps its derived state.
+    /// Set when a failed account-switch wipe deferred the derived-state purge (#3229). Cleared by the wipe
+    /// that succeeds or by a refused switch, whose previous account keeps its derived state.
     static let pendingDerivedPurgeKey = "kg_pending_local_wipe_derived_purge"
 
     private let wipeRows: RowWipe
@@ -40,6 +40,13 @@ final class LocalDataCleanerService: LocalDataClearing {
 
     static func persistedPendingWipeOwner(defaults: UserDefaults = .standard) -> String? {
         defaults.string(forKey: pendingWipeOwnerKey)
+    }
+
+    /// Only an account switch can be refused after a failed wipe, leaving its previous account signed in
+    /// (`manual_login_account_switch`, `account_switch_<provider>`). Every other reason is a logout, whose
+    /// derived state is purged even when the rows could not be wiped (#3229).
+    static func defersDerivedPurgeOnFailure(reason: String) -> Bool {
+        reason == "manual_login_account_switch" || reason.hasPrefix("account_switch")
     }
 
     var pendingLocalWipeOwner: String? { Self.persistedPendingWipeOwner(defaults: defaults) }
@@ -74,9 +81,9 @@ final class LocalDataCleanerService: LocalDataClearing {
                 cloud: CloudPreferencesSync.shared
             )
         }
-        // A failed wipe leaves the rows behind and may be refused (a switch keeps the previous account
-        // signed in), so its derived state must survive until the wipe completes (#3229).
-        if wiped {
+        // A failed switch wipe is refused and keeps the previous account signed in, so its derived state
+        // must survive until the wipe completes (#3229). A failed logout already signed its owner out.
+        if wiped || !Self.defersDerivedPurgeOnFailure(reason: reason) {
             defaults.removeObject(forKey: Self.pendingDerivedPurgeKey)
             await Self.purgeDerivedLocalState(roots: derivedRoots)
         } else {
