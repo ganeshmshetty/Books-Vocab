@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -855,9 +856,11 @@ def test_registered_worktree_branch_identity_mismatch_is_a_hard_block(
     assert str(worktree) in report["policy"]["physical_identity_mismatches"]
 
 
-def _unregistered_dirty_worktree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+def _unregistered_dirty_worktree(
+    tmp_path: Path, name: str = "unregistered"
+) -> tuple[Path, Path, Path, Path]:
     repo, worktree = _repo_with_worktree(tmp_path)
-    unregistered = tmp_path / "unregistered"
+    unregistered = tmp_path / name
     _run_git(repo, "worktree", "add", "-b", "unregistered", str(unregistered), "main")
     (unregistered / "unregistered.txt").write_bytes(b"unregistered\n" * 128)
     state = tmp_path / "registry.json"
@@ -905,6 +908,38 @@ def test_unregistered_dirty_worktree_under_budget_warns_and_names_path(
     assert len(remedies) == 1
     assert str(unregistered) in remedies[0]
     assert f"git -C {repo} worktree remove {unregistered}" in remedies[0]
+    # #3001: the adopt half must be runnable as printed: --worktree and the
+    # required --intent (placeholder), not the bare subcommand.
+    assert (
+        f"adopt it with ./ops/worktree_orchestrate.py adopt --worktree {unregistered} "
+        "--intent <intent>" in remedies[0]
+    )
+
+
+def test_unregistered_remedy_shell_quotes_paths_with_spaces(tmp_path: Path) -> None:
+    """Issue #3001: the remedy is a command an operator copies, so a path with
+    spaces must reach the shell as one quoted argument, not split words."""
+
+    repo, unregistered, state, output = _unregistered_dirty_worktree(
+        tmp_path, name="stray checkout"
+    )
+
+    assert (
+        main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
+        == 0
+    )
+    remedies = json.loads(output.read_text(encoding="utf-8"))["policy"][
+        "unregistered_physical_remedies"
+    ]
+    assert len(remedies) == 1
+    assert (
+        f"git -C {repo} worktree remove {shlex.quote(str(unregistered))}" in remedies[0]
+    )
+    assert f"worktree remove {unregistered}" not in remedies[0]
+    assert (
+        f"adopt it with ./ops/worktree_orchestrate.py adopt --worktree "
+        f"{shlex.quote(str(unregistered))} --intent <intent>" in remedies[0]
+    )
 
 
 def test_unregistered_worktree_over_budget_blocks_on_its_own_line(
@@ -926,6 +961,52 @@ def test_unregistered_worktree_over_budget_blocks_on_its_own_line(
         reason.startswith("unregistered-physical-worktree")
         for reason in policy["blocking_reasons"]
     )
+
+
+def test_unregistered_warning_does_not_mask_registered_terminal_dirty_block(
+    tmp_path: Path,
+) -> None:
+    """Issue #3001 item 3: a stray unregistered checkout only warns, so its
+    warning must not mask a registered non-active worktree that is dirty.  The
+    verdict keeps the dirty block and the unregistered path stays listed."""
+
+    repo, terminal = _repo_with_worktree(tmp_path)
+    (terminal / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    unregistered = tmp_path / "unregistered"
+    _run_git(repo, "worktree", "add", "-b", "unregistered", str(unregistered), "main")
+    (unregistered / "unregistered.txt").write_bytes(b"unregistered\n" * 128)
+    state = tmp_path / "registry.json"
+    output = tmp_path / "lane-usage.json"
+    _write_registry(
+        state,
+        [
+            {
+                "branch": "lane-one",
+                "path": str(terminal),
+                "status": "published",
+                "claim_generation": 0,
+                "external_ids": ["DIRECT-DELIVERY-DIRTY-PUBLISHED-COMBINED"],
+            }
+        ],
+    )
+
+    assert (
+        main(["--workspace", str(repo), "--state", str(state), "--output", str(output)])
+        == BLOCKED_EXIT
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    policy = report["policy"]
+    assert policy["verdict"] == "block"
+    assert "dirty-physical-worktree" in policy["blocking_reasons"]
+    assert policy["blocking_dirty_physical_worktrees"] == [str(terminal)]
+    assert policy["unregistered_physical_worktrees"] == [str(unregistered)]
+    assert f"unregistered-physical-worktree:{unregistered}" in policy["warning_reasons"]
+    assert not any(
+        reason.startswith("unregistered-physical-worktree")
+        for reason in policy["blocking_reasons"]
+    )
+    assert len(policy["unregistered_physical_remedies"]) == 1
+    assert str(unregistered) in policy["unregistered_physical_remedies"][0]
 
 
 def test_terminal_registered_residue_is_visible_but_not_active(
@@ -2785,6 +2866,31 @@ def test_sibling_agent_lanes_neither_block_each_other_nor_mask_an_orphan(
     )
 
 
+def test_branch_probes_never_outlive_the_measurement_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CR P3: the tip and ancestry probes used a fixed 10s timeout that ignored the
+    # report's measurement deadline. A probe is now capped by the remaining budget,
+    # and a passed deadline raises before another git process starts.
+    repo, _ = _repo_with_worktree(tmp_path)
+    timeouts: list[object] = []
+    real_run = subprocess.run
+
+    def recording_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        timeouts.append(kwargs.get("timeout"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(disk_usage.subprocess, "run", recording_run)
+    disk_usage._branch_tip(repo, "main", deadline=time.monotonic() + 2)
+    disk_usage._branch_tip(repo, "main")
+    with pytest.raises(disk_usage._MeasurementBudgetExceeded):
+        disk_usage._branch_tip(repo, "main", deadline=time.monotonic() - 1)
+
+    assert len(timeouts) == 2
+    assert isinstance(timeouts[0], float) and 0 < timeouts[0] <= 2
+    assert timeouts[1] == disk_usage.PROBE_TIMEOUT_SECONDS
+
+
 def _detached_lane_report(
     tmp_path: Path, *, advance_branch: bool
 ) -> tuple[int, dict, Path]:
@@ -2836,3 +2942,124 @@ def test_detached_lane_behind_branch_tip_blocks_and_names_repair(
     assert "physical-identity-mismatch" in policy["blocking_reasons"]
     assert str(worktree) in policy["physical_identity_mismatches"]
     assert f"git -C {worktree} switch lane-one" in policy["physical_identity_repairs"]
+
+
+def _lane_one_report(tmp_path: Path, repo: Path, worktree: Path) -> tuple[int, dict]:
+    state = tmp_path / "registry.json"
+    output = tmp_path / "lane-usage.json"
+    _write_registry(
+        state,
+        [
+            {
+                "branch": "lane-one",
+                "path": str(worktree),
+                "status": "active",
+                "claim_generation": 0,
+                "external_ids": ["DIRECT-DELIVERY-DESCENDANT"],
+            }
+        ],
+    )
+    code = main(
+        ["--workspace", str(repo), "--state", str(state), "--output", str(output)]
+    )
+    return code, json.loads(output.read_text(encoding="utf-8"))
+
+
+def test_fix_branch_grown_from_registered_branch_is_a_warning_not_a_block(
+    tmp_path: Path,
+) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "switch", "-c", "lane-two")
+    (worktree / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _run_git(worktree, "add", "fix.txt")
+    _run_git(worktree, "commit", "-m", "fix grown from the lane")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == 0
+    assert policy["verdict"] == "warning"
+    assert "physical-identity-mismatch" not in policy["blocking_reasons"]
+    assert str(worktree) not in policy["physical_identity_mismatches"]
+    assert str(worktree) in policy["descendant_fix_branch_warnings"]
+    assert f"descendant-fix-branch-worktree:{worktree}" in policy["warning_reasons"]
+
+
+def test_unrelated_branch_in_a_lane_still_blocks_as_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "switch", "-c", "lane-two", "main")
+    (worktree / "sibling.txt").write_text("sibling\n", encoding="utf-8")
+    _run_git(worktree, "add", "sibling.txt")
+    _run_git(worktree, "commit", "-m", "sibling branch off main")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+
+
+def test_unrelated_branch_cut_from_main_after_lane_merged_still_blocks(
+    tmp_path: Path,
+) -> None:
+    # #3092 (b), CR P2: once the registered lane tip has landed on main (--no-ff),
+    # a branch cut from main contains that tip, yet it is unrelated to the open lane,
+    # not a fix grown from it. It must still block as identity mismatch.
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(repo, "merge", "--no-ff", "-m", "land lane-one", "lane-one")
+    _run_git(worktree, "switch", "-c", "lane-two", "main")
+    (worktree / "sibling.txt").write_text("sibling\n", encoding="utf-8")
+    _run_git(worktree, "add", "sibling.txt")
+    _run_git(worktree, "commit", "-m", "sibling branch off merged main")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+
+
+def test_timed_out_landing_probe_never_downgrades_a_lane_to_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A probe that times out cannot prove the registered tip is unlanded, so the
+    # branch must block (fail closed), not warn as a descendant fix.
+    repo, _ = _repo_with_worktree(tmp_path)
+    tip = disk_usage._branch_tip(repo, "lane-one")
+    real_run = subprocess.run
+
+    def run_timing_out_on_main(
+        *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess:
+        if "refs/heads/main" in args[0]:
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(disk_usage.subprocess, "run", run_timing_out_on_main)
+    assert not disk_usage._grown_from_registered_branch(
+        repo, {"branch": "lane-one", "head": tip}
+    )
+
+
+def test_detached_head_grown_from_registered_branch_still_blocks(
+    tmp_path: Path,
+) -> None:
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "checkout", "--detach", "HEAD")
+    (worktree / "detached.txt").write_text("detached\n", encoding="utf-8")
+    _run_git(worktree, "add", "detached.txt")
+    _run_git(worktree, "commit", "-m", "detached progress")
+
+    code, report = _lane_one_report(tmp_path, repo, worktree)
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
