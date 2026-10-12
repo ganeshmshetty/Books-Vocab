@@ -154,7 +154,7 @@ struct WordRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityRowLabel)
         .accessibilityValue(accessibilityProgressDescription)
-        .accessibilityHint(L10n.string("點兩下查看詳細資訊"))
+        .accessibilityHint(L10n.string("點兩下查看詳情"))
         .enableInjection()
     }
 

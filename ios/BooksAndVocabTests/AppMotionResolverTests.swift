@@ -29,6 +29,12 @@ struct AppMotionResolverTests {
         }
     }
 
+    @Test("Swipe-linked feedback buttons are instant under Reduce Motion and keep their spring otherwise")
+    func feedbackButtonMotionHonoursReduceMotion() {
+        #expect(TodayReviewFeedbackMotion.animation(reduceMotion: true) == nil)
+        #expect(TodayReviewFeedbackMotion.animation(reduceMotion: false) != nil)
+    }
+
     @Test("Reduce Motion off keeps every review spring")
     func springsAreKeptWhenReduceMotionIsOff() {
         for kind in Self.positional + Self.fading {

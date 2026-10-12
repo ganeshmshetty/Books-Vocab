@@ -587,7 +587,7 @@
 /* Track B — i18n residual top-5 */
 "載入音訊…" = "Loading audio…";
 "音訊載入失敗" = "Audio failed to load";
-"點兩下查看詳細資訊" = "Double-tap to view details";
+"點兩下查看詳情" = "Double-tap to view details";
 "%@ · %@" = "%@ · %@";
 "%@ · %@ · %@" = "%@ · %@ · %@";
 "已追蹤" = "Following";
@@ -852,7 +852,6 @@
 "閱讀器（EPUB/PDF/TXT/MD）" = "Reader (EPUB/PDF/TXT/MD)";
 "雲端閱讀進度與書架" = "Cloud reading progress and bookshelf";
 "關聯圖載入失敗" = "Failed to load relation graph";
-"隱藏此連結" = "Hide this link";
 "隱藏連結" = "Hide link";
 "隱藏連結失敗" = "Failed to hide link";
 "離開後同步將繼續在背景執行，可隨時返回查看進度" = "Sync continues in the background after you leave; come back any time to check progress";

@@ -39,6 +39,35 @@ struct TodayReviewCollocationStateTests {
         #expect(state.explanations.isEmpty)
     }
 
+    @Test func commit_failedSaveRollsBackEntryAndLocalState() {
+        let entry = makeEntry()
+        entry.collocationExplanations = ["take shape": "become clear gradually"]
+        var state = TodayReviewCollocationState()
+        state.sync(from: entry)
+
+        let saved = TodayReviewCollocationCommit.commit(
+            "rewritten", for: "take shape", entry: entry, state: &state, save: { false }
+        )
+
+        #expect(saved == false)
+        #expect(entry.collocationExplanations == ["take shape": "become clear gradually"])
+        #expect(state.explanations == ["take shape": "become clear gradually"])
+    }
+
+    @Test func commit_successfulSaveKeepsUpdate() {
+        let entry = makeEntry()
+        var state = TodayReviewCollocationState()
+        state.sync(from: entry)
+
+        let saved = TodayReviewCollocationCommit.commit(
+            "fresh", for: "take shape", entry: entry, state: &state, save: { true }
+        )
+
+        #expect(saved)
+        #expect(entry.collocationExplanations["take shape"] == "fresh")
+        #expect(state.explanations["take shape"] == "fresh")
+    }
+
     private func makeEntry() -> VocabularyEntry {
         VocabularyEntry(
             word: "example",

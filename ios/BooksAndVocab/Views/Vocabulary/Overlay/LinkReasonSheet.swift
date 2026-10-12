@@ -57,7 +57,7 @@ struct LinkReasonSheet: View {
                         HStack(spacing: 6) {
                             Image(systemName: "eye.slash")
                                 .font(appSkin.typography.iconTiny)
-                            Text("隱藏此連結".localized)
+                            Text("隱藏連結".localized)
                         }
                         .frame(maxWidth: .infinity)
                     }

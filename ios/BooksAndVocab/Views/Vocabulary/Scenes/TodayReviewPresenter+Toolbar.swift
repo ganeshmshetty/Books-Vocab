@@ -330,7 +330,7 @@ struct ReviewToolbarControls: View, Equatable {
     // MARK: - Feedback Buttons
 
     private var feedbackButtons: some View {
-        let spring = AppMotion.feedbackButtonSpring
+        let spring = TodayReviewFeedbackMotion.animation(reduceMotion: reduceMotion)
         return HStack(spacing: appSkin.metrics.sectionHeaderGap) {
             Button(action: onForgotTap) {
                 HStack(spacing: AppSpacing.s1) {
@@ -629,3 +629,12 @@ struct ShortcutKeyCap: View {
     }
 }
 #endif
+
+/// 滑動連動的回饋按鈕（忘記／記得）位移與縮放動效。Reduce Motion 下瞬間（#3322）；
+/// 關閉時保留 `feedbackButtonSpring`。不走 `AppMotionResolver.tracking`：那是拖拽跟手 spring，
+/// 與此按鈕 spring 不同，共用會改變 Reduce Motion 關閉時的既有手感。
+enum TodayReviewFeedbackMotion {
+    static func animation(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : AppMotion.feedbackButtonSpring
+    }
+}
