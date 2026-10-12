@@ -1,8 +1,0 @@
-{
-  "schema": "kg.complexity-budget-raise.v1",
-  "issue": 3323,
-  "raise": {
-    "ops": 121
-  },
-  "note": "#3323 next_stage ancestry check + Deliver.is_ancestor adds ~50 authored ops lines"
-}

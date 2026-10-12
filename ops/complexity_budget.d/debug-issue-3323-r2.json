@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3323,
+  "raise": {
+    "ops": 386
+  },
+  "note": "#3323 r2 (fix of PR 3342 CR P1): next_stage ancestry gate (deliver.py), CleanupService merged-head containment for GitHub Update branch (cleanup.py, bridge in application_services.py), optional merged_head_sha in the terminal proof (domain, registry_command, registry records.py), and their unit tests"
+}
