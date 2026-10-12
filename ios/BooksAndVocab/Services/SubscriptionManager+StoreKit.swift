@@ -7,6 +7,8 @@ extension SubscriptionManager {
         product: Product?,
         using kgService: any KGServing
     ) async throws {
+        // 同步請求屬於發出當下的帳號；回應只能套用於該帳號（#2592）
+        let owner = _authManager?.userId
         let environment = appStoreEnvironment(for: transaction)
         let willAutoRenew = await queryWillAutoRenew() ?? entitlements.pro.will_renew
         let snapshot = KGAppStoreSubscriptionSyncRequest(
@@ -24,7 +26,7 @@ extension SubscriptionManager {
         // 於請求發出時標記世代：發出後的本地寫入（登出、樂觀更新）使此回應失效；refresh GET 不影響（#2800）
         let generation = claimEntitlementsGeneration()
         let response = try await kgService.syncAppStoreSubscription(snapshot)
-        applySyncResponse(response, requestedAt: generation)
+        applySyncResponse(response, requestedAt: generation, owner: owner)
     }
 
     func syncCurrentEntitlements(using kgService: any KGServing) async {
