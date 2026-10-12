@@ -210,25 +210,45 @@ done
 merge_group_contexts() {
   sed -n 's/.*merge-group 的 `required` 聚合\(.*\)；同名 context.*/\1/p' <<<"$1" | grep -o '`[^`]*`' | tr -d '`' | grep -vx 'required' | sort || true
 }
+# rc: 0 match, 1 real set mismatch, 2 CI row not parsed, 3 ruby unavailable (#3310).
 merge_group_contexts_match() {
   local wf="$1" got want
+  command -v ruby >/dev/null 2>&1 || { echo "ruby unavailable: cannot read $wf needs (#3310)" >&2; return 3; }
   got="$(merge_group_contexts "$2")"
+  [ -n "$got" ] || { echo "merge-group row not parsed from tech_index.md CI row (#3310)" >&2; return 2; }
   want="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["needs"].sort' "$wf")"
-  [ -n "$got" ] && [ "$got" = "$want" ]
+  [ "$got" = "$want" ] || { echo "tech_index.md CI row merge-group contexts differ from merge-group-required.yml needs (#3300)" >&2; return 1; }
 }
-merge_group_contexts_match .github/workflows/merge-group-required.yml "$ci_row" \
-  || { echo "tech_index.md CI row merge-group contexts differ from merge-group-required.yml needs (#3300)" >&2; exit 1; }
+merge_group_contexts_match .github/workflows/merge-group-required.yml "$ci_row" || exit 1
 # red: a drifted workflow copy (one need dropped, one ghost need added) must be detected.
 ruby -ryaml -e 'w = YAML.load_file(ARGV[0]); w["jobs"]["required"]["needs"].delete("ops-suite"); File.write(ARGV[1], w.to_yaml)' \
   .github/workflows/merge-group-required.yml "$TMP/merge-group-drop.yml"
 ruby -ryaml -e 'w = YAML.load_file(ARGV[0]); w["jobs"]["required"]["needs"] << "ghost-gate"; File.write(ARGV[1], w.to_yaml)' \
   .github/workflows/merge-group-required.yml "$TMP/merge-group-add.yml"
 for drifted in "$TMP/merge-group-drop.yml" "$TMP/merge-group-add.yml"; do
-  if merge_group_contexts_match "$drifted" "$ci_row"; then
-    echo "docs-lint did not detect merge-group need drift in $drifted (#3300)" >&2
+  rc=0; merge_group_contexts_match "$drifted" "$ci_row" 2>/dev/null || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    echo "docs-lint did not detect merge-group need drift in $drifted (rc=$rc, #3300)" >&2
     exit 1
   fi
 done
+# #3310: a row that sed cannot extract is "not parsed" (rc 2), never a set mismatch (rc 1).
+bad_row="${ci_row/；同名 context/; 同名 context}"
+rc=0; merge_group_contexts_match .github/workflows/merge-group-required.yml "$bad_row" 2>"$TMP/unparsed.err" || rc=$?
+if [ "$rc" -ne 2 ] || ! grep -q 'not parsed' "$TMP/unparsed.err" || grep -q 'differ' "$TMP/unparsed.err"; then
+  echo "unparsed CI row not reported as 'not parsed' with rc 2 (rc=$rc, #3310)" >&2
+  cat "$TMP/unparsed.err" >&2
+  exit 1
+fi
+# #3310: no ruby on PATH is reported as "ruby unavailable" (rc 3), never as a set mismatch.
+noruby="$TMP/noruby-bin"; mkdir -p "$noruby"
+for t in sed grep tr sort; do ln -s "$(command -v "$t")" "$noruby/$t"; done
+rc=0; (PATH="$noruby"; hash -r; merge_group_contexts_match .github/workflows/merge-group-required.yml "$ci_row") 2>"$TMP/noruby.err" || rc=$?
+if [ "$rc" -ne 3 ] || ! grep -q 'ruby unavailable' "$TMP/noruby.err" || grep -q 'differ' "$TMP/noruby.err"; then
+  echo "missing ruby not reported as 'ruby unavailable' with rc 3 (rc=$rc, #3310)" >&2
+  cat "$TMP/noruby.err" >&2
+  exit 1
+fi
 grep -q 'PR 側.*`pr-gate.yml`.*只 needs `repo-gate`' docs/sop/delivery_control_dogfood.md || { echo "SOP lacks PR-side required clarification (#3264)" >&2; exit 1; }
 
 echo "docs-lint tests: PASS"
