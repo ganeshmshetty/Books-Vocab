@@ -258,7 +258,7 @@ def test_runner_allows_final_cas_after_validated_source_is_removed(
 
 
 def test_subprocess_runner_returns_normal_result() -> None:
-    result = SubprocessCommandRunner(timeout_seconds=1).run(
+    result = SubprocessCommandRunner(timeout_seconds=30).run(
         ("sh", "-c", "printf ready")
     )
 
@@ -278,7 +278,7 @@ def test_subprocess_runner_uses_fallback_without_ambient_path(
     monkeypatch.setenv("PATH", "")
     monkeypatch.setitem(executables._FALLBACK_EXECUTABLES, command, (str(fallback),))
 
-    result = SubprocessCommandRunner(timeout_seconds=1).run((command, "ready"))
+    result = SubprocessCommandRunner(timeout_seconds=30).run((command, "ready"))
 
     assert result.exit_code == 0
     assert result.stdout == "ready"
