@@ -574,6 +574,13 @@ def required_state(checks: list[dict[str, Any]]) -> str:
     return str(states[0])
 
 
+def check_run_state(run: dict[str, Any]) -> str:
+    """The `gh pr checks` state of one check run: its conclusion once completed."""
+    if str(run.get("status") or "").casefold() != "completed":
+        return "PENDING"
+    return str(run.get("conclusion") or "PENDING").upper()
+
+
 def started_of(run: dict[str, Any]) -> str:
     """ISO start time of a check run; ``""`` when GitHub gave none (sorts oldest)."""
     return str(run.get("started_at") or run.get("startedAt") or "")
@@ -1176,8 +1183,8 @@ class Delivery:
             self.say(f"required passed on #{number}")
             if not self.args.merge:
                 return self.summary(branch, lane, number, "ready-to-merge")
-            self.extra["review"] = self.review_gate(repo, number)
-            self.area_quality_gate(repo, number)
+            self.extra["review"] = review = self.review_gate(repo, number)
+            self.area_quality_gate(repo, number, review["head"])
             self.mutate(
                 [*delivery, "queue", "--pr", str(number)],
                 self.home,
@@ -1263,7 +1270,20 @@ class Delivery:
         ).stdout
         return json.loads(out or "[]")
 
-    def area_quality_gate(self, repo: str, number: int) -> None:
+    def _head_check_runs(self, repo: str, head: str) -> list[dict[str, Any]]:
+        """Every check run on the exact head, reruns included, with a `state`.
+
+        `gh pr checks` keeps one row per name, so a rerun could be shadowed by
+        the run it replaced; the commit's check-runs list (filter=all) keeps all
+        of them for newest_by_name to choose from by started_at (#3208).
+        """
+        runs = self.gh_pages(
+            f"repos/{repo}/commits/{head}/check-runs?filter=all&per_page=100",
+            "check_runs",
+        )
+        return [{**run, "state": check_run_state(run)} for run in runs]
+
+    def area_quality_gate(self, repo: str, number: int, head: str) -> None:
         """Hold the queue on the exact head's area quality jobs (#2833, #2870).
 
         The newest run per full check name decides, then runs aggregate by area.
@@ -1276,7 +1296,7 @@ class Delivery:
         """
 
         def settled() -> list[str] | None:
-            checks = self._pr_checks(repo, number)
+            checks = self._head_check_runs(repo, head)
             newest = newest_by_name(checks)
             area = {
                 name: check
