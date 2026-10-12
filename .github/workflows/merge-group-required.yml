@@ -143,6 +143,53 @@ jobs:
           uv sync --locked
           uv run python -m pytest -q -rs --skip-allowlist=tests/skip_allowlist.json
 
+  # The iOS routing decision on its own, so the iOS suite starts in parallel with
+  # short-gate instead of after its ~13 minute backend run (#3238). Same base and
+  # router as short-gate's classification; only the iOS outputs are read here.
+  route:
+    name: route
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ios: ${{ steps.scope.outputs.ios }}
+      ios_mode: ${{ steps.scope.outputs.ios_mode }}
+      ios_selectors: ${{ steps.scope.outputs.ios_selectors }}
+      ui_smoke: ${{ steps.scope.outputs.ui_smoke }}
+    steps:
+      - name: Checkout merge group
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Resolve merge-group diff base
+        id: base
+        env:
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null; then
+            echo "origin/main is unavailable; cannot bound the cumulative merge group" >&2
+            exit 1
+          fi
+          if ! base_sha="$(git merge-base refs/remotes/origin/main "$HEAD_SHA")"; then
+            echo "no merge base between origin/main and merge-group head $HEAD_SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "merge base is not an exact commit SHA: $base_sha" >&2
+            exit 1
+          fi
+          echo "sha=$base_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Classify merge-group scope
+        id: scope
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          ./ops/ci_scope_router.sh --base "$BASE_SHA" --head "$HEAD_SHA" --format github-output >> "$GITHUB_OUTPUT"
+
   # The Linux ops suite (ops/ci_scope_router.sh ops=true), once per merge group, as
   # the same reusable workflow pr-gate uses. macos_ops=false keeps the scarce
   # macOS pool off the queue; `required` below fails closed on a red shard.
@@ -158,19 +205,20 @@ jobs:
       macos_ops: 'false'
 
   # The iOS quality suite, once per change, with the router's decision from
-  # short-gate. run_tests=true runs the simulator test jobs; PRs compile only.
+  # route (parallel with short-gate). run_tests=true runs the simulator test
+  # jobs; PRs compile only.
   ios-quality:
     name: ios-quality
-    needs: short-gate
-    if: ${{ needs.short-gate.outputs.ios == 'true' }}
+    needs: route
+    if: ${{ needs.route.outputs.ios == 'true' }}
     uses: ./.github/workflows/ios-quality.yml
     permissions:
       contents: read
       actions: read
     with:
-      ios_mode: ${{ needs.short-gate.outputs.ios_mode }}
-      ios_selectors: ${{ needs.short-gate.outputs.ios_selectors }}
-      ui_smoke: ${{ needs.short-gate.outputs.ui_smoke }}
+      ios_mode: ${{ needs.route.outputs.ios_mode }}
+      ios_selectors: ${{ needs.route.outputs.ios_selectors }}
+      ui_smoke: ${{ needs.route.outputs.ui_smoke }}
       run_tests: 'true'
 
   # The only context branch protection and the merge queue read. It passes only
