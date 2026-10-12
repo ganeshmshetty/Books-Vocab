@@ -355,6 +355,8 @@ struct AddLinkSheet: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // The body tap is part of the same one-at-a-time link lock as 新增連結.
+                .disabled(linkLocked)
                 .accessibilityIdentifier(AddLinkCoordinator.detailIdentifier(for: entry))
                 .accessibilityValue(
                     AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: projection, isExpanded: isExpanded)
@@ -504,11 +506,10 @@ struct AddLinkSheet: View {
                     .truncationMode(.tail)
                     .accessibilityIdentifier("\(senseID).partOfSpeech")
             }
+            // Expanded rows show the full definition; the collapsed row never builds this view.
             Text(sense.definition)
                 .font(appSkin.typography.caption)
                 .foregroundStyle(appSkin.palette.secondaryText)
-                .lineLimit(3)
-                .truncationMode(.tail)
                 .accessibilityIdentifier(senseID)
             if let senseTranslation = sense.translation, senseTranslation != translation {
                 Text(senseTranslation)
@@ -535,8 +536,6 @@ struct AddLinkSheet: View {
                         ),
                         style: .example
                     )
-                    .lineLimit(3)
-                    .truncationMode(.tail)
                     .accessibilityIdentifier(
                         AddLinkCoordinator.detailExampleIdentifier(
                             for: entry,
@@ -554,6 +553,8 @@ struct AddLinkSheet: View {
     /// decides expansion, and the sheet performs the effect it names.
     private func send(_ action: AddLinkRowDisclosure.Action, in snapshot: AddLinkSearchSnapshot) {
         isSearchFocused = false
+        // VoiceOver custom actions bypass a button's .disabled, so the lock is enforced here too.
+        if case .link = action, coordinator.linkingTargetCardID != nil { return }
         switch rowDisclosure.send(action) {
         case .nothing:
             break
