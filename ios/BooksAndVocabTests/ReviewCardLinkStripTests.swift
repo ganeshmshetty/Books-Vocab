@@ -44,6 +44,19 @@ struct ReviewCardLinkStripTests {
         #expect(row.isExpandable, "an expanded row keeps its control so it can collapse")
     }
 
+    @Test func collapsedAndExpandedShareOneVisibleOrder() {
+        // #3114: one flow renders both states, so the expanded strip starts with
+        // exactly the collapsed items, in the same order, with no duplicates.
+        let group = Self.group(items: 5)
+        let collapsed = ReviewCardLinkStripLayout.row(for: group, presentation: .twoPerGroup, isExpanded: false)
+        let expanded = ReviewCardLinkStripLayout.row(for: group, presentation: .twoPerGroup, isExpanded: true)
+        #expect(
+            expanded.visible.prefix(collapsed.visible.count).map(\.id) == collapsed.visible.map(\.id),
+            "expanding only appends; it never reorders or re-renders the leading links"
+        )
+        #expect(expanded.visible.map(\.id) == group.items.map(\.id))
+    }
+
     @Test func expansionIsBoundedAndCountsTheRest() {
         // Expanding must never grow the card without limit: past the cap the
         // remainder stays a count, and that count is not expandable twice.

@@ -20,6 +20,46 @@ struct OverviewPage {
         exactlyOne(app.buttons.matching(identifier: "reviewCalendar.open"), "reviewCalendar.open")
     }
 
+    /// Region of the Overview ScrollView not covered by the navigation bar or tab bar.
+    /// Caller must ensure the ScrollView exists (property access on a missing element throws).
+    /// A hidden bar (zero matches) is valid; a duplicate bar fails the contract instead of
+    /// silently acting on an implicit first match.
+    private func actionableBand(scrollView: XCUIElement) -> CGRect {
+        let frame = scrollView.frame
+        var top = frame.minY
+        if let navigationBar = app.navigationBars.exactlyOneElementIfPresent(named: "overview navigation bar"),
+           !navigationBar.frame.isEmpty {
+            top = max(top, navigationBar.frame.maxY)
+        }
+        var bottom = frame.maxY
+        if let tabBar = app.tabBars.exactlyOneElementIfPresent(named: "overview tab bar"),
+           !tabBar.frame.isEmpty {
+            bottom = min(bottom, tabBar.frame.minY)
+        }
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: max(0, bottom - top))
+    }
+
+    /// Drag the Overview ScrollView so the opener's centre moves toward the middle of the
+    /// actionable band (#2886). Element-relative swipes start and end at fixed fractions of the
+    /// ScrollView frame, which extends under the navigation bar and tab bar, so a gesture can be
+    /// consumed by a bar and never scroll, or fling past the band in one step. This drag has both
+    /// endpoints inside the band, caps the travel at half the band height, and holds before release
+    /// so no fling momentum carries content out of the band.
+    private func dragOverviewContent(scrollView: XCUIElement, band: CGRect, openerMidY: CGFloat) {
+        // UIKit does not begin scrolling for drags shorter than its pan slop.
+        let minimumTravel: CGFloat = 24
+        let maximumTravel = band.height * 0.5
+        let needed = band.midY - openerMidY
+        let magnitude = min(max(abs(needed), minimumTravel), maximumTravel)
+        // Positive travel moves the finger down, which moves content down.
+        let travel = needed < 0 ? -magnitude : magnitude
+        let origin = scrollView.coordinate(withNormalizedOffset: .zero)
+        let x = band.midX - scrollView.frame.minX
+        let start = origin.withOffset(CGVector(dx: x, dy: band.midY - travel / 2 - scrollView.frame.minY))
+        let end = origin.withOffset(CGVector(dx: x, dy: band.midY + travel / 2 - scrollView.frame.minY))
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.3)
+    }
+
     /// Move the real Overview ScrollView until the calendar opener is both
     /// visible and hittable. The opener is below the first viewport in the
     /// production layout; existence alone is therefore not an actionable
@@ -38,24 +78,30 @@ struct OverviewPage {
         while Date() < deadline {
             if query.count == 1 {
                 let button = query.element(boundBy: 0)
+                // The actionable band is the part of the ScrollView that is not covered by the
+                // large navigation bar (which overlays content while scrolling) or the tab bar.
+                let band = scrollQuery.count == 1 && scrollView.exists
+                    ? actionableBand(scrollView: scrollView)
+                    : CGRect.null
                 if button.exists,
                    !button.frame.isEmpty,
                    scrollQuery.count == 1,
                    scrollView.exists,
                    scrollView.frame.intersects(button.frame),
+                   band.contains(button.frame),
                    button.isHittable {
                     return
                 }
 
-                if scrollQuery.count == 1, scrollView.exists, !button.frame.isEmpty, button.frame.minY < scrollView.frame.minY {
-                    scrollView.swipeDown()
+                if scrollQuery.count == 1, scrollView.exists, !button.frame.isEmpty, band.height > 0 {
+                    dragOverviewContent(scrollView: scrollView, band: band, openerMidY: button.frame.midY)
                 } else if scrollQuery.count == 1, scrollView.exists {
-                    scrollView.swipeUp()
+                    scrollView.swipeUp(velocity: .slow)
                 } else {
-                    app.swipeUp()
+                    app.swipeUp(velocity: .slow)
                 }
             } else {
-                app.swipeUp()
+                app.swipeUp(velocity: .slow)
             }
             swipes += 1
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))

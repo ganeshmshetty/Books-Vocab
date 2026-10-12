@@ -21,6 +21,7 @@ struct ReviewCardHitTargetButton<Label: View>: View {
     let action: () -> Void
     let accessibilityIdentifier: String
     var accessibilityLabel: String? = nil
+    var accessibilityValue: String? = nil
     @ViewBuilder let label: () -> Label
 
     var body: some View {
@@ -36,6 +37,7 @@ struct ReviewCardHitTargetButton<Label: View>: View {
                 .buttonStyle(.plain)
                 .appPointerHover()
                 .modifier(OptionalAccessibilityLabel(label: accessibilityLabel))
+                .modifier(OptionalAccessibilityValue(value: accessibilityValue))
                 .accessibilityIdentifier(accessibilityIdentifier)
             }
             .enableInjection()
@@ -49,6 +51,19 @@ private struct OptionalAccessibilityLabel: ViewModifier {
     func body(content: Content) -> some View {
         if let label {
             content.accessibilityLabel(label)
+        } else {
+            content
+        }
+    }
+}
+
+private struct OptionalAccessibilityValue: ViewModifier {
+    let value: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let value {
+            content.accessibilityValue(value)
         } else {
             content
         }

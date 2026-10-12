@@ -86,6 +86,10 @@ enum TodayReviewMetrics {
 
     // MARK: Fold layout(不與既有 foldJoinRoundness / paperFoldOffsetY 幾何欄位合併)
     static let foldPadding: CGFloat = 28
+    /// 正面右上角 chrome：無框字形到卡片頂／右緣的視覺距離（#3112）。
+    static let chromeCornerInset: CGFloat = AppSpacing.s3
+    /// 44pt 觸控框相對 14pt 字形每側多出的量 = (44 − 14) / 2（#3112）。
+    static let chromeHitOverhang: CGFloat = 15
     static let foldSectionSpacing: CGFloat = 24
     /// 精簡流程最後一階：section 間距降到此值（`ReviewCardLayoutSolver` 算、
     /// 卡片正反面畫，共用同一顆 token）。

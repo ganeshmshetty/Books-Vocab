@@ -357,6 +357,36 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
         editor.done()
     }
 
+    /// #3112: the front-face corner glyphs carry stable identifiers and each
+    /// hit target is at least 44pt, so the borderless glyph has no visual box
+    /// but keeps the HIG touch area.
+    @MainActor
+    func testFrontChromeGlyphsAreIdentifiedWithHitTargetsAtLeast44pt() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeck],
+            extraEnvironment: ["KG_UI_TEST_SERVER_URL": "http://127.0.0.1:9"],
+            perfLog: "review"
+        )
+        captureStep("launch", app: app)
+        _ = try startReview(app: app)
+
+        for identifier in ["todayReview.card.speak", "todayReview.card.openDetail"] {
+            let matches = app.buttons.matching(identifier: identifier)
+            // `XCUIElementQuery.element` fails the test when the query is ambiguous,
+            // so the glyph is resolved without a positional pick.
+            let glyph = matches.element
+            XCTAssertTrue(
+                glyph.waitUntilExists(timeout: 8),
+                "正面右上角必須有可辨識的按鈕 \(identifier)"
+            )
+            XCTAssertEqual(matches.count, 1, "\(identifier) identifier 必須唯一")
+            let frame = glyph.frame
+            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(identifier) 觸控寬度必須 >= 44pt，實際 \(frame.width)")
+            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(identifier) 觸控高度必須 >= 44pt，實際 \(frame.height)")
+        }
+        captureStep("front-chrome", app: app)
+    }
+
     /// Autoplay must not keep flipping cards under the editor sheet, and the pause
     /// it takes must survive the sheet closing.
     @MainActor

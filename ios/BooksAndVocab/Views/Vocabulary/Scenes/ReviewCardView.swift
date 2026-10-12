@@ -153,6 +153,7 @@ struct ReviewCardView: View {
     @Environment(\.appSkin) private var appSkin
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.speechService) private var speechService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let content: ReviewCardContent
     let profile: ReviewCardLayoutProfile
@@ -450,6 +451,7 @@ struct ReviewCardView: View {
                         ? L10n.string("todayReview.card.temporaryDetail.show")
                         : L10n.string("todayReview.card.temporaryDetail.restore"),
                     identifier: interactive ? "todayReview.card.temporaryDetail" : nil,
+                    borderless: true,
                     action: { if interactive { actions.toggleTemporaryDetail?() } }
                 )
                 .accessibilityValue(temporaryDetailToggle.rawValue)
@@ -457,15 +459,26 @@ struct ReviewCardView: View {
             VocabChromeIconButton(
                 systemImage: "speaker.wave.2.fill",
                 label: "播放發音".localized,
+                identifier: interactive ? "todayReview.card.speak" : nil,
+                borderless: true,
                 action: { if interactive { speechService.speak(card.word) } }
             )
             VocabChromeIconButton(
                 systemImage: "arrow.up.right",
                 label: "查看詳情".localized,
+                identifier: interactive ? "todayReview.card.openDetail" : nil,
+                borderless: true,
                 action: { if interactive { actions.detailTap?() } }
             )
         }
-        .padding(reviewCardPadding)
+        // The glyph sits centred in a 44pt touch box, so the box overhangs it by
+        // `chromeHitOverhang`. Offsetting by the difference puts the visible glyph
+        // `chromeCornerInset` from the card's top and trailing edges without
+        // changing the word-row reserve (#3112).
+        .offset(
+            x: TodayReviewMetrics.chromeHitOverhang - TodayReviewMetrics.chromeCornerInset,
+            y: TodayReviewMetrics.chromeCornerInset - TodayReviewMetrics.chromeHitOverhang
+        )
         .allowsHitTesting(interactive)
     }
 
@@ -895,47 +908,41 @@ struct ReviewCardView: View {
     ) -> some View {
         let isExpanded = linkExpansion.isExpanded(group.id, cardKey: currentCardKey)
         let row = ReviewCardLinkStripLayout.row(for: group, presentation: presentation, isExpanded: isExpanded)
-        VStack(alignment: .leading, spacing: appSkin.spacing.inlineGap) {
-            HStack(spacing: AppSpacing.s1) {
-                Text(group.label.localized + "：")
-                    .font(appSkin.typography.caption)
-                    .foregroundStyle(appSkin.palette.tertiaryText)
+        let shown = row.visible
+        // One flow for both states (#3114): the label is the hanging-indent cell, and
+        // each chip carries its own " | " so a separator never starts a line.
+        HangingIndentFlowLayout(spacing: AppSpacing.s1) {
+            Text(group.label.localized + "：")
+                .font(appSkin.typography.caption)
+                .foregroundStyle(appSkin.palette.tertiaryText)
 
-                ForEach(Array(row.leading.enumerated()), id: \.element.id) { index, item in
+            ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                HStack(spacing: AppSpacing.s1) {
                     linkItemButton(item)
-
-                    if index < row.leading.count - 1 {
+                    if index < shown.count - 1 {
                         Text("|")
                             .font(appSkin.typography.caption)
                             .foregroundStyle(appSkin.palette.quaternaryText)
                     }
                 }
-
-                if row.isExpandable {
-                    linkOverflowToggle(group, row: row, isExpanded: isExpanded)
-                } else if row.overflowCount > 0 {
-                    // Links the device does not hold: counted, but nothing to expand.
-                    Text("+\(row.overflowCount)")
-                        .font(appSkin.typography.caption)
-                        .foregroundStyle(appSkin.palette.quaternaryText)
-                }
             }
 
-            if !row.expanded.isEmpty {
-                CollocationFlowLayout(spacing: appSkin.spacing.inlineGap) {
-                    ForEach(row.expanded) { item in
-                        linkItemButton(item)
-                    }
+            if row.isExpandable {
+                if isExpanded, row.overflowCount > 0 {
+                    overflowCountText(row.overflowCount)
                 }
-                .transition(.opacity)
-
-                if row.overflowCount > 0 {
-                    Text("+\(row.overflowCount)")
-                        .font(appSkin.typography.caption)
-                        .foregroundStyle(appSkin.palette.quaternaryText)
-                }
+                linkOverflowToggle(group, row: row, isExpanded: isExpanded)
+            } else if row.overflowCount > 0 {
+                // Links the device does not hold: counted, but nothing to expand.
+                overflowCountText(row.overflowCount)
             }
         }
+    }
+
+    private func overflowCountText(_ count: Int) -> some View {
+        Text("+\(count)")
+            .font(appSkin.typography.caption)
+            .foregroundStyle(appSkin.palette.quaternaryText)
     }
 
     /// One tappable link (a pending placeholder explains what is happening instead).
@@ -954,27 +961,37 @@ struct ReviewCardView: View {
         }
     }
 
-    /// "+N" (collapsed) / "收合" (expanded). The tap area reaches past the glyphs
-    /// without growing the row, so the strip's height budget is untouched.
+    /// "+N" (collapsed) / "收合" (expanded), drawn as a chevron capsule so it reads as a
+    /// control. The 44pt touch target overlays the capsule and does not grow the row (#3114).
     private func linkOverflowToggle(
         _ group: ReviewCardLinkGroup,
         row: ReviewCardLinkStripLayout.Row,
         isExpanded: Bool
     ) -> some View {
         let cardKey = currentCardKey
-        return Button {
-            withAnimation(AppMotion.reviewRevealSpring) {
-                linkExpansion.toggle(group.id, cardKey: cardKey)
+        let reducesMotion = reduceMotion
+        return ReviewCardHitTargetButton(
+            action: {
+                let animation: Animation? = reducesMotion ? nil : AppMotion.reviewRevealSpring
+                withAnimation(animation) {
+                    linkExpansion.toggle(group.id, cardKey: cardKey)
+                }
+            },
+            accessibilityIdentifier: "todayReview.card.link.overflow.\(group.id)",
+            accessibilityValue: isExpanded ? "expanded" : "collapsed"
+        ) {
+            HStack(spacing: AppSpacing.s1) {
+                Text(isExpanded ? L10n.string("todayReview.card.link.collapse") : "+\(row.overflowCount)")
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(appSkin.typography.iconTiny)
+                    .accessibilityHidden(true)
             }
-        } label: {
-            Text(isExpanded ? L10n.string("todayReview.card.link.collapse") : "+\(row.overflowCount)")
-                .font(appSkin.typography.caption)
-                .foregroundStyle(isExpanded ? appSkin.palette.tertiaryText : appSkin.palette.quaternaryText)
-                .contentShape(Rectangle().inset(by: -8))
+            .font(appSkin.typography.caption)
+            .foregroundStyle(appSkin.palette.secondaryText)
+            .padding(.horizontal, AppSpacing.s2)
+            .padding(.vertical, AppSpacing.s1)
+            .background(AppRoundedRect(roundness: appSkin.roundness.pill).fill(appSkin.palette.cardBorder))
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("todayReview.card.link.overflow.\(group.id)")
-        .accessibilityValue(isExpanded ? "expanded" : "collapsed")
     }
 
     /// A link whose target card is still being created. It is a real, tappable

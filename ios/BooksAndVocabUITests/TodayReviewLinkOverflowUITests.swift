@@ -63,6 +63,7 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
         }
         XCTAssertEqual(toggle.value as? String, "collapsed")
         XCTAssertEqual(toggle.label, "+2", "收合時顯示被藏起來的連結數")
+        XCTAssertGreaterThanOrEqual(toggle.frame.height, 44, "收合控制項的觸控高度必須 >= 44pt (#3114)")
         XCTAssertTrue(waitForDrawnLinkCount(review, 2), "收合時組名旁只有兩個連結")
         captureStep("link-overflow-collapsed", app: app)
 
