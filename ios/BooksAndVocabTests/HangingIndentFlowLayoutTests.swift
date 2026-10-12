@@ -72,18 +72,34 @@ struct HangingIndentFlowLayoutTests {
         return CGSize(width: width, height: natural.height * lines)
     }
 
-    /// #3297：標籤已佔滿可用寬（valueWidth <= 0）時，項目不得被夾成 0 寬而隱形；
-    /// 必須保留自然寬，仍在標籤列上。
-    /// Red：舊實作 valueWidth = max(0, 40 - 64) = 0，line 74 將 chip 夾成 min(50, 0) = 0。
-    @Test func zeroValueColumnKeepsNaturalChipWidth() {
+    /// #3297：標籤已佔滿可用寬（valueWidth <= 0）時，項目不得被夾成 0 寬而隱形。
+    /// 標籤列已無值欄，項目改換到下一行、從 x = 0 起排，寬度夾到卡片寬（不溢出，#3317）。
+    /// Red（#3297 舊實作）：valueWidth = 0 時 chip 被夾成 min(50, 0) = 0。
+    @Test func zeroValueColumnKeepsChipVisibleInsideTheCard() {
         let result = HangingIndentFlow.place(
             sizes: [Self.label, Self.chip],
             spacing: Self.gap,
             maxWidth: 40
         )
-        #expect(result.frames[1].width == Self.chip.width, "the chip must not collapse to zero width")
+        #expect(result.frames[1].width > 0, "the chip must not collapse to zero width")
         #expect(result.frames[1].height == Self.chip.height)
-        #expect(result.frames[1].minY == 0, "the chip stays on the label row")
+        #expect(result.frames[1].minX == 0, "no value column left, so the chip starts at the card edge")
+        #expect(result.frames[1].minY > 0, "the chip wraps below the label, which already fills the row")
+        #expect(result.frames[1].maxX <= 40, "the chip stays inside the card")
+    }
+
+    /// #3317：標籤填滿卡片時，後續項目 maxX 不得超過 maxWidth（#3227 不變量）。
+    /// Red：舊實作 valueWidth = 0 不夾寬，chip 以 x = 64、寬 50 放置，maxX = 114 > 40。
+    @Test func zeroValueColumnNeverPlacesItemPastTheCard() {
+        let maxWidth: CGFloat = 40
+        let result = HangingIndentFlow.place(
+            sizes: [Self.label, Self.chip, Self.chip],
+            spacing: Self.gap,
+            maxWidth: maxWidth
+        )
+        for frame in result.frames.dropFirst() {
+            #expect(frame.maxX <= maxWidth, "no item after the label may extend past the card")
+        }
     }
 
     @Test func emptyInputHasNoGeometry() {
