@@ -69,10 +69,23 @@ struct AuthManagerAccountSwitchTests {
         private(set) var stuckRetryFailures = 0
         static let stuckRetryCap = 3
         private(set) var rebuildCount = 0
+        /// When set, each rebuild suspends until `releaseOldestRebuild()` (#3328: a second confirm while the first rebuild awaits).
+        var holdRebuilds = false
+        private var heldRebuilds: [CheckedContinuation<Void, Never>] = []
+        var suspendedRebuildCount: Int { heldRebuilds.count }
+        func releaseOldestRebuild() {
+            guard !heldRebuilds.isEmpty else { return }
+            heldRebuilds.removeFirst().resume()
+        }
         var pendingWipeNeedsStoreRebuild: Bool { stuckRetryFailures >= Self.stuckRetryCap }
         func rebuildStoreAndDiscardPendingWipe() async -> Bool {
             guard pendingWipeNeedsStoreRebuild, !failRebuild else { return false }
             rebuildCount += 1
+            if holdRebuilds {
+                await withCheckedContinuation { heldRebuilds.append($0) }
+            }
+            // Like the real rebuild, a call that resumes after the marker is gone fails.
+            guard pendingWipeNeedsStoreRebuild, !failRebuild else { return false }
             stuckRetryFailures = 0
             pendingLocalWipeOwner = nil
             return true
@@ -440,6 +453,33 @@ struct AuthManagerAccountSwitchTests {
         #expect(await manager.recoverFromStuckLocalWipe() == false)
         #expect(manager.authError == L10n.string("本機資料重建失敗，請稍後再試"))
         #expect(manager.canRecoverStuckLocalWipe, "a failed rebuild leaves the recovery available for retry")
+    }
+
+    /// #3328: a second confirm while the first rebuild is awaiting must not run the rebuild again. A duplicate
+    /// that resumes after the marker is gone fails and would overwrite the restart message the first call sets.
+    @Test func stuck_wipe_second_confirm_during_rebuild_keeps_restart_message() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        cleaner.failRetry = true
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        for _ in 0..<RecordingCleaner.stuckRetryCap {
+            await manager.login(customToken: "user-b")
+        }
+        #expect(manager.canRecoverStuckLocalWipe)
+
+        cleaner.holdRebuilds = true
+        let first = Task { await manager.recoverFromStuckLocalWipe() }
+        while cleaner.suspendedRebuildCount == 0 { await Task.yield() }
+        let second = Task { await manager.recoverFromStuckLocalWipe() }
+        for _ in 0..<20 { await Task.yield() }
+
+        cleaner.releaseOldestRebuild()
+        #expect(await first.value)
+        cleaner.releaseOldestRebuild()  // no-op once fixed; on the bug it resumes the duplicate rebuild
+        #expect(await second.value == false)
+        #expect(cleaner.rebuildCount == 1, "the rebuild runs once")
+        #expect(manager.authError == L10n.string("本機資料已重建，請重新啟動 App 後再登入"))
     }
 
     /// #3289: past the retry cap a sign-in still retries the wipe in-process. Once the failure clears,
