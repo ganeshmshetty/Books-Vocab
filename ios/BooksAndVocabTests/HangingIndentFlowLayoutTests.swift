@@ -72,6 +72,20 @@ struct HangingIndentFlowLayoutTests {
         return CGSize(width: width, height: natural.height * lines)
     }
 
+    /// #3297：標籤已佔滿可用寬（valueWidth <= 0）時，項目不得被夾成 0 寬而隱形；
+    /// 必須保留自然寬，仍在標籤列上。
+    /// Red：舊實作 valueWidth = max(0, 40 - 64) = 0，line 74 將 chip 夾成 min(50, 0) = 0。
+    @Test func zeroValueColumnKeepsNaturalChipWidth() {
+        let result = HangingIndentFlow.place(
+            sizes: [Self.label, Self.chip],
+            spacing: Self.gap,
+            maxWidth: 40
+        )
+        #expect(result.frames[1].width == Self.chip.width, "the chip must not collapse to zero width")
+        #expect(result.frames[1].height == Self.chip.height)
+        #expect(result.frames[1].minY == 0, "the chip stays on the label row")
+    }
+
     @Test func emptyInputHasNoGeometry() {
         let result = HangingIndentFlow.place(sizes: [], spacing: Self.gap, maxWidth: 130)
         #expect(result.frames.isEmpty)

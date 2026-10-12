@@ -69,7 +69,8 @@ enum HangingIndentFlow {
 
         for index in 1..<count {
             var size = measure(index, nil)
-            if size.width > valueWidth {
+            // valueWidth <= 0（標籤已佔滿）時不夾寬：夾成 0 會讓項目隱形（#3297），保留自然寬。
+            if valueWidth > 0, size.width > valueWidth {
                 let fitted = measure(index, valueWidth)
                 size = CGSize(width: min(fitted.width, valueWidth), height: fitted.height)
             }
