@@ -53,7 +53,10 @@ struct AddLinkSheet: View {
     @State private var awaitingCreationOutcome = false
     @State private var didCompleteCreation = false
     @State private var recoveredProviderErrors: Set<UUID> = []
-    @State private var expandedCandidateIDs: Set<UUID> = []
+    /// One row open at a time; a query change closes it (#3111).
+    @State private var rowDisclosure = AddLinkRowDisclosure()
+    /// 打開卡片: the word's detail page, presented over this sheet so the query survives (#3111).
+    @State private var openedCardEntry: VocabularyEntry?
     @FocusState private var isSearchFocused: Bool
     @Environment(\.toastCoordinator) private var toastCoordinator
     @Environment(\.networkMonitor) private var networkMonitor
@@ -245,6 +248,12 @@ struct AddLinkSheet: View {
             // finishes the local projection, and the source card shows it as a
             // pending link meanwhile.
         }
+        .onChange(of: searchText) { _, _ in
+            rowDisclosure.send(.queryChanged)
+        }
+        .toastSheet(item: $openedCardEntry) { entry in
+            WordDetailSheet(entry: entry, allEntries: allEntries, wrapInNavigation: true)
+        }
         .enableInjection()
     }
 
@@ -260,8 +269,8 @@ struct AddLinkSheet: View {
             } else {
                 ForEach(snapshot.candidates) { entry in
                     // Collapsed rows materialize only the first sense; the full projection
-                    // is built for the one row the user expanded (#2407).
-                    let isExpanded = expandedCandidateIDs.contains(entry.id)
+                    // is built for the one row the user expanded (#2407, #3111).
+                    let isExpanded = rowDisclosure.isExpanded(entry.id)
                     let recovering = recoveredProviderErrors.contains(entry.id)
                     let projection = AddLinkCoordinator.candidateProjection(
                         for: entry,
@@ -271,53 +280,20 @@ struct AddLinkSheet: View {
                     let isLinkingRow = entry.kgCardId != nil
                         && coordinator.linkingTargetCardID == entry.kgCardId
                     VStack(alignment: .leading, spacing: appSkin.metrics.cardBlockInnerGap) {
-                        Button { selectEntry(entry, in: snapshot) } label: {
-                            HStack(spacing: appSkin.spacing.inlineGap) {
-                                VStack(alignment: .leading, spacing: AppSpacing.microGap) {
-                                    Text(entry.word)
-                                        .font(appSkin.typography.rowWord)
-                                        .foregroundStyle(appSkin.palette.primaryText)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                    Text(entry.translation)
-                                        .font(appSkin.typography.caption)
-                                        .foregroundStyle(appSkin.palette.tertiaryText)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                if isLinkingRow {
-                                    Spacer(minLength: AppSpacing.s2)
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .accessibilityIdentifier("addLink.row.linking.\(entry.kgCardId ?? "")")
-                                }
-                            }
-                            // Full-width row: the ↵ hint overlay sits at the row's edge.
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        // One link at a time: every row is locked while one is in flight.
-                        .disabled(coordinator.linkingTargetCardID != nil)
-                        .accessibilityIdentifier(AddLinkCoordinator.detailIdentifier(for: entry))
-                        .accessibilityValue(AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: projection))
-                        .overlay(alignment: .trailing) {
-                            // Return will link exactly this word (#2038). Applied after the
-                            // button's own id/value so the hint keeps an id of its own.
-                            if !isLinkingRow, returnBehavior == .linkExact(entry.id) {
-                                Image(systemName: "return")
-                                    .font(appSkin.typography.caption)
-                                    .foregroundStyle(appSkin.palette.tertiaryText)
-                                    .accessibilityIdentifier("addLink.row.returnHint")
-                                    .transition(.opacity)
-                            }
-                        }
-                        .animation(AppMotion.contentFade, value: returnBehavior)
-
-                        dictionaryDetail(projection, for: entry, isExpanded: isExpanded)
-
-                        if projection.state != .providerDecodeError {
-                            expandToggle(for: entry, isExpanded: isExpanded)
+                        candidateSummary(
+                            entry,
+                            projection: projection,
+                            isExpanded: isExpanded,
+                            isLinkingRow: isLinkingRow,
+                            returnBehavior: returnBehavior,
+                            snapshot: snapshot
+                        )
+                        if isExpanded {
+                            expandedDetail(projection, for: entry)
+                                .transition(.opacity)
                         }
                     }
+                    .animation(AppMotion.contentFade, value: isExpanded)
                     .listRowBackground(Color.clear)
                 }
                 // Create stays reachable next to partial matches (`run` while
@@ -329,37 +305,108 @@ struct AddLinkSheet: View {
         }
     }
 
-    private func expandToggle(for entry: VocabularyEntry, isExpanded: Bool) -> some View {
-        Button {
-            if isExpanded {
-                expandedCandidateIDs.remove(entry.id)
-            } else {
-                expandedCandidateIDs.insert(entry.id)
+    /// Collapsed row (#3111): one line of word, part of speech and meaning, then two explicit
+    /// buttons. A tap on the body only expands or collapses the row; linking and opening the
+    /// card happen only through 新增連結 and 打開卡片.
+    private func candidateSummary(
+        _ entry: VocabularyEntry,
+        projection: AddLinkDetailProjection,
+        isExpanded: Bool,
+        isLinkingRow: Bool,
+        returnBehavior: AddLinkReturnBehavior,
+        snapshot: AddLinkSearchSnapshot
+    ) -> some View {
+        let linkLocked = coordinator.linkingTargetCardID != nil
+        return VStack(alignment: .leading, spacing: 0) {
+            detailStateMarker(projection, for: entry)
+            HStack(spacing: appSkin.spacing.inlineGap) {
+                Button { send(.toggleRow(entry.id), in: snapshot) } label: {
+                    HStack(spacing: appSkin.spacing.inlineGap) {
+                        Text(entry.word)
+                            .font(appSkin.typography.rowWord)
+                            .foregroundStyle(appSkin.palette.primaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .layoutPriority(1)
+                        if let partOfSpeech = projection.senses.first?.partOfSpeech {
+                            Text(partOfSpeech)
+                                .font(appSkin.typography.caption)
+                                .foregroundStyle(appSkin.palette.tertiaryText)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        Text(entry.translation)
+                            .font(appSkin.typography.caption)
+                            .foregroundStyle(appSkin.palette.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if isLinkingRow {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .accessibilityIdentifier("addLink.row.linking.\(entry.kgCardId ?? "")")
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(appSkin.typography.caption)
+                            .foregroundStyle(appSkin.palette.tertiaryText)
+                            .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                            .accessibilityHidden(true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(AddLinkCoordinator.detailIdentifier(for: entry))
+                .accessibilityValue(
+                    AddLinkCoordinator.rowAccessibilityValue(for: entry, detail: projection, isExpanded: isExpanded)
+                )
+                // VoiceOver reaches the same two actions the visible buttons carry.
+                .accessibilityAction(named: Text(L10n.string("新增連結"))) {
+                    send(.link(entry.id), in: snapshot)
+                }
+                .accessibilityAction(named: Text(L10n.string("打開卡片"))) {
+                    send(.openCard(entry.id), in: snapshot)
+                }
+
+                // Return will link exactly this word (#2038). It sits outside the body button so
+                // its identifier stays addressable.
+                if !isLinkingRow, returnBehavior == .linkExact(entry.id) {
+                    Image(systemName: "return")
+                        .font(appSkin.typography.caption)
+                        .foregroundStyle(appSkin.palette.tertiaryText)
+                        .accessibilityIdentifier("addLink.row.returnHint")
+                        .transition(.opacity)
+                }
+
+                Button { send(.link(entry.id), in: snapshot) } label: {
+                    Image(systemName: "link.badge.plus")
+                        .font(appSkin.typography.body)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(appSkin.palette.secondaryText)
+                // One link at a time: the button is locked while one is in flight.
+                .disabled(linkLocked)
+                .accessibilityLabel(L10n.string("新增連結"))
+                .accessibilityIdentifier(AddLinkCoordinator.linkIdentifier(for: entry))
+
+                Button { send(.openCard(entry.id), in: snapshot) } label: {
+                    Image(systemName: "arrow.up.right")
+                        .font(appSkin.typography.body)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(appSkin.palette.secondaryText)
+                .accessibilityLabel(L10n.string("打開卡片"))
+                .accessibilityIdentifier(AddLinkCoordinator.openCardIdentifier(for: entry))
             }
-        } label: {
-            // Reuses existing localized keys (展開 / todayReview.fold.collapse) so no new strings ship.
-            Label(
-                L10n.string(isExpanded ? "todayReview.fold.collapse" : "展開"),
-                systemImage: isExpanded ? "chevron.up" : "chevron.down"
-            )
+            .animation(AppMotion.contentFade, value: returnBehavior)
         }
-        .buttonStyle(.appCompactAction(.neutral))
-        // Same lock as the row button: one link at a time.
-        .disabled(coordinator.linkingTargetCardID != nil)
-        // Every row shares the visible title, so VoiceOver names the word it belongs to.
-        .accessibilityLabel("\(entry.word), \(L10n.string(isExpanded ? "todayReview.fold.collapse" : "展開"))")
-        .accessibilityIdentifier(AddLinkCoordinator.detailExpandIdentifier(for: entry))
     }
 
-    /// Collapsed rows show the first sense (part of speech + definition) only; examples,
-    /// per-sense translations, forms and provenance appear once the row is expanded.
-    @ViewBuilder
-    private func dictionaryDetail(
-        _ projection: AddLinkDetailProjection,
-        for entry: VocabularyEntry,
-        isExpanded: Bool
-    ) -> some View {
-        let detailID = AddLinkCoordinator.detailIdentifier(for: entry)
+    /// Hidden marker carrying the materialization verdict over every sense (UITests read it).
+    private func detailStateMarker(_ projection: AddLinkDetailProjection, for entry: VocabularyEntry) -> some View {
         Color.clear
             .frame(width: 1, height: 1)
             .accessibilityElement()
@@ -367,109 +414,155 @@ struct AddLinkSheet: View {
             .accessibilityValue(
                 "\(projection.state.accessibilityValue)|senses=\(projection.senses.count)"
             )
+    }
 
-        switch projection.state {
-        case .providerDecodeError:
-            VStack(alignment: .leading, spacing: AppSpacing.microGap) {
-                Text(L10n.string("sync.failure.reason.decoding"))
-                    .font(appSkin.typography.caption)
-                    .foregroundStyle(appSkin.palette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("\(detailID).provider.error")
-                Button(L10n.string("重試")) {
-                    recoveredProviderErrors.insert(entry.id)
-                }
-                .buttonStyle(.appCompactAction(.neutral))
-                .accessibilityIdentifier(AddLinkCoordinator.detailRetryIdentifier(for: entry))
-            }
-        case .ready, .missingExample, .recovered:
-            ForEach(Array(projection.senses.enumerated()), id: \.offset) { senseIndex, sense in
+    /// Expanded row (#3111): every sense, examples through the card's inline-markdown pipeline
+    /// (no literal `**`), forms, and provenance. The context line is dropped when it repeats the
+    /// first example.
+    @ViewBuilder
+    private func expandedDetail(_ projection: AddLinkDetailProjection, for entry: VocabularyEntry) -> some View {
+        let detailID = AddLinkCoordinator.detailIdentifier(for: entry)
+        VStack(alignment: .leading, spacing: appSkin.metrics.cardBlockInnerGap) {
+            switch projection.state {
+            case .providerDecodeError:
                 VStack(alignment: .leading, spacing: AppSpacing.microGap) {
-                    if let partOfSpeech = sense.partOfSpeech {
-                        Text(L10n.string("reviewCardLayout.field.partOfSpeech") + ": " + partOfSpeech)
-                            .font(appSkin.typography.caption)
-                            .foregroundStyle(appSkin.palette.tertiaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier(
-                                "\(AddLinkCoordinator.detailSenseIdentifier(for: entry, index: senseIndex)).partOfSpeech"
-                            )
-                    }
-                    Text(sense.definition)
+                    Text(L10n.string("sync.failure.reason.decoding"))
                         .font(appSkin.typography.caption)
                         .foregroundStyle(appSkin.palette.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier(
-                            AddLinkCoordinator.detailSenseIdentifier(for: entry, index: senseIndex)
-                        )
-                    if isExpanded, let translation = sense.translation,
-                       translation != projection.translation {
-                        Text(translation)
-                            .font(appSkin.typography.caption)
-                            .foregroundStyle(appSkin.palette.tertiaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier(
-                                "\(AddLinkCoordinator.detailSenseIdentifier(for: entry, index: senseIndex)).translation"
-                            )
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .accessibilityIdentifier("\(detailID).provider.error")
+                    Button(L10n.string("重試")) {
+                        recoveredProviderErrors.insert(entry.id)
                     }
-                    if !isExpanded {
-                        EmptyView()
-                    } else if sense.examples.isEmpty {
-                        Color.clear
-                            .frame(width: 1, height: 1)
-                            .accessibilityElement()
-                            .accessibilityIdentifier(
-                                AddLinkCoordinator.detailMissingExampleIdentifier(
-                                    for: entry,
-                                    senseIndex: senseIndex
-                                )
-                            )
-                            .accessibilityValue("missing")
-                    } else {
-                        ForEach(Array(sense.examples.enumerated()), id: \.offset) { exampleIndex, example in
-                            Text(L10n.string("reviewCardLayout.field.example") + ": " + example)
-                                .font(appSkin.typography.caption)
-                                .foregroundStyle(appSkin.palette.tertiaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityIdentifier(
-                                    AddLinkCoordinator.detailExampleIdentifier(
-                                        for: entry,
-                                        senseIndex: senseIndex,
-                                        exampleIndex: exampleIndex
-                                    )
-                                )
-                        }
-                    }
+                    .buttonStyle(.appCompactAction(.neutral))
+                    .accessibilityIdentifier(AddLinkCoordinator.detailRetryIdentifier(for: entry))
                 }
-                .accessibilityElement(children: .contain)
+            case .ready, .missingExample, .recovered:
+                ForEach(Array(projection.senses.enumerated()), id: \.offset) { senseIndex, sense in
+                    senseDetail(sense, senseIndex: senseIndex, entry: entry, translation: projection.translation)
+                }
             }
 
-            if isExpanded, !projection.forms.isEmpty {
+            if !projection.forms.isEmpty {
                 Text(L10n.string("變化形") + ": " + projection.forms.joined(separator: ", "))
                     .font(appSkin.typography.caption)
                     .foregroundStyle(appSkin.palette.tertiaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
                     .accessibilityIdentifier(AddLinkCoordinator.detailFormsIdentifier(for: entry))
             }
 
-            if isExpanded {
-                VStack(alignment: .leading, spacing: AppSpacing.microGap) {
-                    Text(L10n.string("來源") + ": " + projection.provenance.source)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("\(detailID).provenance.source")
-                    if let chapter = projection.provenance.chapter {
-                        Text(chapter)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("\(detailID).provenance.chapter")
-                    }
-                    Text(projection.provenance.context)
-                        .fixedSize(horizontal: false, vertical: true)
+            let firstExample = projection.senses.first?.examples.first
+            VStack(alignment: .leading, spacing: AppSpacing.microGap) {
+                Text(L10n.string("來源") + ": " + projection.provenance.source)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier("\(detailID).provenance.source")
+                if let chapter = projection.provenance.chapter {
+                    Text(chapter)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .accessibilityIdentifier("\(detailID).provenance.chapter")
+                }
+                let context = projection.provenance.context
+                if !context.isEmpty, context != firstExample {
+                    Text(context)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
                         .accessibilityIdentifier("\(detailID).provenance.context")
                 }
-                .font(appSkin.typography.caption)
-                .foregroundStyle(appSkin.palette.tertiaryText)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier(AddLinkCoordinator.detailProvenanceIdentifier(for: entry))
             }
+            .font(appSkin.typography.caption)
+            .foregroundStyle(appSkin.palette.tertiaryText)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(AddLinkCoordinator.detailProvenanceIdentifier(for: entry))
+        }
+        .padding(appSkin.metrics.cardBlockInnerGap)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            appSkin.palette.cardBackground,
+            in: AppRoundedRect(roundness: AppRoundness.control)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("\(detailID).expanded")
+    }
+
+    private func senseDetail(
+        _ sense: AddLinkDetailProjection.Sense,
+        senseIndex: Int,
+        entry: VocabularyEntry,
+        translation: String
+    ) -> some View {
+        let senseID = AddLinkCoordinator.detailSenseIdentifier(for: entry, index: senseIndex)
+        return VStack(alignment: .leading, spacing: AppSpacing.microGap) {
+            if let partOfSpeech = sense.partOfSpeech {
+                Text(L10n.string("reviewCardLayout.field.partOfSpeech") + ": " + partOfSpeech)
+                    .font(appSkin.typography.caption)
+                    .foregroundStyle(appSkin.palette.tertiaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier("\(senseID).partOfSpeech")
+            }
+            Text(sense.definition)
+                .font(appSkin.typography.caption)
+                .foregroundStyle(appSkin.palette.secondaryText)
+                .lineLimit(3)
+                .truncationMode(.tail)
+                .accessibilityIdentifier(senseID)
+            if let senseTranslation = sense.translation, senseTranslation != translation {
+                Text(senseTranslation)
+                    .font(appSkin.typography.caption)
+                    .foregroundStyle(appSkin.palette.tertiaryText)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier("\(senseID).translation")
+            }
+            if sense.examples.isEmpty {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityIdentifier(
+                        AddLinkCoordinator.detailMissingExampleIdentifier(for: entry, senseIndex: senseIndex)
+                    )
+                    .accessibilityValue("missing")
+            } else {
+                ForEach(Array(sense.examples.enumerated()), id: \.offset) { exampleIndex, example in
+                    CardInlineText(
+                        paragraph: CardDocumentParagraph(
+                            inlines: [CardDocumentInline.text(L10n.string("reviewCardLayout.field.example") + ": ")]
+                                + CardMarkdownInlineParser.parseParagraph(example).inlines
+                        ),
+                        style: .example
+                    )
+                    .lineLimit(3)
+                    .truncationMode(.tail)
+                    .accessibilityIdentifier(
+                        AddLinkCoordinator.detailExampleIdentifier(
+                            for: entry,
+                            senseIndex: senseIndex,
+                            exampleIndex: exampleIndex
+                        )
+                    )
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Body tap, 新增連結 and 打開卡片 all route through the disclosure reducer: the reducer
+    /// decides expansion, and the sheet performs the effect it names.
+    private func send(_ action: AddLinkRowDisclosure.Action, in snapshot: AddLinkSearchSnapshot) {
+        isSearchFocused = false
+        switch rowDisclosure.send(action) {
+        case .nothing:
+            break
+        case .link(let id):
+            guard let entry = snapshot.candidates.first(where: { $0.id == id }) else { return }
+            selectEntry(entry, in: snapshot)
+        case .openCard(let id):
+            guard let entry = snapshot.candidates.first(where: { $0.id == id }) else { return }
+            openedCardEntry = entry
         }
     }
 

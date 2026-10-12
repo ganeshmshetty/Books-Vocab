@@ -246,7 +246,7 @@ struct AddLinkCoordinatorTests {
         )
     }
 
-    @Test("collapsed row value names only the visible first sense and verdict, never hidden examples or provenance")
+    @Test("collapsed row value names only word, translation, part of speech and verdict, never the definition, examples or provenance")
     func collapsedRowValueOmitsHiddenDetail() {
         let entry = Self.entry("fortuitous", cardID: "target", notebook: "nb")
         entry.translation = "偶然發生而幸運的"
@@ -262,7 +262,9 @@ struct AddLinkCoordinatorTests {
 
         #expect(value.contains("word=fortuitous"))
         #expect(value.contains("translation=偶然發生而幸運的"))
-        #expect(value.contains("sense=Happening by chance, usually with a favorable result."))
+        #expect(value.contains("pos=adj."))
+        #expect(!value.contains("sense="))
+        #expect(!value.contains("Happening by chance"))
         #expect(value.contains("detail.state=ready-senses-2"))
         #expect(!value.contains("example="))
         #expect(!value.contains("The fortuitous meeting"))
