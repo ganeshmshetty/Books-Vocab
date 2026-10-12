@@ -34,7 +34,7 @@ verified_against: 8210e47aa53f8a2b03aafefadb7494098fa22cb1
 - build / test 共用 `/tmp/kg-ios-build.lock` 序列化，共享快取**不會**並行寫壞。
 - `com.kg.disk-guard` 每 5 分鐘檢查並維持每個 keyed root 最多 1 個可重建世代；所有受管理 iOS writer cache 合計以 **16 GiB** 為硬預算，且每次新建前保留 **6 GiB** headroom。Xcode 全域 `BooksAndVocab-*` DerivedData 另以 **4 GiB** 固定 byte cap 管理，不混入上述 aggregate；活躍／未知 iOS 工作或 lock contention 會先延後清理，安全時按最舊優先收斂可重建目錄。預算或可用空間不足時，新的 build/archive 以 exit 75 fail-closed。
 - UITest 的截圖、video、UIreview、xcresult 是 agent 觀察產物，不是 DerivedData：視覺 run 預設進系統暫存的 run bundle 並帶 TTL；只有顯式 `--retain` 才進 `build/ios-report/retained/`。source tree 只保存 fixture、契約與小型 receipt。
-- GitHub-hosted iOS CI 另有**唯讀的 SwiftPM source cache**；它不是 DerivedData，也不與本機 `.cache/` 共用。PR 可還原，只有成功的 `main` push 會寫入。
+- GitHub-hosted iOS CI 另有**唯讀的 SwiftPM source cache**；它不是 DerivedData，也不與本機 `.cache/` 共用。PR 可還原，只有排程 `main` run 的 `ios-tests (unit)` leg 會寫入（未被取消即寫，紅燈也寫；僅 cache miss 時）。
 
 ## 問題：110G 孤兒洩漏
 
@@ -110,7 +110,7 @@ GitHub-hosted macOS runner 每次都是新的 VM；本機長存的 DerivedData �
 -onlyUsePackageVersionsFromResolvedFile
 ```
 
-`ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` 是版本真相，必須提交；缺檔或 cache root 落在專案內時 helper 直接 fail-closed。cache key 精確包含 cache schema、runner OS、arch、Xcode 指紋與該 lockfile 的 hash，**沒有** restore key，避免跨 Xcode／架構吃到不相容來源。每個 iOS job 都 restore；只有可信的、成功的 `main` push 中 `ios-build` job 可 save，PR 和測試 matrix 永遠不寫 cache。
+`ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved` 是版本真相，必須提交；缺檔或 cache root 落在專案內時 helper 直接 fail-closed。cache key 精確包含 cache schema、runner OS、arch、Xcode 指紋與該 lockfile 的 hash，**沒有** restore key，避免跨 Xcode／架構吃到不相容來源。每個 iOS job 都 restore；只有可信的排程 `main` run 中 `ios-tests (unit)` leg 可 save（未被取消即寫，紅燈也寫；僅 cache miss 時）；`ios-build` 在測試路徑會 skip、不寫 cache，PR、merge queue 與 ui-smoke leg 永遠不寫 cache。
 
 這個 cache 只保存公開套件的可重建原始碼與下載內容，不能放 token、簽署資料或 DerivedData。cold miss 仍是正確路徑，首次 PR 不得因尚未命中 cache 宣稱變快；要等 main 建立 cache 後，以後續 GitHub Actions run 的 `cache-hit` 與實際 timing 比較。
 
