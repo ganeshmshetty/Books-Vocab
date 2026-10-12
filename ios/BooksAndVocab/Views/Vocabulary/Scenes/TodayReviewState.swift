@@ -7,18 +7,29 @@ struct KeyboardGradeRequest: Equatable {
     let remember: Bool
 }
 
-/// 甩出動畫中到達的評分暫存區（#3127）。只留一筆：甩出中後到的評分取代前一筆（以最後的意圖為準），
-/// settle 時取出一次後清空，因此同一評分不會套用兩次，也不會在甩出中被無條件丟棄。純值，供單元測試。
+/// 甩出動畫中到達的評分暫存區（#3127、#3278）。有界 FIFO：甩出中後到的評分依到達順序排隊，
+/// 每次 settle 只取出最前面一筆套用，因此每筆評分恰好套用一次，後到的評分不會覆蓋先到的。
+/// 容量上限 `capacity` 遠大於一次甩出間可能累積的評分數（每次 settle 消耗一筆，甩出約數百毫秒），
+/// 超出時丟棄最新一筆並保留已排隊的評分。純值，供單元測試。
 struct FlingGradeBuffer: Equatable {
-    private(set) var pendingRemember: Bool?
+    static let capacity = 8
+
+    private(set) var pendingRemembers: [Bool] = []
 
     mutating func receive(remember: Bool) {
-        pendingRemember = remember
+        guard pendingRemembers.count < Self.capacity else { return }
+        pendingRemembers.append(remember)
     }
 
+    /// settle 時取出最早到達的一筆；佇列為空回傳 nil。
     mutating func takeAtSettle() -> Bool? {
-        defer { pendingRemember = nil }
-        return pendingRemember
+        guard !pendingRemembers.isEmpty else { return nil }
+        return pendingRemembers.removeFirst()
+    }
+
+    /// 自動播放中或已無卡片時整批丟棄，與原本 settle 的丟棄語意一致。
+    mutating func discardAll() {
+        pendingRemembers.removeAll()
     }
 }
 
