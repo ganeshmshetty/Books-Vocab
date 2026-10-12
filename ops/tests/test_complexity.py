@@ -578,14 +578,17 @@ def test_raise_writes_a_fragment_for_the_areas_the_lane_is_over_only(
     )
     argv = ["raise", "--base", trunk, "--issue", "3155", "--name", "lane-a"]
     assert complexity.main([*argv, "--note", "ops grew"], repo=repo) == 0
-    assert json.loads((repo / FRAGMENTS / "lane-a.json").read_text()) == {
-        "schema": "kg.complexity-budget-raise.v1",
-        "issue": 3155,
-        "raise": {
-            "ops": 80
-        },  # measured 1020 - effective 1000 + LIFT_MARGIN["ops"] 60; docs and workflows fit
-        "note": "ops grew",
-    }
+    assert (
+        json.loads((repo / FRAGMENTS / "lane-a.json").read_text())
+        == {
+            "schema": "kg.complexity-budget-raise.v1",
+            "issue": 3155,
+            "raise": {
+                "ops": 80
+            },  # measured 1020 - effective 1000 + LIFT_MARGIN["ops"] 60; docs and workflows fit
+            "note": "ops grew",
+        }
+    )
     assert (
         json.loads((repo / complexity.BUDGET_FILE).read_text())["ceilings"]["ops"]
         == 1000
@@ -638,7 +641,11 @@ def test_two_sibling_lanes_each_adding_the_ops_margin_compose_under_the_raised_c
     # raises with `raise`: each lane passes alone, and the merged tree admits both without an OVER.
     repo = _git_repo(
         tmp_path,
-        {"ops/a.py": "1\n" * 1000, "docs/x.md": "1\n", ".github/workflows/w.yml": "1\n"},
+        {
+            "ops/a.py": "1\n" * 1000,
+            "docs/x.md": "1\n",
+            ".github/workflows/w.yml": "1\n",
+        },
     )
     _base(repo, ops=1000)
     _git(repo, "add", "-A")
