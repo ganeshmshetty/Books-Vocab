@@ -34,4 +34,13 @@ struct LinkedCardOverlayStackPushTests {
         stack.pushLinkedCard(b)
         #expect(stack.map(\.id) == [a.id, b.id])
     }
+
+    /// #3129 — the layer title is the linked word itself, never an English literal;
+    /// an empty word falls back to the localized 連結卡片.
+    @Test func layerTitleShowsWordWithLocalizedFallback() {
+        #expect(LinkedCardOverlayStack.layerTitle(for: "abrasive") == "abrasive")
+        #expect(LinkedCardOverlayStack.layerTitle(for: "  abrasive ") == "abrasive")
+        #expect(LinkedCardOverlayStack.layerTitle(for: "") == L10n.string("連結卡片"))
+        #expect(LinkedCardOverlayStack.layerTitle(for: " \n") == L10n.string("連結卡片"))
+    }
 }
