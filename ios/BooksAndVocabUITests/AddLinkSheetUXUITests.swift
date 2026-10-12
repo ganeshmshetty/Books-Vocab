@@ -156,6 +156,49 @@ final class AddLinkSheetUXUITests: UITestCase {
         captureStep("add-link-failed-pill", app: app)
     }
 
+    // MARK: - #3111 打開卡片 return path
+
+    /// 打開卡片 presents the word detail over the sheet (#3111), so the query and
+    /// its result list must survive the round trip back.
+    @MainActor
+    func testOpenCardReturnKeepsAddLinkQuery() throws {
+        guard let app = openAddLinkSheet(perfLog: "add-link-open-card-return") else { return }
+        let searchField = app.textFields["addLink.searchField"]
+        XCTAssertTrue(searchField.waitUntilValue(hasKeyboardFocus: true, timeout: 5))
+        app.typeText("fort")
+        XCTAssertTrue(lookupState(in: app).waitUntilValueEquals("results-2", timeout: 5))
+
+        // The serendipity detail that opened this sheet stays beneath it and keeps its hero in the
+        // AX tree, so existence proves nothing: the presentation is a +1 step in the hero count.
+        let heroBaseline = heroWordCount(in: app)
+        let openCard = app.buttons
+            .matching(NSPredicate(format: "label == %@", "打開卡片"))
+            .firstMatch
+        XCTAssertTrue(openCard.waitUntilExists(timeout: 5), "a collapsed row must expose 打開卡片")
+        openCard.tapWhenReady()
+        XCTAssertTrue(
+            waitUntilHeroWordCount(heroBaseline + 1, in: app, timeout: 10),
+            "打開卡片 must present the word detail over the sheet"
+        )
+
+        // The detail is the topmost sheet; its close control is the last hittable 關閉.
+        let close = topmostHittableClose(in: app, timeout: 5)
+        XCTAssertNotNil(close, "the presented word detail must expose a hittable 關閉")
+        close?.tap()
+        XCTAssertTrue(
+            waitUntilHeroWordCount(heroBaseline, in: app, timeout: 10),
+            "closing the detail must return to the sheet"
+        )
+
+        XCTAssertTrue(app.textFields["addLink.searchField"].waitUntilExists(timeout: 5))
+        XCTAssertEqual(searchField.value as? String, "fort", "the query must survive 打開卡片 and return")
+        XCTAssertTrue(
+            lookupState(in: app).waitUntilValueEquals("results-2", timeout: 5),
+            "the result list must survive 打開卡片 and return"
+        )
+        captureStep("add-link-open-card-return", app: app)
+    }
+
     // MARK: - Helpers
 
     /// Launches the linked-cards world, opens `serendipity`'s detail and its
@@ -209,6 +252,34 @@ final class AddLinkSheetUXUITests: UITestCase {
 
     func marker(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    /// Word-detail heroes in the AX tree. Count them: a stacked detail keeps its hero alive beneath.
+    func heroWordCount(in app: XCUIApplication) -> Int {
+        app.staticTexts.matching(identifier: "cardDocument.hero.word").count
+    }
+
+    func waitUntilHeroWordCount(_ expected: Int, in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if heroWordCount(in: app) == expected { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return heroWordCount(in: app) == expected
+    }
+
+    /// The topmost sheet's 關閉 is the last hittable one; it can trail the hero while the sheet animates in.
+    func topmostHittableClose(in app: XCUIApplication, timeout: TimeInterval) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let candidate = app.buttons
+                .matching(NSPredicate(format: "label == %@", "關閉"))
+                .allElementsBoundByIndex
+                .last(where: { $0.exists && $0.isHittable })
+            if let candidate { return candidate }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+        return nil
     }
 }
 
