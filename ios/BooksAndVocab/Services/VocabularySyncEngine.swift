@@ -217,24 +217,32 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                 // A delete queued during an earlier suspension supersedes this edit: do not send it.
                 guard entry.syncAction == .edit else { continue }
                 entry.prepareForRetryAttempt()
+                // Snapshot what goes on the wire. An edit saved while this request is in flight is newer than
+                // the response: it must stay pending for the next sync and must not be marked synced/rejected (#3248).
+                let sentTranslation = entry.translation
+                let sentExplanation = entry.explanationUpdateValue
+                let isSuperseded = { entry.translation != sentTranslation || entry.explanationUpdateValue != sentExplanation }
                 do {
                     try await service.updateCardContent(
                         word: entry.word,
-                        translation: entry.translation,
-                        explanation: entry.explanationUpdateValue,
+                        translation: sentTranslation,
+                        explanation: sentExplanation,
                         notebookId: entry.notebookId
                     )
                     if Task.isCancelled { return cancelledResult(since: start) }
                     // A delete queued while the update was on the wire must survive the edit's success (#2733).
-                    if entry.syncAction == .edit { entry.markSynced() }
+                    if entry.syncAction == .edit, !isSuperseded() { entry.markSynced() }
                 } catch is CancellationError {
                     return cancelledResult(since: start)
                 } catch {
-                    // A 4xx is the server's deterministic rejection: retrying re-sends the same request forever (#3207).
-                    if let reason = Self.permanentEditRejectionReason(error) {
-                        entry.markEditRejected(reason: reason)
-                    } else {
-                        entry.markSyncFailed()
+                    // A superseded edit keeps its newer pending state; the failed request is still reported below.
+                    if !isSuperseded() {
+                        // A 4xx is the server's deterministic rejection: retrying re-sends the same request forever (#3207).
+                        if let reason = Self.permanentEditRejectionReason(error) {
+                            entry.markEditRejected(reason: reason)
+                        } else {
+                            entry.markSyncFailed()
+                        }
                     }
                     encounteredFailure = true
                 }

@@ -106,6 +106,31 @@ struct WordEditSheetSaveTests {
         #expect(entry.shouldUploadOnNextSync)
     }
 
+    /// #3248：上傳進行中的列不得被改寫；否則過期回應會把較新的內容標成 synced，新內容永遠不上傳。
+    @Test func commitEditWhileUploadInFlightIsRefusedBeforeMutation() {
+        let entry = makeSyncedEntry()
+        entry.kgCardId = "card-1"
+        entry.syncAction = .edit
+        entry.syncState = .pending
+        entry.isUploadInFlight = true
+        var saveCalled = false
+
+        #expect(throws: WordEditSheet.EditValidationError.uploadInFlight) {
+            try WordEditSheet.commitEdit(
+                entry: entry,
+                translation: "新翻譯",
+                explanation: "新筆記",
+                save: { saveCalled = true }
+            )
+        }
+
+        #expect(!saveCalled)
+        #expect(entry.translation == "短暫的")
+        #expect(entry.explanation == "原始筆記")
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+    }
+
     @Test func failedSaveRestoresRejectedEditState() {
         let entry = makeSyncedEntry()
         entry.kgCardId = "card-1"
