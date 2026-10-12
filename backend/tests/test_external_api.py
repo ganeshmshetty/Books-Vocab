@@ -832,8 +832,16 @@ async def _request_while_probing(stub: _BlockingStub, slow_request) -> httpx.Res
     that loop, this coroutine cannot observe ``stub.entered`` until the stub has
     returned, so the probe is served after the blocking call instead of during it.
     """
+    from kg import observability_alerts
+
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Warm the route before timing so one-off cold-path cost (lazy DB init, imports)
+        # is not charged to the budget. The warm-up consumes the per-process run slot,
+        # so reopen it: the timed probe then takes the same granted path a real probe does.
+        warm = await client.get("/api/system/info")
+        assert warm.status_code == 200, warm.text
+        observability_alerts._reset_run_throttle()
         slow = asyncio.create_task(slow_request(client))
         deadline = time.monotonic() + 5.0
         while not stub.entered.is_set():
@@ -1413,3 +1421,42 @@ def test_external_card_meaning_update_graph_open_failure_is_captured_not_raised(
 
     assert captured == ["external_api.judge_requeue"]
     assert evicted == [card_id]
+
+
+@pytest.mark.asyncio
+async def test_probe_budget_excludes_cold_start_cost(external_api, monkeypatch):
+    """#3220: the first run of the probe's checks pays one-off cold-path cost (lazy DB init,
+    imports). A loaded runner can push that past the wall-clock budget, so the warm-up must
+    absorb it and the timed probe must not be charged for it."""
+    from kg import observability_alerts
+    from kg.judge import ManualLinkJudge
+    from kg.judge.models import Judgement
+
+    headers = {"X-KG-API-Key": _create_key(external_api)}
+    from_id, to_id = _seed_two_cards(external_api, headers)
+
+    real_run_all_checks = observability_alerts.run_all_checks
+    cold_start_calls: list[bool] = []
+
+    def run_all_checks_with_cold_start() -> None:
+        if not cold_start_calls:
+            cold_start_calls.append(True)
+            time.sleep(_PROBE_BUDGET_SECONDS * 2)
+        real_run_all_checks()
+
+    monkeypatch.setattr(observability_alerts, "run_all_checks", run_all_checks_with_cold_start)
+
+    def judge(self, *args, **kwargs):
+        return Judgement(link="shares_usage", confidence=0.9, reason="slow judge")
+
+    stub = _BlockingStub()
+    monkeypatch.setattr(ManualLinkJudge, "evaluate", stub.wrap(judge))
+    monkeypatch.setattr(external_router, "create_client", lambda _provider: SimpleNamespace())
+
+    response = await _request_while_probing(
+        stub,
+        lambda client: client.post("/api/v1/links", json={"fromId": from_id, "toId": to_id}, headers=headers),
+    )
+
+    assert response.status_code == 200, response.text
+    assert cold_start_calls == [True]
