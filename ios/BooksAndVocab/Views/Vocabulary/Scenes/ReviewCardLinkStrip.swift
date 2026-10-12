@@ -17,6 +17,10 @@ enum ReviewCardLinkStripLayout {
         let overflowCount: Int
         /// 有被藏起來、且裝置上真的有的連結 → 「+N」是按鈕；否則只是計數文字。
         let isExpandable: Bool
+
+        /// 畫面上依序出現的連結。收合與展開共用同一條流式佈局，兩者的差別只在這個清單
+        /// 是否多出 `expanded`（#3114）。
+        var visible: [KGCardLinkSummary] { leading + expanded }
     }
 
     static func row(
