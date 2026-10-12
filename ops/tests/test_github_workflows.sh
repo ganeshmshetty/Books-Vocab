@@ -1193,6 +1193,14 @@ ruby -ryaml -e 'jobs = YAML.load_file(ARGV[0])["jobs"]
   s = save.call("ios-tests")
   exit 1 unless s.size == 1 && s[0]["if"].to_s.include?("matrix.scope == \x27unit\x27") && s[0]["if"].to_s.include?("github.event_name == \x27schedule\x27")' "$IOS" \
   || fail "SwiftPM cache save is not on the unit test leg of ios-tests (ios-build skips with tests on, so the daily run would never write the cache)"
+# A red scheduled unit run must still seed the cache (success() skips it); only a
+# cancelled run may skip the save. The cache-hit guard keeps restores from re-saving.
+ruby -ryaml -e 'steps = YAML.load_file(ARGV[0])["jobs"]["ios-tests"]["steps"]
+  save = Array(steps).select { |s| s["name"] == "Save SwiftPM source cache from trusted main" }
+  exit 1 unless save.size == 1
+  cond = save[0]["if"].to_s
+  exit 1 unless cond.include?("!cancelled()") && !cond.include?("success()") && cond.include?("cache-hit != \x27true\x27")' "$IOS" \
+  || fail "SwiftPM cache save step must run unless cancelled (!cancelled(), not success()) and keep the cache-hit != 'true' guard"
 
 # --- iOS selector-aware routing (Issue #1051) --------------------------------
 # The router decides; ios-quality re-validates and owns the full fallback. These

@@ -353,7 +353,7 @@ jobs:
       # Written by the unit leg only: ios-build skips with tests on (#3238), and
       # both legs would otherwise race on the same key.
       - name: Save SwiftPM source cache from trusted main
-        if: ${{ success() && matrix.scope == 'unit' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && matrix.scope == 'unit' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/kg-ios-swiftpm
