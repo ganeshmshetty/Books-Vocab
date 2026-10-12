@@ -312,6 +312,30 @@ struct SyncAddConvergenceTests {
 
         #expect(!entry.shouldUploadOnNextSync)
         #expect(entry.kgCardId == "card-r")
+        // #3279: the rejection survives delete+undo as a terminal failed edit, not a synced row.
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .failed)
+        #expect(entry.isRejectedEdit)
+    }
+
+    @Test("編輯送出中被刪除，server 回 4xx 後撤銷 → 還原為拒收的 edit，不重送被拒內容（#3279）")
+    func undo_of_delete_queued_while_edit_in_flight_restores_rejection_without_resend() {
+        let entry = makePendingAdd("edited-in-flight")
+        entry.kgCardId = "card-i"
+        entry.markSynced()
+        entry.queueEdit()
+
+        entry.queueDelete()
+        entry.isUploadInFlight = true
+        entry.markEditRejected(reason: "HTTP 400")
+        entry.isUploadInFlight = false
+        entry.undoQueuedDelete()
+
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .failed)
+        #expect(entry.isRejectedEdit)
+        #expect(!entry.shouldUploadOnNextSync)
+        #expect(entry.kgCardId == "card-i")
     }
 
     @Test("編輯上傳失敗（可重試）後被刪除再撤銷 → 回到 pending edit 待重試，不 markSynced")

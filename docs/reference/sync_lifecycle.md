@@ -94,10 +94,14 @@ iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performC
 ### 撤銷尚未送出的刪除（SyncView「還原」）
 
 1. `pending + delete` 列以 `VocabularyEntry.undoQueuedDelete()` 撤銷
-2. `kgCardId` 非空（server 已確認持有卡）：排入刪除前為未送出的編輯（`actionBeforeDeleteRaw == edit`）→ `pending + edit`，保留編輯內容待上傳（#3059 (5)，不得 `markSynced` 丟掉編輯）；否則 → `synced + add`。`queueDelete` 只在列尚非 delete 且排入前為未送出的 edit（pending 或可重試的 failed）時記錄 `actionBeforeDeleteRaw = edit`；被 server 拒收的 edit（T12 終態）不記錄，撤銷後不重送被拒內容；重複排入不覆寫
+2. `kgCardId` 非空（server 已確認持有卡）：
+   - 排入刪除前為被 server 拒收的 edit（`rejectedReason != nil`，T12 終態）→ `failed + edit`，保留 `rejectedReason`，不重送被拒內容（#3279，不得 `markSynced`）。
+   - 排入刪除前為未送出的編輯（`actionBeforeDeleteRaw == edit`）→ `pending + edit`，保留編輯內容待上傳（#3059 (5)，不得 `markSynced` 丟掉編輯）。
+   - 否則 → `synced + add`。
+   `queueDelete` 只在列尚非 delete 且排入前為未送出的 edit（pending 或可重試的 failed）時記錄 `actionBeforeDeleteRaw = edit`；被拒收的 edit 保留 `rejectedReason` 而不記錄為可重送；重複排入不覆寫。送出中（in-flight）的 edit 被刪除後才收到 4xx，`markEditRejected` 把拒收寫到刪除列的 `rejectedReason`、清除 `actionBeforeDeleteRaw`，刪除意圖保留（#3279）
 3. `kgCardId` 為空（server 從未確認，例如上傳中的新增被刪）→ `pending + add`，下一輪 sync 上傳；**不得**變成 `synced`（synced 無 server 卡會在 full pull 的 orphan cleanup 被刪，#2484）
 4. 進行中（in-flight）的列不可撤銷（I3）：撤銷為 no-op、列保持 `pending + delete`，由回應決定去留（deleted／not_found 硬刪、failed 保留）；sync 返回後仍存在的 delete 列才可撤銷。`applyBatchDeleteResponse` 與逐卡 fallback 的 `syncAction == .delete` 守門保留作防禦
-5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T11）
+5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T14）
 
 ### 雲端資料拉回本地
 
