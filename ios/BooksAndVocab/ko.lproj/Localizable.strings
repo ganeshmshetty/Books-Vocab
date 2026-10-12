@@ -1371,7 +1371,7 @@
 "addLink.create.notebook" = "추가 위치: %@";
 
 /* Review card link strip: collapse an expanded group (#2043) */
-"todayReview.card.link.collapse" = "ì ê¸°";
+"todayReview.card.link.collapse" = "접기";
 "todayReview.card.link.overflow.a11y" = "나머지 %@개 링크 표시";
 
 /* Add Link Return key on an already linked word (#2038) */
