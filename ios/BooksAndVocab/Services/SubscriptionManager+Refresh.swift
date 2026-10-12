@@ -38,7 +38,7 @@ extension SubscriptionManager {
 
             // 已有更新的世代套用過（refresh 或樂觀／同步寫入）：本回應已過期（無論到達順序）
             guard generation > lastAppliedEntitlementsGeneration else {
-                AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(lastAppliedEntitlementsGeneration)")
+                AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(self.lastAppliedEntitlementsGeneration)")
                 return
             }
 
