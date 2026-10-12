@@ -119,14 +119,26 @@ struct ReviewCardLinkStripTests {
         #expect(!expansion.isExpanded("shares_usage", cardKey: "a"), "tapping again collapses")
     }
 
-    /// #3227：VoiceOver 的「顯示其餘 N 個連結」必須在五個語系都解析到文案，不得回退成 key 本身。
-    /// Red：key 不存在時 L10n 回傳 key，斷言失敗。
-    @Test func overflowAccessibilityLabelResolvesInEveryLocale() {
+    /// #3227：VoiceOver 文案與收合文案必須在每個語系的 `.lproj` 自己有譯文。`L10n` 會回退到 en，
+    /// 因此這裡直接查各語系 bundle、不經回退；譯文也不得含 UTF-8 被當成 Latin-1 解讀的亂碼（U+0080–U+00FF）。
+    /// Red：舊版 ja／ko／zh 的收合文案即為亂碼；缺鍵時 `L10n.format` 會回退英文，所以不能只靠它判定。
+    @Test func reviewLinkStripStringsHaveOwnTranslationsInEveryLocale() throws {
+        let keys = ["todayReview.card.link.overflow.a11y", "todayReview.card.link.collapse"]
+        let missing = "__missing_translation__"
         let languages: [AppLanguage] = [.english, .traditionalChinese, .simplifiedChinese, .japanese, .korean]
         for language in languages {
-            let label = L10n.format("todayReview.card.link.overflow.a11y", language: language, "3")
-            #expect(!label.contains("todayReview.card.link"), "\(language) falls back to the raw key")
-            #expect(label.contains("3"), "\(language) carries the hidden-link count")
+            let code = try #require(language.localizationCode)
+            let path = try #require(Bundle.main.path(forResource: code, ofType: "lproj"))
+            let bundle = try #require(Bundle(path: path))
+            for key in keys {
+                let own = bundle.localizedString(forKey: key, value: missing, table: "Localizable")
+                #expect(own != missing, "\(code) must define \(key) itself")
+                let mojibake = own.unicodeScalars.contains { (0x80...0xFF).contains($0.value) }
+                #expect(!mojibake, "\(code) \(key) is mis-decoded: \(own)")
+            }
+            let overflow = bundle.localizedString(forKey: keys[0], value: missing, table: "Localizable")
+            #expect(overflow.contains("%@"), "\(code) keeps the hidden-link count placeholder")
+            #expect(L10n.format(keys[0], language: language, "3").contains("3"), "\(code) renders the hidden-link count")
         }
     }
 

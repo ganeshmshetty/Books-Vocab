@@ -1006,7 +1006,9 @@ struct ReviewCardView: View {
     }
 
     /// "+N" (collapsed) / "收合" (expanded), drawn as a chevron capsule so it reads as a
-    /// control. The 44pt touch target overlays the capsule and does not grow the row (#3114).
+    /// control. The touch band overlays the capsule without growing the row (#3114), and is
+    /// capped at `TodayReviewMetrics.linkOverflowHitTarget` (capsule + 2×s1) so it stays
+    /// within the row gap instead of the 44pt default (#3226/#3253).
     private func linkOverflowToggle(
         _ group: ReviewCardLinkGroup,
         row: ReviewCardLinkStripLayout.Row,
