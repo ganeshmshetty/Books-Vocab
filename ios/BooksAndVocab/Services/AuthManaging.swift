@@ -100,4 +100,14 @@ protocol AuthManaging: AnyObject {
     func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?)
     func loginWithGoogle(modelContainer: ModelContainer?)
     func loginWithApple(modelContainer: ModelContainer?)
+    /// True when sign-in is refused on a wipe stuck past its retry cap and the store rebuild can run (#3229).
+    var canRecoverStuckLocalWipe: Bool { get }
+    /// Store-rebuild recovery offered by the sign-in sheet for a stuck wipe. `false` when it cannot run.
+    func recoverFromStuckLocalWipe() async -> Bool
+}
+
+extension AuthManaging {
+    // Conformers without a local-wipe gate (test and debug stubs) never offer the recovery.
+    var canRecoverStuckLocalWipe: Bool { false }
+    func recoverFromStuckLocalWipe() async -> Bool { false }
 }

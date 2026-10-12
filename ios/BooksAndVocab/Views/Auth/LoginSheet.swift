@@ -14,6 +14,7 @@ struct LoginSheet: View {
     @Environment(\.authManager) private var authManager
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @State private var isConfirmingLocalReset = false
 
     var body: some View {
         NavigationStack {
@@ -32,6 +33,19 @@ struct LoginSheet: View {
         }
         .onAppear {
             PerfLog.auth.mark("auth.gate.login.shown")
+        }
+        .confirmationDialog(
+            L10n.string("重設本機資料？"),
+            isPresented: $isConfirmingLocalReset,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.string("重設本機資料"), role: .destructive) {
+                Task { _ = await authManager.recoverFromStuckLocalWipe() }
+            }
+            .accessibilityIdentifier("auth.loginSheet.confirmResetLocalDataButton")
+            Button(L10n.string("取消"), role: .cancel) {}
+        } message: {
+            Text(L10n.string("上一個帳號的本機資料無法清除。重設會刪除本機資料庫，尚未同步的內容將無法復原。"))
         }
         .enableInjection()
     }
@@ -94,6 +108,16 @@ struct LoginSheet: View {
                     description: error
                 )
                 .padding(.horizontal, AppSpacing.s4)
+            }
+
+            // Escape for a wipe stuck past the retry cap (#3229): the only in-app path that clears the store.
+            if authManager.canRecoverStuckLocalWipe {
+                Button(L10n.string("重設本機資料"), role: .destructive) {
+                    isConfirmingLocalReset = true
+                }
+                .buttonStyle(.appAction(.destructive))
+                .padding(.horizontal, AppSpacing.s4)
+                .accessibilityIdentifier("auth.loginSheet.resetLocalDataButton")
             }
         }
         .overlay {

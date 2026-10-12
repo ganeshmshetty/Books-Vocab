@@ -274,6 +274,12 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         return false
     }
 
+    /// The sign-in sheet offers the store rebuild only while a wipe is stuck past the retry cap and this
+    /// process has not rebuilt yet (#3229).
+    var canRecoverStuckLocalWipe: Bool {
+        localDataCleaner.pendingWipeNeedsStoreRebuild && !localWipeRequiresRestart
+    }
+
     /// Store-rebuild recovery for a wipe stuck past the retry cap (#3229). Deletes the on-disk store and
     /// drops the pending marker. The live container still references the deleted files, so this process
     /// refuses every sign-in; the next launch builds a fresh store and admits sign-in normally.
@@ -314,11 +320,11 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     }
 
     private func refuseSignInUntilLocalWipeSucceeds() {
-        // Past the retry cap, retrying cannot succeed: the only escape is a store rebuild, which has no
-        // in-app entry yet. Telling the user to retry later would be a false promise (#3229).
+        // Past the retry cap the only escape is the store rebuild, offered in-app by the sign-in sheet.
+        // Telling the user to retry later would be a false promise (#3229).
         if localDataCleaner.pendingWipeNeedsStoreRebuild {
             AppLog.auth.error("sign-in refused: pending local wipe is stuck past the retry cap")
-            authError = L10n.string("本機資料無法清除，請重新安裝 App 後再登入")
+            authError = L10n.string("本機資料無法清除，請使用「重設本機資料」後再登入")
             return
         }
         AppLog.auth.error("sign-in refused: previous account's local wipe is still pending")

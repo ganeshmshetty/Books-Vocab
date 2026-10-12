@@ -390,7 +390,7 @@ struct AuthManagerAccountSwitchTests {
             manager.authError != L10n.string("上一個帳號的本機資料尚未清除，請稍後再試登入"),
             "a capped wipe must not tell the user to retry later: retrying cannot succeed"
         )
-        #expect(manager.authError == L10n.string("本機資料無法清除，請重新安裝 App 後再登入"))
+        #expect(manager.authError == L10n.string("本機資料無法清除，請使用「重設本機資料」後再登入"))
 
         #expect(await manager.recoverFromStuckLocalWipe())
         await manager.login(customToken: "user-b")
@@ -401,6 +401,24 @@ struct AuthManagerAccountSwitchTests {
         await relaunched.login(customToken: "user-b")
         #expect(relaunched.userId == "user-b")
         #expect(relaunched.isLoggedIn)
+    }
+
+    /// #3229: a capped wipe must offer an in-app recovery, not leave the user to reinstall. The recovery
+    /// runs the store rebuild and then leaves sign-in refused until the restart the message asks for.
+    @Test func stuck_wipe_offers_in_app_store_rebuild_recovery() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        cleaner.failRetry = true
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        for _ in 0..<RecordingCleaner.stuckRetryCap {
+            await manager.login(customToken: "user-b")
+        }
+        #expect(manager.canRecoverStuckLocalWipe)
+
+        #expect(await manager.recoverFromStuckLocalWipe())
+        #expect(!manager.canRecoverStuckLocalWipe, "the rebuilt store is pending a restart, not recoverable again")
+        #expect(manager.authError == L10n.string("本機資料已重建，請重新啟動 App 後再登入"))
     }
 
     // MARK: - Real cleaner fixtures (#3229)
