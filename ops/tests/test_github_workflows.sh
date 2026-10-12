@@ -1201,6 +1201,16 @@ ruby -ryaml -e 'steps = YAML.load_file(ARGV[0])["jobs"]["ios-tests"]["steps"]
   cond = save[0]["if"].to_s
   exit 1 unless cond.include?("!cancelled()") && !cond.include?("success()") && cond.include?("cache-hit != \x27true\x27")' "$IOS" \
   || fail "SwiftPM cache save step must run unless cancelled (!cancelled(), not success()) and keep the cache-hit != 'true' guard"
+# SoT docs must describe that exact writer (#3315): the ios-tests unit leg of a
+# scheduled main run that is not cancelled, red runs included. The old wording
+# (successful runs only, ios-build as writer) contradicts the save step above.
+for doc in docs/sop/ios.md docs/reference/ios_deriveddata_policy.md; do
+  grep -q 'ios-tests (unit)' "$doc" && grep -q '未被取消' "$doc" \
+    || fail "$doc does not name the SwiftPM cache writer (scheduled main ios-tests unit leg, not cancelled)"
+  if grep -Eq '只有成功的排程 `main` run|成功的 `main` push 會寫入|中 `ios-build` job 可 save' "$doc"; then
+    fail "$doc still says only successful main runs or ios-build write the SwiftPM cache"
+  fi
+done
 
 # --- iOS selector-aware routing (Issue #1051) --------------------------------
 # The router decides; ios-quality re-validates and owns the full fallback. These
