@@ -36,6 +36,8 @@ extension SubscriptionManager {
         let previousRefreshTime = lastRefreshTime
         lastRefreshTime = Date()
         let generation = claimEntitlementsGeneration()
+        refreshRequestSequence += 1
+        let refreshSequence = refreshRequestSequence
 
         beginLoading()
         defer { endLoading() }
@@ -78,12 +80,17 @@ extension SubscriptionManager {
         } catch is CancellationError {
             // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh。
             // 過期請求不得還原，否則會蓋掉較新請求寫入的冷卻時間。
-            if generation == entitlementsGeneration { lastRefreshTime = previousRefreshTime }
+            if refreshSequence == refreshRequestSequence { lastRefreshTime = previousRefreshTime }
         } catch {
-            // 只有最新發出的請求可寫入錯誤：較早請求的失敗若較新請求仍在途或已套用，即已被取代，
-            // 不得寫入 lastError（否則 paywall 會對已過時的請求顯示重試）。
-            guard generation == entitlementsGeneration else { return }
+            // 只有最新發出的 refresh 可寫入錯誤：較早 refresh 的失敗若較新 refresh 已發出，即已被取代，
+            // 不得寫入 lastError（否則 paywall 會對已過時的請求顯示重試）。判斷只看 refresh 自己的序號：
+            // 同步取號會推進共用世代，不得吞掉 refresh 自身的錯誤（#3233）。
+            // 較新的請求（同步）已寫入的錯誤仍優先（#3223）。
+            guard refreshSequence == refreshRequestSequence,
+                  lastError == nil || generation > lastErrorGeneration
+            else { return }
             lastError = error.localizedDescription
+            lastErrorGeneration = generation
         }
     }
 
