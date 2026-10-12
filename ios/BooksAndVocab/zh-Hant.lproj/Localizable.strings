@@ -576,7 +576,7 @@
 /* Track B — i18n residual top-5 */
 "載入音訊…" = "載入音訊…";
 "音訊載入失敗" = "音訊載入失敗";
-"點兩下查看詳細資訊" = "點兩下查看詳細資訊";
+"點兩下查看詳情" = "點兩下查看詳情";
 "%@ · %@" = "%@ · %@";
 "%@ · %@ · %@" = "%@ · %@ · %@";
 "已追蹤" = "已追蹤";
@@ -839,7 +839,6 @@
 "閱讀器（EPUB/PDF/TXT/MD）" = "閱讀器（EPUB/PDF/TXT/MD）";
 "雲端閱讀進度與書架" = "雲端閱讀進度與書架";
 "關聯圖載入失敗" = "關聯圖載入失敗";
-"隱藏此連結" = "隱藏此連結";
 "隱藏連結" = "隱藏連結";
 "隱藏連結失敗" = "隱藏連結失敗";
 "離開後同步將繼續在背景執行，可隨時返回查看進度" = "離開後同步將繼續在背景執行，可隨時返回查看進度";
@@ -945,7 +944,7 @@
 "vocab.chromeIcon.translation.dismiss" = "關閉翻譯面板";
 "vocab.chromeIcon.todayReview.help" = "顯示快捷鍵";
 "vocab.chromeIcon.todayReview.close" = "關閉今日複習";
-"vocab.chromeIcon.translation.detail" = "看詳情";
+"vocab.chromeIcon.translation.detail" = "查看詳情";
 "vocab.chromeIcon.translation.expand" = "展開";
 "vocab.chromeIcon.translation.collapse" = "收起";
 "vocab.chromeIcon.translation.delete" = "刪除";
@@ -972,9 +971,9 @@
 "search.clear" = "清除搜尋";
 "banner.action.retry" = "重試";
 "banner.action.dismiss" = "關閉";
-"translation.vocab.speak" = "朗讀 %@";
-"vocab.card.speak" = "朗讀 %@";
-"vocab.card.addLink" = "新增知識連結";
+"translation.vocab.speak" = "播放 %@ 發音";
+"vocab.card.speak" = "播放 %@ 發音";
+"vocab.card.addLink" = "新增連結";
 "sync.pending.undoDelete" = "復原刪除";
 "sync.pending.cancelAdd" = "取消待新增項目";
 
