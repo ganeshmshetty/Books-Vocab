@@ -831,7 +831,7 @@ class Delivery:
             if not raised:
                 return
             lines = [
-                f"- {area}: {old:,} -> {new:,} (measured {now:,} + {complexity.LIFT_MARGIN})"
+                f"- {area}: {old:,} -> {new:,} (measured {now:,} + {complexity.LIFT_MARGIN[area]})"
                 for area, (old, new, now) in raised.items()
             ]
             message = (
