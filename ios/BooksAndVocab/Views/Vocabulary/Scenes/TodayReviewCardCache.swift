@@ -88,6 +88,17 @@ struct TodayReviewCardCache {
         Set(groups.flatMap { group in group.items.map { group.id + "/" + $0.id } })
     }
 
+    /// Re-derives the link content of the prepared cards among `entries` in place, keeping
+    /// each card's measurements (#2133). Entries that are not prepared are left to `prewarm`.
+    mutating func refreshLinks(
+        forPreparedEntries entries: [VocabularyEntry],
+        peers: [String: VocabularyEntry] = [:]
+    ) {
+        for entry in entries where storage[entry.id] != nil {
+            refreshLinks(for: entry, peers: peers)
+        }
+    }
+
     mutating func prewarm(
         queue: [VocabularyEntry],
         currentIndex: Int,

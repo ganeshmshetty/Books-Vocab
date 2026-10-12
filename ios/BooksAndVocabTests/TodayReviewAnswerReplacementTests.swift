@@ -172,6 +172,8 @@ struct TodayReviewAnswerReplacementTests {
 
     /// Re-completing after back + shuffle must still drop the saved order:
     /// only the analytics event is once-per-session, the store clear is not.
+    /// Shuffle pins answered slots (#2482) and only permutes the unanswered ones,
+    /// so the back + shuffle leg needs two unanswered slots ahead of the cursor.
     @Test func recompletingAfterBackAndShuffleClearsTheSavedOrder() throws {
         TodayReviewSessionSnapshotStore.clear(for: "replace-user")
         ReviewSessionStore.clear(userID: "replace-user")
@@ -183,25 +185,22 @@ struct TodayReviewAnswerReplacementTests {
         let (container, _) = try makeContainer(entries)
         let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: "replace-user")
 
-        for _ in 0..<4 {
-            state.submit(.remembered, container: container, reviewSettings: .default)
-        }
-        #expect(state.currentEntry == nil)
-        #expect(ReviewSessionStore.loadOrder(
-            availableEntries: entries, userID: "replace-user", allowPartialQueue: true
-        ) == nil)
-
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.submit(.remembered, container: container, reviewSettings: .default)
         state.goPrevious()
         state.goPrevious()
         state.shuffleQueue()
-        // Precondition: the shuffle really persisted an order (else the final
-        // assertion would pass vacuously).
+        // Precondition: the shuffle really persisted an order over the two unanswered
+        // slots (else the final assertion would pass vacuously).
         #expect(ReviewSessionStore.loadOrder(
             availableEntries: entries, userID: "replace-user", allowPartialQueue: true
         ) != nil)
 
-        state.submit(.remembered, container: container, reviewSettings: .default)
-        state.submit(.remembered, container: container, reviewSettings: .default)
+        // Index 0-1 re-submit their existing answer (idempotent advance); 2-3 are the
+        // shuffled unanswered slots. The last submit completes the session.
+        for _ in 0..<4 {
+            state.submit(.remembered, container: container, reviewSettings: .default)
+        }
         #expect(state.currentEntry == nil)
 
         #expect(ReviewSessionStore.loadOrder(
@@ -293,6 +292,110 @@ struct TodayReviewAnswerReplacementTests {
         #expect(entry.lapseCount == 1)
         #expect(entry.reviewStreak == 0)
         #expect(entry.lastReviewFeedbackRaw == ReviewFeedback.forgot.rawValue)
+    }
+
+    /// #2482: answered slots are pinned on shuffle. Answers are keyed by queue
+    /// index, so a shuffle that moved slot 1 or 2 would grade the wrong cards on flush.
+    @Test func shuffleAfterBackKeepsAnsweredSlotsAndTheirGradingTargets() async throws {
+        TodayReviewSessionSnapshotStore.clear(for: "replace-user")
+        ReviewSessionStore.clear(userID: "replace-user")
+        defer {
+            TodayReviewSessionSnapshotStore.clear(for: "replace-user")
+            ReviewSessionStore.clear(userID: "replace-user")
+        }
+        let entries = makeEntries(6)
+        let (container, _) = try makeContainer(entries)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: "replace-user")
+
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.submit(.forgot, container: container, reviewSettings: .default)
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.goPrevious()
+        state.goPrevious()
+        let answeredBefore = Array(state.queue[0...2])
+        for _ in 0..<5 {
+            state.shuffleQueue()
+        }
+
+        #expect(zip(answeredBefore, state.queue[0...2]).allSatisfy { pair in pair.0 === pair.1 })
+        #expect(state.submittedAnswers.keys.sorted() == [0, 1, 2])
+
+        state.flushPendingAnswers(container: container, reviewSettings: .default)
+        for index in 0..<3 {
+            try await waitForFlush(state, index: index)
+        }
+
+        let fresh = ModelContext(container)
+        let feedbackByCard = Dictionary(
+            try fresh.fetch(FetchDescriptor<ReviewRecord>()).compactMap { record in
+                record.kgCardId.map { ($0, record.feedback) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        #expect(feedbackByCard[entries[0].kgCardId ?? ""] == ReviewFeedback.remembered.rawValue)
+        #expect(feedbackByCard[entries[1].kgCardId ?? ""] == ReviewFeedback.forgot.rawValue)
+        #expect(feedbackByCard[entries[2].kgCardId ?? ""] == ReviewFeedback.remembered.rawValue)
+        #expect(feedbackByCard.count == 3)
+    }
+
+    /// #2482 (review P1): a flushed answer's baseline is the pre-review snapshot. After a
+    /// restore, shuffling must keep that baseline; re-deriving it from the live (post-review)
+    /// entry makes the replace re-apply the grade on top and double-counts.
+    @Test func replaceAfterRestoreAndShuffleDoesNotDoubleCountFlushedAnswer() async throws {
+        let userID = "replace-user"
+        TodayReviewSessionSnapshotStore.clear(for: userID)
+        ReviewSessionStore.clear(userID: userID)
+        defer {
+            TodayReviewSessionSnapshotStore.clear(for: userID)
+            ReviewSessionStore.clear(userID: userID)
+        }
+        let entries = makeEntries(6)
+        let (container, _) = try makeContainer(entries)
+        let first = TodayReviewState(entries: entries, allEntries: entries, currentUserID: userID)
+        first.submit(.remembered, container: container, reviewSettings: .default)
+        first.flushPendingAnswers(container: container, reviewSettings: .default)
+        try await waitForFlush(first, index: 0)
+        first.persistSnapshot()
+        let target = first.queue[0]
+
+        let restored = TodayReviewState(entries: entries, allEntries: entries, currentUserID: userID)
+        #expect(restored.queue[0] === target)
+        #expect(restored.submittedAnswers[0]?.flushed == true)
+        restored.goPrevious()
+        for _ in 0..<5 {
+            restored.shuffleQueue()
+        }
+        #expect(restored.queue[0] === target)
+        #expect(restored.currentEntry === target)
+
+        restored.submit(.forgot, container: container, reviewSettings: .default)
+        restored.flushPendingAnswers(container: container, reviewSettings: .default)
+        try await waitForFlush(restored, index: 0)
+
+        let fresh = ModelContext(container)
+        let stored = try #require(try fresh.fetch(FetchDescriptor<VocabularyEntry>())
+            .first { $0.kgCardId == target.kgCardId })
+        let records = try fresh.fetch(FetchDescriptor<ReviewRecord>())
+            .filter { $0.kgCardId == target.kgCardId }
+        #expect(stored.reviewCount == 1)
+        #expect(records.count == 1)
+        #expect(records.first?.feedback == ReviewFeedback.forgot.rawValue)
+    }
+
+    /// #2482 (CR on #3167): an answered row re-keyed by sync mid-session changes its persistence id
+    /// but is still the same row. Its pre-review baseline must survive a reorder; re-deriving it from
+    /// the live, already-flushed (post-review) row double-counts `reviewCount` on the next replace.
+    @Test func syncQueueMetadataKeepsBaselineOfAnsweredRowReKeyedMidSession() {
+        let entries = makeEntries(3)
+        var controller = TodayReviewSessionPersistenceController(queue: entries, currentUserID: nil)
+        let original = controller.queueBaselines[0]
+
+        entries[0].reviewCount = original.reviewCount + 1
+        entries[0].kgCardId = "card-rekeyed-\(UUID().uuidString.prefix(8))"
+        controller.syncQueueMetadata(for: entries, keepingBaselinesAt: [0])
+
+        #expect(controller.queuePersistenceIDs[0] == ReviewSessionPersistence.persistenceID(for: entries[0]))
+        #expect(controller.queueBaselines[0].reviewCount == original.reviewCount)
     }
 
     private struct FetchFailure: Error {}

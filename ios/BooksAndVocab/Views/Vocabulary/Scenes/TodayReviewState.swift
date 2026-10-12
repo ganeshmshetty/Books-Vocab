@@ -38,6 +38,8 @@ final class TodayReviewState {
     var forgotFeedbackTrigger: Int { scoring.forgotFeedbackTrigger }
     var forgotCount: Int { scoring.forgotCount }
     var rememberedCount: Int { scoring.rememberedCount }
+    /// 已作答的槽位（queue index）。洗牌時釘住，答案才不會對到別張卡（#2482）。
+    private var answeredSlots: Set<Int> { Set(scoring.submittedAnswers.keys) }
 
     // MARK: - Perf (fling→front render gap self-measurement)
     nonisolated(unsafe) static var flingClock: DispatchTime?
@@ -50,6 +52,9 @@ final class TodayReviewState {
     // MARK: - Immutable Lookup
 
     let linkedEntryLookup: [String: VocabularyEntry]
+    /// #2535: card ids that a queued card links to. `peerChipFingerprint` watches only these
+    /// peers, so an unrelated card's archive does not re-derive the review chips.
+    private var queuePeerCardIDs: Set<String> = []
     let currentUserID: String?
 
     // MARK: - Diagnostics (throwaway-init detection)
@@ -101,6 +106,7 @@ final class TodayReviewState {
         sessionStartTime = restored?.sessionStartTime ?? Date()
         let _tLookup = DispatchTime.now()
         linkedEntryLookup = Self.buildLinkedEntryLookup(from: allEntries)
+        queuePeerCardIDs = Self.peerCardIDs(of: ordered)
         let _msLookup = PerfChannel.ms(since: _tLookup)
         if let restored {
             session = TodayReviewSessionState(
@@ -110,6 +116,7 @@ final class TodayReviewState {
             persistence = TodayReviewSessionPersistenceController(
                 queuePersistenceIDs: restored.persistenceIDs,
                 queueBaselines: restored.baselines,
+                queueEntryIDs: restored.queue.map(\.id),
                 currentUserID: currentUserID
             )
             scoring.restore(
@@ -153,7 +160,7 @@ final class TodayReviewState {
             currentCard: currentCardState,
             slots: slotModels,
             revealStage: revealStage,
-            canShuffle: session.canShuffle,
+            canShuffle: session.canShuffle(pinned: answeredSlots),
             canAutoplay: canAutoplay,
             canGoPrevious: session.canGoPrevious,
             canGoNext: session.canGoNext,
@@ -206,7 +213,7 @@ final class TodayReviewState {
         // hit) → infinite re-eval loop. Hits are served read-only; the
         // prewarm-covered, near-impossible miss builds an ephemeral card without
         // writing the observed cache (self-heals on the next prewarmCardWindow()).
-        cardCache.cached(for: entry) ?? TodayReviewCardCache.buildOne(entry)
+        cardCache.cached(for: entry) ?? TodayReviewCardCache.buildOne(entry, peers: linkedEntryLookup)
     }
 
     // MARK: - Actions
@@ -216,7 +223,8 @@ final class TodayReviewState {
     }
 
     func navigateToLinkedCard(link: KGCardLinkSummary) {
-        guard let target = linkedEntryLookup[link.cardId] else { return }
+        guard let target = linkedEntryLookup[link.cardId],
+              !target.isArchived, target.syncAction != .delete else { return }
         tappedLink = nil
         linkedCardStack.pushLinkedCard(target)
     }
@@ -268,7 +276,35 @@ final class TodayReviewState {
     }
 
     func rebuildCacheForEntry(_ entry: VocabularyEntry) {
-        cardCache.rebuild(for: entry)
+        trackPeers(of: entry)
+        cardCache.rebuild(for: entry, peers: linkedEntryLookup)
+    }
+
+    /// A peer was archived, restored or queued for delete while the session is open
+    /// (e.g. in the linked-card overlay). Chips are dropped at build time, so the link
+    /// content of the prepared cards is re-derived from the peers' current state (#2535).
+    /// Measurements are kept, so the card on screen does not jump (#2133).
+    func refreshPeerDependentCards() {
+        cardCache.refreshLinks(forPreparedEntries: queue, peers: linkedEntryLookup)
+        prewarmCardWindow()
+    }
+
+    /// Archive and delete-queue state of the peers the queue links to (#2535). The view
+    /// reads it in `body` and re-derives the chips when it changes, so a peer flip that
+    /// lands after the overlay closed (a failed archive rolled back) still restores its chip.
+    var peerChipFingerprint: Int {
+        var hasher = Hasher()
+        for cardID in queuePeerCardIDs.sorted() {
+            guard let peer = linkedEntryLookup[cardID] else { continue }
+            hasher.combine(cardID)
+            hasher.combine(peer.isArchived)
+            hasher.combine(peer.syncAction.rawValue)
+        }
+        return hasher.finalize()
+    }
+
+    private func trackPeers(of entry: VocabularyEntry) {
+        queuePeerCardIDs.formUnion(Self.peerCardIDs(of: [entry]))
     }
 
     /// The card's link set changed (pending link created/failed/resolved, or AddLink
@@ -276,7 +312,8 @@ final class TodayReviewState {
     /// `TodayReviewCardCache.refreshLinks`). Use `rebuildCacheForEntry` only when the
     /// card content itself changed.
     func refreshLinksForEntry(_ entry: VocabularyEntry, pendingLinks: [KGCardLinkSummary]? = nil) {
-        cardCache.refreshLinks(for: entry, pendingLinks: pendingLinks)
+        trackPeers(of: entry)
+        cardCache.refreshLinks(for: entry, pendingLinks: pendingLinks, peers: linkedEntryLookup)
     }
 
     func handleDetailTap() {
@@ -309,12 +346,12 @@ final class TodayReviewState {
     }
 
     func shuffleQueue() {
-        guard session.canShuffle else { return }
+        guard session.canShuffle(pinned: answeredSlots) else { return }
         withAnimation(AppMotion.reviewNavigationSpring) {
-            _ = session.shuffleRemaining()
+            _ = session.shuffleRemaining(pinned: answeredSlots)
         }
         syncCurrentEntryDerivedState()
-        syncQueueMetadata()
+        syncQueueMetadata(keepingBaselinesAt: answeredSlots)
         prewarmCardWindow()
         ReviewSessionStore.saveOrder(queue, userID: currentUserID)
         persistSnapshot()
@@ -448,7 +485,7 @@ final class TodayReviewState {
             return true
 
         case .shuffle:
-            guard !autoplayBlocks(.shuffle), queue.count - currentIndex > 1 else { return false }
+            guard !autoplayBlocks(.shuffle), session.canShuffle(pinned: answeredSlots) else { return false }
             shuffleQueue()
             return true
 
@@ -648,7 +685,9 @@ final class TodayReviewState {
         flushPendingAnswers(
             container: container,
             notebookSettingsSnapshot: notebookSettingsSnapshot,
-            onFinalize: { [weak self] in self?.persistSnapshot() },
+            onFinalize: { [weak self] in
+                self?.finalizeSnapshotAfterFlush(completed: self?.session.isComplete ?? false)
+            },
             onFailure: onSaveFailure
         )
     }
@@ -682,13 +721,31 @@ final class TodayReviewState {
         persistence.clearSnapshot()
     }
 
+    /// True while some answer is not confirmed in the store (skipped by a deferred
+    /// flush, or never flushed). Such an answer exists only in the snapshot.
+    var hasUnflushedAnswers: Bool {
+        scoring.submittedAnswers.values.contains { !$0.flushed }
+    }
+
+    /// Crash-recovery finalize after a deferred flush (#3123). The snapshot is dropped
+    /// only when the session is complete AND every answer is confirmed in the store.
+    /// Otherwise it is rewritten, so restore re-flushes whatever was skipped.
+    func finalizeSnapshotAfterFlush(completed: Bool) {
+        if completed && !hasUnflushedAnswers {
+            clearSnapshot()
+        } else {
+            persistSnapshot()
+        }
+    }
+
     // MARK: - Cache Builders
 
     private func prewarmCardWindow() {
         cardCache.prewarm(
             queue: queue,
             currentIndex: currentIndex,
-            lookaheadLimit: Self.cacheLookaheadLimit
+            lookaheadLimit: Self.cacheLookaheadLimit,
+            peers: linkedEntryLookup
         )
     }
 
@@ -701,8 +758,12 @@ final class TodayReviewState {
         }
     }
 
-    private func syncQueueMetadata() {
-        persistence.syncQueueMetadata(for: queue)
+    private static func peerCardIDs(of entries: [VocabularyEntry]) -> Set<String> {
+        Set(entries.flatMap { $0.graphLinksByKind.values.joined() }.map(\.cardId))
+    }
+
+    private func syncQueueMetadata(keepingBaselinesAt answeredSlots: Set<Int>) {
+        persistence.syncQueueMetadata(for: queue, keepingBaselinesAt: answeredSlots)
     }
 
     private func advancePastAlreadyScoredCard() {

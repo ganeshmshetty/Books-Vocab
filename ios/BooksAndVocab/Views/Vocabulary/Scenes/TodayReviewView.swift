@@ -259,6 +259,15 @@ struct TodayReviewView: View {
         .overlay {
             LinkedCardOverlayStack(stack: $state.linkedCardStack, allEntries: allEntries)
         }
+        // Peers may be archived or restored inside the overlay; rebuild chips when it closes (#2535).
+        .onChange(of: state.linkedCardStack.count) { _, _ in
+            state.refreshPeerDependentCards()
+        }
+        // A peer flip after the overlay closed (a failed archive rolled back) re-derives the
+        // chips too. The fingerprint is read in body, so SwiftUI tracks the peers it covers.
+        .onChange(of: state.peerChipFingerprint) { _, _ in
+            state.refreshPeerDependentCards()
+        }
         .toastSheet(item: $state.tappedLink) { link in
             LinkReasonSheet(
                 link: link,
@@ -367,7 +376,8 @@ struct TodayReviewView: View {
                 container: container,
                 notebookSettingsSnapshot: notebookSettingsSnapshot,
                 onFinalize: {
-                    if completed { state.clearSnapshot() } else { state.persistSnapshot() }
+                    // Clears only when every answer reached the store (#3123).
+                    state.finalizeSnapshotAfterFlush(completed: completed)
                     guard loggedIn else { return }
                     Task { await kgService.pushReviewQuietly(container: container) }
                 },
