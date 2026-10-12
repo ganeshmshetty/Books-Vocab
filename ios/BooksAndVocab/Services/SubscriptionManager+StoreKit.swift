@@ -7,6 +7,8 @@ extension SubscriptionManager {
         product: Product?,
         using kgService: any KGServing
     ) async throws {
+        // 同步請求屬於發出當下的帳號；回應只能套用於該帳號（#2592）
+        let owner = _authManager?.userId
         let environment = appStoreEnvironment(for: transaction)
         let willAutoRenew = await queryWillAutoRenew() ?? entitlements.pro.will_renew
         let snapshot = KGAppStoreSubscriptionSyncRequest(
@@ -21,10 +23,31 @@ extension SubscriptionManager {
             price_display: product?.displayPrice,
             signed_transaction_info: environment == "xcode" ? nil : signedTransactionInfo
         )
-        // 於請求發出時標記世代：發出後的本地寫入（登出、樂觀更新）使此回應失效；refresh GET 不影響（#2800）
+        try await applySyncRequest(owner: owner) { try await kgService.syncAppStoreSubscription(snapshot) }
+    }
+
+    /// 發出 App Store 同步請求並套用回應。請求於發出時標記世代：發出後的本地寫入（登出、樂觀更新）使此回應失效；
+    /// refresh GET 不影響（#2800）。失敗只在本請求仍是最新發出者時寫入 `lastError`：較新的請求已在途或已套用時，
+    /// 本次失敗已被取代；若本次是最新者，只寫 log 會讓 paywall 沒有重試入口（#3223）。
+    func applySyncRequest(owner: String?, _ send: () async throws -> KGEntitlements) async throws {
         let generation = claimEntitlementsGeneration()
-        let response = try await kgService.syncAppStoreSubscription(snapshot)
-        applySyncResponse(response, requestedAt: generation)
+        let response: KGEntitlements
+        do {
+            response = try await send()
+        } catch {
+            if !(error is CancellationError), generation == entitlementsGeneration {
+                lastError = error.localizedDescription
+                lastErrorGeneration = generation
+            }
+            throw error
+        }
+        // 回應屬於發出時的帳號。切換帳號不經登出，不會取得本地寫入世代，因此等待期間若已換帳號，
+        // 此回應不得寫入新帳號的權益（#3232）。
+        guard _authManager?.userId == owner else {
+            AppLog.subscription.warning("Discarding sync response: account changed while the request was in flight")
+            return
+        }
+        applySyncResponse(response, requestedAt: generation, owner: owner)
     }
 
     func syncCurrentEntitlements(using kgService: any KGServing) async {

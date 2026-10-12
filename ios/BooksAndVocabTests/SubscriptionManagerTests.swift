@@ -602,6 +602,230 @@ struct SubscriptionManagerTests {
         #expect(!applied)
         #expect(!mgr.hasProAccess)
     }
+
+    // MARK: - sync failure reporting (#3223)
+
+    @MainActor
+    @Test func failed_latest_sync_request_surfaces_error_over_superseded_refresh_failure() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 1 = 較早發出的非強制 refresh，掛起後失敗；之後發出的 StoreKit 同步（最新請求）同樣失敗。
+        let service = GatedSubscriptionService(responses: [:], suspended: [1])
+        let auth = RefreshOrderAuthStub()
+        let older = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: false) }
+        try #require(await service.waitUntilParked(1))
+
+        _ = try? await mgr.applySyncRequest(owner: "test_user") { throw UnexpectedSubscriptionCall() }
+        #expect(mgr.lastError != nil)
+
+        // 較早的 refresh 最後失敗：已被較新的同步取代，不得清除或覆寫其錯誤。
+        service.release(1)
+        await older.value
+        #expect(mgr.lastError != nil)
+    }
+
+    @MainActor
+    @Test func applied_sync_response_clears_stale_error_and_reschedules_expiry() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastError = savedError
+            mgr.expiryTimer?.cancel()
+            mgr.expiryTimer = nil
+        }
+        mgr.lastError = "stale"
+
+        // 已取消續訂但仍有效，到期時間為未來：套用後必須排程到期刷新。
+        let expiry = Date().addingTimeInterval(3600).ISO8601Format()
+        let pro = status(isActive: true, status: "active", willRenew: false, expiresAt: expiry, source: "app_store")
+        let generation = mgr.claimEntitlementsGeneration()
+        let applied = mgr.applySyncResponse(KGEntitlements(pro: pro), requestedAt: generation, owner: "test_user")
+
+        #expect(applied)
+        #expect(mgr.lastError == nil)
+        #expect(mgr.expiryTimer != nil)
+    }
+
+    // MARK: - account switch ownership (#2592)
+
+    @MainActor
+    @Test func refresh_after_account_switch_drops_previous_account_pro_when_fetch_fails() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedOwner = mgr.entitlementsOwnerUserId
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.entitlementsOwnerUserId = savedOwner
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 帳號 A 的 Pro 已綁定 A；未經登出，直接切換為 B，且 B 的 refresh 失敗。
+        mgr.commitEntitlements(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            owner: "A"
+        )
+        let auth = RefreshOrderAuthStub()
+        auth.userId = "B"
+
+        // responses 為空 → fetch 拋錯。B 不得沿用 A 的 Pro。
+        let service = GatedSubscriptionService(responses: [:], suspended: [])
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(!mgr.hasProAccess)
+        #expect(mgr.lastError != nil)
+    }
+
+    @MainActor
+    @Test func refresh_keeps_same_account_pro_when_fetch_fails() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedOwner = mgr.entitlementsOwnerUserId
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.entitlementsOwnerUserId = savedOwner
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 對照組：同一帳號的網路失敗不應清除既有權益（既有行為：只寫 lastError）。
+        mgr.commitEntitlements(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            owner: "test_user"
+        )
+        let service = GatedSubscriptionService(responses: [:], suspended: [])
+        await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: true)
+        #expect(mgr.hasProAccess)
+        #expect(mgr.lastError != nil)
+    }
+
+    // MARK: - session end (#2592, #3222)
+
+    // MARK: - account binding of sync responses (#3232) and refresh error reporting (#3233)
+
+    /// A sync response for account A that returns after the session moved to account B must not write
+    /// A's entitlements into B. Switching accounts does not pass through logout, so no local write
+    /// generation invalidates the request.
+    @MainActor
+    @Test func sync_response_for_previous_account_is_discarded_after_account_switch() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedAuth = mgr._authManager
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr._authManager = savedAuth
+        }
+        mgr.commitEntitlements(SubscriptionManager.defaultEntitlements)
+
+        let auth = RefreshOrderAuthStub()
+        auth.userId = "test_user"
+        mgr._authManager = auth
+
+        _ = try? await mgr.applySyncRequest(owner: "test_user") {
+            auth.userId = "other_user"
+            return KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
+        }
+
+        #expect(!mgr.hasProAccess, "A's response must not be written after the session switched to B")
+    }
+
+    @MainActor
+    @Test func sync_response_for_current_account_still_applies() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedAuth = mgr._authManager
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr._authManager = savedAuth
+        }
+        mgr.commitEntitlements(SubscriptionManager.defaultEntitlements)
+
+        let auth = RefreshOrderAuthStub()
+        auth.userId = "test_user"
+        mgr._authManager = auth
+
+        try await mgr.applySyncRequest(owner: "test_user") {
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin"))
+        }
+
+        #expect(mgr.hasProAccess)
+    }
+
+    /// The refresh's own network error must reach `lastError` even when a sync claimed the shared
+    /// generation while the refresh was in flight. Only a newer refresh or a newer error may supersede it.
+    @MainActor
+    @Test func refresh_error_surfaces_when_a_sync_started_during_the_refresh() async throws {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        let service = GatedSubscriptionService(responses: [:], suspended: [1])
+        let auth = RefreshOrderAuthStub()
+        let refresh = Task { await mgr.refreshEntitlements(using: service, authManager: auth, force: true) }
+        try #require(await service.waitUntilParked(1))
+
+        // 同步在 refresh GET 途中開始並取號（推進共用世代）；它本身沒有失敗，不應影響 refresh 的錯誤。
+        _ = mgr.claimEntitlementsGeneration()
+
+        service.release(1)
+        await refresh.value
+        #expect(mgr.lastError != nil, "a sync claiming the shared generation must not drop the refresh's own error")
+    }
+
+    @MainActor
+    @Test func session_end_resets_pro_and_discards_sync_requested_before_logout() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+
+        // 用戶 A 的 Pro 已套用；App Store 同步於登出前發出，回應尚未返回。
+        mgr.commitEntitlements(KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")))
+        let syncGeneration = mgr.claimEntitlementsGeneration()
+
+        mgr.resetForSessionEnd()
+        #expect(!mgr.hasProAccess)
+
+        // 登出後才到達的 A 同步回應（active）必須被丟棄，不得把 Pro 寫回。
+        let applied = mgr.applySyncResponse(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            requestedAt: syncGeneration
+        )
+        #expect(!applied)
+        #expect(!mgr.hasProAccess)
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。

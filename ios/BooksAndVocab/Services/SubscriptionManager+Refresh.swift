@@ -8,12 +8,22 @@ extension SubscriptionManager {
     /// 核心 refresh 只需要 `fetchEntitlements`，依窄能力協定 `SubscriptionServing` 實作，
     /// 讓回應順序語義能以確定性替身測試（#2800）。
     func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async {
+        // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
+        let requestUserId = authManager.userId
+
         guard authManager.isLoggedIn else {
             commitEntitlements(Self.defaultEntitlements)
             lastError = nil
             expiryTimer?.cancel()
             expiryTimer = nil
             return
+        }
+
+        // 未經登出直接換成另一帳號：屬於前一帳號的權益不得沿用，且 refresh 失敗時也不得保留（#2592）。
+        if let owner = entitlementsOwnerUserId, owner != requestUserId {
+            AppLog.subscription.warning("Entitlements owner changed; discarding previous account's state")
+            commitEntitlements(Self.defaultEntitlements)
+            lastRefreshTime = nil
         }
 
         // Cooldown：防止短時間重複 refresh，force 可跳過
@@ -26,9 +36,8 @@ extension SubscriptionManager {
         let previousRefreshTime = lastRefreshTime
         lastRefreshTime = Date()
         let generation = claimEntitlementsGeneration()
-
-        // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
-        let requestUserId = authManager.userId
+        refreshRequestSequence += 1
+        let refreshSequence = refreshRequestSequence
 
         beginLoading()
         defer { endLoading() }
@@ -65,18 +74,23 @@ extension SubscriptionManager {
                 return
             }
             // 期間可能已有更新的寫入發出；由 applyEntitlements 再守一次世代
-            guard applyEntitlements(remote, generation: generation) else { return }
+            guard applyEntitlements(remote, generation: generation, owner: requestUserId) else { return }
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
         } catch is CancellationError {
             // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh。
             // 過期請求不得還原，否則會蓋掉較新請求寫入的冷卻時間。
-            if generation == entitlementsGeneration { lastRefreshTime = previousRefreshTime }
+            if refreshSequence == refreshRequestSequence { lastRefreshTime = previousRefreshTime }
         } catch {
-            // 只有最新發出的請求可寫入錯誤：較早請求的失敗若較新請求仍在途或已套用，即已被取代，
-            // 不得寫入 lastError（否則 paywall 會對已過時的請求顯示重試）。
-            guard generation == entitlementsGeneration else { return }
+            // 只有最新發出的 refresh 可寫入錯誤：較早 refresh 的失敗若較新 refresh 已發出，即已被取代，
+            // 不得寫入 lastError（否則 paywall 會對已過時的請求顯示重試）。判斷只看 refresh 自己的序號：
+            // 同步取號會推進共用世代，不得吞掉 refresh 自身的錯誤（#3233）。
+            // 較新的請求（同步）已寫入的錯誤仍優先（#3223）。
+            guard refreshSequence == refreshRequestSequence,
+                  lastError == nil || generation > lastErrorGeneration
+            else { return }
             lastError = error.localizedDescription
+            lastErrorGeneration = generation
         }
     }
 

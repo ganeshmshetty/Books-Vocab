@@ -11,25 +11,42 @@ final class LocalDataCleanerService: LocalDataClearing {
     /// pending-wipe marker. It outlives the process, and sign-in refuses to complete while it is set,
     /// so no account can write into those rows before the wipe succeeds (#2717).
     static let pendingWipeOwnerKey = "kg_pending_local_wipe_owner"
+    /// Consecutive failed row wipes under the current marker. At `pendingWipeFailureLimit` retrying is
+    /// no longer a recovery path: only a store rebuild can clear the rows (#3229).
+    static let pendingWipeFailureCountKey = "kg_pending_local_wipe_failures"
+    static let pendingWipeFailureLimit = 5
+    /// Set when a failed account-switch wipe deferred the derived-state purge (#3229). Cleared by the wipe
+    /// that succeeds or by a refused switch, whose previous account keeps its derived state.
+    static let pendingDerivedPurgeKey = "kg_pending_local_wipe_derived_purge"
 
     private let wipeRows: RowWipe
     private let defaults: UserDefaults
     private let derivedRoots: DerivedLocalStateRoots
+    private let storeRebuild: @Sendable () -> Bool
 
     init(
         wipeRows: @escaping RowWipe = { container, reason in
             try await BackgroundSyncActor(modelContainer: container).clearUserData(reason: reason)
         },
         defaults: UserDefaults = .standard,
-        derivedRoots: DerivedLocalStateRoots = .production
+        derivedRoots: DerivedLocalStateRoots = .production,
+        storeRebuild: @escaping @Sendable () -> Bool = { AppBootstrap.purgeStoreFiles() }
     ) {
         self.wipeRows = wipeRows
         self.defaults = defaults
         self.derivedRoots = derivedRoots
+        self.storeRebuild = storeRebuild
     }
 
     static func persistedPendingWipeOwner(defaults: UserDefaults = .standard) -> String? {
         defaults.string(forKey: pendingWipeOwnerKey)
+    }
+
+    /// Only an account switch can be refused after a failed wipe, leaving its previous account signed in
+    /// (`manual_login_account_switch`, `account_switch_<provider>`). Every other reason is a logout, whose
+    /// derived state is purged even when the rows could not be wiped (#3229).
+    static func defersDerivedPurgeOnFailure(reason: String) -> Bool {
+        reason == "manual_login_account_switch" || reason.hasPrefix("account_switch")
     }
 
     var pendingLocalWipeOwner: String? { Self.persistedPendingWipeOwner(defaults: defaults) }
@@ -64,7 +81,14 @@ final class LocalDataCleanerService: LocalDataClearing {
                 cloud: CloudPreferencesSync.shared
             )
         }
-        await Self.purgeDerivedLocalState(roots: derivedRoots)
+        // A failed switch wipe is refused and keeps the previous account signed in, so its derived state
+        // must survive until the wipe completes (#3229). A failed logout already signed its owner out.
+        if wiped || !Self.defersDerivedPurgeOnFailure(reason: reason) {
+            defaults.removeObject(forKey: Self.pendingDerivedPurgeKey)
+            await Self.purgeDerivedLocalState(roots: derivedRoots)
+        } else {
+            defaults.set(true, forKey: Self.pendingDerivedPurgeKey)
+        }
         return wiped
     }
 
@@ -137,24 +161,56 @@ final class LocalDataCleanerService: LocalDataClearing {
             return false
         }
         clearSyncState()
+        await purgeDeferredDerivedStateIfNeeded()
+        return true
+    }
+
+    /// True once the row wipe has failed `pendingWipeFailureLimit` times under the current marker.
+    /// Sign-in then stops retrying and waits for `rebuildStoreAndDiscardPendingWipe` (#3229).
+    var pendingWipeNeedsStoreRebuild: Bool {
+        defaults.integer(forKey: Self.pendingWipeFailureCountKey) >= Self.pendingWipeFailureLimit
+    }
+
+    /// Store-rebuild recovery for a wipe stuck past the retry cap (#3229). Deletes the on-disk store
+    /// (the only way to drop rows a wipe cannot clear), then drops the marker, the deferred derived state
+    /// and the sync cursors. Only runs past the cap and only if the store files were removed.
+    func rebuildStoreAndDiscardPendingWipe() async -> Bool {
+        guard pendingWipeNeedsStoreRebuild, storeRebuild() else { return false }
+        AppLog.sync.warning("local store rebuilt after a stuck pending wipe")
+        clearPendingWipeMarker()
+        clearSyncState()
+        await purgeDeferredDerivedStateIfNeeded()
         return true
     }
 
     /// Drops the marker of a wipe whose account switch was refused. The failed wipe committed nothing
-    /// (one final save), so the still-signed-in account keeps its rows and sync cursors unchanged.
+    /// (one final save), so the still-signed-in account keeps its rows, sync cursors and derived state.
     func discardPendingLocalWipe() {
+        clearPendingWipeMarker()
+        defaults.removeObject(forKey: Self.pendingDerivedPurgeKey)
+    }
+
+    private func clearPendingWipeMarker() {
         defaults.removeObject(forKey: Self.pendingWipeOwnerKey)
+        defaults.removeObject(forKey: Self.pendingWipeFailureCountKey)
+    }
+
+    private func purgeDeferredDerivedStateIfNeeded() async {
+        guard defaults.bool(forKey: Self.pendingDerivedPurgeKey) else { return }
+        defaults.removeObject(forKey: Self.pendingDerivedPurgeKey)
+        await Self.purgeDerivedLocalState(roots: derivedRoots)
     }
 
     private func wipeRowsRecordingFailure(container: ModelContainer, reason: String, owner: String) async -> Bool {
         do {
             try await wipeRows(container, reason)
-            defaults.removeObject(forKey: Self.pendingWipeOwnerKey)
+            clearPendingWipeMarker()
             return true
         } catch {
             AppLog.sync.error("clearUserData failed: \(error.localizedDescription)")
             AppCrashReporting.record(error, context: "kg.local.clear")
             defaults.set(owner, forKey: Self.pendingWipeOwnerKey)
+            defaults.set(defaults.integer(forKey: Self.pendingWipeFailureCountKey) + 1, forKey: Self.pendingWipeFailureCountKey)
             return false
         }
     }

@@ -94,6 +94,13 @@ final class SubscriptionManager: SubscriptionManaging {
     var lastAppliedEntitlementsGeneration = 0
     /// 最近一次本地決策寫入（樂觀更新、登出）的世代。只有它會使較早發出的 App Store 同步回應失效（#2800）。
     var lastLocalWriteGeneration = 0
+    /// `entitlements` 所屬的帳號。nil 代表未綁定（預設值，或無法確定歸屬）；帳號切換時不得沿用他人的權益（#2592）。
+    var entitlementsOwnerUserId: String?
+    /// refresh 自己的請求序號（#3233）。只有最新發出的 refresh 可寫入錯誤或還原冷卻；共用世代會被 StoreKit 同步取號推進，
+    /// 不能用來判斷 refresh 自身的失敗是否過期。
+    var refreshRequestSequence = 0
+    /// 寫入 `lastError` 的請求世代。較早 refresh 的失敗不得覆寫較新請求已寫入的錯誤（#3223）。
+    var lastErrorGeneration = 0
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?
@@ -134,26 +141,41 @@ final class SubscriptionManager: SubscriptionManaging {
 
     /// 只有 `generation` 仍新於已套用世代時才寫入，回傳是否套用；過期回應不論到達順序一律丟棄（#2800）。
     @discardableResult
-    func applyEntitlements(_ value: KGEntitlements, generation: Int) -> Bool {
+    func applyEntitlements(_ value: KGEntitlements, generation: Int, owner: String? = nil) -> Bool {
         guard generation > lastAppliedEntitlementsGeneration else { return false }
         entitlements = value
+        entitlementsOwnerUserId = owner
         lastAppliedEntitlementsGeneration = generation
         return true
     }
 
     /// 本地決策寫入（樂觀更新、登出）：取新世代並立即套用，使此前發出、尚未返回的請求全部失效（#2800）。
-    func commitEntitlements(_ value: KGEntitlements) {
+    func commitEntitlements(_ value: KGEntitlements, owner: String? = nil) {
         let generation = claimEntitlementsGeneration()
         lastLocalWriteGeneration = generation
-        applyEntitlements(value, generation: generation)
+        applyEntitlements(value, generation: generation, owner: owner)
+    }
+
+    /// 登出（含 delete_account、401 teardown）：權益回到預設，並以本地寫入世代使所有在途請求失效，
+    /// 包括登出前發出、尚未返回的 App Store 同步回應（#2592, #3222）。
+    func resetForSessionEnd() {
+        commitEntitlements(Self.defaultEntitlements)
+        lastError = nil
+        lastRefreshTime = nil
+        expiryTimer?.cancel()
+        expiryTimer = nil
     }
 
     /// App Store 同步回應是伺服器對本次交易的權威結果。較晚發出的 refresh GET 可能先被伺服器處理（尚未含本次交易），
     /// 不得擋住它；只有發出後發生的本地寫入（登出、樂觀更新）才使其失效。回傳是否套用（#2800）。
     @discardableResult
-    func applySyncResponse(_ value: KGEntitlements, requestedAt generation: Int) -> Bool {
+    func applySyncResponse(_ value: KGEntitlements, requestedAt generation: Int, owner: String? = nil) -> Bool {
         guard lastLocalWriteGeneration < generation else { return false }
-        return applyEntitlements(value, generation: claimEntitlementsGeneration())
+        guard applyEntitlements(value, generation: claimEntitlementsGeneration(), owner: owner) else { return false }
+        // 已套用的權威結果取代先前的失敗訊息，並依新權益重建到期排程（#3223）
+        lastError = nil
+        scheduleExpiryRefresh(for: value.pro)
+        return true
     }
 
     /// 在 app 啟動時呼叫，持續監聽 Transaction.updates 以捕捉中斷購買、續訂等事件
