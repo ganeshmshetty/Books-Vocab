@@ -1582,7 +1582,13 @@ def _is_ancestor(
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return completed.returncode == 0
+    # merge-base --is-ancestor: 0 = ancestor, 1 = not; anything else (e.g. 128 for an
+    # unknown ref) is an unverifiable probe, so it stays unknown (#3217).
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    return None
 
 
 def _grown_from_registered_branch(

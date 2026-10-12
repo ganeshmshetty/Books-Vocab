@@ -2971,6 +2971,8 @@ def test_fix_branch_grown_from_registered_branch_is_a_warning_not_a_block(
     tmp_path: Path,
 ) -> None:
     repo, worktree = _repo_with_worktree(tmp_path)
+    # A real clone always has origin/main; without it the landing probe is unknown (#3217).
+    _run_git(repo, "update-ref", "refs/remotes/origin/main", "main")
     _run_git(worktree, "switch", "-c", "lane-two")
     (worktree / "fix.txt").write_text("fix\n", encoding="utf-8")
     _run_git(worktree, "add", "fix.txt")
@@ -3046,6 +3048,29 @@ def test_timed_out_landing_probe_never_downgrades_a_lane_to_a_warning(
     monkeypatch.setattr(disk_usage.subprocess, "run", run_timing_out_on_main)
     assert not disk_usage._grown_from_registered_branch(
         repo, {"branch": "lane-one", "head": tip}
+    )
+
+
+def test_unknown_base_ref_is_unknown_not_proof_the_tip_never_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #3217: git exit 128 (unknown ref) is an unverifiable probe, not evidence that
+    # the registered tip never landed; it must stay unknown so the lane is not
+    # downgraded to a descendant-fix warning.
+    repo, worktree = _repo_with_worktree(tmp_path)
+    tip = disk_usage._branch_tip(repo, "lane-one")
+    _run_git(worktree, "switch", "-c", "lane-two")
+    (worktree / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _run_git(worktree, "add", "fix.txt")
+    _run_git(worktree, "commit", "-m", "lane-two grown fix")
+    head = disk_usage._branch_tip(repo, "lane-two")
+    monkeypatch.setattr(
+        disk_usage, "MERGED_BASE_REFS", ("refs/heads/does-not-exist",)
+    )
+
+    assert disk_usage._is_ancestor(repo, "refs/heads/does-not-exist", tip) is None
+    assert not disk_usage._grown_from_registered_branch(
+        repo, {"branch": "lane-one", "head": head}
     )
 
 
