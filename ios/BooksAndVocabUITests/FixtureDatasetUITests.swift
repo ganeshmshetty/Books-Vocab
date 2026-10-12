@@ -450,14 +450,20 @@ final class FixtureDatasetUITests: UITestCase {
             XCTFail("bookshelf shell (import toolbar) should mount before the fixture projection is awaited")
             return
         }
-        guard bookshelf.anyBookCard.waitUntilExists(timeout: 10) else {
+        // Projection budget 30 s. Run 38319567232 (ui-smoke, 2026-10-12 23:19Z)
+        // screen recording shows the empty state for roughly the first 10 s of
+        // the test, then the seeded grid from about 20 s on, so the seeded
+        // projection can lag launch by more than 10 s on the loaded runner. The
+        // recording is not aligned to the wait window, so the bounded budget is
+        // the change; the stage-named diagnostics confirm the stage on recurrence.
+        guard bookshelf.anyBookCard.waitUntilExists(timeout: 30) else {
             attachDiagnostics(for: app, namePrefix: "Bookshelf Projection")
             XCTFail("bookshelf fixture (with_books_library) should render at least one book card")
             return
         }
-        // Wait on the card that carries the title, with the same budget as the
-        // card wait. A bare staticTexts query with a 5 s window flakes on a
-        // loaded ui-smoke runner; the combined card label is the stable surface.
+        // Wait on the card that carries the title, with the same 30 s budget as
+        // the projection stage. A bare staticTexts query with a 5 s window flakes
+        // on a loaded ui-smoke runner; the combined card label is the stable surface.
         let titledCard = app.descendants(matching: .any)
             .matching(NSPredicate(
                 format: "identifier BEGINSWITH[c] %@ AND label CONTAINS[c] %@",
@@ -466,7 +472,7 @@ final class FixtureDatasetUITests: UITestCase {
             ))
             .firstMatch
         XCTAssertTrue(
-            titledCard.waitUntilExists(timeout: 10),
+            titledCard.waitUntilExists(timeout: 30),
             "dataset-overridden book title '\(expectedTitle)' should render in a bookshelf card"
         )
     }
