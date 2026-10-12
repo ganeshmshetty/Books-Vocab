@@ -131,6 +131,8 @@ struct WordEditSheet: View {
     enum EditValidationError: Error, Equatable {
         case translationLength
         case noteLength
+        /// 列正被同步擷取中：編輯會與送出中的內容競態（SyncLifecycle I3，#3248），拒絕儲存並保留草稿。
+        case uploadInFlight
     }
 
     /// 與後端 Python `str.strip()` 的空白集合一致：`whitespacesAndNewlines` 再加 U+001C–U+001F
@@ -166,6 +168,8 @@ struct WordEditSheet: View {
         save: () throws -> Void
     ) throws {
         let validated = try validate(translation: translation, explanation: explanation)
+        // 同步擷取期間的列不可改寫：送出中的回應會以送出內容收斂，改寫會被靜默覆蓋（#3248）。
+        guard !entry.isUploadInFlight else { throw EditValidationError.uploadInFlight }
 
         let original = (
             translation: entry.translation,

@@ -503,6 +503,51 @@ struct VocabularySyncEngineTests {
         #expect(!entry.isUploadInFlight)
     }
 
+    @Test("an edit changed again while its update is on the wire stays pending and uploads on the next sync (#3248)")
+    func editChangedDuringFlightStaysPending() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.onEditInFlight = { entry.translation = "newer translation" }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(service.editRequests.map(\.translation) == ["edited translation"])
+        #expect(entry.translation == "newer translation")
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("a rejected response for an edit superseded in flight does not fail the newer edit (#3248)")
+    func supersededEditRejectionKeepsNewerEditPending() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 422, detail: "")
+        service.onEditInFlight = { entry.translation = "newer translation" }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(entry.translation == "newer translation")
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
     @Test("a failed edit stays retryable and makes sync partial")
     func failedEditCanRetry() async throws {
         let container = try makeContainer()

@@ -244,7 +244,8 @@ extension VocabularyEntry {
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
     // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
-    // T8 edit 成功：action 仍為 edit 才 markSynced（清除 explanationClearPending）；成功前被刪者維持 delete。
+    // T8 edit 成功：action 仍為 edit 且送出的 translation／note 與目前列相符才 markSynced（清除 explanationClearPending）；
+    //     成功前被刪者維持 delete；送出後被改寫者維持 pending edit，交下一輪上傳較新內容（#3248）。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
     // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
     //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
