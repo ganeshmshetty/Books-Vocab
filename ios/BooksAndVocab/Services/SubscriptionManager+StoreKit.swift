@@ -23,9 +23,23 @@ extension SubscriptionManager {
             price_display: product?.displayPrice,
             signed_transaction_info: environment == "xcode" ? nil : signedTransactionInfo
         )
-        // 於請求發出時標記世代：發出後的本地寫入（登出、樂觀更新）使此回應失效；refresh GET 不影響（#2800）
+        try await applySyncRequest(owner: owner) { try await kgService.syncAppStoreSubscription(snapshot) }
+    }
+
+    /// 發出 App Store 同步請求並套用回應。請求於發出時標記世代：發出後的本地寫入（登出、樂觀更新）使此回應失效；
+    /// refresh GET 不影響（#2800）。失敗只在本請求仍是最新發出者時寫入 `lastError`：較新的請求已在途或已套用時，
+    /// 本次失敗已被取代；若本次是最新者，只寫 log 會讓 paywall 沒有重試入口（#3223）。
+    func applySyncRequest(owner: String?, _ send: () async throws -> KGEntitlements) async throws {
         let generation = claimEntitlementsGeneration()
-        let response = try await kgService.syncAppStoreSubscription(snapshot)
+        let response: KGEntitlements
+        do {
+            response = try await send()
+        } catch {
+            if !(error is CancellationError), generation == entitlementsGeneration {
+                lastError = error.localizedDescription
+            }
+            throw error
+        }
         applySyncResponse(response, requestedAt: generation, owner: owner)
     }
 
