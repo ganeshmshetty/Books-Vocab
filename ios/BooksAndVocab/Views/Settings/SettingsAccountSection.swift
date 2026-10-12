@@ -1,8 +1,42 @@
+import SwiftData
 import SwiftUI
+
+/// Logout gate decision (#2745). Logout deletes every local vocabulary row and
+/// every review record, so unsynced data must never be discarded without an
+/// explicit confirmation.
+enum SettingsLogoutGate: Equatable {
+    case proceed
+    case confirmUnsynced(cards: Int, reviews: Int)
+    case confirmUnreadable
+
+    /// A `nil` count means that read failed, so logout must not proceed silently.
+    static func decide(unsyncedCards: Int?, unsyncedReviews: Int?) -> SettingsLogoutGate {
+        guard let unsyncedCards, let unsyncedReviews else { return .confirmUnreadable }
+        if unsyncedCards == 0 && unsyncedReviews == 0 { return .proceed }
+        return .confirmUnsynced(cards: unsyncedCards, reviews: unsyncedReviews)
+    }
+
+    /// Reads both unsynced counts from the caller's context. A failed read of
+    /// either one fails closed to `.confirmUnreadable`.
+    static func evaluate(in context: ModelContext) -> SettingsLogoutGate {
+        var cards: Int?
+        var reviews: Int?
+        do {
+            cards = try BackgroundSyncActor.unsyncedEntryCount(in: context)
+            reviews = try BackgroundSyncActor.unsyncedReviewCount(in: context)
+        } catch {
+            AppLog.kg.error("Logout gate could not count unsynced local data: \(error.localizedDescription)")
+        }
+        return decide(unsyncedCards: cards, unsyncedReviews: reviews)
+    }
+}
 
 struct SettingsAccountSection: View {
     @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
+    @Environment(\.modelContext) private var modelContext
+    /// Pending confirmation (#2745); nil while no prompt is shown.
+    @State private var logoutPrompt: SettingsLogoutGate?
     let state: SettingsPresenterState.AuthSection
     let subscription: SettingsPresenterState.SubscriptionSection?
     let manualLoginUserId: Binding<String>?
@@ -158,7 +192,7 @@ struct SettingsAccountSection: View {
             SettingsDivider(leadingInset: 0)
 
             // Logout button
-            Button(role: .destructive, action: actions.logout) {
+            Button(role: .destructive, action: { requestLogout() }) {
                 Text(SettingsAccountCopy.logoutTitle)
                     .font(appSkin.typography.body)
                     .foregroundStyle(appSkin.palette.destructive)
@@ -167,7 +201,42 @@ struct SettingsAccountSection: View {
             .padding(appSkin.spacing.cardPadding)
             .accessibilityLabel(SettingsAccountCopy.logoutTitle)
             .accessibilityIdentifier("settings.account.logoutButton")
+            .confirmationDialog(
+                SettingsAccountCopy.unsyncedLogoutTitle,
+                isPresented: Binding(
+                    get: { logoutPrompt != nil },
+                    set: { if !$0 { logoutPrompt = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(SettingsAccountCopy.unsyncedLogoutConfirmTitle, role: .destructive) {
+                    actions.logout()
+                }
+                .accessibilityIdentifier("settings.account.logoutConfirmButton")
+                Button(SettingsAccountCopy.unsyncedLogoutCancelTitle, role: .cancel) {}
+            } message: {
+                Text(logoutPromptMessage)
+            }
         }
+    }
+
+    /// Logout with no unsynced rows proceeds directly. Otherwise the user must
+    /// confirm the discard: logout deletes every local vocabulary row and review
+    /// record, so unsynced data must never disappear without an explicit choice (#2745).
+    private func requestLogout() {
+        let gate = SettingsLogoutGate.evaluate(in: modelContext)
+        if gate == .proceed {
+            actions.logout()
+        } else {
+            logoutPrompt = gate
+        }
+    }
+
+    private var logoutPromptMessage: String {
+        if case .confirmUnsynced(let cards, let reviews)? = logoutPrompt {
+            return SettingsAccountCopy.unsyncedLogoutMessage(cards: cards, reviews: reviews)
+        }
+        return SettingsAccountCopy.unsyncedLogoutUnknownMessage
     }
 
     private func accountSummaryRow() -> some View {
