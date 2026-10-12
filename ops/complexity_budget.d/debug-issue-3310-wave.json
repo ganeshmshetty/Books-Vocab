@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3310,
+  "raise": {
+    "ops": 66
+  },
+  "note": "Issue #3310: two distinct red tests (unparsed CI row, ruby unavailable) plus the rc split add ~20 net lines to ops/tests/test_docs_lint.sh; ops area over by 6."
+}
