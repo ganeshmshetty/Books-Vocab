@@ -99,6 +99,39 @@ struct VocabularySyncEngineTests {
         #expect(!entry.shouldUploadOnNextSync)
     }
 
+    @Test("a note cleared on an edit reaches the content update as an explicit empty string, not omitted (#2550)")
+    func clearedNoteIsSentAsExplicitEmptyString() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit(notebookId: "notebook-a")
+        context.insert(entry)
+        try WordEditSheet.commitEdit(
+            entry: entry,
+            translation: entry.translation,
+            explanation: "   ",
+            save: {}
+        )
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry],
+            modelContext: context,
+            service: service,
+            emit: { _ in }
+        )
+
+        #expect(service.editRequests == [
+            EditRequest(
+                word: entry.word,
+                translation: entry.translation,
+                explanation: "",
+                notebookId: "notebook-a"
+            )
+        ])
+        #expect(entry.isSynced)
+    }
+
     @Test("a delete issued while its add is in flight is queued, not dropped, and removed on the next sync")
     func deleteDuringInFlightAddIsQueued() async throws {
         let container = try makeContainer()

@@ -170,12 +170,22 @@ struct WordEditSheet: View {
         let original = (
             translation: entry.translation,
             explanation: entry.explanation,
+            explanationClearPending: entry.explanationClearPending,
             syncAction: entry.syncAction,
             syncState: entry.syncState
         )
 
         entry.translation = validated.translation
-        entry.explanation = validated.explanation
+        if let explanation = validated.explanation {
+            entry.explanation = explanation
+            entry.explanationClearPending = false
+        } else {
+            // 清空只在伺服器可能持有 note 時升級為明確清空（送 ""，#2550）；本地從未持有 note 時仍是「未變更」，
+            // 因為 nil 代表未知（可能尚未 pull），不是已知的空。
+            entry.explanationClearPending = entry.hasServerCard
+                && (original.explanation != nil || original.explanationClearPending)
+            entry.explanation = nil
+        }
 
         if entry.isSynced {
             entry.syncAction = .edit
@@ -187,6 +197,7 @@ struct WordEditSheet: View {
         } catch {
             entry.translation = original.translation
             entry.explanation = original.explanation
+            entry.explanationClearPending = original.explanationClearPending
             entry.syncAction = original.syncAction
             entry.syncState = original.syncState
             throw error

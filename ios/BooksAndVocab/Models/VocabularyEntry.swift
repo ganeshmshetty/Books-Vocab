@@ -47,6 +47,10 @@ final class VocabularyEntry {
     /// 任何重新排入 add 的路徑（`restorePendingEntry`）或同步成功（`markSynced`）都清除。
     /// Optional，SwiftData lightweight migration 時既有 row 為 nil。
     var rejectedReason: String?
+    /// 使用者把伺服器已持有的 note 清空、尚未同步（#2550）。`explanation` 此時為 nil，PATCH 須送明確的 ""
+    /// 才會清除伺服器 note；nil 在 wire 上是「未變更」。`markSynced`（編輯成功）時清除。
+    /// Lightweight migration：既有 row 預設 false。
+    var explanationClearPending: Bool = false
     var difficultyTier: String?     // "core" / "intermediate" / "advanced" / "rare"
     var actionType: String = "add"  // "add" | "delete" | "edit"
     var reviewModeRaw: String = VocabularyCardMode.recognition.rawValue
@@ -234,7 +238,7 @@ extension VocabularyEntry {
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
     // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
-    // T8 edit 成功：action 仍為 edit 才 markSynced；成功前被刪者維持 delete。
+    // T8 edit 成功：action 仍為 edit 才 markSynced（清除 explanationClearPending）；成功前被刪者維持 delete。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
     // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
     //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
@@ -251,6 +255,11 @@ extension VocabularyEntry {
     /// `hasServerCard`（kgCardId 非空）即代表 server 已有卡片；編輯 synced 卡會把 syncState 改為 pending+edit，
     /// 但 kgCardId 保留，因此不能只靠 `isSynced` 判斷。
     var hasServerCard: Bool { !(kgCardId ?? "").isEmpty }
+
+    /// PATCH 的 note 欄位三態（#2550）：nil＝省略（伺服器值不變）；""＝明確清空；其餘＝設定值。
+    var explanationUpdateValue: String? {
+        explanationClearPending ? "" : explanation
+    }
 
     var requiresServerDelete: Bool { isSynced || isUploadInFlight || hasServerCard }
 
@@ -286,6 +295,7 @@ extension VocabularyEntry {
         syncAction = .add
         syncState = .synced
         rejectedReason = nil
+        explanationClearPending = false
     }
 
     func markSyncFailed() {

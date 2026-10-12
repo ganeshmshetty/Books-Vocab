@@ -204,7 +204,7 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     try await service.updateCardContent(
                         word: entry.word,
                         translation: entry.translation,
-                        explanation: entry.explanation,
+                        explanation: entry.explanationUpdateValue,
                         notebookId: entry.notebookId
                     )
                     if Task.isCancelled { return cancelledResult(since: start) }
