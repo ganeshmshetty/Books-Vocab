@@ -502,6 +502,41 @@ def test_dead_lanes_and_closed_prs_are_not_resumed(record: Any, pr: Any) -> None
         deliver.next_stage(record, pr)
 
 
+MERGED_OLD_HEAD = "a" * 40
+
+
+def test_a_merged_pr_is_cleanup_only_when_the_lane_head_is_its_head() -> None:
+    pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
+    assert (
+        deliver.next_stage(
+            {"status": "published"}, pr, head=MERGED_OLD_HEAD, branch="debug/x"
+        )
+        == "cleanup"
+    )
+
+
+def test_a_reused_branch_whose_old_pr_merged_is_refused_not_cleaned() -> None:
+    # #3311: the branch name carries a merged PR; the lane's new commits are not in it
+    pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
+    with pytest.raises(deliver.DeliverError, match="debug/issue-2042-r2"):
+        deliver.next_stage(
+            {"status": "active"},
+            pr,
+            head="b" * 40,
+            branch="debug/issue-2042-r2",
+        )
+
+
+def test_a_merged_pr_with_no_local_branch_is_cleanup() -> None:
+    # nothing local to drop: the branch is gone, so cleanup cannot lose commits
+    pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
+    assert deliver.next_stage({"status": "published"}, pr, head=None) == "cleanup"
+
+
+def test_the_pr_lookup_asks_github_for_the_head_it_is_compared_with() -> None:
+    assert "headRefOid" in deliver.PR_LOOKUP_FIELDS.split(",")
+
+
 def test_required_state_defaults_to_pending() -> None:
     assert deliver.required_state([]) == "PENDING"
     assert deliver.required_state([{"name": "other", "state": "SUCCESS"}]) == "PENDING"
@@ -715,10 +750,18 @@ def test_a_cleanup_pending_lane_with_an_open_pr_is_released_before_waiting() -> 
 
 
 def test_a_merged_pr_goes_straight_to_cleanup() -> None:
-    world = FakeWorld(prs=[{"number": 9, "state": "MERGED"}])
+    world = FakeWorld(prs=[{"number": 9, "state": "MERGED", "headRefOid": NEW_TIP}])
     code, _result = ship(world, "--merge")
     assert code == 0
     assert world.names() == ["cleanup-merged", "sync-main"]
+
+
+def test_a_reused_branch_with_a_merged_old_pr_is_not_cleaned_up() -> None:
+    world = FakeWorld(prs=[{"number": 9, "state": "MERGED", "headRefOid": "f" * 40}])
+    code, result = ship(world, "--merge")
+    assert code == 1
+    assert world.branch in result["error"]
+    assert "cleanup-merged" not in world.names()
 
 
 def test_dirty_trees_and_trunk_branches_are_refused() -> None:
@@ -1861,7 +1904,7 @@ def test_branch_resume_of_an_already_merged_lane_stops_with_a_clear_message() ->
 
 def test_branch_resume_still_cleans_a_merged_lane_that_is_not_yet_retired() -> None:
     world = FakeWorld(
-        prs=[{"number": 41, "state": "MERGED"}],
+        prs=[{"number": 41, "state": "MERGED", "headRefOid": NEW_TIP}],
         record={"branch": "feat/thing", "status": "cleanup_pending"},
     )
     code, _ = ship(world, "--branch", "feat/thing")
@@ -2760,7 +2803,10 @@ def test_merge_fails_loudly_when_a_closes_issue_is_still_open() -> None:
 
 
 def test_a_merged_pr_without_closes_reads_no_issue() -> None:
-    world = FakeWorld(prs=[{"number": 9, "state": "MERGED"}], pr_body="no issues")
+    world = FakeWorld(
+        prs=[{"number": 9, "state": "MERGED", "headRefOid": NEW_TIP}],
+        pr_body="no issues",
+    )
     code, _ = ship(world, "--merge")
     assert code == 0
     assert _issue_views(world) == []

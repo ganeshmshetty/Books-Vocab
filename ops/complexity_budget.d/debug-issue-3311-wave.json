@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3311,
+  "raise": {
+    "ops": 174
+  },
+  "note": "#3311: next_stage refuses a merged PR whose head is not the lane head; cmd_open refuses a branch name carrying any PR (reused-name guard). Net production growth in ops/deliver.py and ops/worktree_orchestrate.py."
+}

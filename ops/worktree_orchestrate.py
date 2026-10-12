@@ -327,6 +327,31 @@ def cmd_open(args: argparse.Namespace) -> int:
             human="✗ open refused: --external-id is required for delegated or owner-bound open",
         )
         return EXIT_BLOCK
+    # A branch name that any PR already carries (merged, closed or open) is a
+    # reused name: its new commits would be dropped by cleanup (#3311). Fail closed
+    # when GitHub cannot say.
+    try:
+        branch_prs = _branch_pull_requests(ROOT, branch)
+    except ReanchorRefused as exc:
+        reason = f"branch PR inventory could not be read: {exc.reason}"
+        _emit(
+            {"schema": SCHEMA, "action": "refused", "reason": reason},
+            as_json=args.json,
+            human=f"✗ open refused: {reason}",
+        )
+        return EXIT_BLOCK
+    if branch_prs:
+        numbers = ", ".join(f"#{number}" for number in branch_prs)
+        reason = (
+            f"branch {branch} already carries PR {numbers}; a reused branch name "
+            "cannot host a new lane; open a fresh slug (-rK)"
+        )
+        _emit(
+            {"schema": SCHEMA, "action": "refused", "reason": reason},
+            as_json=args.json,
+            human=f"✗ open refused: {reason}",
+        )
+        return EXIT_BLOCK
     base_sha = _resolve_commit(ROOT, args.base)
     if base_sha is None:
         _emit(
