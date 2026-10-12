@@ -96,6 +96,11 @@ final class SubscriptionManager: SubscriptionManaging {
     var lastLocalWriteGeneration = 0
     /// `entitlements` 所屬的帳號。nil 代表未綁定（預設值，或無法確定歸屬）；帳號切換時不得沿用他人的權益（#2592）。
     var entitlementsOwnerUserId: String?
+    /// refresh 自己的請求序號（#3233）。只有最新發出的 refresh 可寫入錯誤或還原冷卻；共用世代會被 StoreKit 同步取號推進，
+    /// 不能用來判斷 refresh 自身的失敗是否過期。
+    var refreshRequestSequence = 0
+    /// 寫入 `lastError` 的請求世代。較早 refresh 的失敗不得覆寫較新請求已寫入的錯誤（#3223）。
+    var lastErrorGeneration = 0
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?

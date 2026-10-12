@@ -37,8 +37,15 @@ extension SubscriptionManager {
         } catch {
             if !(error is CancellationError), generation == entitlementsGeneration {
                 lastError = error.localizedDescription
+                lastErrorGeneration = generation
             }
             throw error
+        }
+        // 回應屬於發出時的帳號。切換帳號不經登出，不會取得本地寫入世代，因此等待期間若已換帳號，
+        // 此回應不得寫入新帳號的權益（#3232）。
+        guard _authManager?.userId == owner else {
+            AppLog.subscription.warning("Discarding sync response: account changed while the request was in flight")
+            return
         }
         applySyncResponse(response, requestedAt: generation, owner: owner)
     }
