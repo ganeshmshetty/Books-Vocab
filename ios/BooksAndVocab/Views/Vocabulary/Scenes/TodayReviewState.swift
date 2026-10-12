@@ -365,7 +365,7 @@ final class TodayReviewState {
     /// interval, defeating "let me read this card in full".
     func toggleTemporaryDetail() {
         guard let key = currentCardState?.card.reviewCardKey else { return }
-        withAnimation(AppMotion.reviewRevealSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
             temporaryDetail.toggle(cardKey: key)
         }
         if temporaryDetail.isDetailed(cardKey: key) {
@@ -383,7 +383,7 @@ final class TodayReviewState {
 
     func shuffleQueue() {
         guard session.canShuffle(pinned: answeredSlots) else { return }
-        withAnimation(AppMotion.reviewNavigationSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
             _ = session.shuffleRemaining(pinned: answeredSlots)
         }
         syncCurrentEntryDerivedState()
@@ -395,7 +395,7 @@ final class TodayReviewState {
 
     func goPrevious() {
         guard session.canGoPrevious else { return }
-        withAnimation(AppMotion.reviewNavigationSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
             _ = session.goPrevious()
         }
         syncCurrentEntryDerivedState()
@@ -408,7 +408,7 @@ final class TodayReviewState {
 
     func goNext() {
         guard session.canGoNext else { return }
-        withAnimation(AppMotion.reviewNavigationSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
             _ = session.goNext()
         }
         syncCurrentEntryDerivedState()
@@ -497,14 +497,14 @@ final class TodayReviewState {
         switch intent {
         case .reveal:
             guard revealStage == .front, currentEntry != nil else { return false }
-            withAnimation(AppMotion.reviewRevealSpring) {
+            withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
                 advanceReveal()
             }
             return true
 
         case .collapse:
             guard revealStage == .back, currentEntry != nil else { return false }
-            withAnimation(AppMotion.reviewRevealSpring) {
+            withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
                 retractReveal()
             }
             return true
@@ -569,7 +569,7 @@ final class TodayReviewState {
             reveal: { [weak self] in self?.advanceReveal() },
             advance: { [weak self] in
                 guard let self, !self.session.isComplete, self.session.canGoNext else { return false }
-                withAnimation(AppMotion.reviewNavigationSpring) {
+                withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
                     _ = self.session.advanceAfterSubmission()
                 }
                 self.syncCurrentEntryDerivedState()

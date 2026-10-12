@@ -305,6 +305,7 @@ PR #402 七階段升級補完語意分層。新元件優先使用以下 token，
 - Rotation 角度由 deterministic seed 推得（如 `NotebookStackMetrics.stableSeed(for:)` djb2 over utf8），**禁用 `String.hashValue`**（per-process random seed 會導致跨 launch 角度跳動）
 - Rotation 不參與 press / 任何 state transition
 - Reduce Motion 仍關 offset/scale 動畫；只保留 rotation 與 opacity dip
+- Review 動效（揭示、切換、完成、甩出、回彈、拖拽）統一經 `AppMotionResolver`：位移／縮放類（甩出、回彈、拖拽）改瞬間，揭示／切換／完成改 opacity cross-fade（#3128）
 
 Precedent callsite：`NotebookStackedCoverView` editorial stack。
 

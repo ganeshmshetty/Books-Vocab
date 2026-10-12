@@ -1019,7 +1019,7 @@ struct ReviewCardView: View {
         return ReviewCardHitTargetButton(
             minimumSide: TodayReviewMetrics.linkOverflowHitTarget,
             action: {
-                let animation: Animation? = reducesMotion ? nil : AppMotion.reviewRevealSpring
+                let animation = AppMotionResolver.animation(.reveal, reduceMotion: reducesMotion)
                 withAnimation(animation) {
                     linkExpansion.toggle(group.id, cardKey: cardKey)
                 }

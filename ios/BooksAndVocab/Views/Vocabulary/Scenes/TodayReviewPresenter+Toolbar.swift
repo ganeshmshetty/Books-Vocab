@@ -216,7 +216,7 @@ struct ReviewToolbarControls: View, Equatable {
                 }
             }
         }
-        .animation(AppMotion.reviewNavigationSpring, value: model.showsAnswer)
+        .animation(AppMotionResolver.animation(.navigation, reduceMotion: reduceMotion), value: model.showsAnswer)
         .animateSpring(model.isAutoPlaying)
         .enableInjection()
     }
