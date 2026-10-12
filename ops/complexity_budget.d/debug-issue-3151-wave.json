@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3151,
+  "raise": {
+    "ops": 133
+  },
+  "note": "Issue #3151: disk guard lane-family rule plus its Done-when identity tests add 133 ops lines against 5 lines of merge-base headroom; the raise is carried by this lane fragment, not the base budget file"
+}
