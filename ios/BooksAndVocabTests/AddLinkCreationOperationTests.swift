@@ -80,6 +80,60 @@ struct AddLinkCreationOperationTests {
         ).isEmpty)
     }
 
+    /// #3115: an existing word runs the same operation pipeline as a new one. The server
+    /// answers `existing_card` for the target steps, which show as skipped; the job still
+    /// succeeds at full progress and the only server write is the operation itself.
+    /// Red on main: the `.active` guard blocked here (phase `.blocked`, no POST).
+    @Test("#3115: existing word enters the pipeline; existing_card steps skip and fraction reaches 1")
+    @MainActor
+    func existingWordRunsPipelineToFullProgress() async throws {
+        let container = try CreationFixtures.container()
+        let source = CreationFixtures.entry("source", cardID: "src")
+        let target = CreationFixtures.entry("target", cardID: "tgt")
+        let service = ScriptedCreationService(
+            onStart: { _, _ in Self.existingCardStatus(sequence: 1) },
+            onFetch: { _, _ in Self.existingCardStatus(sequence: 2) }
+        )
+        let coordinator = AddLinkCreationCoordinator(environment: CreationFixtures.environment())
+
+        coordinator.start(
+            word: "target",
+            sourceEntry: source,
+            allEntries: [source, target],
+            operationService: service,
+            syncService: service,
+            container: container
+        )
+        #expect(coordinator.phase == .running, "an existing word is no longer refused as linkable")
+
+        #expect(await CreationFixtures.eventually { coordinator.phase == .succeeded })
+        #expect(service.startKeys.count == 1, "exactly one operation POST, no separate manual-link call")
+        #expect(coordinator.steps.first { $0.id == "translate" }?.status == .skipped)
+        #expect(coordinator.steps.first { $0.id == "create_card" }?.status == .skipped)
+        #expect(coordinator.steps.first { $0.id == "enrich" }?.status == .skipped)
+        #expect(coordinator.fraction == 1)
+    }
+
+    private static func existingCardStatus(sequence: Int) -> KGAddLinkOperationStatus {
+        KGAddLinkOperationStatus(
+            operationId: "op-1",
+            notebookId: "nb",
+            status: "succeeded",
+            sequence: sequence,
+            steps: [
+                KGAddLinkOperationStep(id: "resolve_target", status: "done", current: 1, total: 1, detailCode: "existing_card"),
+                KGAddLinkOperationStep(id: "translate", status: "skipped", current: 0, total: 0, detailCode: "existing_card"),
+                KGAddLinkOperationStep(id: "create_card", status: "skipped", current: 0, total: 0, detailCode: "existing_card"),
+                KGAddLinkOperationStep(id: "enrich", status: "skipped", current: 0, total: 0, detailCode: "existing_card"),
+                KGAddLinkOperationStep(id: "create_link", status: "done", current: 1, total: 1, detailCode: nil),
+            ],
+            targetCardId: "tgt",
+            linkId: "link-1",
+            warnings: [],
+            errorCode: nil
+        )
+    }
+
     @Test("request encodes the backend command contract")
     func requestEncoding() throws {
         let request = KGAddLinkOperationRequest(

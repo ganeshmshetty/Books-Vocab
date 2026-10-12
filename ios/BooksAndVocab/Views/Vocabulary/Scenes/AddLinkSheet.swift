@@ -590,7 +590,7 @@ struct AddLinkSheet: View {
                     notebookLine: AddLinkCreateCopy.notebookLine(notebookName: createNotebookName),
                     isHighlighted: isCreateHighlighted,
                     disabledReason: connectivity.createDisabledReason,
-                    action: startCreation
+                    action: { startCreation() }
                 )
                 .transition(.opacity)
                 .disabled(coordinator.linkingTargetCardID != nil || !connectivity.allowsServerWork)
@@ -630,6 +630,13 @@ struct AddLinkSheet: View {
             if let notice = connectivity.noticeMessage { toastCoordinator.warning(notice) }
             return
         }
+        // #3115: an existing word takes the same operation pipeline as a new one (progress
+        // panel, idempotent POST, hub ownership: closing the sheet does not roll it back).
+        // The synchronous link is only the fallback for a service without operations.
+        if kgService is any AddLinkOperationServing {
+            startCreation(word: entry.word)
+            return
+        }
         awaitingActionOutcome = true
         coordinator.startLinkExisting(
             target: entry,
@@ -645,7 +652,8 @@ struct AddLinkSheet: View {
             awaitingCreationOutcome = true
             creationCoordinator.retryWarnings()
         } else {
-            startCreation()
+            // Retry the job's own word: the search field may have changed since the attempt.
+            startCreation(word: creationCoordinator.targetWord.isEmpty ? searchText : creationCoordinator.targetWord)
         }
     }
 
@@ -681,6 +689,12 @@ struct AddLinkSheet: View {
     }
 
     private func startCreation() {
+        startCreation(word: searchText)
+    }
+
+    /// Starts the one operation pipeline for a typed-new or an existing word (#3115).
+    /// `word` is explicit so a candidate tap or a retry never resolves a partial query.
+    private func startCreation(word: String) {
         guard let operationService = kgService as? any AddLinkOperationServing else { return }
         // Retry also lands here: offline must not turn into another failed attempt.
         guard connectivity.allowsServerWork else {
@@ -690,7 +704,7 @@ struct AddLinkSheet: View {
         creationAttempt += 1
         awaitingCreationOutcome = true
         creationCoordinator.start(
-            word: searchText,
+            word: word,
             sourceEntry: sourceEntry,
             allEntries: allEntries,
             operationService: operationService,

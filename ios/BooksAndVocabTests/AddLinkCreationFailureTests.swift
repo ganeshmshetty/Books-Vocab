@@ -267,6 +267,25 @@ struct AddLinkCreationP1CoordinatorTests {
         #expect(coordinator.failure == nil)
     }
 
+    @Test("#3115: an existing (.active) target enters the operation pipeline instead of being blocked")
+    func existingTargetEntersPipeline() async throws {
+        let container = try CreationFixtures.container()
+        let source = CreationFixtures.entry("source", cardID: "src")
+        let target = CreationFixtures.entry("target", cardID: "tgt")
+        let service = ScriptedCreationService(
+            onStart: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 1) },
+            onFetch: { _, id in CreationFixtures.status(id, "succeeded", sequence: 2) }
+        )
+        let coordinator = AddLinkCreationCoordinator(environment: P1Fixtures.environment())
+        P1Fixtures.start(coordinator, word: "target", source: source, allEntries: [source, target],
+                         service: service, container: container)
+
+        // Before #3115 the .active guard blocked here with addLink.target.linkable and no POST.
+        #expect(coordinator.phase != .blocked)
+        #expect(await CreationFixtures.eventually { coordinator.phase == .succeeded })
+        #expect(service.startKeys.count == 1, "an existing word posts exactly one ensure-target operation")
+    }
+
     @Test("C11: server warnings end in succeededWithWarnings naming each missing part")
     func serverWarnings() async throws {
         let service = ScriptedCreationService(

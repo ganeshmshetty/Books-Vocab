@@ -235,7 +235,10 @@ final class AddLinkCreationCoordinator {
         }
 
         switch Self.localTargetState(query: trimmedWord, sourceEntry: sourceEntry, allEntries: allEntries) {
-        case .missing:
+        case .missing, .active:
+            // #3115: an existing word is one pipeline with a new word. The server resolves
+            // it as existing_card (translate/create/enrich skipped), so the link runs under
+            // the same progress panel, idempotency key and hub ownership.
             break
         case .pending, .failed:
             block(message: L10n.string("此單字尚未同步，無法建立連結"))
