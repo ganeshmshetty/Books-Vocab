@@ -47,6 +47,8 @@ struct ReviewCardActions {
     var deleteCollocationExplanation: ((String) -> Void)? = nil
     /// #2041：精簡卡的「暫時看詳細／恢復精簡」。nil（設定頁預覽 / catalog）＝不畫按鈕。
     var toggleTemporaryDetail: (() -> Void)? = nil
+    /// #2043／#3130：「+N」點擊，參數為連結群組 id；展開狀態由 session 持有。nil ＝ 不可展開。
+    var toggleLinkGroup: ((String) -> Void)? = nil
 
     static let none = ReviewCardActions()
 }
@@ -153,7 +155,6 @@ struct ReviewCardView: View {
     @Environment(\.appSkin) private var appSkin
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.speechService) private var speechService
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let content: ReviewCardContent
     let profile: ReviewCardLayoutProfile
@@ -170,6 +171,9 @@ struct ReviewCardView: View {
     /// 多單字本入口才有值（`ReviewCardNotebookBadgeResolver`）；nil ＝ 不畫標示。
     var notebookBadge: ReviewCardNotebookBadge? = nil
     var actions: ReviewCardActions = .none
+    /// 哪幾組知識連結被「+N」展開（#2043、#3130）。由 session 持有（`TodayReviewState`），
+    /// 綁一張卡：換卡即清空，舊卡的展開狀態對新卡讀不到。
+    var linkExpansion = ReviewCardLinkExpansion()
     var onFrontHeightChange: ((CGFloat) -> Void)? = nil
 
     /// 自量的寬度（量測 key 的 bucket）與正面高度（背面預算的被減數）。
@@ -177,9 +181,6 @@ struct ReviewCardView: View {
     /// This is only a transient mount gate. The actual measurements live in
     /// `content.measurementCache`, which survives resident-slot recycling.
     @State private var measurementProbeReadyToken: String?
-    /// 哪幾組知識連結被「+N」展開（#2043）。只活在記憶體、綁一張卡：常駐 slot 換卡後
-    /// 舊卡的展開狀態讀不到，也不寫入任何 store。
-    @State private var linkExpansion = ReviewCardLinkExpansion()
 
     private var reviewMeasurementCache: ReviewCardMeasurementCache { content.measurementCache }
 
@@ -1014,15 +1015,10 @@ struct ReviewCardView: View {
         row: ReviewCardLinkStripLayout.Row,
         isExpanded: Bool
     ) -> some View {
-        let cardKey = currentCardKey
-        let reducesMotion = reduceMotion
         return ReviewCardHitTargetButton(
             minimumSide: TodayReviewMetrics.linkOverflowHitTarget,
             action: {
-                let animation = AppMotionResolver.animation(.reveal, reduceMotion: reducesMotion)
-                withAnimation(animation) {
-                    linkExpansion.toggle(group.id, cardKey: cardKey)
-                }
+                actions.toggleLinkGroup?(group.id)
             },
             accessibilityIdentifier: "todayReview.card.link.overflow.\(group.id)",
             // #3227：收合時「+N」是純符號文字，VoiceOver 需要「顯示其餘 N 個連結」；展開時沿用可見的「收合」文案。

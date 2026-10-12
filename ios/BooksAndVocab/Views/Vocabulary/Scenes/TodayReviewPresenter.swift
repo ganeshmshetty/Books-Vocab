@@ -35,6 +35,8 @@ struct TodayReviewPresenterState {
     /// #2041：目前「暫時看詳細」的那張卡（`CardPresentation.reviewCardKey`），nil ＝
     /// 全部依設定。session 記憶體，換卡即清。
     var temporaryDetailCardKey: String? = nil
+    /// #3130：「+N」展開（綁單張卡，換卡即清空）。
+    var linkExpansion = ReviewCardLinkExpansion()
     /// #3127：鍵盤評分請求（與按鈕、滑動同一條甩出路徑）。變化即由 view 觸發一次 `flingCard`。
     var keyboardGrade: KeyboardGradeRequest? = nil
 }
@@ -320,6 +322,8 @@ struct TodayReviewPresenter: View {
     var notebookBadges: [String: ReviewCardNotebookBadge] = [:]
     /// #2041：精簡卡 chrome 的「暫時看詳細／恢復精簡」。預設 no-op（fixture / catalog）。
     var onToggleTemporaryDetail: () -> Void = {}
+    /// #2043／#3130：「+N」點擊 → session 切換該群組展開。預設 no-op（fixture / catalog）。
+    var onToggleLinkGroup: (String) -> Void = { _ in }
 
     /// 給 extension 判斷能否互動
     var isCardInteractive: Bool {

@@ -980,7 +980,8 @@
 "todayReview.card.notebook.a11y" = "单字本：%@";
 "todayReview.card.notebook.default" = "默认单字本";
 "todayReview.card.notebook.unnamed" = "未命名单字本";
-"todayReview.saveFailure" = "复习结果未存档，请稍后再试";
+"todayReview.saveFailure" = "复习结果尚未存档，下次打开复习时会自动重试";
+"todayReview.linkHideFailed" = "无法隐藏链接，已还原";
 "todayReview.autoplay.blockedHint" = "自动播放中，请先关闭";
 
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */

@@ -100,8 +100,10 @@ extension TodayReviewPresenter {
                     explainCollocation: onExplainCollocation,
                     viewCollocationExplanation: onViewCollocationExplanation,
                     deleteCollocationExplanation: onDeleteCollocationExplanation,
-                    toggleTemporaryDetail: onToggleTemporaryDetail
+                    toggleTemporaryDetail: onToggleTemporaryDetail,
+                    toggleLinkGroup: onToggleLinkGroup
                 ),
+                linkExpansion: state.linkExpansion,
                 // FIX(review-flip-gap)：逐 slot 記實測 front 高度（active slot
                 // 恆 uncap → 量到自然高度）。`activeCardHeight` 讀 active slot 的值，
                 // 供非 active slot cap（見下方的 .frame）。量測只有卡片自己做得到，

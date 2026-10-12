@@ -225,7 +225,8 @@ struct TodayReviewView: View {
             },
             collocationExplanations: state.currentCollocationExplanations,
             notebookBadges: notebookBadges,
-            onToggleTemporaryDetail: { state.toggleTemporaryDetail() }
+            onToggleTemporaryDetail: { state.toggleTemporaryDetail() },
+            onToggleLinkGroup: { state.toggleLinkGroup($0) }
         )
         .toastOverlay()
         .task {
@@ -290,6 +291,7 @@ struct TodayReviewView: View {
                         context: modelContext
                     )
                     state.hideLink(link, peer: peer)
+                    let toast = toastCoordinator
                     Task {
                         do {
                             try await kgService.hideLink(linkId: link.id, notebookId: notebookId)
@@ -299,6 +301,8 @@ struct TodayReviewView: View {
                                 sourceEntry: entry,
                                 targetEntry: peer
                             )
+                            // #3130：樂觀隱藏失敗時連結已還原，必須告知使用者，不能無聲復活。
+                            toast.error(L10n.string("todayReview.linkHideFailed"))
                         }
                     }
                 }

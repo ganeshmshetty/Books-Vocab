@@ -53,14 +53,23 @@ enum ReviewCardLinkStripLayout {
     }
 }
 
-/// 哪幾組連結被展開（#2043）。只存在記憶體（`ReviewCardView` 的 `@State`），
-/// 綁定一張卡：常駐 slot 換到別張卡時，舊卡的展開狀態對新卡永遠讀不到。
+/// 哪幾組連結被展開（#2043）。只存在記憶體，由 `TodayReviewState` 持有（#3130）並於每次換卡清空；
+/// 綁定一張卡：舊卡的展開狀態對新卡永遠讀不到。
 struct ReviewCardLinkExpansion: Equatable {
     private(set) var cardKey: String?
     private(set) var groupIDs: Set<String> = []
 
     func isExpanded(_ groupID: String, cardKey: String) -> Bool {
         self.cardKey == cardKey && groupIDs.contains(groupID)
+    }
+
+    /// 換卡即還原（#3130）：清空展開，與 temporary detail 同一生命週期。回傳是否真的有變化，
+    /// 閒置時不寫入（與 `ReviewCardTemporaryDetail.reset()` 同慣例）。
+    @discardableResult
+    mutating func reset() -> Bool {
+        guard cardKey != nil || !groupIDs.isEmpty else { return false }
+        self = ReviewCardLinkExpansion()
+        return true
     }
 
     mutating func toggle(_ groupID: String, cardKey: String) {

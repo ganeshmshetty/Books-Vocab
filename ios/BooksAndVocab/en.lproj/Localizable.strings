@@ -999,7 +999,8 @@
 "todayReview.card.notebook.a11y" = "Notebook: %@";
 "todayReview.card.notebook.default" = "Default notebook";
 "todayReview.card.notebook.unnamed" = "Untitled notebook";
-"todayReview.saveFailure" = "Review result wasn't saved. Please try again later.";
+"todayReview.saveFailure" = "Review result isn't saved yet. It will retry the next time you open Review.";
+"todayReview.linkHideFailed" = "Couldn't hide the link. It has been restored.";
 "todayReview.autoplay.blockedHint" = "Autoplay is on. Turn it off first.";
 
 /* i18n: toast / status messages (closing the toastCoordinator/reportError lint blindspot) */
