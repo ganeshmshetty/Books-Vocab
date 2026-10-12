@@ -73,7 +73,6 @@ struct ReaderPage {
     }
     var resetMenu: XCUIElement { app.buttons["reader.settings.resetMenu"] }
     var resetAllButton: XCUIElement { app.buttons["reader.settings.reset.all"] }
-    var progressBadge: XCUIElement { app.staticTexts["reader.header.progressBadge"] }
 
     // MARK: - Query definitions
 
@@ -164,10 +163,6 @@ struct ReaderPage {
 
     private var resetAllButtonQuery: XCUIElementQuery {
         app.buttons.matching(identifier: "reader.settings.reset.all")
-    }
-
-    private var progressBadgeQuery: XCUIElementQuery {
-        app.staticTexts.matching(identifier: "reader.header.progressBadge")
     }
 
     var tableOfContentsButton: XCUIElement {
@@ -804,18 +799,6 @@ struct ReaderPage {
     }
 
     // MARK: - Progress
-
-    /// Parse the bottom progress text ("57%", its accessibility value) into a
-    /// whole-percent Double. Returns nil while the numeric text is not
-    /// applicable (unknown/restore failure or hidden behind a panel).
-    func progressPercent() -> Double? {
-        guard let progressBadge = exactlyOneIfPresent(
-            progressBadgeQuery,
-            named: "Reader progress badge"
-        ) else { return nil }
-        let value = progressBadge.value as? String ?? ""
-        return Double(value.replacingOccurrences(of: "%", with: ""))
-    }
 
     /// Exact progression fraction (0...1) from the runtime-state evidence key
     /// `progression=`. The visible value is whole-percent, too coarse for
