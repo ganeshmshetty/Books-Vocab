@@ -330,12 +330,12 @@ else
   echo "[release] diagnostics unavailable: $DIAGNOSTICS" >&2
 fi
 if [[ $ARCHIVE_EXIT -ne 0 ]]; then
-  echo "RESULT=fail EXIT=$ARCHIVE_EXIT caller=$CALLER archive=$ARCHIVE log=$ARCHIVE_LOG xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
+  echo "RESULT=fail EXIT=$ARCHIVE_EXIT caller=$CALLER archive=$ARCHIVE log=$ARCHIVE_LOG xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "$ARCHIVE_EXIT" "fail" "skipped" "skipped"
   echo "[release] ✗ archive failed (exit $ARCHIVE_EXIT, ${ARCHIVE_ELAPSED}s) log=$ARCHIVE_LOG xcresult=$RESULT_BUNDLE" >&2
   exit "$ARCHIVE_EXIT"
 fi
-echo "RESULT=ok EXIT=0 caller=$CALLER archive=$ARCHIVE log=$ARCHIVE_LOG xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
+echo "RESULT=ok EXIT=0 caller=$CALLER archive=$ARCHIVE log=$ARCHIVE_LOG xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
 echo "[release] ✓ archive succeeded (${ARCHIVE_ELAPSED}s) log=$ARCHIVE_LOG xcresult=$RESULT_BUNDLE"
 if [[ $DO_UPLOAD -eq 1 ]]; then
   upload_sentry_dsyms "$ARCHIVE"

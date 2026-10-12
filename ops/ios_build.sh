@@ -188,7 +188,7 @@ kg_ios_verdict_init build "$PROJECT_ROOT"
 # below and as ios_test.sh's write_early_failure_verdict.
 write_early_failure_verdict() {
   local reason="$1" exit_code="$2"
-  echo "RESULT=inconclusive EXIT=$exit_code reason=$reason caller=$CALLER elapsed=0s $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
+  echo "RESULT=inconclusive EXIT=$exit_code reason=$reason caller=$CALLER elapsed=0s $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   jq -nc \
     --arg schema "kg.ios.run-verdict.v1" \
     --arg kind "build" \
@@ -388,12 +388,12 @@ if [[ $EXIT_CODE -eq 0 ]]; then
     mkdir -p "$DERIVED_DATA_ROOT"
     echo "$COMPILE_EVENT_COUNT" > "$BUILD_PROGRESS_BASELINE"
   fi
-  echo "RESULT=ok EXIT=0 caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
+  echo "RESULT=ok EXIT=0 caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "ok" "0"
   echo "[ios_build] timings lockWaitMs=$LOCK_WAIT_MS bootMs=$BOOT_MS xcodebuildMs=$XCODEBUILD_MS totalMs=$TOTAL_MS"
   echo "[ios_build] ✓ build succeeded (${ELAPSED}s, ${COMPILE_EVENT_COUNT} compile events) — $CALLER  log=$TMPOUT  xcresult=$RESULT_BUNDLE  verdict=$VERDICT_FILE"
 else
-  echo "RESULT=fail EXIT=$EXIT_CODE caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
+  echo "RESULT=fail EXIT=$EXIT_CODE caller=$CALLER elapsed=${ELAPSED}s log=$TMPOUT xcresult=$RESULT_BUNDLE $(kg_ios_verdict_commit_kv "$PROJECT_ROOT") $(kg_ios_verdict_identity_kv)" > "$VERDICT_FILE"
   write_json_verdict "fail" "$EXIT_CODE"
   echo "[ios_build] timings lockWaitMs=$LOCK_WAIT_MS bootMs=$BOOT_MS xcodebuildMs=$XCODEBUILD_MS totalMs=$TOTAL_MS"
   echo "[ios_build] ✗ build failed (exit $EXIT_CODE, ${ELAPSED}s) — $CALLER  log=$TMPOUT  xcresult=$RESULT_BUNDLE  verdict=$VERDICT_FILE" >&2
