@@ -602,6 +602,36 @@ struct SubscriptionManagerTests {
         #expect(!applied)
         #expect(!mgr.hasProAccess)
     }
+
+    // MARK: - session end (#2592, #3222)
+
+    @MainActor
+    @Test func session_end_resets_pro_and_discards_sync_requested_before_logout() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+
+        // 用戶 A 的 Pro 已套用；App Store 同步於登出前發出，回應尚未返回。
+        mgr.commitEntitlements(KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")))
+        let syncGeneration = mgr.claimEntitlementsGeneration()
+
+        mgr.resetForSessionEnd()
+        #expect(!mgr.hasProAccess)
+
+        // 登出後才到達的 A 同步回應（active）必須被丟棄，不得把 Pro 寫回。
+        let applied = mgr.applySyncResponse(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            requestedAt: syncGeneration
+        )
+        #expect(!applied)
+        #expect(!mgr.hasProAccess)
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
