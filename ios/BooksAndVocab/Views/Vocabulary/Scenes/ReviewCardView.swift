@@ -450,6 +450,7 @@ struct ReviewCardView: View {
                         ? L10n.string("todayReview.card.temporaryDetail.show")
                         : L10n.string("todayReview.card.temporaryDetail.restore"),
                     identifier: interactive ? "todayReview.card.temporaryDetail" : nil,
+                    borderless: true,
                     action: { if interactive { actions.toggleTemporaryDetail?() } }
                 )
                 .accessibilityValue(temporaryDetailToggle.rawValue)
@@ -457,15 +458,26 @@ struct ReviewCardView: View {
             VocabChromeIconButton(
                 systemImage: "speaker.wave.2.fill",
                 label: "播放發音".localized,
+                identifier: interactive ? "todayReview.card.speak" : nil,
+                borderless: true,
                 action: { if interactive { speechService.speak(card.word) } }
             )
             VocabChromeIconButton(
                 systemImage: "arrow.up.right",
                 label: "查看詳情".localized,
+                identifier: interactive ? "todayReview.card.openDetail" : nil,
+                borderless: true,
                 action: { if interactive { actions.detailTap?() } }
             )
         }
-        .padding(reviewCardPadding)
+        // The glyph sits centred in a 44pt touch box, so the box overhangs it by
+        // `chromeHitOverhang`. Offsetting by the difference puts the visible glyph
+        // `chromeCornerInset` from the card's top and trailing edges without
+        // changing the word-row reserve (#3112).
+        .offset(
+            x: TodayReviewMetrics.chromeHitOverhang - TodayReviewMetrics.chromeCornerInset,
+            y: TodayReviewMetrics.chromeCornerInset - TodayReviewMetrics.chromeHitOverhang
+        )
         .allowsHitTesting(interactive)
     }
 

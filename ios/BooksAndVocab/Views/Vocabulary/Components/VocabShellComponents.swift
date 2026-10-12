@@ -181,18 +181,26 @@ struct VocabChromeIconButton: View {
     var tone: Color? = nil
     var label: String? = nil
     var identifier: String? = nil
+    /// Glyph only: no surface and no stroke. The 44pt touch box is unchanged (#3112).
+    var borderless: Bool = false
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VocabChromeSurface(
-                fill: appSkin.palette.cardBackground,
-                border: appSkin.palette.cardBorder
-            ) {
+            if borderless {
                 Image(systemName: systemImage)
-                    .font(appSkin.typography.iconMedium)
-                    .foregroundStyle(tone ?? appSkin.palette.secondaryText)
-                    .frame(width: appSkin.metrics.chromeButtonSize, height: appSkin.metrics.chromeButtonSize)
+                    .font(appSkin.typography.iconSmall)
+                    .foregroundStyle(tone ?? appSkin.palette.tertiaryText)
+            } else {
+                VocabChromeSurface(
+                    fill: appSkin.palette.cardBackground,
+                    border: appSkin.palette.cardBorder
+                ) {
+                    Image(systemName: systemImage)
+                        .font(appSkin.typography.iconMedium)
+                        .foregroundStyle(tone ?? appSkin.palette.secondaryText)
+                        .frame(width: appSkin.metrics.chromeButtonSize, height: appSkin.metrics.chromeButtonSize)
+                }
             }
             // 視覺維持 32pt（VocabChromeSurface），僅外擴觸控目標到 HIG 44pt 下限。
             // contentShape 確保整個 44pt 區域可點，但不撐大版面佔位（frame minWidth/minHeight 不放大視覺）。
