@@ -62,6 +62,7 @@ enum ReviewSessionPersistence {
         queueCount: Int,
         queuePersistenceIDs: [String],
         queueBaselines: [TodayReviewSessionSnapshotStore.ReviewBaseline],
+        queueEntryIDs: [UUID] = [],
         submittedAnswers: [Int: TodayReviewState.SubmittedAnswer]
     ) {
         guard !queuePersistenceIDs.isEmpty else {
@@ -77,10 +78,11 @@ enum ReviewSessionPersistence {
                 flushed: answer.flushed
             )
         }
-        let queueItems = zip(queuePersistenceIDs, queueBaselines).map { persistenceID, baseline in
+        let queueItems = zip(queuePersistenceIDs, queueBaselines).enumerated().map { index, pair in
             TodayReviewSessionSnapshotStore.Snapshot.QueueItem(
-                persistenceID: persistenceID,
-                baseline: baseline
+                persistenceID: pair.0,
+                baseline: pair.1,
+                entryID: index < queueEntryIDs.count ? queueEntryIDs[index] : nil
             )
         }
 
@@ -127,14 +129,22 @@ enum ReviewSessionPersistence {
             uniquingKeysWith: { first, _ in first }
         )
 
-        // 逐一比對快照佇列。缺席的卡、以及快照內重複出現的 persistenceID（第二次起）都視為遺失。
+        let entryByID = Dictionary(
+            uniqueEntries.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        // 逐一比對快照佇列。每列先以列 UUID 找回（sync 可能在快照寫入後把該列 re-key），
+        // 無 UUID 或找不到才退回 persistenceID，與 fetchQueuedEntry 同一順序。
+        // 缺席的卡、以及快照內解析到同一列的第二次起都視為遺失。
         // kept 保留 (舊 index, entry)；oldToNew 把舊 index 重映射到新佇列位置。
-        var seenIDs = Set<String>()
+        var seenEntryIDs = Set<UUID>()
         var kept: [(oldIndex: Int, entry: VocabularyEntry)] = []
         var oldToNew: [Int: Int] = [:]
         for (oldIndex, item) in snapshot.queue.enumerated() {
-            guard let entry = entryMap[item.persistenceID],
-                  seenIDs.insert(item.persistenceID).inserted else { continue }
+            let resolved = item.entryID.flatMap { entryByID[$0] } ?? entryMap[item.persistenceID]
+            guard let entry = resolved,
+                  seenEntryIDs.insert(entry.id).inserted else { continue }
             oldToNew[oldIndex] = kept.count
             kept.append((oldIndex, entry))
         }
@@ -159,12 +169,12 @@ enum ReviewSessionPersistence {
             }
         }
 
-        let restoredIDs = kept.map { snapshot.queue[$0.oldIndex].persistenceID }
+        // 還原列採用其「目前」persistenceID：被 re-key 的列以新卡號重新進入佇列，之後的快照寫入才不會沿用舊 key。
         let restoredQueue = kept.map { $0.entry }
-        let restoredIDSet = Set(restoredIDs)
-        let appendedEntries = uniqueEntries.filter { !restoredIDSet.contains(persistenceID(for: $0)) }
+        let restoredEntryIDs = Set(restoredQueue.map(\.id))
+        let appendedEntries = uniqueEntries.filter { !restoredEntryIDs.contains($0.id) }
         let queue = restoredQueue + appendedEntries
-        let persistenceIDs = restoredIDs + appendedEntries.map(persistenceID(for:))
+        let persistenceIDs = restoredQueue.map(persistenceID(for:)) + appendedEntries.map(persistenceID(for:))
         let baselines = kept.map { snapshot.queue[$0.oldIndex].baseline } + appendedEntries.map(makeBaseline(from:))
 
         var submittedAnswers: [Int: TodayReviewState.SubmittedAnswer] = [:]

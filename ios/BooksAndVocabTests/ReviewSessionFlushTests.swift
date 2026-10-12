@@ -122,6 +122,70 @@ struct ReviewSessionFlushTests {
         #expect(rekeyedRecords.first?.feedback == ReviewFeedback.forgot.rawValue)
     }
 
+    /// #3169 relaunch re-key: a snapshot written before sync re-keyed a queued row still holds the
+    /// row's old persistence id. After kill+relaunch the unflushed grade must be restored onto that
+    /// row (matched by its own id), not treated as a deleted card and dropped.
+    @Test func restoreFindsRekeyedRowAfterRelaunch() {
+        let userID = "flush-rekey-relaunch-user"
+        TodayReviewSessionSnapshotStore.clear(for: userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: userID) }
+        let entries = makeEntries(2)
+        let answeredAt = Date()
+        ReviewSessionPersistence.persistSnapshot(
+            userId: userID,
+            sessionStartTime: answeredAt,
+            currentIndex: 1,
+            queueCount: 2,
+            queuePersistenceIDs: entries.map(ReviewSessionPersistence.persistenceID(for:)),
+            queueBaselines: entries.map(ReviewSessionPersistence.makeBaseline(from:)),
+            queueEntryIDs: entries.map(\.id),
+            submittedAnswers: [
+                0: TodayReviewState.SubmittedAnswer(feedback: .remembered, answeredAt: answeredAt, reviewRecordID: UUID())
+            ]
+        )
+        // Sync re-keys the answered row after the snapshot was written, then the app is killed.
+        entries[0].kgCardId = "card-rekeyed-\(UUID().uuidString.prefix(8))"
+
+        let restored = ReviewSessionPersistence.restoreSnapshotIfPossible(
+            orderedEntries: entries,
+            userId: userID
+        )
+
+        #expect(restored?.queue.map(\.id) == entries.map(\.id))
+        #expect(restored?.persistenceIDs == entries.map(ReviewSessionPersistence.persistenceID(for:)))
+        #expect(restored?.submittedAnswers[0]?.feedback == .remembered)
+        #expect(restored?.submittedAnswers[0]?.flushed == false)
+    }
+
+    /// #3169 legacy blob: a snapshot without row ids (written before `entryID` existed, or with no
+    /// ids supplied) still restores each row by persistence id, exactly as before.
+    @Test func restoreWithoutRowIDsFallsBackToPersistenceID() {
+        let userID = "flush-legacy-restore-user"
+        TodayReviewSessionSnapshotStore.clear(for: userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: userID) }
+        let entries = makeEntries(2)
+        let answeredAt = Date()
+        ReviewSessionPersistence.persistSnapshot(
+            userId: userID,
+            sessionStartTime: answeredAt,
+            currentIndex: 1,
+            queueCount: 2,
+            queuePersistenceIDs: entries.map(ReviewSessionPersistence.persistenceID(for:)),
+            queueBaselines: entries.map(ReviewSessionPersistence.makeBaseline(from:)),
+            submittedAnswers: [
+                0: TodayReviewState.SubmittedAnswer(feedback: .remembered, answeredAt: answeredAt, reviewRecordID: UUID())
+            ]
+        )
+
+        let restored = ReviewSessionPersistence.restoreSnapshotIfPossible(
+            orderedEntries: entries,
+            userId: userID
+        )
+
+        #expect(restored?.queue.map(\.id) == entries.map(\.id))
+        #expect(restored?.submittedAnswers[0]?.flushed == false)
+    }
+
     /// #3123 fetch error: a row fetch that throws is not a deleted entry. That answer stays
     /// un-settled (so the caller keeps its snapshot and restore retries it), while the other
     /// answer still settles and is written.
