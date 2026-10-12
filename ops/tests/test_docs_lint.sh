@@ -200,4 +200,11 @@ if [ "$guard_mismatch" -ne 0 ]; then
   exit 1
 fi
 
+# #3264: tech_index CI row names every merge-group required input; SOP states the PR-side clarification.
+ci_row="$(grep -m1 '^| CI |' docs/reference/tech_index.md || true)"
+for ctx in short-gate ios-quality ops-suite; do
+  printf '%s' "$ci_row" | grep -q "\`$ctx\`" || { echo "tech_index.md CI row lacks required input $ctx (#3264)" >&2; exit 1; }
+done
+grep -q 'PR 側.*`pr-gate.yml`.*只 needs `repo-gate`' docs/sop/delivery_control_dogfood.md || { echo "SOP lacks PR-side required clarification (#3264)" >&2; exit 1; }
+
 echo "docs-lint tests: PASS"
