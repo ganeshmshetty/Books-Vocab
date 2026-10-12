@@ -15,6 +15,8 @@ import SwiftUI
 /// - 摺頁 chevron：半高 22 < 正反面 padding 28，只落在空白 padding 內（見 `ReviewFoldTapTargets`）。
 /// - Word Detail「＋」：上緣落在區塊 padding（24pt）內，下緣落在標題列與連結列之間的 16pt 間距內。
 /// - Reader 發音鈕：下緣貼近 panelBody 間距、上緣貼近拖曳把手下方的 12pt 間距，約 ±2pt 未經裝置量測。
+/// - 連結列「+N」：傳入 `TodayReviewMetrics.linkOverflowHitTarget`（膠囊高 + 2×s1），外擴恰為列距 s1，
+///   不蓋到上一列連結（#3253）。沿用預設 44pt 時外擴約 10pt，會蓋到上一列，因此不得省略此參數。
 struct ReviewCardHitTargetButton<Label: View>: View {
     @ObserveInjection private var inject
     var minimumSide: CGFloat = TodayReviewMetrics.addLinkHitTarget

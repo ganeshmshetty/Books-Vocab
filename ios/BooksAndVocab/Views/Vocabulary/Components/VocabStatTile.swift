@@ -10,6 +10,13 @@ enum VocabStatTileLayout {
     }
 }
 
+/// Frame anchor for one Overview metric readout. Its content must hug the top edge: a
+/// readout that stretches to its grid row's height would otherwise center its numeral,
+/// breaking the shared top line with the neighbouring readout in the row (#3271).
+enum VocabStatReadoutLayout {
+    static let frameAlignment: Alignment = .topLeading
+}
+
 /// One Overview metric readout. It owns its padding, so its accessibility frame is the
 /// whole readout; any surface is drawn by the caller around it.
 struct VocabStatReadout: View {
@@ -49,7 +56,7 @@ struct VocabStatReadout: View {
             }
         }
         .padding(AppSkin.baseSpacing.cardPadding)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: VocabStatReadoutLayout.frameAlignment)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(identifier)
         .accessibilityValue(value)

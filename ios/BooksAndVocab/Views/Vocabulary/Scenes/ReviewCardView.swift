@@ -1006,7 +1006,9 @@ struct ReviewCardView: View {
     }
 
     /// "+N" (collapsed) / "收合" (expanded), drawn as a chevron capsule so it reads as a
-    /// control. The 44pt touch target overlays the capsule and does not grow the row (#3114).
+    /// control. The touch band overlays the capsule without growing the row (#3114), and is
+    /// capped at `TodayReviewMetrics.linkOverflowHitTarget` (capsule + 2×s1) so it stays
+    /// within the row gap instead of the 44pt default (#3226/#3253).
     private func linkOverflowToggle(
         _ group: ReviewCardLinkGroup,
         row: ReviewCardLinkStripLayout.Row,
@@ -1015,6 +1017,7 @@ struct ReviewCardView: View {
         let cardKey = currentCardKey
         let reducesMotion = reduceMotion
         return ReviewCardHitTargetButton(
+            minimumSide: TodayReviewMetrics.linkOverflowHitTarget,
             action: {
                 let animation: Animation? = reducesMotion ? nil : AppMotion.reviewRevealSpring
                 withAnimation(animation) {
@@ -1022,6 +1025,8 @@ struct ReviewCardView: View {
                 }
             },
             accessibilityIdentifier: "todayReview.card.link.overflow.\(group.id)",
+            // #3227：收合時「+N」是純符號文字，VoiceOver 需要「顯示其餘 N 個連結」；展開時沿用可見的「收合」文案。
+            accessibilityLabel: isExpanded ? nil : L10n.format("todayReview.card.link.overflow.a11y", "\(row.overflowCount)"),
             accessibilityValue: isExpanded ? "expanded" : "collapsed"
         ) {
             HStack(spacing: AppSpacing.s1) {

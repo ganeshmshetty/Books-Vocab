@@ -1393,6 +1393,7 @@
 
 /* Review card link strip: collapse an expanded group (#2043) */
 "todayReview.card.link.collapse" = "Show fewer";
+"todayReview.card.link.overflow.a11y" = "Show %@ more links";
 
 /* Add Link Return key on an already linked word (#2038) */
 "addLink.return.alreadyLinked" = "Already linked to “%@”";

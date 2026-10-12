@@ -1374,6 +1374,7 @@
 
 /* Review card link strip: collapse an expanded group (#2043) */
 "todayReview.card.link.collapse" = "折りたたむ";
+"todayReview.card.link.overflow.a11y" = "残り %@ 件のリンクを表示";
 
 /* Add Link Return key on an already linked word (#2038) */
 "addLink.return.alreadyLinked" = "「%@」にはすでにリンク済みです";

@@ -50,6 +50,36 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
         return review.drawnLinks(cardIDPrefix: Self.linkPrefix).count == expected
     }
 
+    /// #3226：「+N」的命中帶不得與任何已畫出的連結 accessibility frame 相交（換行後會壓到上一列）。
+    @MainActor
+    private func assertToggleClearsDrawnLinks(
+        _ toggle: XCUIElement,
+        _ review: TodayReviewPage,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        for link in review.drawnLinks(cardIDPrefix: Self.linkPrefix).allElementsBoundByIndex where link.exists {
+            XCTAssertFalse(
+                toggle.frame.intersects(link.frame),
+                "「+N」命中帶不得蓋到連結 \(link.identifier)",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    /// #3227：收合時 VoiceOver 讀「顯示其餘 N 個連結」，不讀符號「+N」。文案隨語系變動，只釘住隱藏數 N。
+    @MainActor
+    private func assertCollapsedLabelAnnouncesHidden(
+        _ toggle: XCUIElement,
+        _ hidden: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNotEqual(toggle.label, "+\(hidden)", "收合時 VoiceOver 不讀符號「+N」(#3227)", file: file, line: line)
+        XCTAssertTrue(toggle.label.contains("\(hidden)"), "收合時 a11y label 必須帶隱藏連結數 \(hidden)", file: file, line: line)
+    }
+
     @MainActor
     func testPlusNExpandsEveryLinkAndCollapsesBack() throws {
         let app = launchIsolatedApp(fixtures: [.notebookReviewDeckMultiNotebook], perfLog: "review")
@@ -62,13 +92,16 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
             return
         }
         XCTAssertEqual(toggle.value as? String, "collapsed")
-        XCTAssertEqual(toggle.label, "+2", "收合時顯示被藏起來的連結數")
-        XCTAssertGreaterThanOrEqual(toggle.frame.height, 44, "收合控制項的觸控高度必須 >= 44pt (#3114)")
+        assertCollapsedLabelAnnouncesHidden(toggle, 2)
+        // #3226/#3253：命中帶不得越過列距（4pt），否則會蓋到上一列的連結。
+        XCTAssertLessThanOrEqual(toggle.frame.height, 32, "命中帶高度由列距決定，不再是 44pt (#3226)")
         XCTAssertTrue(waitForDrawnLinkCount(review, 2), "收合時組名旁只有兩個連結")
+        assertToggleClearsDrawnLinks(toggle, review)
         captureStep("link-overflow-collapsed", app: app)
 
         toggle.tapWhenReady()
         XCTAssertTrue(waitForDrawnLinkCount(review, 4), "展開後四個連結都在畫面上")
+        assertToggleClearsDrawnLinks(toggle, review)
         XCTAssertEqual(toggle.value as? String, "expanded")
         XCTAssertNotEqual(toggle.label, "+2", "展開後控制項改為收合文案")
         captureStep("link-overflow-expanded", app: app)
@@ -76,7 +109,7 @@ final class TodayReviewLinkOverflowUITests: UITestCase {
         toggle.tapWhenReady()
         XCTAssertTrue(waitForDrawnLinkCount(review, 2), "再點一次回到兩個連結")
         XCTAssertEqual(toggle.value as? String, "collapsed")
-        XCTAssertEqual(toggle.label, "+2")
+        assertCollapsedLabelAnnouncesHidden(toggle, 2)
     }
 
     @MainActor

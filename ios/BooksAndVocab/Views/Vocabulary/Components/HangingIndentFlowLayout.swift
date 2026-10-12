@@ -8,15 +8,20 @@ import SwiftUI
 struct HangingIndentFlowLayout: Layout {
     var spacing: CGFloat
 
+    /// 子視圖量測：寬度為 nil 取自然尺寸；否則取該寬度下換行後的尺寸（#3227：超寬項目在值欄內換行）。
+    private static func flow(_ subviews: Subviews, spacing: CGFloat, maxWidth: CGFloat?) -> HangingIndentFlow.Result {
+        HangingIndentFlow.place(count: subviews.count, spacing: spacing, maxWidth: maxWidth) { index, width in
+            subviews[index].sizeThatFits(width.map { ProposedViewSize(width: $0, height: nil) } ?? .unspecified)
+        }
+    }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        let result = HangingIndentFlow.place(sizes: sizes, spacing: spacing, maxWidth: proposal.width)
+        let result = Self.flow(subviews, spacing: spacing, maxWidth: proposal.width)
         return CGSize(width: proposal.width ?? result.contentWidth, height: result.height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        let result = HangingIndentFlow.place(sizes: sizes, spacing: spacing, maxWidth: bounds.width)
+        let result = Self.flow(subviews, spacing: spacing, maxWidth: bounds.width)
         for (index, frame) in result.frames.enumerated() {
             subviews[index].place(
                 at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
@@ -37,20 +42,38 @@ enum HangingIndentFlow {
     }
 
     static func place(sizes: [CGSize], spacing: CGFloat, maxWidth: CGFloat?) -> Result {
-        guard let label = sizes.first else {
+        place(count: sizes.count, spacing: spacing, maxWidth: maxWidth) { index, _ in sizes[index] }
+    }
+
+    /// `measure(index, width)`：width 為 nil 取自然尺寸；否則回傳該寬度下的尺寸（文字換行後的高）。
+    static func place(
+        count: Int,
+        spacing: CGFloat,
+        maxWidth: CGFloat?,
+        measure: (_ index: Int, _ width: CGFloat?) -> CGSize
+    ) -> Result {
+        guard count > 0 else {
             return Result(frames: [], contentWidth: 0, height: 0)
         }
         let limit = maxWidth ?? .infinity
+        let label = measure(0, nil)
         // 懸掛縮排：第一行與之後每一行的項目都從這個 x 開始。
         let indent = label.width + spacing
+        // 值欄可用寬。超過它的項目（#3227）改以值欄寬重新量測，在值欄內換行，不溢出卡片。
+        let valueWidth = max(0, limit - indent)
         var frames = [CGRect(origin: .zero, size: label)]
         var x = indent
         var y: CGFloat = 0
         var rowHeight = label.height
         var contentWidth = label.width
 
-        for size in sizes.dropFirst() {
-            // 行首永遠放得下一顆，避免超寬的單一連結被丟到下一行造成空行。
+        for index in 1..<count {
+            var size = measure(index, nil)
+            if size.width > valueWidth {
+                let fitted = measure(index, valueWidth)
+                size = CGSize(width: min(fitted.width, valueWidth), height: fitted.height)
+            }
+            // 行首永遠放得下一顆（已夾到值欄寬），避免超寬項目被丟到下一行造成空行。
             if x > indent, x + size.width > limit {
                 y += rowHeight + spacing
                 x = indent

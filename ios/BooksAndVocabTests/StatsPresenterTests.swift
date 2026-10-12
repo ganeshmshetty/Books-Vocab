@@ -285,6 +285,13 @@ struct StatsPresenterTests {
         #expect(StatsMetricValueLayout.unitIsFixedWidth)
     }
 
+    /// Grid readouts share a top line with their row neighbour (#3271). A leading
+    /// vertical anchor centers a short readout inside a taller surface, so the
+    /// numeral drops below the neighbour's first line.
+    @Test func readoutLayout_anchorsFrameToTopLeading() {
+        #expect(VocabStatReadoutLayout.frameAlignment == .topLeading)
+    }
+
     @Test func singleCard_singleReview_countsAsOne() {
         let summary = StatsPresentation.buildSummary(
             from: [syncedEntry(dueOffset: 0)],
