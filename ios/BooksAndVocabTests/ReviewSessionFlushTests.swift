@@ -157,6 +157,43 @@ struct ReviewSessionFlushTests {
         #expect(restored?.submittedAnswers[0]?.flushed == false)
     }
 
+    /// #3181 swapped keys: after a relaunch the first row carries the second row's old card id and
+    /// vice versa. Matching by persistence id would pair each unflushed grade with the other row;
+    /// row-id restore must keep each grade on its own row.
+    @Test func restoreKeepsGradesOnRowsWhenCardIDsSwapAcrossRelaunch() {
+        let userID = "flush-rekey-swap-user"
+        TodayReviewSessionSnapshotStore.clear(for: userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: userID) }
+        let entries = makeEntries(2)
+        let (first, second) = (entries[0], entries[1])
+        let answeredAt = Date()
+        ReviewSessionPersistence.persistSnapshot(
+            userId: userID,
+            sessionStartTime: answeredAt,
+            currentIndex: 2,
+            queueCount: 2,
+            queuePersistenceIDs: entries.map(ReviewSessionPersistence.persistenceID(for:)),
+            queueBaselines: entries.map(ReviewSessionPersistence.makeBaseline(from:)),
+            queueEntryIDs: entries.map(\.id),
+            submittedAnswers: [
+                0: TodayReviewState.SubmittedAnswer(feedback: .remembered, answeredAt: answeredAt, reviewRecordID: UUID()),
+                1: TodayReviewState.SubmittedAnswer(feedback: .forgot, answeredAt: answeredAt, reviewRecordID: UUID()),
+            ]
+        )
+        let firstCardID = first.kgCardId
+        first.kgCardId = second.kgCardId
+        second.kgCardId = firstCardID
+
+        let restored = ReviewSessionPersistence.restoreSnapshotIfPossible(
+            orderedEntries: entries,
+            userId: userID
+        )
+
+        #expect(restored?.queue.map(\.id) == [first.id, second.id])
+        #expect(restored?.submittedAnswers[0]?.feedback == .remembered)
+        #expect(restored?.submittedAnswers[1]?.feedback == .forgot)
+    }
+
     /// #3169 legacy blob: a snapshot without row ids (written before `entryID` existed, or with no
     /// ids supplied) still restores each row by persistence id, exactly as before.
     @Test func restoreWithoutRowIDsFallsBackToPersistenceID() {
