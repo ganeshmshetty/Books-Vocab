@@ -6,7 +6,6 @@ struct WordDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(\.kgService) private var kgService
-    @Environment(\.detailRouter) private var detailRouter
     @Environment(\.toastCoordinator) private var toastCoordinator
     @State private var state = WordDetailSceneState()
     @State private var localLinkedCardStack: [VocabularyEntry] = []
@@ -22,7 +21,7 @@ struct WordDetailSheet: View {
 
     @Bindable var entry: VocabularyEntry
     let allEntries: [VocabularyEntry]
-    private let wrapInNavigation: Bool
+    /// 是否自繪 chrome（標題列、關閉鈕、分享／編輯）。只有 `LinkedCardOverlayStack` 的子層是 false。
     private let showsInlineChrome: Bool
     /// `nil` = 沿用 `showsInlineChrome`（app 內所有宿主）。只有截圖／行銷這種
     /// 需要「有 chrome 但不入鏡生命週期動作」的呈現路徑才顯式指定。
@@ -33,8 +32,7 @@ struct WordDetailSheet: View {
     init(
         entry: VocabularyEntry,
         allEntries: [VocabularyEntry] = [],
-        wrapInNavigation: Bool = true,
-        showsInlineChrome: Bool? = nil,
+        showsInlineChrome: Bool = true,
         showsLifecycleActions: Bool? = nil,
         onClose: (() -> Void)? = nil,
         linkedCardStack: Binding<[VocabularyEntry]>? = nil,
@@ -42,8 +40,7 @@ struct WordDetailSheet: View {
     ) {
         self.entry = entry
         self.allEntries = allEntries
-        self.wrapInNavigation = wrapInNavigation
-        self.showsInlineChrome = showsInlineChrome ?? wrapInNavigation
+        self.showsInlineChrome = showsInlineChrome
         self.explicitLifecycleActions = showsLifecycleActions
         self.onInlineClose = onClose
         self.externalLinkedCardStack = linkedCardStack
@@ -220,10 +217,9 @@ struct WordDetailSheet: View {
         kgService as? any CardPreferenceUpdating
     }
 
+    /// 有外部 stack binding 時（疊層子卡），疊層由外層 `LinkedCardOverlayStack` 管理，不重複渲染。
     private var shouldUseLinkedOverlayStack: Bool {
-        // 有外部 stack binding 時，overlay 由外部 LinkedCardOverlayStack 管理，不重複渲染
-        guard externalLinkedCardStack == nil else { return false }
-        return wrapInNavigation || detailRouter == nil
+        externalLinkedCardStack == nil
     }
 
     /// 封存後**刻意不關 sheet**：圖示翻成 `archivebox.fill`，再按一次就是解除封存。
@@ -295,10 +291,8 @@ struct WordDetailSheet: View {
 
     private func handleLinkTap(_ link: KGCardLinkSummary) {
         guard let target = state.linkedEntry(for: link, from: entry, in: allEntries) else { return }
-        if !wrapInNavigation, let detailRouter {
-            detailRouter.showWordDetail(target, allEntries: allEntries)
-            return
-        }
+        // 連結一律推上 `linkedCardStack`：疊層子卡拿到外層堆疊，宿主拿到自己的。
+        // 不再從環境的 DetailRouter 推論去向——那會在複習疊層中替換掉複習 session（#3126）。
         linkedCardStack.wrappedValue.pushLinkedCard(target)
     }
 }
