@@ -205,6 +205,30 @@ ci_row="$(grep -m1 '^| CI |' docs/reference/tech_index.md || true)"
 for ctx in short-gate ios-quality ops-suite; do
   printf '%s' "$ci_row" | grep -q "\`$ctx\`" || { echo "tech_index.md CI row lacks required input $ctx (#3264)" >&2; exit 1; }
 done
+
+# #3300: the CI row's merge-group `required` contexts must equal the required job's `needs` as an exact set.
+merge_group_contexts() {
+  sed -n 's/.*merge-group 的 `required` 聚合\(.*\)；同名 context.*/\1/p' <<<"$1" | grep -o '`[^`]*`' | tr -d '`' | grep -vx 'required' | sort || true
+}
+merge_group_contexts_match() {
+  local wf="$1" got want
+  got="$(merge_group_contexts "$2")"
+  want="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["needs"].sort' "$wf")"
+  [ -n "$got" ] && [ "$got" = "$want" ]
+}
+merge_group_contexts_match .github/workflows/merge-group-required.yml "$ci_row" \
+  || { echo "tech_index.md CI row merge-group contexts differ from merge-group-required.yml needs (#3300)" >&2; exit 1; }
+# red: a drifted workflow copy (one need dropped, one ghost need added) must be detected.
+ruby -ryaml -e 'w = YAML.load_file(ARGV[0]); w["jobs"]["required"]["needs"].delete("ops-suite"); File.write(ARGV[1], w.to_yaml)' \
+  .github/workflows/merge-group-required.yml "$TMP/merge-group-drop.yml"
+ruby -ryaml -e 'w = YAML.load_file(ARGV[0]); w["jobs"]["required"]["needs"] << "ghost-gate"; File.write(ARGV[1], w.to_yaml)' \
+  .github/workflows/merge-group-required.yml "$TMP/merge-group-add.yml"
+for drifted in "$TMP/merge-group-drop.yml" "$TMP/merge-group-add.yml"; do
+  if merge_group_contexts_match "$drifted" "$ci_row"; then
+    echo "docs-lint did not detect merge-group need drift in $drifted (#3300)" >&2
+    exit 1
+  fi
+done
 grep -q 'PR 側.*`pr-gate.yml`.*只 needs `repo-gate`' docs/sop/delivery_control_dogfood.md || { echo "SOP lacks PR-side required clarification (#3264)" >&2; exit 1; }
 
 echo "docs-lint tests: PASS"
