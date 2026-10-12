@@ -168,23 +168,27 @@ final class AddLinkSheetUXUITests: UITestCase {
         app.typeText("fort")
         XCTAssertTrue(lookupState(in: app).waitUntilValueEquals("results-2", timeout: 5))
 
+        // The serendipity detail that opened this sheet stays beneath it and keeps its hero in the
+        // AX tree, so existence proves nothing: the presentation is a +1 step in the hero count.
+        let heroBaseline = heroWordCount(in: app)
         let openCard = app.buttons
             .matching(NSPredicate(format: "label == %@", "打開卡片"))
             .firstMatch
         XCTAssertTrue(openCard.waitUntilExists(timeout: 5), "a collapsed row must expose 打開卡片")
         openCard.tapWhenReady()
-
-        let heroWord = app.staticTexts["cardDocument.hero.word"]
-        XCTAssertTrue(heroWord.waitUntilExists(timeout: 10), "打開卡片 must present the word detail")
+        XCTAssertTrue(
+            waitUntilHeroWordCount(heroBaseline + 1, in: app, timeout: 10),
+            "打開卡片 must present the word detail over the sheet"
+        )
 
         // The detail is the topmost sheet; its close control is the last hittable 關閉.
-        let close = app.buttons
-            .matching(NSPredicate(format: "label == %@", "關閉"))
-            .allElementsBoundByIndex
-            .last(where: { $0.exists && $0.isHittable })
+        let close = topmostHittableClose(in: app, timeout: 5)
         XCTAssertNotNil(close, "the presented word detail must expose a hittable 關閉")
         close?.tap()
-        XCTAssertTrue(heroWord.waitUntilGone(timeout: 10), "closing the detail must return to the sheet")
+        XCTAssertTrue(
+            waitUntilHeroWordCount(heroBaseline, in: app, timeout: 10),
+            "closing the detail must return to the sheet"
+        )
 
         XCTAssertTrue(app.textFields["addLink.searchField"].waitUntilExists(timeout: 5))
         XCTAssertEqual(searchField.value as? String, "fort", "the query must survive 打開卡片 and return")
@@ -248,6 +252,34 @@ final class AddLinkSheetUXUITests: UITestCase {
 
     func marker(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    /// Word-detail heroes in the AX tree. Count them: a stacked detail keeps its hero alive beneath.
+    func heroWordCount(in app: XCUIApplication) -> Int {
+        app.staticTexts.matching(identifier: "cardDocument.hero.word").count
+    }
+
+    func waitUntilHeroWordCount(_ expected: Int, in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if heroWordCount(in: app) == expected { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return heroWordCount(in: app) == expected
+    }
+
+    /// The topmost sheet's 關閉 is the last hittable one; it can trail the hero while the sheet animates in.
+    func topmostHittableClose(in app: XCUIApplication, timeout: TimeInterval) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            let candidate = app.buttons
+                .matching(NSPredicate(format: "label == %@", "關閉"))
+                .allElementsBoundByIndex
+                .last(where: { $0.exists && $0.isHittable })
+            if let candidate { return candidate }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+        return nil
     }
 }
 
