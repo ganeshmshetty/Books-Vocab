@@ -253,7 +253,7 @@ struct AddLinkSheet: View {
             }
         withConnectionHandlers
             .toastSheet(item: $openedCardEntry) { entry in
-                WordDetailSheet(entry: entry, allEntries: allEntries, wrapInNavigation: true)
+                WordDetailSheet(entry: entry, allEntries: allEntries)
             }
             .enableInjection()
     }
