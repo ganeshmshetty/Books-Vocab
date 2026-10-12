@@ -2944,14 +2944,16 @@ def test_detached_lane_behind_branch_tip_blocks_and_names_repair(
     assert f"git -C {worktree} switch lane-one" in policy["physical_identity_repairs"]
 
 
-def _lane_one_report(tmp_path: Path, repo: Path, worktree: Path) -> tuple[int, dict]:
+def _lane_one_report(
+    tmp_path: Path, repo: Path, worktree: Path, branch: str = "lane-one"
+) -> tuple[int, dict]:
     state = tmp_path / "registry.json"
     output = tmp_path / "lane-usage.json"
     _write_registry(
         state,
         [
             {
-                "branch": "lane-one",
+                "branch": branch,
                 "path": str(worktree),
                 "status": "active",
                 "claim_generation": 0,
@@ -3063,3 +3065,104 @@ def test_detached_head_grown_from_registered_branch_still_blocks(
     assert "physical-identity-mismatch" in policy["blocking_reasons"]
     assert str(worktree) in policy["physical_identity_mismatches"]
     assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+
+
+def _rebased_fix_lane(
+    tmp_path: Path, registered: str, physical: str
+) -> tuple[Path, Path]:
+    # The registered tip stays on its lane; the physical HEAD is a fix round rebased
+    # onto main, so the registered tip is NOT an ancestor of HEAD (the #3151 shape).
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "branch", "-m", registered)
+    _run_git(worktree, "switch", "-c", physical, "main")
+    (worktree / "fix.txt").write_text("fix\n", encoding="utf-8")
+    _run_git(worktree, "add", "fix.txt")
+    _run_git(worktree, "commit", "-m", "fix round rebased onto main")
+    return repo, worktree
+
+
+@pytest.mark.parametrize(
+    ("branch", "family"),
+    [
+        ("debug/issue-2923-r5", "debug/issue-2923"),
+        ("debug/issue-2923-r6", "debug/issue-2923"),
+        ("debug/issue-3001-r4x", "debug/issue-3001"),
+        ("debug/issue-2548-wave", "debug/issue-2548"),
+        ("debug/mq-ios-once-r3", "debug/mq-ios-once"),
+        ("debug/mq-ios-once", "debug/mq-ios-once"),
+    ],
+)
+def test_lane_family_strips_exactly_one_fix_round_suffix(
+    branch: str, family: str
+) -> None:
+    assert disk_usage._lane_family(branch) == family
+
+
+def test_same_family_rebased_fix_branch_is_a_warning_not_a_block(
+    tmp_path: Path,
+) -> None:
+    # #3151 (a) and (d): same lane family, registered tip not an ancestor of HEAD.
+    repo, worktree = _rebased_fix_lane(
+        tmp_path, "debug/issue-2923-r5", "debug/issue-2923-r6"
+    )
+
+    code, report = _lane_one_report(
+        tmp_path, repo, worktree, branch="debug/issue-2923-r5"
+    )
+
+    policy = report["policy"]
+    assert code == 0
+    assert policy["verdict"] == "warning"
+    assert "physical-identity-mismatch" not in policy["blocking_reasons"]
+    assert str(worktree) not in policy["physical_identity_mismatches"]
+    assert str(worktree) in policy["descendant_fix_branch_warnings"]
+    assert f"descendant-fix-branch-worktree:{worktree}" in policy["warning_reasons"]
+    assert not any(
+        str(worktree) in repair for repair in policy["physical_identity_repairs"]
+    )
+
+
+def test_different_family_rebased_branch_still_blocks_with_repair(
+    tmp_path: Path,
+) -> None:
+    # #3151 (b): a rebased branch of another lane family is still an identity mismatch.
+    repo, worktree = _rebased_fix_lane(
+        tmp_path, "debug/issue-2923-r5", "debug/issue-2548-r3"
+    )
+
+    code, report = _lane_one_report(
+        tmp_path, repo, worktree, branch="debug/issue-2923-r5"
+    )
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert f"descendant-fix-branch-worktree:{worktree}" not in policy["warning_reasons"]
+    assert (
+        f"git -C {worktree} switch debug/issue-2923-r5"
+        in policy["physical_identity_repairs"]
+    )
+
+
+def test_detached_head_in_a_same_family_lane_still_blocks(tmp_path: Path) -> None:
+    # #3151 (c): a detached HEAD is never a fix round, whatever the registered name.
+    repo, worktree = _repo_with_worktree(tmp_path)
+    _run_git(worktree, "branch", "-m", "debug/issue-2923-r5")
+    _run_git(worktree, "checkout", "--detach", "HEAD")
+    (worktree / "detached.txt").write_text("detached\n", encoding="utf-8")
+    _run_git(worktree, "add", "detached.txt")
+    _run_git(worktree, "commit", "-m", "detached progress")
+
+    code, report = _lane_one_report(
+        tmp_path, repo, worktree, branch="debug/issue-2923-r5"
+    )
+
+    policy = report["policy"]
+    assert code == BLOCKED_EXIT
+    assert "physical-identity-mismatch" in policy["blocking_reasons"]
+    assert str(worktree) in policy["physical_identity_mismatches"]
+    assert (
+        f"git -C {worktree} switch debug/issue-2923-r5"
+        in policy["physical_identity_repairs"]
+    )

@@ -1609,6 +1609,33 @@ def _grown_from_registered_branch(
     )
 
 
+# #3151: the review-fix dispatcher names each round `<lane>-rN` (the wave lane is
+# `<lane>-wave`); the trailing round suffix is the only part that varies per round.
+_FIX_ROUND_SUFFIX = re.compile(r"-(?:wave|r\d+x?)$")
+_LANE_NAME_SENTINELS = frozenset({"(detached)", "(canonical)"})
+
+
+def _lane_family(branch: str) -> str:
+    """Branch name without its one trailing fix-round suffix."""
+
+    return _FIX_ROUND_SUFFIX.sub("", branch)
+
+
+def _same_lane_family(item: dict[str, Any]) -> bool:
+    """True when the physical branch and the registered branch are rounds of one lane.
+
+    The fix dispatcher rebases every round onto origin/main, so the registered tip
+    stops being an ancestor of HEAD and the ancestor rule cannot see the round. A
+    detached HEAD has no observed branch and never reaches this check.
+    """
+
+    registered = str(item.get("branch") or "")
+    observed = str(item.get("observed_branch") or "")
+    if not registered or not observed or {registered, observed} & _LANE_NAME_SENTINELS:
+        return False
+    return _lane_family(registered) == _lane_family(observed)
+
+
 def _stale_agent_cleanup_hint(path: Path, lock: dict[str, Any], branch: str) -> str:
     quoted = shlex.quote(str(path))
     unlock = f"git worktree unlock {quoted} && " if lock["state"] != "unlocked" else ""
@@ -2318,15 +2345,18 @@ def build_report(
     ]
     # #3092: a physical branch grown from the registered one (registered tip is an
     # ancestor of the physical HEAD, and that tip has not landed on main) has lost no
-    # commit; the registry only lags. Warn by path instead of blocking every lane;
-    # unrelated branches still block. A probe that the deadline cut short leaves its
-    # lane unclassified: it is neither a warning nor an identity mismatch, and the
-    # report is marked measurement-incomplete below.
+    # commit; the registry only lags. #3151: so does a rebased round of the same lane
+    # family, which is no longer a descendant. Warn by path instead of blocking every
+    # lane; unrelated branches and detached HEADs still block. A probe that the
+    # deadline cut short leaves its lane unclassified: it is neither a warning nor an
+    # identity mismatch, and the report is marked measurement-incomplete below.
     budget_unclassified: set[str] = set()
     descendant_fix_branches: list[str] = []
     for item in mismatched_lanes:
         try:
-            if _grown_from_registered_branch(workspace, item, deadline=deadline):
+            if _same_lane_family(item) or _grown_from_registered_branch(
+                workspace, item, deadline=deadline
+            ):
                 descendant_fix_branches.append(str(item["path"]))
         except _MeasurementBudgetExceeded:
             budget_unclassified.add(str(item["path"]))
