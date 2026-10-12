@@ -210,13 +210,14 @@ done
 merge_group_contexts() {
   sed -n 's/.*merge-group 的 `required` 聚合\(.*\)；同名 context.*/\1/p' <<<"$1" | grep -o '`[^`]*`' | tr -d '`' | grep -vx 'required' | sort || true
 }
-# rc: 0 match, 1 real set mismatch, 2 CI row not parsed, 3 ruby unavailable (#3310).
+# rc: 0 match, 1 real set mismatch, 2 CI row or workflow not parsed, 3 ruby unavailable (#3310, #3329).
 merge_group_contexts_match() {
   local wf="$1" got want
   command -v ruby >/dev/null 2>&1 || { echo "ruby unavailable: cannot read $wf needs (#3310)" >&2; return 3; }
   got="$(merge_group_contexts "$2")"
   [ -n "$got" ] || { echo "merge-group row not parsed from tech_index.md CI row (#3310)" >&2; return 2; }
-  want="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["needs"].sort' "$wf")"
+  want="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["needs"].sort' "$wf" 2>/dev/null)" \
+    || { echo "workflow unparsed: cannot load $wf needs (#3329)" >&2; return 2; }
   [ "$got" = "$want" ] || { echo "tech_index.md CI row merge-group contexts differ from merge-group-required.yml needs (#3300)" >&2; return 1; }
 }
 merge_group_contexts_match .github/workflows/merge-group-required.yml "$ci_row" || exit 1
@@ -238,6 +239,14 @@ rc=0; merge_group_contexts_match .github/workflows/merge-group-required.yml "$ba
 if [ "$rc" -ne 2 ] || ! grep -q 'not parsed' "$TMP/unparsed.err" || grep -q 'differ' "$TMP/unparsed.err"; then
   echo "unparsed CI row not reported as 'not parsed' with rc 2 (rc=$rc, #3310)" >&2
   cat "$TMP/unparsed.err" >&2
+  exit 1
+fi
+# #3329: a malformed merge-group workflow (ruby YAML load fails) is "workflow unparsed" (rc 2), never a set mismatch.
+printf 'jobs:\n  required:\n    needs: [short-gate\n' >"$TMP/merge-group-malformed.yml"
+rc=0; merge_group_contexts_match "$TMP/merge-group-malformed.yml" "$ci_row" 2>"$TMP/malformed.err" || rc=$?
+if [ "$rc" -ne 2 ] || ! grep -q 'workflow unparsed' "$TMP/malformed.err" || grep -q 'differ' "$TMP/malformed.err"; then
+  echo "malformed merge-group workflow not reported as 'workflow unparsed' with rc 2 (rc=$rc, #3329)" >&2
+  cat "$TMP/malformed.err" >&2
   exit 1
 fi
 # #3310: no ruby on PATH is reported as "ruby unavailable" (rc 3), never as a set mismatch.
