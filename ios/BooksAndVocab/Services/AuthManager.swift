@@ -282,7 +282,12 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     /// refuses every sign-in; the next launch builds a fresh store and admits sign-in normally.
     @discardableResult
     func recoverFromStuckLocalWipe() async -> Bool {
-        guard await localDataCleaner.rebuildStoreAndDiscardPendingWipe() else { return false }
+        guard await localDataCleaner.rebuildStoreAndDiscardPendingWipe() else {
+            // #3309: the sheet discards the Bool, so the failure must reach the user through authError.
+            AppLog.auth.error("store rebuild failed: stuck local wipe not recovered")
+            authError = L10n.string("本機資料重建失敗，請稍後再試")
+            return false
+        }
         localWipeRequiresRestart = true
         refuseSignInUntilRestart()
         return true
