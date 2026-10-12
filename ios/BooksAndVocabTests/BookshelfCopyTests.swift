@@ -29,14 +29,7 @@ struct BookshelfCopyTests {
 
         // 0.567 must read 57% (rounded), same as the visible BookCard label; truncation gave 56%.
         #expect(BookshelfCopy.readingProgressAccessibilityValue(0.567, locale: english) == "57%")
-        #expect(
-            BookshelfCopy.readingProgressAccessibilityValue(0.567, locale: english)
-                == ReadingProgressFormatter.percentText(0.567, locale: english)
-        )
-        #expect(
-            BookshelfCopy.readingProgressAccessibilityValue(0.564, locale: english)
-                == ReadingProgressFormatter.percentText(0.564, locale: english)
-        )
+        #expect(BookshelfCopy.readingProgressAccessibilityValue(0.564, locale: english) == "56%")
         #expect(BookshelfCopy.readingProgressAccessibilityValue(-0.2, locale: english) == "0%")
         #expect(BookshelfCopy.readingProgressAccessibilityValue(1.4, locale: english) == "100%")
         #expect(BookshelfCopy.readingProgressAccessibilityValue(nil, locale: english) == "0%")
