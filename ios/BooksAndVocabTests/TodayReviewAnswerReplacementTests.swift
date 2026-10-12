@@ -172,6 +172,8 @@ struct TodayReviewAnswerReplacementTests {
 
     /// Re-completing after back + shuffle must still drop the saved order:
     /// only the analytics event is once-per-session, the store clear is not.
+    /// Shuffle pins answered slots (#2482) and only permutes the unanswered ones,
+    /// so the back + shuffle leg needs two unanswered slots ahead of the cursor.
     @Test func recompletingAfterBackAndShuffleClearsTheSavedOrder() throws {
         TodayReviewSessionSnapshotStore.clear(for: "replace-user")
         ReviewSessionStore.clear(userID: "replace-user")
@@ -183,25 +185,22 @@ struct TodayReviewAnswerReplacementTests {
         let (container, _) = try makeContainer(entries)
         let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: "replace-user")
 
-        for _ in 0..<4 {
-            state.submit(.remembered, container: container, reviewSettings: .default)
-        }
-        #expect(state.currentEntry == nil)
-        #expect(ReviewSessionStore.loadOrder(
-            availableEntries: entries, userID: "replace-user", allowPartialQueue: true
-        ) == nil)
-
+        state.submit(.remembered, container: container, reviewSettings: .default)
+        state.submit(.remembered, container: container, reviewSettings: .default)
         state.goPrevious()
         state.goPrevious()
         state.shuffleQueue()
-        // Precondition: the shuffle really persisted an order (else the final
-        // assertion would pass vacuously).
+        // Precondition: the shuffle really persisted an order over the two unanswered
+        // slots (else the final assertion would pass vacuously).
         #expect(ReviewSessionStore.loadOrder(
             availableEntries: entries, userID: "replace-user", allowPartialQueue: true
         ) != nil)
 
-        state.submit(.remembered, container: container, reviewSettings: .default)
-        state.submit(.remembered, container: container, reviewSettings: .default)
+        // Index 0-1 re-submit their existing answer (idempotent advance); 2-3 are the
+        // shuffled unanswered slots. The last submit completes the session.
+        for _ in 0..<4 {
+            state.submit(.remembered, container: container, reviewSettings: .default)
+        }
         #expect(state.currentEntry == nil)
 
         #expect(ReviewSessionStore.loadOrder(
