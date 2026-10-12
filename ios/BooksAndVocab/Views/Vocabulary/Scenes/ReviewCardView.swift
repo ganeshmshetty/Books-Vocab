@@ -1015,6 +1015,7 @@ struct ReviewCardView: View {
         let cardKey = currentCardKey
         let reducesMotion = reduceMotion
         return ReviewCardHitTargetButton(
+            minimumSide: TodayReviewMetrics.linkOverflowHitTarget,
             action: {
                 let animation: Animation? = reducesMotion ? nil : AppMotion.reviewRevealSpring
                 withAnimation(animation) {

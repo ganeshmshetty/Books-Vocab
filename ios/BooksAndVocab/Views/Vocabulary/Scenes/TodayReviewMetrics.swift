@@ -101,6 +101,13 @@ enum TodayReviewMetrics {
     static let notebookBadgeDotSize: CGFloat = 6
     /// 卡內「＋」新增連結的可點範圍下限（HIG 44pt，#2044）。只擴可點範圍，不擴版面。
     static let addLinkHitTarget: CGFloat = AppFloatingChromeMetrics.hitTarget
+    /// 連結列「+N」膠囊（caption 行高 + s1 上下 padding）的估計高度，未經裝置量測。
+    static let linkOverflowCapsuleHeight: CGFloat = 24
+    /// 連結列「+N」的命中下限（#3226、#3253）。命中帶以膠囊為中心上下各外擴
+    /// `(此值 − 膠囊高) / 2`，這裡取 = 膠囊高 + 2 × s1，讓外擴恰為列距 `AppSpacing.s1`，
+    /// 帶子只落在列間空隙、不蓋到上一列連結。代價：放棄 #3114 的 44pt HIG 觸控下限，
+    /// 此為有意取捨，band 上限由 `ReviewCardHitTargetButtonTests` 釘住。
+    static let linkOverflowHitTarget: CGFloat = linkOverflowCapsuleHeight + 2 * AppSpacing.s1
     /// 摺頁 chevron 的命中下限（HIG 44pt，#3117）。命中帶以摺線為中心，半高 = 此值 / 2 = 22，
     /// 必須小於正反面共用的 `ReviewCardChrome.padding`（28），帶子才只落在空白 padding 內。
     static let chevronHitTarget: CGFloat = AppFloatingChromeMetrics.hitTarget
