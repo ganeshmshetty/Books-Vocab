@@ -263,12 +263,25 @@ struct ReviewCardView: View {
     var reviewCardPadding: CGFloat { TodayReviewMetrics.foldPadding }
     var answerCardHeight: CGFloat { TodayReviewMetrics.answerMinHeight }
 
-    /// 右上角 chrome（[暫時詳細] + 喇叭 + 詳情）每顆 44pt HIG 觸控框 + 間距 inlineGap
-    /// 的總寬，供單字列保留 trailing 空間，避免長詞被圖示擋住。與 frontCardChrome
-    /// 佈局同源：按鈕數由同一個 `temporaryDetailToggle` 決定。
+    /// 右上角 chrome 的總寬（喇叭 + 詳情，加上有項目時的 ⋯ 選單），供單字列保留
+    /// trailing 空間，避免長詞被圖示擋住。與 frontCardChrome 同源：⋯ 是否出現由
+    /// `hasCardMenu` 決定，因此保留寬度永不超過先前的最大值（#3112）。
     var frontChromeReserveWidth: CGFloat {
-        let buttons: CGFloat = temporaryDetailToggle == .unavailable ? 2 : 3
-        return 44 * buttons + appSkin.spacing.inlineGap * (buttons - 1)
+        Self.frontChromeReserve(
+            buttons: Self.frontChromeBaseButtons + (hasCardMenu ? 1 : 0),
+            gap: appSkin.spacing.inlineGap
+        )
+    }
+
+    /// 喇叭 + 詳情：永遠可見。
+    static let frontChromeBaseButtons = 2
+    /// 右上角 chrome 上限：喇叭 + 詳情 + ⋯（#3112）。
+    static let frontChromeMaxButtons = 3
+
+    /// `buttons` 個 44pt HIG 觸控框、以 `gap` 相隔的寬度。純函式，供單元測試釘住保留寬度。
+    static func frontChromeReserve(buttons: Int, gap: CGFloat) -> CGFloat {
+        let count = CGFloat(buttons)
+        return 44 * count + gap * (count - 1)
     }
 
     // MARK: Temporary Detail (#2041)
@@ -293,6 +306,11 @@ struct ReviewCardView: View {
             isDetailed: temporarilyDetailed
         )
     }
+
+    /// The `⋯` menu is shown only when it has an item (the temporary-detail toggle
+    /// today; #2042 adds the production toggle here). Without items it is absent
+    /// rather than an empty menu, so standard-preset wrapping stays as it was (#3112).
+    private var hasCardMenu: Bool { temporaryDetailToggle != .unavailable }
 
     /// Fields the detailed face would add, pre-measured by hidden probes while the
     /// card is still compact so the expansion animates to real heights.
@@ -438,23 +456,10 @@ struct ReviewCardView: View {
     @ViewBuilder
     func frontCardChrome(_ card: CardPresentation, interactive: Bool) -> some View {
         HStack(spacing: appSkin.spacing.inlineGap) {
-            // #2041：只在精簡卡上出現，同一顆按鈕來回切換。放最左，喇叭 / 詳情的
-            // 位置不因它出現與否而移動。
-            switch temporaryDetailToggle {
-            case .unavailable:
-                EmptyView()
-            case .showDetail, .restoreCompact:
-                let showing = temporaryDetailToggle == .showDetail
-                VocabChromeIconButton(
-                    systemImage: showing ? "rectangle.expand.vertical" : "rectangle.compress.vertical",
-                    label: showing
-                        ? L10n.string("todayReview.card.temporaryDetail.show")
-                        : L10n.string("todayReview.card.temporaryDetail.restore"),
-                    identifier: interactive ? "todayReview.card.temporaryDetail" : nil,
-                    borderless: true,
-                    action: { if interactive { actions.toggleTemporaryDetail?() } }
-                )
-                .accessibilityValue(temporaryDetailToggle.rawValue)
+            // #3112：⋯ 只在有項目時出現（#2041 的暫時詳細現在收在選單裡）。放最左，
+            // 喇叭 / 詳情（右上角）的位置不因它出現與否而移動。
+            if hasCardMenu {
+                cardMenu(interactive: interactive)
             }
             VocabChromeIconButton(
                 systemImage: "speaker.wave.2.fill",
@@ -480,6 +485,45 @@ struct ReviewCardView: View {
             y: TodayReviewMetrics.chromeCornerInset - TodayReviewMetrics.chromeHitOverhang
         )
         .allowsHitTesting(interactive)
+    }
+
+    /// 右上角 `⋯` 選單（#3112）。字形與喇叭／詳情同為 borderless：14pt、無框、44pt 觸控框。
+    /// 非互動（預覽）時只畫字形，不掛 identifier、不回應點擊。
+    @ViewBuilder
+    private func cardMenu(interactive: Bool) -> some View {
+        if interactive {
+            Menu {
+                Button {
+                    actions.toggleTemporaryDetail?()
+                } label: {
+                    Label(
+                        temporaryDetailToggle == .showDetail
+                            ? L10n.string("todayReview.card.temporaryDetail.show")
+                            : L10n.string("todayReview.card.temporaryDetail.restore"),
+                        systemImage: temporaryDetailToggle == .showDetail
+                            ? "rectangle.expand.vertical"
+                            : "rectangle.compress.vertical"
+                    )
+                }
+                .accessibilityIdentifier("todayReview.card.temporaryDetail")
+                .accessibilityValue(temporaryDetailToggle.rawValue)
+            } label: {
+                cardMenuGlyph
+            }
+            .accessibilityLabel(L10n.string("todayReview.card.more"))
+            .accessibilityIdentifier("todayReview.card.more")
+            .accessibilityValue(temporaryDetailToggle.rawValue)
+        } else {
+            cardMenuGlyph
+        }
+    }
+
+    private var cardMenuGlyph: some View {
+        Image(systemName: "ellipsis")
+            .font(appSkin.typography.iconSmall)
+            .foregroundStyle(appSkin.palette.tertiaryText)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
     }
 
     /// 卡片所屬單字本（色點 ＋ 名稱）。純標示、不可點：點擊照常落到正面的翻卡手勢。

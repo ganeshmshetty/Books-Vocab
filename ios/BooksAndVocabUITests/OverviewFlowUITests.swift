@@ -340,6 +340,7 @@ final class OverviewFlowUITests: UITestCase {
             overview.assertMetric("totalCards", value: expected.formattedCount(expected.totalCards))
             overview.assertMetric("reviewedToday", value: expected.formattedCount(expected.reviewedToday))
             overview.assertMetric("dueToday", value: expected.formattedCount(expected.dueToday))
+            overview.assertMetricCardsHaveUniformGeometry()
             XCTAssertTrue(shell.overviewTab.isSelected, "總覽 tab did not become selected")
         }
 
@@ -404,7 +405,7 @@ final class OverviewFlowUITests: UITestCase {
                 "dueToday",
                 value: counterexampleExpected.formattedCount(counterexampleExpected.dueToday)
             )
-            counterexampleOverview.assertMetricCardsHaveUniformGeometry()
+            counterexampleOverview.assertMetricCardsHaveUniformGeometry(twoColumns: false)
             counterexampleOverview.calendar.assertExists(timeout: 10)
             counterexampleOverview.scrollToForecastRange(14)
             counterexampleOverview.selectForecastRange(14)

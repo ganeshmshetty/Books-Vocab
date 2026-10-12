@@ -1345,6 +1345,7 @@
 
 "todayReview.card.temporaryDetail.show" = "暂时显示详细内容";
 "todayReview.card.temporaryDetail.restore" = "恢复精简";
+"todayReview.card.more" = "更多操作";
 
 "addLink.error.quotaExhausted" = "今天的 AI 额度已用完，请明天再试。";
 "addLink.error.sourceUnavailable" = "来源卡片已不可用（已删除、封存或移动）。";

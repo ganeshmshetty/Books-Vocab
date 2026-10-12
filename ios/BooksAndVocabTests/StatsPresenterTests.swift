@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import SwiftUI
 import Testing
 @testable import BooksAndVocab
 
@@ -850,6 +851,19 @@ struct StatsPresenterTests {
             #expect(clock == ReviewCalendarClock.uiWorldOrLive())
             #expect(clock.dayKey(clock.now) > clock.dayKey(dueDate))
         }
+    }
+}
+/// #2859: the Overview metric block is a two-column grid at standard Dynamic Type
+/// sizes and reflows to one column at accessibility sizes. Pins the pure policy.
+@Suite struct StatsMetricsColumnPolicyTests {
+    @Test func standardSizes_useTwoColumns() {
+        #expect(VocabStatTileLayout.columnCount(for: .large) == 2)
+        #expect(VocabStatTileLayout.columnCount(for: .xxxLarge) == 2)
+    }
+
+    @Test func accessibilitySizes_reflowToOneColumn() {
+        #expect(VocabStatTileLayout.columnCount(for: .accessibility1) == 1)
+        #expect(VocabStatTileLayout.columnCount(for: .accessibility3) == 1)
     }
 }
 #endif

@@ -319,7 +319,7 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
         // ── 1. Compact card shows the button, back has no detail fields ────────
         guard review.waitForTemporaryDetail("showDetail", timeout: 10) else {
             captureStep("temporary-detail.no-button", app: app)
-            XCTFail("精簡卡 chrome 必須出現『暫時顯示詳細』按鈕")
+            XCTFail("精簡卡 ⋯ 選單必須帶出『暫時顯示詳細』狀態")
             return
         }
         review.flipCard()
@@ -328,8 +328,9 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
         captureStep("temporary-detail.compact", app: app)
 
         // ── 2. Tap → this card shows its detailed content ─────────────────────
-        review.temporaryDetailButton.tapWhenReady()
-        XCTAssertTrue(review.waitForTemporaryDetail("restoreCompact"), "同一顆按鈕必須翻成『恢復精簡』")
+        review.openCardMenu()
+        review.temporaryDetailMenuItem.tapWhenReady()
+        XCTAssertTrue(review.waitForTemporaryDetail("restoreCompact"), "同一個選單項目必須翻成『恢復精簡』")
         XCTAssertTrue(anyDetailFieldMounted(timeout: 3), "暫時詳細後背面必須出現例句等詳細內容")
         XCTAssertTrue(review.waitForProgress("1 / "), "切換版面不得推進佇列")
         captureStep("temporary-detail.detailed", app: app)
@@ -385,6 +386,40 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
             XCTAssertGreaterThanOrEqual(frame.height, 44, "\(identifier) 觸控高度必須 >= 44pt，實際 \(frame.height)")
         }
         captureStep("front-chrome", app: app)
+    }
+
+    /// #3112: on the compact preset the secondary card actions sit behind one `⋯`
+    /// menu on the front face. The menu glyph keeps the 44pt HIG touch area, and
+    /// its single item toggles temporary detail.
+    @MainActor
+    func testFrontChromeMenuHoldsTemporaryDetailWithHitTargetAtLeast44pt() throws {
+        let app = launchIsolatedApp(
+            fixtures: [.notebookReviewDeck],
+            extraEnvironment: ["KG_UI_TEST_SERVER_URL": "http://127.0.0.1:9"],
+            perfLog: "review"
+        )
+        captureStep("launch", app: app)
+
+        let review = try startReview(app: app)
+        let editor = ReviewCardLayoutEditorPage(app: app)
+        review.layoutEditorButton.tapWhenReady()
+        XCTAssertTrue(editor.waitUntilVisible())
+        editor.selectPreset("recognition", index: ReviewCardLayoutEditorPage.PresetIndex.compact)
+        editor.selectPreset("production", index: ReviewCardLayoutEditorPage.PresetIndex.compact)
+        editor.done()
+
+        XCTAssertTrue(review.waitForTemporaryDetail("showDetail", timeout: 10), "精簡卡的 ⋯ 選單必須帶出『暫時顯示詳細』狀態")
+        let more = review.cardMoreButton
+        XCTAssertTrue(more.waitUntilExists(timeout: 8), "正面右上角必須有 ⋯ 選單 todayReview.card.more")
+        XCTAssertGreaterThanOrEqual(more.frame.width, 44, "⋯ 觸控寬度必須 >= 44pt，實際 \(more.frame.width)")
+        XCTAssertGreaterThanOrEqual(more.frame.height, 44, "⋯ 觸控高度必須 >= 44pt，實際 \(more.frame.height)")
+        captureStep("front-chrome-menu", app: app)
+
+        review.openCardMenu()
+        XCTAssertTrue(review.temporaryDetailMenuItem.waitUntilExists(timeout: 5), "⋯ 選單必須列出『暫時顯示詳細』")
+        review.temporaryDetailMenuItem.tapWhenReady()
+        XCTAssertTrue(review.waitForTemporaryDetail("restoreCompact"), "選單項目必須把本卡切成『恢復精簡』")
+        captureStep("front-chrome-menu-detailed", app: app)
     }
 
     /// Autoplay must not keep flipping cards under the editor sheet, and the pause

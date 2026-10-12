@@ -276,21 +276,31 @@ struct TodayReviewPage {
         element("todayReview.expandZone")
     }
 
-    /// #2041 compact-card chrome toggle on the ACTIVE card. Its accessibility
-    /// value is the button state: `showDetail` (compact now) or `restoreCompact`.
+    /// #3112 `⋯` menu on the ACTIVE card. It exists only when the menu has an item
+    /// (compact preset today). Its accessibility value mirrors the temporary-detail
+    /// state (`showDetail` / `restoreCompact`), so state reads need no open menu.
     /// Query-only: a standard-preset card legitimately has none.
-    var temporaryDetailButton: XCUIElement {
+    var cardMoreButton: XCUIElement {
+        queryElement("todayReview.card.more")
+    }
+
+    func openCardMenu() {
+        cardMoreButton.tapWhenReady()
+    }
+
+    /// Menu item that toggles temporary detail (#2041). Present only while the menu is open.
+    var temporaryDetailMenuItem: XCUIElement {
         queryElement("todayReview.card.temporaryDetail")
     }
 
     func waitForTemporaryDetail(_ value: String, timeout: TimeInterval = 8) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let matches = elements(for: "todayReview.card.temporaryDetail").allElementsBoundByIndex
+            let matches = elements(for: "todayReview.card.more").allElementsBoundByIndex
             if matches.count == 1, matches[0].exists, (matches[0].value as? String) == value { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
-        let matches = elements(for: "todayReview.card.temporaryDetail").allElementsBoundByIndex
+        let matches = elements(for: "todayReview.card.more").allElementsBoundByIndex
         return matches.count == 1 && (matches[0].value as? String) == value
     }
 

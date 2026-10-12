@@ -1353,6 +1353,7 @@
 
 "todayReview.card.temporaryDetail.show" = "暫時顯示詳細內容";
 "todayReview.card.temporaryDetail.restore" = "恢復精簡";
+"todayReview.card.more" = "更多動作";
 
 "addLink.error.quotaExhausted" = "今天的 AI 額度已用完，請明天再試。";
 "addLink.error.sourceUnavailable" = "來源卡片已無法使用（已刪除、封存或移動）。";
