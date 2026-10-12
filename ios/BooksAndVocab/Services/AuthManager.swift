@@ -314,6 +314,13 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     }
 
     private func refuseSignInUntilLocalWipeSucceeds() {
+        // Past the retry cap, retrying cannot succeed: the only escape is a store rebuild, which has no
+        // in-app entry yet. Telling the user to retry later would be a false promise (#3229).
+        if localDataCleaner.pendingWipeNeedsStoreRebuild {
+            AppLog.auth.error("sign-in refused: pending local wipe is stuck past the retry cap")
+            authError = L10n.string("本機資料無法清除，請重新安裝 App 後再登入")
+            return
+        }
         AppLog.auth.error("sign-in refused: previous account's local wipe is still pending")
         authError = L10n.string("上一個帳號的本機資料尚未清除，請稍後再試登入")
     }

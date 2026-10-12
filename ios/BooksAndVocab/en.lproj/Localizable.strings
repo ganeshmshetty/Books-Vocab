@@ -768,6 +768,7 @@
 "本機舊帳號資料尚未清除，已暫停同步" = "Previous account data is not cleared yet. Sync is paused.";
 "上一個帳號的本機資料尚未清除，請稍後再試登入" = "Previous account's local data could not be cleared. Please try signing in again.";
 "本機資料已重建，請重新啟動 App 後再登入" = "Local data was rebuilt. Please restart the app before signing in.";
+"本機資料無法清除，請重新安裝 App 後再登入" = "Local data could not be cleared. Please reinstall the app and sign in again.";
 "目前無已連結節點" = "No linked nodes yet";
 "目前無法產生語境解釋。" = "Unable to generate a contextual explanation right now.";
 "目前無法連線" = "Unable to connect right now";
