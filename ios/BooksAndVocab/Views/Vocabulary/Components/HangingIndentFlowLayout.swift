@@ -61,6 +61,11 @@ enum HangingIndentFlow {
         let indent = label.width + spacing
         // 值欄可用寬。超過它的項目（#3227）改以值欄寬重新量測，在值欄內換行，不溢出卡片。
         let valueWidth = max(0, limit - indent)
+        // 標籤已佔滿（valueWidth <= 0）時沒有值欄：項目改從卡片左緣起排，寬度夾到卡片寬。
+        // 夾成 0 會讓項目隱形（#3297）；保留自然寬又會溢出卡片（#3317）。
+        let hasValueColumn = valueWidth > 0
+        let lineStart: CGFloat = hasValueColumn ? indent : 0
+        let itemWidth = hasValueColumn ? valueWidth : limit
         var frames = [CGRect(origin: .zero, size: label)]
         var x = indent
         var y: CGFloat = 0
@@ -69,15 +74,15 @@ enum HangingIndentFlow {
 
         for index in 1..<count {
             var size = measure(index, nil)
-            // valueWidth <= 0（標籤已佔滿）時不夾寬：夾成 0 會讓項目隱形（#3297），保留自然寬。
-            if valueWidth > 0, size.width > valueWidth {
-                let fitted = measure(index, valueWidth)
-                size = CGSize(width: min(fitted.width, valueWidth), height: fitted.height)
+            if size.width > itemWidth {
+                let fitted = measure(index, itemWidth)
+                size = CGSize(width: min(fitted.width, itemWidth), height: fitted.height)
             }
-            // 行首永遠放得下一顆（已夾到值欄寬），避免超寬項目被丟到下一行造成空行。
-            if x > indent, x + size.width > limit {
+            // 行首永遠放得下一顆（已夾到寬度上限），避免超寬項目被丟到下一行造成空行。
+            // 無值欄時首顆的 x = indent 已超出卡片，會在此換到 lineStart 的新行。
+            if x > lineStart, x + size.width > limit {
                 y += rowHeight + spacing
-                x = indent
+                x = lineStart
                 rowHeight = 0
             }
             frames.append(CGRect(x: x, y: y, width: size.width, height: size.height))
