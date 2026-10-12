@@ -102,6 +102,66 @@ struct KGServiceLastSyncDateTests {
 
         #expect(service.lastSyncDate == nil)
     }
+
+    // MARK: - Failed wipe is reported and retried (#2717)
+
+    private struct WipeFailure: Error {}
+
+    /// Throws on the first call, succeeds afterwards: a transient store failure.
+    private final class FlakyWipe: @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var calls: [String] = []
+        func run(_ container: ModelContainer, _ reason: String) async throws {
+            let shouldFail: Bool = lock.withLock {
+                calls.append(reason)
+                return calls.count == 1
+            }
+            if shouldFail { throw WipeFailure() }
+        }
+    }
+
+    @Test func failedWipeKeepsCursorsReportsFailureAndRetriesBeforeNextSync() async throws {
+        let suite = "kg.test.failedWipe"
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        defaults.set("cursor-A", forKey: KGService.SyncKeys.incrementalBoundary)
+        defaults.set("events-A", forKey: KGService.SyncKeys.reviewEventPullBoundary)
+        let flaky = FlakyWipe()
+        let cleaner = LocalDataCleanerService(wipeRows: flaky.run, defaults: defaults)
+        let container = try makeEmptyContainer()
+
+        let ok = await cleaner.clearLocalDataReportingFailure(
+            container: container,
+            reason: "user_logout",
+            owner: "user-a",
+            deletedAccountID: nil
+        )
+
+        #expect(ok == false, "failure must be reported to the caller")
+        #expect(defaults.string(forKey: KGService.SyncKeys.incrementalBoundary) == "cursor-A", "cursors survive a failed wipe")
+        #expect(defaults.string(forKey: KGService.SyncKeys.reviewEventPullBoundary) == "events-A")
+        #expect(LocalDataCleanerService.persistedPendingWipeOwner(defaults: defaults) == "user-a")
+
+        let refused = await cleaner.retryPendingLocalWipe(container: container, signedInUserId: "user-b")
+
+        #expect(refused == false, "another account signed in: the leftover rows may hold its unsynced data")
+        #expect(flaky.calls.count == 1, "no row wipe under another account")
+        #expect(LocalDataCleanerService.persistedPendingWipeOwner(defaults: defaults) == "user-a", "marker keeps its owner")
+        #expect(defaults.string(forKey: KGService.SyncKeys.incrementalBoundary) == "cursor-A", "cursors survive a refused retry")
+
+        let finished = await cleaner.retryPendingLocalWipe(container: container, signedInUserId: nil)
+
+        #expect(finished == true)
+        #expect(flaky.calls.count == 2, "retry must re-run the row wipe")
+        #expect(LocalDataCleanerService.persistedPendingWipeOwner(defaults: defaults) == nil)
+        #expect(defaults.object(forKey: KGService.SyncKeys.incrementalBoundary) == nil, "retry success clears cursors")
+        #expect(defaults.object(forKey: KGService.SyncKeys.reviewEventPullBoundary) == nil)
+
+        let again = await cleaner.retryPendingLocalWipe(container: container, signedInUserId: nil)
+        #expect(again == true)
+        #expect(flaky.calls.count == 2, "no marker, no retry")
+    }
 }
 
 /// Pins the pipeline-pending retry schedule.

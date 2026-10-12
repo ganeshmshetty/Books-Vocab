@@ -129,6 +129,12 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         let userIdStr = userId.trimmingCharacters(in: .whitespacesAndNewlines)
         let tokenStr = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !userIdStr.isEmpty, !tokenStr.isEmpty else { return }
+        // Fail closed (#2717): no account becomes current while a previous account's wipe is pending.
+        // The async sign-in paths complete the wipe before reaching here; this guards direct callers.
+        guard !localDataCleaner.hasPendingLocalWipe else {
+            refuseSignInUntilLocalWipeSucceeds()
+            return
+        }
 
         // Real login replaces demo mode — clean up demo data
         if isDemoMode, let container = modelContainer {
@@ -174,13 +180,22 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     /// `login(userId:token:)` so a blank token neither switches nor wipes.
     func login(customToken: String) async {
         let userIdStr = customToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !userIdStr.isEmpty,
-           let existing = self.userId,
+        guard !userIdStr.isEmpty else { return }
+        guard await completePreviousAccountWipe() else { return }
+        if let existing = self.userId,
            existing != userIdStr,
            let container = self.modelContainer {
             AppLog.auth.info("Manual login account switch — clearing previous user's local data")
             accountPreferenceLifecycle.suspend()
-            await localDataCleaner.clearLocalData(container: container, reason: "manual_login_account_switch", deletedAccountID: nil)
+            guard await clearPreviousAccountData(
+                container: container,
+                reason: "manual_login_account_switch",
+                owner: existing,
+                deletedAccountID: nil
+            ) else {
+                refuseAccountSwitch()
+                return
+            }
         }
         login(userId: customToken, token: customToken)
     }
@@ -208,12 +223,69 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     /// 新 cleanup 並行。徹底閉合需 sync 內部 generation re-check/abort（另案）；
     /// 現靠空庫安全網 + 帳號切換清 boundary 緩解。
     func waitForPendingLocalDataCleanup() async {
+        await awaitLogoutCleanupChain()
+    }
+
+    /// `false` while a previous account's wipe is outstanding: sync must not merge into those rows
+    /// (#2717). Sign-in refuses while a wipe is pending, so this is a fail-closed check and never wipes.
+    func waitForLocalDataCleanupGate() async -> Bool {
+        await awaitLogoutCleanupChain()
+        return !localDataCleaner.hasPendingLocalWipe
+    }
+
+    private func awaitLogoutCleanupChain() async {
         while true {
             let generation = localDataCleanupGeneration
             guard let pending = pendingLocalDataCleanup else { return }
             await pending.value
             if localDataCleanupGeneration == generation { return }
         }
+    }
+
+    /// Sign-in boundary (#2717). A logout wipe still in flight finishes first. A wipe left pending by
+    /// an earlier failure must then succeed before any account becomes current. `false` = fail closed.
+    private func completePreviousAccountWipe() async -> Bool {
+        await awaitLogoutCleanupChain()
+        guard localDataCleaner.hasPendingLocalWipe else { return true }
+        if let container = modelContainer {
+            let finished = await localDataCleaner.retryPendingLocalWipe(container: container, signedInUserId: userId)
+            if finished { return true }
+        }
+        refuseSignInUntilLocalWipeSucceeds()
+        return false
+    }
+
+    /// Wipes the rows of `owner`, the account they belong to. A failure is recorded by the cleaner;
+    /// one immediate retry runs before the caller proceeds. `false` = still failing.
+    private func clearPreviousAccountData(
+        container: ModelContainer,
+        reason: String,
+        owner: String,
+        deletedAccountID: String?
+    ) async -> Bool {
+        if await localDataCleaner.clearLocalDataReportingFailure(
+            container: container,
+            reason: reason,
+            owner: owner,
+            deletedAccountID: deletedAccountID
+        ) {
+            return true
+        }
+        AppLog.auth.error("local wipe failed (reason=\(reason)); retrying once before sign-in")
+        return await localDataCleaner.retryPendingLocalWipe(container: container, signedInUserId: userId)
+    }
+
+    /// The switch wipe failed twice. The previous account stays signed in: its rows and cursors are
+    /// intact because the failed wipe committed nothing, so the pending marker is dropped (#2717).
+    private func refuseAccountSwitch() {
+        localDataCleaner.discardPendingLocalWipe()
+        activateAccountPreferencesForCurrentSession()
+        refuseSignInUntilLocalWipeSucceeds()
+    }
+
+    private func refuseSignInUntilLocalWipeSucceeds() {
+        AppLog.auth.error("sign-in refused: previous account's local wipe is still pending")
+        authError = L10n.string("上一個帳號的本機資料尚未清除，請稍後再試登入")
     }
 
     func logout(modelContainer: ModelContainer? = nil, reason: String = "user_logout") {
@@ -238,12 +310,14 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     private func endSession(modelContainer: ModelContainer?, reason: String, deletedAccountID: String?) {
         AppAnalytics.track(.logoutPerformed(reason: reason))
         let container = modelContainer ?? self.modelContainer
+        // Captured before teardown nils userId: the wipe belongs to this account's rows ("" if none).
+        let previousUserId = self.userId ?? ""
         if reason == LocalDataCleanerService.deleteAccountReason, deletedAccountID == nil {
             AppLog.auth.warning("logout(delete_account): no account captured; account-preference purge skipped (#2434)")
         }
         accountPreferenceLifecycle.suspend()
         localDataCleanupGeneration += 1
-        pendingLocalDataCleanup = Task { [previousCleanup = pendingLocalDataCleanup] in
+        pendingLocalDataCleanup = Task { [previousCleanup = pendingLocalDataCleanup, previousUserId] in
             // Clear session state UP FRONT, before awaiting clearLocalData. The cleanup hops to
             // BackgroundSyncActor — a real suspension that yields the MainActor. Doing the nils
             // + clearSession() after that await (the old order) opened a TOCTOU window: a
@@ -266,10 +340,12 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             // 讓 gate 只 await 最新 handle 即隱含前序 cleanup 全部收尾。
             await previousCleanup?.value
 
+            // A failure stays recorded as pending; sign-in completes it before any account is admitted.
             if let container {
-                await localDataCleaner.clearLocalData(
+                _ = await clearPreviousAccountData(
                     container: container,
                     reason: reason,
+                    owner: previousUserId,
                     deletedAccountID: deletedAccountID
                 )
             }
@@ -296,22 +372,27 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         modelContainer: ModelContainer?
     ) async {
         authError = nil
-        if let displayName, !displayName.isEmpty { self.displayName = displayName }
-        if let email, !email.isEmpty { self.userEmail = email }
-        self.avatarURL = avatarURL
-        sessionStore.persistProfile(
-            userId: self.userId,
-            displayName: self.displayName,
-            userEmail: self.userEmail,
-            avatarURL: self.avatarURL
-        )
+        // Profile fields are applied only once the sign-in is admitted, so a refused switch cannot
+        // leave the still-signed-in previous account showing the new account's name/email (#2717).
+        guard await completePreviousAccountWipe() else { return }
 
         let isAccountSwitch = self.userId != nil && self.userId != userId
         if isAccountSwitch, let container = modelContainer {
             AppLog.auth.info("Account switch — clearing previous user's local data")
             accountPreferenceLifecycle.suspend()
-            await localDataCleaner.clearLocalData(container: container, reason: accountSwitchReason, deletedAccountID: nil)
+            guard await clearPreviousAccountData(
+                container: container,
+                reason: accountSwitchReason,
+                owner: self.userId ?? "",
+                deletedAccountID: nil
+            ) else {
+                refuseAccountSwitch()
+                return
+            }
         }
+        if let displayName, !displayName.isEmpty { self.displayName = displayName }
+        if let email, !email.isEmpty { self.userEmail = email }
+        self.avatarURL = avatarURL
         login(userId: userId, token: jwtToken)
     }
 

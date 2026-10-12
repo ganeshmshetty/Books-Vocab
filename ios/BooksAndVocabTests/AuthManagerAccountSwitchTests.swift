@@ -52,15 +52,44 @@ struct AuthManagerAccountSwitchTests {
     }
 
     /// Records every `clearLocalData` invocation so a test can assert whether — and
-    /// with what reason — an account switch triggered the SwiftData purge.
+    /// with what reason — an account switch triggered the SwiftData purge. Models the
+    /// pending-wipe marker (#2717): a failed clear records its owner until a retry succeeds.
+    /// Mirrors the real retry guard: the wipe only runs while nobody else is signed in.
     private final class RecordingCleaner: LocalDataClearing, @unchecked Sendable {
-        @MainActor private(set) var clearCount = 0
-        @MainActor private(set) var reasons: [String] = []
+        private(set) var clearCount = 0
+        private(set) var reasons: [String] = []
+        private(set) var owners: [String] = []
+        private(set) var retrySignedInUsers: [String?] = []
+        private(set) var discardCount = 0
+        var failClear = false
+        var failRetry = false
+        var pendingLocalWipeOwner: String?
         func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
-            await MainActor.run {
-                clearCount += 1
-                reasons.append(reason)
-            }
+            clearCount += 1
+            reasons.append(reason)
+        }
+        func clearLocalDataReportingFailure(
+            container: ModelContainer,
+            reason: String,
+            owner: String,
+            deletedAccountID: String?
+        ) async -> Bool {
+            await clearLocalData(container: container, reason: reason, deletedAccountID: deletedAccountID)
+            owners.append(owner)
+            pendingLocalWipeOwner = failClear ? owner : nil
+            return !failClear
+        }
+        func retryPendingLocalWipe(container: ModelContainer, signedInUserId: String?) async -> Bool {
+            retrySignedInUsers.append(signedInUserId)
+            guard let owner = pendingLocalWipeOwner else { return true }
+            guard signedInUserId == nil || signedInUserId == owner else { return false }
+            guard !failRetry else { return false }
+            pendingLocalWipeOwner = nil
+            return true
+        }
+        func discardPendingLocalWipe() {
+            discardCount += 1
+            pendingLocalWipeOwner = nil
         }
     }
 
@@ -175,5 +204,109 @@ struct AuthManagerAccountSwitchTests {
 
         #expect(cleaner.clearCount == 0)
         #expect(manager.userId == "old-user")
+    }
+
+    /// #2717: a switch wipe that fails is retried right away, before B is admitted, so B normally
+    /// never sees A's rows. The retry runs while A (the owner) is still the signed-in account.
+    @Test func failed_account_switch_wipe_is_retried_before_admitting_next_account() async {
+        let cleaner = RecordingCleaner()
+        cleaner.failClear = true
+        let manager = makeManager(priorUserId: "old-user", cleaner: cleaner)
+
+        await manager.login(customToken: "new-user")
+
+        #expect(cleaner.retrySignedInUsers == ["old-user"])
+        #expect(cleaner.pendingLocalWipeOwner == nil)
+        #expect(manager.userId == "new-user")
+    }
+
+    /// #2717: when the switch wipe still fails after the retry, account B is not admitted and A keeps
+    /// its session. Admitting B would let B write into A's leftover rows, which a later retry then
+    /// wipes together with B's unsynced data (the P1 data-loss path).
+    @Test func failed_account_switch_refuses_next_account_and_keeps_previous_session() async {
+        let cleaner = RecordingCleaner()
+        cleaner.failClear = true
+        cleaner.failRetry = true
+        let manager = makeManager(priorUserId: "old-user", cleaner: cleaner)
+
+        await manager.login(customToken: "new-user")
+
+        #expect(manager.userId == "old-user")
+        #expect(manager.isLoggedIn == true)
+        #expect(manager.authError != nil)
+        #expect(cleaner.discardCount == 1, "A's rows are intact, so the marker is dropped")
+        #expect(cleaner.pendingLocalWipeOwner == nil)
+        #expect(await manager.waitForLocalDataCleanupGate() == true)
+    }
+
+    /// #2717: a wipe left pending by a logout must finish before the next sign-in is admitted, and the
+    /// retry runs while nobody is signed in, so it can only touch the owner's rows.
+    @Test func pending_logout_wipe_completes_before_next_sign_in() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        await manager.login(customToken: "user-b")
+
+        #expect(cleaner.retrySignedInUsers == [nil])
+        #expect(cleaner.pendingLocalWipeOwner == nil)
+        #expect(manager.userId == "user-b")
+    }
+
+    /// #2717: a pending logout wipe that still fails refuses the sign-in (fail closed). No account
+    /// may become current, so nothing can be written into the owner's leftover rows.
+    @Test func pending_logout_wipe_still_failing_refuses_sign_in() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        cleaner.failRetry = true
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        await manager.login(customToken: "user-b")
+
+        #expect(manager.userId == nil)
+        #expect(manager.isLoggedIn == false)
+        #expect(manager.authError != nil)
+        #expect(cleaner.pendingLocalWipeOwner == "user-a", "the owner's marker survives for the next attempt")
+    }
+
+    /// #2717: the sync gate only reports the pending state. It never runs the wipe, because the
+    /// gate can run under an account that did not own the leftover rows.
+    @Test func sync_gate_reports_pending_wipe_without_wiping() async {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        #expect(await manager.waitForLocalDataCleanupGate() == false)
+        #expect(cleaner.retrySignedInUsers.isEmpty)
+        #expect(cleaner.pendingLocalWipeOwner == "user-a")
+    }
+
+    /// #2717: the direct `login(userId:token:)` entry is fail closed too while a wipe is pending.
+    @Test func direct_login_is_refused_while_a_wipe_is_pending() {
+        let cleaner = RecordingCleaner()
+        cleaner.pendingLocalWipeOwner = "user-a"
+        let manager = makeManager(priorUserId: nil, cleaner: cleaner)
+
+        manager.login(userId: "user-b", token: "token-b")
+
+        #expect(manager.userId == nil)
+        #expect(manager.authError != nil)
+    }
+
+    /// #2717: while the previous account's wipe is still pending, the switch must keep the sync
+    /// cursors. Clearing them would make B's first sync a seamless incremental over A's rows.
+    @Test func failed_switch_wipe_keeps_sync_cursors_for_the_retry() async {
+        let defaults = UserDefaults.standard
+        let key = KGService.SyncKeys.incrementalBoundary
+        defaults.set("cursor-of-old-user", forKey: key)
+        defer { defaults.removeObject(forKey: key) }
+        let cleaner = RecordingCleaner()
+        cleaner.failClear = true
+        cleaner.failRetry = true
+        let manager = makeManager(priorUserId: "old-user", cleaner: cleaner)
+
+        await manager.login(customToken: "new-user")
+
+        #expect(defaults.string(forKey: key) == "cursor-of-old-user")
     }
 }

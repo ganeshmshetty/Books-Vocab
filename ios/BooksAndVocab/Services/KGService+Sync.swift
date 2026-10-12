@@ -663,7 +663,13 @@ extension KGService {
         // 跳過後端全部卡 → 本地空庫但自認最新），且拉回的資料會被 resume 的
         // cleanup 再清一遍 —— 2026-06-09 000287 單字本事故根因。放在入口
         // 單點守住全部四個觸發點（post-login / scenePhase / ⌘R / Settings）。
-        await sessionInvalidator.waitForPendingLocalDataCleanup()
+        // 上一帳號的列清除在 retry 後仍失敗（#2717）時不得 pull：殘留列的 boundary 會讓 B
+        // 漏掉 boundary 之前的伺服器資料。retry 成功後下一輪 trigger 即恢復正常。
+        guard await sessionInvalidator.waitForLocalDataCleanupGate() else {
+            AppLog.kg.error("backgroundSync skipped: previous account's local wipe still pending")
+            lastBackgroundSyncError = L10n.string("本機舊帳號資料尚未清除，已暫停同步")
+            return .didNotRun
+        }
 
         // 離線時跳過整個背景同步，不產生無意義的錯誤日誌
         guard connectivityGate.isConnected else {
