@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 2977,
+  "raise": {
+    "ops": 76
+  },
+  "note": "issue #2977: busy-lease publish/drain zero-GitHub-read test and non-cleanup 30s wait test add ~40 authored ops test lines; test-only, no product tooling growth"
+}
