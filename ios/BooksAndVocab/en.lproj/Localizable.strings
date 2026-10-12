@@ -1363,6 +1363,7 @@
 
 "todayReview.card.temporaryDetail.show" = "Show details for this card";
 "todayReview.card.temporaryDetail.restore" = "Back to compact";
+"todayReview.card.more" = "More actions";
 
 "addLink.error.quotaExhausted" = "Today's AI quota is used up. Try again tomorrow.";
 "addLink.error.sourceUnavailable" = "The source card is no longer available (deleted, archived, or moved).";
