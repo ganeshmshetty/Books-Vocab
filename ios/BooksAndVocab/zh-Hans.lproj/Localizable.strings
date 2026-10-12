@@ -1371,7 +1371,8 @@
 "addLink.create.notebook" = "加入：%@";
 
 /* Review card link strip: collapse an expanded group (#2043) */
-"todayReview.card.link.collapse" = "收起";
+"todayReview.card.link.collapse" = "æ¶èµ·";
+"todayReview.card.link.overflow.a11y" = "显示其余 %@ 个链接";
 
 /* Add Link Return key on an already linked word (#2038) */
 "addLink.return.alreadyLinked" = "已链接过“%@”";

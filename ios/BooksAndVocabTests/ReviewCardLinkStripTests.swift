@@ -119,6 +119,17 @@ struct ReviewCardLinkStripTests {
         #expect(!expansion.isExpanded("shares_usage", cardKey: "a"), "tapping again collapses")
     }
 
+    /// #3227：VoiceOver 的「顯示其餘 N 個連結」必須在五個語系都解析到文案，不得回退成 key 本身。
+    /// Red：key 不存在時 L10n 回傳 key，斷言失敗。
+    @Test func overflowAccessibilityLabelResolvesInEveryLocale() {
+        let languages: [AppLanguage] = [.english, .traditionalChinese, .simplifiedChinese, .japanese, .korean]
+        for language in languages {
+            let label = L10n.format("todayReview.card.link.overflow.a11y", language: language, "3")
+            #expect(!label.contains("todayReview.card.link"), "\(language) falls back to the raw key")
+            #expect(label.contains("3"), "\(language) carries the hidden-link count")
+        }
+    }
+
     @Test func expandingOnAnotherCardStartsFresh() {
         var expansion = ReviewCardLinkExpansion()
         expansion.toggle("shares_usage", cardKey: "a")

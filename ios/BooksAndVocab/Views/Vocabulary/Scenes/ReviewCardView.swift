@@ -1023,6 +1023,8 @@ struct ReviewCardView: View {
                 }
             },
             accessibilityIdentifier: "todayReview.card.link.overflow.\(group.id)",
+            // #3227：收合時「+N」是純符號文字，VoiceOver 需要「顯示其餘 N 個連結」；展開時沿用可見的「收合」文案。
+            accessibilityLabel: isExpanded ? nil : L10n.format("todayReview.card.link.overflow.a11y", "\(row.overflowCount)"),
             accessibilityValue: isExpanded ? "expanded" : "collapsed"
         ) {
             HStack(spacing: AppSpacing.s1) {

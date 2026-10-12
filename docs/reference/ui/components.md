@@ -102,6 +102,7 @@ Scope: `ios/BooksAndVocab`
 
 核心元件：
 - `VocabCard`
+- `HangingIndentFlowLayout`（`Components/HangingIndentFlowLayout.swift`，複習卡連結列）：首格為標籤、其後項目接在標籤右側並換行到同一值欄；超過值欄寬的項目在值欄內換行、不溢出卡片（#3227）。連結列「+N」命中帶上限見 `TodayReviewMetrics.linkOverflowHitTarget`（膠囊高 + 2×s1，不蓋到上一列；放棄 44pt 下限，#3226/#3253）
 - `VocabToneChip`
 - `VocabTierLabel`
 - `VocabEmptyStateContent`
