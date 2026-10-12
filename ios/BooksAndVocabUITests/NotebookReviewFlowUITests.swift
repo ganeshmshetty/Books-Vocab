@@ -113,8 +113,8 @@ final class NotebookReviewFlowUITests: UITestCase {
         )
         try step("graded-remembered", app: app) {
             XCTAssertTrue(
-                review.waitUntilLabel(of: review.rememberedButton, contains: "·1"),
-                "記得計數應顯示 ·1，實際 label：\(review.rememberedButton.label)"
+                review.waitUntilLabel(of: review.rememberedButton, contains: "· "),
+                "記得按鈕應顯示下次複習間隔（· 〈間隔〉，#3135），實際 label：\(review.rememberedButton.label)"
             )
         }
 
@@ -138,8 +138,8 @@ final class NotebookReviewFlowUITests: UITestCase {
         )
         try step("graded-forgot", app: app) {
             XCTAssertTrue(
-                review.waitUntilLabel(of: review.forgotButton, contains: "·1"),
-                "忘記計數應顯示 ·1，實際 label：\(review.forgotButton.label)"
+                review.waitUntilLabel(of: review.forgotButton, contains: "· "),
+                "忘記按鈕應顯示下次複習間隔（· 〈間隔〉，#3135），實際 label：\(review.forgotButton.label)"
             )
         }
 

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 enum AppMetrics {
     // ── Divider / Separator ───────────────────────────────────────────────────
@@ -121,6 +122,63 @@ enum AppMotion {
         static let opacityDip: Double = DesignTokens.Motion.TapFeedback.opacityDip
         /// 對應的動畫曲線
         static let animation = Animation.interactiveSpring(response: DesignTokens.Motion.Spring.TapFeedback.response, dampingFraction: DesignTokens.Motion.Spring.TapFeedback.damping)
+    }
+}
+
+/// Reduce Motion 下 review 動效的唯一解析點（#3128）。依 `docs/sop/ui-design.md` Motion Contract：
+/// 位移／縮放動畫改為瞬間（`nil`），揭示／切換／完成只保留 opacity cross-fade。
+/// 關閉 Reduce Motion 時每個語意都保留原 spring，行為不變。
+enum AppMotionResolver {
+    enum ReviewKind: Equatable {
+        case reveal
+        case navigation
+        case celebration
+        case fling(duration: Double)
+        case snapBack
+        case tracking
+    }
+
+    enum Resolved: Equatable {
+        case spring(ReviewKind)
+        case crossFade
+        case instant
+    }
+
+    static func resolve(_ kind: ReviewKind, reduceMotion: Bool) -> Resolved {
+        guard reduceMotion else { return .spring(kind) }
+        switch kind {
+        case .reveal, .navigation, .celebration:
+            return .crossFade
+        case .fling, .snapBack, .tracking:
+            return .instant
+        }
+    }
+
+    static func animation(_ kind: ReviewKind, reduceMotion: Bool) -> Animation? {
+        switch resolve(kind, reduceMotion: reduceMotion) {
+        case .spring(let springKind):
+            return springAnimation(for: springKind)
+        case .crossFade:
+            return AppMotion.quickEaseOut
+        case .instant:
+            return nil
+        }
+    }
+
+    /// 非 View 呼叫點（TodayReviewState）在動作當下讀取系統設定；View 內請傳入 `\.accessibilityReduceMotion`。
+    static func systemAnimation(_ kind: ReviewKind) -> Animation? {
+        animation(kind, reduceMotion: UIAccessibility.isReduceMotionEnabled)
+    }
+
+    private static func springAnimation(for kind: ReviewKind) -> Animation {
+        switch kind {
+        case .reveal: return AppMotion.reviewRevealSpring
+        case .navigation: return AppMotion.reviewNavigationSpring
+        case .celebration: return AppMotion.celebrationBounce
+        case .fling(let duration): return AppMotion.swipeFling(duration: duration)
+        case .snapBack: return AppMotion.swipeSnapBackSpring
+        case .tracking: return AppMotion.swipeTrackingSpring
+        }
     }
 }
 

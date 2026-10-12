@@ -449,12 +449,9 @@ enum ReviewSessionPersistence {
         to entry: VocabularyEntry,
         reviewSettings: ReviewSettings
     ) {
-        let minInterval = reviewSettings.effectiveMinimumIntervalHours
-        let baseInterval = baseline.reviewCount == 0
-            ? reviewSettings.effectiveInitialIntervalHours
-            : max(baseline.reviewIntervalHours, minInterval)
-        let updatedInterval = VocabularyReviewPolicy.nextIntervalHours(
-            currentIntervalHours: baseInterval,
+        // #3135：與評分按鈕的下次間隔提示共用同一函式，提示永遠等於寫入值。
+        let updatedInterval = ReviewIntervalProjection.nextIntervalHours(
+            baseline: baseline,
             feedback: answer.feedback,
             settings: reviewSettings
         )

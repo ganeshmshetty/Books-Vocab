@@ -19,15 +19,24 @@ struct ReviewCardHitTargetButtonTests {
         Image(systemName: "plus").font(.system(size: 14, weight: .medium))
     }
 
-    /// #3253：「+N」命中帶上下各外擴 `(minimumSide − 膠囊高) / 2`，必須 ≤ 列距 `AppSpacing.s1`，
-    /// 才不會蓋到上一列連結。Positive control：預設 44pt 的外擴約 10pt > 4pt，會失敗。
-    @Test func link_overflow_hit_band_stays_within_the_row_gap() {
-        let band = (TodayReviewMetrics.linkOverflowHitTarget - TodayReviewMetrics.linkOverflowCapsuleHeight) / 2
-        #expect(band <= AppSpacing.s1)
-        #expect(
-            (TodayReviewMetrics.addLinkHitTarget - TodayReviewMetrics.linkOverflowCapsuleHeight) / 2 > AppSpacing.s1,
-            "positive control: the default 44pt band would reach the previous row"
+    /// #3295：「+N」命中帶以渲染後的膠囊為基準上下各外擴 `linkOverflowHitBand`，不再用未量測的
+    /// 膠囊高常數（舊值 24）。sub-default Dynamic Type 下膠囊實際高 < 24，舊推導讓外擴 > s1 而蓋到上一列。
+    /// 這裡渲染 production 膠囊（XS 字級）、確認 band ≤ s1，且 band 不增加版面高度。
+    @Test func link_overflow_hit_band_stays_within_the_row_gap_at_extra_small_type() {
+        let capsule = ReviewCardLinkOverflowLabel(title: "+3", isExpanded: false)
+            .environment(\.sizeCategory, .extraSmall)
+        let bare = fittingSize(capsule)
+        let wrapped = fittingSize(
+            ReviewCardHitTargetButton(
+                verticalBand: TodayReviewMetrics.linkOverflowHitBand,
+                action: {},
+                accessibilityIdentifier: "test.overflow"
+            ) { capsule }
         )
+
+        #expect(bare.height > 0)
+        #expect(TodayReviewMetrics.linkOverflowHitBand <= AppSpacing.s1)
+        #expect(wrapped == bare)
     }
 
     @Test func minimum_side_is_the_hig_hit_target() {

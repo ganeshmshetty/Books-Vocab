@@ -15,11 +15,14 @@ import SwiftUI
 /// - 摺頁 chevron：半高 22 < 正反面 padding 28，只落在空白 padding 內（見 `ReviewFoldTapTargets`）。
 /// - Word Detail「＋」：上緣落在區塊 padding（24pt）內，下緣落在標題列與連結列之間的 16pt 間距內。
 /// - Reader 發音鈕：下緣貼近 panelBody 間距、上緣貼近拖曳把手下方的 12pt 間距，約 ±2pt 未經裝置量測。
-/// - 連結列「+N」：傳入 `TodayReviewMetrics.linkOverflowHitTarget`（膠囊高 + 2×s1），外擴恰為列距 s1，
-///   不蓋到上一列連結（#3253）。沿用預設 44pt 時外擴約 10pt，會蓋到上一列，因此不得省略此參數。
+/// - 連結列「+N」：傳入 `verticalBand: TodayReviewMetrics.linkOverflowHitBand`（= s1）。命中帶以渲染後的
+///   膠囊為基準、上下各外擴 band，不依賴未量測的膠囊高常數，外擴恰為列距，不蓋到上一列連結（#3253、#3295）。
+///   沿用預設 44pt 時外擴約 10pt，會蓋到上一列，因此不得省略此參數。
 struct ReviewCardHitTargetButton<Label: View>: View {
     @ObserveInjection private var inject
     var minimumSide: CGFloat = TodayReviewMetrics.addLinkHitTarget
+    /// 非 nil 時改採「渲染後 label 上下各外擴此量」的命中帶，忽略 `minimumSide`（#3295）。
+    var verticalBand: CGFloat? = nil
     let action: () -> Void
     let accessibilityIdentifier: String
     var accessibilityLabel: String? = nil
@@ -32,8 +35,7 @@ struct ReviewCardHitTargetButton<Label: View>: View {
             .accessibilityHidden(true)
             .overlay {
                 Button(action: action) {
-                    label()
-                        .frame(minWidth: minimumSide, minHeight: minimumSide)
+                    hitArea
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -43,6 +45,15 @@ struct ReviewCardHitTargetButton<Label: View>: View {
                 .accessibilityIdentifier(accessibilityIdentifier)
             }
             .enableInjection()
+    }
+
+    @ViewBuilder
+    private var hitArea: some View {
+        if let verticalBand {
+            label().padding(.vertical, verticalBand)
+        } else {
+            label().frame(minWidth: minimumSide, minHeight: minimumSide)
+        }
     }
 }
 

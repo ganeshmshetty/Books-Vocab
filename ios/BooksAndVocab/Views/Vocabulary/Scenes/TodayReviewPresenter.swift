@@ -35,6 +35,8 @@ struct TodayReviewPresenterState {
     /// #2041：目前「暫時看詳細」的那張卡（`CardPresentation.reviewCardKey`），nil ＝
     /// 全部依設定。session 記憶體，換卡即清。
     var temporaryDetailCardKey: String? = nil
+    /// #3130：「+N」展開（綁單張卡，換卡即清空）。
+    var linkExpansion = ReviewCardLinkExpansion()
     /// #3127：鍵盤評分請求（與按鈕、滑動同一條甩出路徑）。變化即由 view 觸發一次 `flingCard`。
     var keyboardGrade: KeyboardGradeRequest? = nil
 }
@@ -57,6 +59,7 @@ struct TodayReviewPresenter: View {
     @Environment(\.appSkin) var appSkin
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
     @Environment(\.speechService) var speechService
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// 自動播放中滑動被擋時的 pill 提示（#2046）。只在手勢 closure 內呼叫，不在 body 讀取。
     @Environment(\.toastCoordinator) var toastCoordinator
     @Environment(\.reviewCardLayoutStore) var reviewCardLayoutStore
@@ -206,7 +209,7 @@ struct TodayReviewPresenter: View {
         ) {
         case .snap: return nil
         case .contentFade: return AppMotion.contentFade
-        case .revealSpring: return AppMotion.reviewRevealSpring
+        case .revealSpring: return AppMotionResolver.animation(.reveal, reduceMotion: reduceMotion)
         }
     }
 
@@ -272,7 +275,7 @@ struct TodayReviewPresenter: View {
             deckHeightGeneration += 1
             let generation = deckHeightGeneration
             deckHeightInFlight = true
-            withAnimation(AppMotion.reviewNavigationSpring, completionCriteria: .logicallyComplete) {
+            withAnimation(AppMotionResolver.animation(.navigation, reduceMotion: reduceMotion), completionCriteria: .logicallyComplete) {
                 deckShellHeight = height
             } completion: {
                 if generation == deckHeightGeneration { deckHeightInFlight = false }
@@ -319,6 +322,10 @@ struct TodayReviewPresenter: View {
     var notebookBadges: [String: ReviewCardNotebookBadge] = [:]
     /// #2041：精簡卡 chrome 的「暫時看詳細／恢復精簡」。預設 no-op（fixture / catalog）。
     var onToggleTemporaryDetail: () -> Void = {}
+    /// #2043／#3130：「+N」點擊 → session 切換該群組展開。預設 no-op（fixture / catalog）。
+    var onToggleLinkGroup: (String) -> Void = { _ in }
+    /// #3135：評分按鈕的下次間隔文字（取代 session 計數）。nil ＝ 目前沒有可評分的卡。
+    var gradeHints: ReviewGradeIntervalHints? = nil
 
     /// 給 extension 判斷能否互動
     var isCardInteractive: Bool {
@@ -510,7 +517,7 @@ struct TodayReviewPresenter: View {
             try? await Task.sleep(nanoseconds: UInt64(Self.revealSettleSeconds * 1_000_000_000))
             guard generation == backMountGeneration else { return }
             // 展開中非 active cap 會由正面高度改到背面高度：以 reveal spring 寫入，預覽下緣連續過渡、不瞬跳。
-            withAnimation(AppMotion.reviewRevealSpring) {
+            withAnimation(AppMotionResolver.animation(.reveal, reduceMotion: reduceMotion)) {
                 deckRevealLatch = TodayReviewDeckHeight.RevealLatch(cardKey: cardKey, measured: probe.layoutHeight)
             }
         }
@@ -574,7 +581,7 @@ struct TodayReviewPresenter: View {
         }
         .onAppear {
             guard introProgress < 1 else { return }
-            withAnimation(AppMotion.reviewRevealSpring) { introProgress = 1 }
+            withAnimation(AppMotionResolver.animation(.reveal, reduceMotion: reduceMotion)) { introProgress = 1 }
         }
         .onChange(of: deckHeightKey) { _, _ in retargetDeckHeight() }
         // 卡片區 ZStack 的 layout 高度：使用者看到的「卡片區高度」本身。
@@ -606,7 +613,7 @@ struct TodayReviewPresenter: View {
             .scaleEffect(celebrationTriggered ? 1 : 0.8)
             .opacity(celebrationTriggered ? 1 : 0)
             .onAppear {
-                withAnimation(AppMotion.celebrationBounce) {
+                withAnimation(AppMotionResolver.animation(.celebration, reduceMotion: reduceMotion)) {
                     celebrationTriggered = true
                 }
             }

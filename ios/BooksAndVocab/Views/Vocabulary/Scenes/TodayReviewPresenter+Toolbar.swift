@@ -29,8 +29,8 @@ struct ReviewToolbarModel: Equatable {
     var autoplaySpeedName: String
     var autoplayProgress: Double
     var progressText: String
-    var forgotCount: Int
-    var rememberedCount: Int
+    /// #3135：「忘記／記得」副標（下次複習間隔）；nil ＝ 目前沒有可評分的卡。
+    var gradeHints: ReviewGradeIntervalHints?
     var canGoPrevious: Bool
     var canGoNext: Bool
     var isCardInteractive: Bool
@@ -187,6 +187,7 @@ struct ReviewToolbarControls: View, Equatable {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let model: ReviewToolbarModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onForgotTap: () -> Void
     let onRememberedTap: () -> Void
     let onPrevious: () -> Void
@@ -216,7 +217,7 @@ struct ReviewToolbarControls: View, Equatable {
                 }
             }
         }
-        .animation(AppMotion.reviewNavigationSpring, value: model.showsAnswer)
+        .animation(AppMotionResolver.animation(.navigation, reduceMotion: reduceMotion), value: model.showsAnswer)
         .animateSpring(model.isAutoPlaying)
         .enableInjection()
     }
@@ -335,14 +336,18 @@ struct ReviewToolbarControls: View, Equatable {
                 HStack(spacing: AppSpacing.s1) {
                     Image(systemName: "xmark")
                     Text(L10n.string("忘記"))
-                    if model.forgotCount > 0 {
-                        Text("·\(model.forgotCount)").font(appSkin.typography.monoLabel)
+                    if let hint = model.gradeHints?.forgotText {
+                        Text("· \(hint)")
+                            .font(appSkin.typography.monoLabel)
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
                     }
                 }
                 .frame(minWidth: TodayReviewMetrics.actionMinWidth)
             }
             .buttonStyle(.vocabAction(.destructive, pressFeedback: false))
             .accessibilityIdentifier("todayReview.feedback.forgot")
+            .accessibilityValue(model.gradeHints.map { L10n.format("todayReview.grade.nextInterval", $0.forgotText) } ?? "")
             .overlay(alignment: .center) {
                 if forgotButtonGlow > 0 {
                     AppRoundedRect(roundness: appSkin.roundness.control)
@@ -359,14 +364,18 @@ struct ReviewToolbarControls: View, Equatable {
                 HStack(spacing: AppSpacing.s1) {
                     Image(systemName: "checkmark")
                     Text(L10n.string("記得"))
-                    if model.rememberedCount > 0 {
-                        Text("·\(model.rememberedCount)").font(appSkin.typography.monoLabel)
+                    if let hint = model.gradeHints?.rememberedText {
+                        Text("· \(hint)")
+                            .font(appSkin.typography.monoLabel)
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
                     }
                 }
                 .frame(minWidth: TodayReviewMetrics.actionMinWidth)
             }
             .buttonStyle(.vocabAction(.success, pressFeedback: false))
             .accessibilityIdentifier("todayReview.feedback.remembered")
+            .accessibilityValue(model.gradeHints.map { L10n.format("todayReview.grade.nextInterval", $0.rememberedText) } ?? "")
             .overlay(alignment: .center) {
                 if rememberedButtonGlow > 0 {
                     AppRoundedRect(roundness: appSkin.roundness.control)
@@ -431,8 +440,7 @@ extension TodayReviewPresenter {
                     autoplaySpeedName: state.autoplaySpeed.displayName,
                     autoplayProgress: state.autoplayProgress,
                     progressText: state.progressText,
-                    forgotCount: state.forgotCount,
-                    rememberedCount: state.rememberedCount,
+                    gradeHints: gradeHints,
                     canGoPrevious: state.canGoPrevious,
                     canGoNext: state.canGoNext,
                     isCardInteractive: isCardInteractive,

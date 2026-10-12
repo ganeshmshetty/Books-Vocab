@@ -55,6 +55,8 @@ final class TodayReviewState {
     /// #2041: session-memory only. Cleared on every card change by
     /// `syncCurrentEntryDerivedState`; never written to a persisted store.
     private var temporaryDetail = ReviewCardTemporaryDetail()
+    /// #3130：「+N」連結展開。與 temporary detail 同一生命週期，換卡即由 `syncCurrentEntryDerivedState` 清空。
+    private var linkExpansion = ReviewCardLinkExpansion()
     var linkedCardStack: [VocabularyEntry] = []
     var tappedLink: KGCardLinkSummary?
     /// #3127：最近一次鍵盤評分請求（見 `requestKeyboardGrade`）。session 記憶體，不持久化。
@@ -210,6 +212,7 @@ final class TodayReviewState {
             autoplaySpeed: autoplaySpeed,
             autoplaySoundEnabled: autoplaySoundEnabled,
             temporaryDetailCardKey: temporaryDetail.detailedCardKey,
+            linkExpansion: linkExpansion,
             keyboardGrade: keyboardGrade
         )
     }
@@ -365,11 +368,28 @@ final class TodayReviewState {
     /// interval, defeating "let me read this card in full".
     func toggleTemporaryDetail() {
         guard let key = currentCardState?.card.reviewCardKey else { return }
-        withAnimation(AppMotion.reviewRevealSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
             temporaryDetail.toggle(cardKey: key)
         }
         if temporaryDetail.isDetailed(cardKey: key) {
             pauseAutoPlayForModalInterruption()
+        }
+    }
+
+    /// #3135：目前卡兩顆評分按鈕的下次間隔提示。baseline 取 session 快照（與 flush 寫入同源）。
+    func gradeIntervalHints(settings: NotebookSettingsSnapshot) -> ReviewGradeIntervalHints? {
+        guard let entry = currentEntry, session.currentIndex < persistence.queueBaselines.count else { return nil }
+        return ReviewGradeIntervalHints(
+            baseline: persistence.queueBaselines[session.currentIndex],
+            settings: settings.reviewSettings(for: entry.notebookId)
+        )
+    }
+
+    /// #3130：「+N」展開由 session 持有；動畫經 `AppMotionResolver`（Reduce Motion 下為 cross-fade）。
+    func toggleLinkGroup(_ groupID: String) {
+        guard let key = currentCardState?.card.reviewCardKey else { return }
+        withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
+            linkExpansion.toggle(groupID, cardKey: key)
         }
     }
 
@@ -383,7 +403,7 @@ final class TodayReviewState {
 
     func shuffleQueue() {
         guard session.canShuffle(pinned: answeredSlots) else { return }
-        withAnimation(AppMotion.reviewNavigationSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
             _ = session.shuffleRemaining(pinned: answeredSlots)
         }
         syncCurrentEntryDerivedState()
@@ -395,7 +415,7 @@ final class TodayReviewState {
 
     func goPrevious() {
         guard session.canGoPrevious else { return }
-        withAnimation(AppMotion.reviewNavigationSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
             _ = session.goPrevious()
         }
         syncCurrentEntryDerivedState()
@@ -408,7 +428,7 @@ final class TodayReviewState {
 
     func goNext() {
         guard session.canGoNext else { return }
-        withAnimation(AppMotion.reviewNavigationSpring) {
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
             _ = session.goNext()
         }
         syncCurrentEntryDerivedState()
@@ -497,14 +517,14 @@ final class TodayReviewState {
         switch intent {
         case .reveal:
             guard revealStage == .front, currentEntry != nil else { return false }
-            withAnimation(AppMotion.reviewRevealSpring) {
+            withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
                 advanceReveal()
             }
             return true
 
         case .collapse:
             guard revealStage == .back, currentEntry != nil else { return false }
-            withAnimation(AppMotion.reviewRevealSpring) {
+            withAnimation(AppMotionResolver.systemAnimation(.reveal)) {
                 retractReveal()
             }
             return true
@@ -569,7 +589,7 @@ final class TodayReviewState {
             reveal: { [weak self] in self?.advanceReveal() },
             advance: { [weak self] in
                 guard let self, !self.session.isComplete, self.session.canGoNext else { return false }
-                withAnimation(AppMotion.reviewNavigationSpring) {
+                withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
                     _ = self.session.advanceAfterSubmission()
                 }
                 self.syncCurrentEntryDerivedState()
@@ -831,5 +851,7 @@ final class TodayReviewState {
         // it later starts compact again. Idle resets write nothing.
         var detail = temporaryDetail
         if detail.reset() { temporaryDetail = detail }
+        var expansion = linkExpansion
+        if expansion.reset() { linkExpansion = expansion }
     }
 }

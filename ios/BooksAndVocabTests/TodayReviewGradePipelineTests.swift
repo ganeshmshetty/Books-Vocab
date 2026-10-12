@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import SwiftUI
 import Testing
 @testable import BooksAndVocab
 
@@ -53,6 +54,32 @@ struct TodayReviewGradePipelineTests {
 
         #expect(state.requestKeyboardGrade(remember: true) == false)
         #expect(state.keyboardGrade == nil)
+    }
+
+    /// #3301：`onKeyPress` 預設同時送 `.down` 與 `.repeat`。只有初次 `.down` 可登記評分。
+    /// Positive control：未加 phase 過濾時 `.repeat` 會通過（回傳 true），此斷言即失敗。
+    @Test func gradeKeyRepeatPhaseIsNotAGradeRequest() {
+        #expect(TodayReviewHotkeyPolicy.acceptsGradeKeyPhase(.down))
+        #expect(TodayReviewHotkeyPolicy.acceptsGradeKeyPhase(.repeat) == false)
+    }
+
+    /// 按住一次方向鍵 = 1 個 `.down` + 多個 `.repeat`：只有 `.down` 會送出 `requestKeyboardGrade`，
+    /// keyboardGrade 的 sequence 停在 1，不會把 FIFO 灌到上限。
+    @Test func heldGradeKeyProducesExactlyOneGradeRequest() {
+        TodayReviewSessionSnapshotStore.clear(for: Self.userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: Self.userID) }
+        let entries = makeEntries(2)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: Self.userID)
+        let phases: [KeyPress.Phases] = [.down] + Array(repeating: KeyPress.Phases.repeat, count: 20)
+
+        var requests = 0
+        for phase in phases where TodayReviewHotkeyPolicy.acceptsGradeKeyPhase(phase) {
+            if state.requestKeyboardGrade(remember: true) { requests += 1 }
+        }
+
+        #expect(requests == 1)
+        #expect(state.keyboardGrade == KeyboardGradeRequest(sequence: 1, remember: true))
+        #expect(state.submittedAnswers.isEmpty)
     }
 
     @Test func gradeBufferedDuringFlingIsTakenOnceAtSettle() {

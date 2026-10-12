@@ -100,8 +100,10 @@ extension TodayReviewPresenter {
                     explainCollocation: onExplainCollocation,
                     viewCollocationExplanation: onViewCollocationExplanation,
                     deleteCollocationExplanation: onDeleteCollocationExplanation,
-                    toggleTemporaryDetail: onToggleTemporaryDetail
+                    toggleTemporaryDetail: onToggleTemporaryDetail,
+                    toggleLinkGroup: onToggleLinkGroup
                 ),
+                linkExpansion: state.linkExpansion,
                 // FIX(review-flip-gap)：逐 slot 記實測 front 高度（active slot
                 // 恆 uncap → 量到自然高度）。`activeCardHeight` 讀 active slot 的值，
                 // 供非 active slot cap（見下方的 .frame）。量測只有卡片自己做得到，
@@ -150,7 +152,7 @@ extension TodayReviewPresenter {
                 logSlotGeometry(slot: slot, role: role, kind: "slot", word: content.card.word, height: h)
             }
             #endif
-            .animation((dismissPhase == .idle && !suppressFoldAnimation) ? AppMotion.reviewRevealSpring : nil,
+            .animation((dismissPhase == .idle && !suppressFoldAnimation) ? AppMotionResolver.animation(.reveal, reduceMotion: reduceMotion) : nil,
                        value: slotShowsAnswer)
             // #2045 方向標記：常駐 overlay（不改 slot 結構與 layout 高度），只有 active
             // 吃 swipeOffset，其餘 slot 恆 0。放在姿態 modifier 之前 → 跟著卡片位移與旋轉。
@@ -357,7 +359,7 @@ extension TodayReviewPresenter {
                 }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 recordSwipeMarkerPeak(to: value.translation.width)
-                withAnimation(AppMotion.swipeTrackingSpring) {
+                withAnimation(AppMotionResolver.animation(.tracking, reduceMotion: reduceMotion)) {
                     swipeOffset = value.translation.width
                 }
             }
@@ -370,7 +372,7 @@ extension TodayReviewPresenter {
                 } else if value.translation.width > threshold {
                     flingCard(direction: 1, velocity: abs(value.velocity.width), callback: onRemembered)
                 } else {
-                    withAnimation(AppMotion.swipeSnapBackSpring) {
+                    withAnimation(AppMotionResolver.animation(.snapBack, reduceMotion: reduceMotion)) {
                         swipeOffset = 0
                     }
                 }
@@ -479,7 +481,7 @@ extension TodayReviewPresenter {
                 // 期間 swipeIntensity 讀凍結值（TodayReviewFling.toolbarIntensity）。
                 // 守門：下一次 fling 若已開始，不覆寫它的凍結值。
                 if dismissPhase == .idle {
-                    withAnimation(AppMotion.swipeSnapBackSpring) {
+                    withAnimation(AppMotionResolver.animation(.snapBack, reduceMotion: reduceMotion)) {
                         frozenSwipeIntensity = 0
                     }
                 }
@@ -487,7 +489,7 @@ extension TodayReviewPresenter {
             }
         }
 
-        withAnimation(AppMotion.swipeFling(duration: plan.duration), completionCriteria: .logicallyComplete) {
+        withAnimation(AppMotionResolver.animation(.fling(duration: plan.duration), reduceMotion: reduceMotion), completionCriteria: .logicallyComplete) {
             swipeOffset = plan.targetOffset
         } completion: {
             completeFling("animation")

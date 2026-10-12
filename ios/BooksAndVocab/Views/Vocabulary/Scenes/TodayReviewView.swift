@@ -25,6 +25,12 @@ enum TodayReviewHotkeyPolicy {
             || hasTappedLink
             || hasExplainSheet
     }
+
+    /// #3301：`onKeyPress` 預設同時送 `.down` 與 `.repeat`，按住方向鍵會連續 `.repeat`。
+    /// 鍵盤評分只認初次 `.down`，一次按壓只登記一筆評分（FIFO 不會因按住而累積至上限 8 筆）。
+    static func acceptsGradeKeyPhase(_ phase: KeyPress.Phases) -> Bool {
+        phase == .down
+    }
 }
 
 enum ReviewIntent {
@@ -225,7 +231,9 @@ struct TodayReviewView: View {
             },
             collocationExplanations: state.currentCollocationExplanations,
             notebookBadges: notebookBadges,
-            onToggleTemporaryDetail: { state.toggleTemporaryDetail() }
+            onToggleTemporaryDetail: { state.toggleTemporaryDetail() },
+            onToggleLinkGroup: { state.toggleLinkGroup($0) },
+            gradeHints: state.gradeIntervalHints(settings: notebookSettingsSnapshot)
         )
         .toastOverlay()
         .task {
@@ -290,6 +298,7 @@ struct TodayReviewView: View {
                         context: modelContext
                     )
                     state.hideLink(link, peer: peer)
+                    let toast = toastCoordinator
                     Task {
                         do {
                             try await kgService.hideLink(linkId: link.id, notebookId: notebookId)
@@ -299,6 +308,8 @@ struct TodayReviewView: View {
                                 sourceEntry: entry,
                                 targetEntry: peer
                             )
+                            // #3130：樂觀隱藏失敗時連結已還原，必須告知使用者，不能無聲復活。
+                            toast.error(L10n.string("todayReview.linkHideFailed"))
                         }
                     }
                 }
@@ -564,9 +575,9 @@ struct TodayReviewView: View {
             return perform(state.revealStage == .front ? .reveal : .collapse)
         // 鍵盤評分走甩出路徑（#3127）：與按鈕、滑動同一條 fling，不直接 submit。
         case .leftArrow:
-            return state.isAutoPlaying ? perform(.previous) : state.requestKeyboardGrade(remember: false)
+            return state.isAutoPlaying ? perform(.previous) : gradeFromKeyPress(press, remember: false)
         case .rightArrow:
-            return state.isAutoPlaying ? perform(.next) : state.requestKeyboardGrade(remember: true)
+            return state.isAutoPlaying ? perform(.next) : gradeFromKeyPress(press, remember: true)
         case .upArrow:
             return perform(.previous)
         case .downArrow:
@@ -586,6 +597,11 @@ struct TodayReviewView: View {
             default: return false
             }
         }
+    }
+    /// #3301：`.repeat` 也回傳 handled（方向鍵不交給 focus 系統移動），但不登記評分請求。
+    private func gradeFromKeyPress(_ press: KeyPress, remember: Bool) -> Bool {
+        guard TodayReviewHotkeyPolicy.acceptsGradeKeyPhase(press.phase) else { return true }
+        return state.requestKeyboardGrade(remember: remember)
     }
     #endif
 

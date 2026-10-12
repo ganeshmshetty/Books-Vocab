@@ -153,6 +153,35 @@ struct ReviewCardLinkStripTests {
         #expect(expansion.measurementVariant(cardKey: "a") == nil)
     }
 
+    /// #3130：展開狀態與 temporary detail 同一生命週期，每次換卡即清空。
+    /// A → B → A：離開 A 時清；回到 A 必須是收合，不得殘留展開。
+    @Test func expansionClearsOnCardChangeSoReturningToACardStartsCollapsed() {
+        var expansion = ReviewCardLinkExpansion()
+        expansion.toggle("shares_usage", cardKey: "a")
+        #expect(expansion.isExpanded("shares_usage", cardKey: "a"))
+
+        let clearedLeavingA = expansion.reset()
+        #expect(clearedLeavingA, "leaving the card clears the expansion")
+        let clearedLandingOnB = expansion.reset()
+        #expect(clearedLandingOnB == false, "idle reset writes nothing")
+        #expect(!expansion.isExpanded("shares_usage", cardKey: "a"), "returning to A starts collapsed")
+        #expect(expansion.measurementVariant(cardKey: "a") == nil)
+    }
+
+    /// #3130：隱藏連結失敗要有可見提示；存檔失敗文案必須說明何時重試（只在下次開啟複習時）。
+    @Test func hideFailureAndSaveRetryCopyStateTheirRecovery() {
+        let languages: [AppLanguage] = [.english, .traditionalChinese, .simplifiedChinese, .japanese, .korean]
+        for language in languages {
+            let hide = L10n.string("todayReview.linkHideFailed", language: language)
+            #expect(hide != "todayReview.linkHideFailed", "missing in \(language)")
+            #expect(!hide.isEmpty)
+        }
+        #expect(
+            L10n.string("todayReview.saveFailure", language: .traditionalChinese)
+                == "複習結果尚未存檔，下次開啟複習時會自動重試"
+        )
+    }
+
     @Test func collapseCopyIsLocalizedEverywhere() {
         let languages: [AppLanguage] = [.english, .traditionalChinese, .simplifiedChinese, .japanese, .korean]
         for language in languages {

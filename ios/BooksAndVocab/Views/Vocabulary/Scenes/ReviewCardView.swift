@@ -47,12 +47,37 @@ struct ReviewCardActions {
     var deleteCollocationExplanation: ((String) -> Void)? = nil
     /// #2041：精簡卡的「暫時看詳細／恢復精簡」。nil（設定頁預覽 / catalog）＝不畫按鈕。
     var toggleTemporaryDetail: (() -> Void)? = nil
+    /// #2043／#3130：「+N」點擊，參數為連結群組 id；展開狀態由 session 持有。nil ＝ 不可展開。
+    var toggleLinkGroup: ((String) -> Void)? = nil
 
     static let none = ReviewCardActions()
 }
 
 /// Geometry observation must include card identity: a resident slot can replace
 /// its content without changing the measured front height.
+/// 連結列「+N」／「收合」的膠囊版面（#3295）。獨立成 view，讓命中帶與單元測試渲染的是同一顆膠囊。
+struct ReviewCardLinkOverflowLabel: View {
+    @ObserveInjection private var inject
+    @Environment(\.appSkin) private var appSkin
+    let title: String
+    let isExpanded: Bool
+
+    var body: some View {
+        HStack(spacing: AppSpacing.s1) {
+            Text(title)
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                .font(appSkin.typography.iconTiny)
+                .accessibilityHidden(true)
+        }
+        .font(appSkin.typography.caption)
+        .foregroundStyle(appSkin.palette.secondaryText)
+        .padding(.horizontal, AppSpacing.s2)
+        .padding(.vertical, AppSpacing.s1)
+        .background(AppRoundedRect(roundness: appSkin.roundness.pill).fill(appSkin.palette.cardBorder))
+        .enableInjection()
+    }
+}
+
 struct ReviewCardFrontMeasurement: Equatable {
     let height: CGFloat
     let cardKey: String
@@ -153,7 +178,6 @@ struct ReviewCardView: View {
     @Environment(\.appSkin) private var appSkin
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.speechService) private var speechService
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let content: ReviewCardContent
     let profile: ReviewCardLayoutProfile
@@ -170,6 +194,9 @@ struct ReviewCardView: View {
     /// 多單字本入口才有值（`ReviewCardNotebookBadgeResolver`）；nil ＝ 不畫標示。
     var notebookBadge: ReviewCardNotebookBadge? = nil
     var actions: ReviewCardActions = .none
+    /// 哪幾組知識連結被「+N」展開（#2043、#3130）。由 session 持有（`TodayReviewState`），
+    /// 綁一張卡：換卡即清空，舊卡的展開狀態對新卡讀不到。
+    var linkExpansion = ReviewCardLinkExpansion()
     var onFrontHeightChange: ((CGFloat) -> Void)? = nil
 
     /// 自量的寬度（量測 key 的 bucket）與正面高度（背面預算的被減數）。
@@ -177,9 +204,6 @@ struct ReviewCardView: View {
     /// This is only a transient mount gate. The actual measurements live in
     /// `content.measurementCache`, which survives resident-slot recycling.
     @State private var measurementProbeReadyToken: String?
-    /// 哪幾組知識連結被「+N」展開（#2043）。只活在記憶體、綁一張卡：常駐 slot 換卡後
-    /// 舊卡的展開狀態讀不到，也不寫入任何 store。
-    @State private var linkExpansion = ReviewCardLinkExpansion()
 
     private var reviewMeasurementCache: ReviewCardMeasurementCache { content.measurementCache }
 
@@ -1006,40 +1030,29 @@ struct ReviewCardView: View {
     }
 
     /// "+N" (collapsed) / "收合" (expanded), drawn as a chevron capsule so it reads as a
-    /// control. The touch band overlays the capsule without growing the row (#3114), and is
-    /// capped at `TodayReviewMetrics.linkOverflowHitTarget` (capsule + 2×s1) so it stays
-    /// within the row gap instead of the 44pt default (#3226/#3253).
+    /// control. The touch band overlays the capsule without growing the row (#3114). It is
+    /// derived from the capsule's rendered height (`verticalBand` = s1 on each side, #3295),
+    /// so it stays within the row gap at every Dynamic Type size instead of the 44pt default
+    /// (#3226/#3253).
     private func linkOverflowToggle(
         _ group: ReviewCardLinkGroup,
         row: ReviewCardLinkStripLayout.Row,
         isExpanded: Bool
     ) -> some View {
-        let cardKey = currentCardKey
-        let reducesMotion = reduceMotion
         return ReviewCardHitTargetButton(
-            minimumSide: TodayReviewMetrics.linkOverflowHitTarget,
+            verticalBand: TodayReviewMetrics.linkOverflowHitBand,
             action: {
-                let animation: Animation? = reducesMotion ? nil : AppMotion.reviewRevealSpring
-                withAnimation(animation) {
-                    linkExpansion.toggle(group.id, cardKey: cardKey)
-                }
+                actions.toggleLinkGroup?(group.id)
             },
             accessibilityIdentifier: "todayReview.card.link.overflow.\(group.id)",
             // #3227：收合時「+N」是純符號文字，VoiceOver 需要「顯示其餘 N 個連結」；展開時沿用可見的「收合」文案。
             accessibilityLabel: isExpanded ? nil : L10n.format("todayReview.card.link.overflow.a11y", "\(row.overflowCount)"),
             accessibilityValue: isExpanded ? "expanded" : "collapsed"
         ) {
-            HStack(spacing: AppSpacing.s1) {
-                Text(isExpanded ? L10n.string("todayReview.card.link.collapse") : "+\(row.overflowCount)")
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(appSkin.typography.iconTiny)
-                    .accessibilityHidden(true)
-            }
-            .font(appSkin.typography.caption)
-            .foregroundStyle(appSkin.palette.secondaryText)
-            .padding(.horizontal, AppSpacing.s2)
-            .padding(.vertical, AppSpacing.s1)
-            .background(AppRoundedRect(roundness: appSkin.roundness.pill).fill(appSkin.palette.cardBorder))
+            ReviewCardLinkOverflowLabel(
+                title: isExpanded ? L10n.string("todayReview.card.link.collapse") : "+\(row.overflowCount)",
+                isExpanded: isExpanded
+            )
         }
     }
 
