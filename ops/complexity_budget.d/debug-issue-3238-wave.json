@@ -1,0 +1,9 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3238,
+  "raise": {
+    "ops": 58,
+    "workflows": 82
+  },
+  "note": "#3238: separate route job for the iOS router (~45 lines) so ios-quality no longer waits for short-gate; fail-closed ios-verdict outcome check (~25 lines); SwiftPM cache save moved to the ios-tests unit leg; behavioural pins for the verdict truth table and route wiring in ops/tests/test_github_workflows.sh"
+}
