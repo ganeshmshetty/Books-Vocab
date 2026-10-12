@@ -649,6 +649,13 @@ private final class PendingSyncInvalidator: SessionInvalidating {
 }
 
 @MainActor
+private final class GateClosedInvalidator: SessionInvalidating {
+    func logout(modelContainer: ModelContainer?, reason: String) {}
+    func waitForPendingLocalDataCleanup() async {}
+    func waitForLocalDataCleanupGate() async -> Bool { false }
+}
+
+@MainActor
 struct BackgroundSyncPendingTokenTests {
     private static func makeContainer() -> ModelContainer {
         let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
@@ -686,6 +693,19 @@ struct BackgroundSyncPendingTokenTests {
         _ = await service.backgroundSync(container: Self.makeContainer(), progress: nil)
         #expect(invalidator.logoutReasons.isEmpty)
         #expect(service.lastBackgroundSyncError != L10n.string("登入已過期"))
+    }
+
+    /// #2717: a previous account's wipe that still fails after the gate retry must block the pull.
+    /// Otherwise B syncs incrementally on A's boundary and never receives older server data.
+    @Test func backgroundSyncBlockedByPendingLocalWipeDoesNotRun() async {
+        let service = KGService(
+            authSession: PendingSyncAuthSession(),
+            sessionInvalidator: GateClosedInvalidator(),
+            connectivityGate: FixedConnectivityGate(isConnected: true)
+        )
+        let outcome = await service.backgroundSync(container: Self.makeContainer(), progress: nil)
+        #expect(outcome == .didNotRun)
+        #expect(service.lastBackgroundSyncError == L10n.string("本機舊帳號資料尚未清除，已暫停同步"))
     }
 
     @Test func processSyncPhaseTreatsSessionPendingAsSkippedNotUnauthorized() async {
