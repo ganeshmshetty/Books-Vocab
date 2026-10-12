@@ -14,15 +14,18 @@ final class LocalDataCleanerService: LocalDataClearing {
 
     private let wipeRows: RowWipe
     private let defaults: UserDefaults
+    private let derivedRoots: DerivedLocalStateRoots
 
     init(
         wipeRows: @escaping RowWipe = { container, reason in
             try await BackgroundSyncActor(modelContainer: container).clearUserData(reason: reason)
         },
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        derivedRoots: DerivedLocalStateRoots = .production
     ) {
         self.wipeRows = wipeRows
         self.defaults = defaults
+        self.derivedRoots = derivedRoots
     }
 
     static func persistedPendingWipeOwner(defaults: UserDefaults = .standard) -> String? {
@@ -61,6 +64,25 @@ final class LocalDataCleanerService: LocalDataClearing {
                 cloud: CloudPreferencesSync.shared
             )
         }
+        await Self.purgeDerivedLocalState(roots: derivedRoots)
+        return wiped
+    }
+
+    /// On-disk locations the derived-state purge touches. Production uses `.production`; tests inject
+    /// temp dirs so no run can reach the real Documents tree.
+    struct DerivedLocalStateRoots: Sendable {
+        var notebookCovers: URL?
+        var podcastCovers: URL?
+        var podcastDownloads: URL?
+
+        static let production = DerivedLocalStateRoots(notebookCovers: nil, podcastCovers: nil, podcastDownloads: nil)
+    }
+
+    /// The state every reset path drops besides SwiftData rows, sync cursors and account preferences:
+    /// the review snapshot, Add Link jobs, quota, podcast/notebook files, the iCloud directory cache.
+    /// Logout, account switch (both via `clearLocalDataReportingFailure`) and Settings reset
+    /// (`KGService.clearLocalData`) all call it, so the step list cannot drift between them (#2721).
+    static func purgeDerivedLocalState(roots: DerivedLocalStateRoots = .production) async {
         // Today-review session snapshots are keyed per-user in a single
         // UserDefaults blob. Logout and account-switch both route through here,
         // so clear every user's snapshot to prevent a stale session from being
@@ -76,16 +98,16 @@ final class LocalDataCleanerService: LocalDataClearing {
         // response header overwrites it. Reset on the main actor (where the
         // @Observable mutation is observed, matching KGService+Health's update hop).
         await MainActor.run { QuotaStore.shared.reset() }
+        #if os(iOS)
         // Downloaded podcast .mp3s live on disk under Documents/podcast-downloads/,
         // not in SwiftData — clearUserData drops the rows but leaves the audio.
         // Purge the whole tree so a reused remoteId can't surface account A's
         // audio under account B after a switch (#726 follow-up).
-        #if os(iOS)
-        PodcastDownloadManager.purgeDownloads()
+        PodcastDownloadManager.purgeDownloads(root: roots.podcastDownloads ?? PodcastDownloadManager.downloadsRoot())
         // Downloaded podcast series covers live under Documents/podcast-covers/
         // (written by PodcastSyncService.cacheCoverIfNeeded), not in SwiftData.
         // Purge so a reused remoteId can't surface account A's cover under B.
-        Self.purgePodcastCovers()
+        purgePodcastCovers(root: roots.podcastCovers ?? PodcastSyncService.coversRoot())
         // User-uploaded notebook covers live on disk under Documents/NotebookCovers/
         // (written by NotebookEditSheet), not in SwiftData. clearUserData drops the
         // Notebook rows but leaves the .jpg files as orphans, so they survive an
@@ -93,13 +115,12 @@ final class LocalDataCleanerService: LocalDataClearing {
         // is necessarily orphaned once its owning row is gone). Books/Originals are
         // deliberately NOT touched here — book files have no server backing and
         // deleting them would permanently lose the user's library (#758 follow-up).
-        Self.purgeNotebookCovers()
+        purgeNotebookCovers(root: roots.notebookCovers ?? coversRoot())
         #endif
         // iCloud 目錄快取以 Apple ID 為準；帳號切換後須重取，否則路徑指向舊帳號容器。
         // 通知讓 ICloudDownloadManager 重設 fileStates + 重啟 NSMetadataQuery。
         Book.clearICloudDirectoryCache()
         NotificationCenter.default.post(name: .localUserDataDidClear, object: nil)
-        return wiped
     }
 
     /// Finishes a pending wipe. The rows still belong to the pending owner only while nobody else is

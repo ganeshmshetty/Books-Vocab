@@ -431,6 +431,9 @@ extension KGService {
         defaults.removeObject(forKey: SyncKeys.payloadVersion)
         ActiveNotebookStore.shared.clear()
         defaults.removeObject(forKey: NotebookFilter.storageKey)
+        // Same derived-state purge as logout / account switch: a Settings reset must not leave the
+        // review snapshot, Add Link jobs, podcast/notebook files or iCloud cache behind (#2721).
+        await LocalDataCleanerService.purgeDerivedLocalState()
         lastSyncDate = nil
         Self.persistLastSyncDate(nil)
         serverCardCount = 0
