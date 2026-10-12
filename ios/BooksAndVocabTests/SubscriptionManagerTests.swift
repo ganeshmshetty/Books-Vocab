@@ -559,6 +559,49 @@ struct SubscriptionManagerTests {
         await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: false)
         #expect(!mgr.hasProAccess)
     }
+
+    // MARK: - App Store sync response authority (#2800)
+    //
+    // 伺服器可能先處理較晚發出的 refresh GET（尚未含本次交易），該 GET 不得擋住同步回應。
+    // `syncTransaction` 需要 StoreKit `Transaction`，無法在單元測試建構，因此決策拆為 `applySyncResponse` 直接測。
+
+    @MainActor
+    @Test func sync_response_applies_after_newer_refresh_already_applied() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        defer { mgr.entitlements = savedEntitlements }
+
+        // 同步請求先發出；較晚發出的 refresh GET 先回 free 並套用；同步回應（active）後到，必須套用。
+        let syncGeneration = mgr.claimEntitlementsGeneration()
+        let refreshGeneration = mgr.claimEntitlementsGeneration()
+        mgr.applyEntitlements(KGEntitlements(pro: status(status: "inactive")), generation: refreshGeneration)
+        #expect(!mgr.hasProAccess)
+
+        let applied = mgr.applySyncResponse(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            requestedAt: syncGeneration
+        )
+        #expect(applied)
+        #expect(mgr.hasProAccess)
+    }
+
+    @MainActor
+    @Test func sync_response_discarded_when_local_write_followed_request() {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        defer { mgr.entitlements = savedEntitlements }
+
+        // 同步請求發出後發生本地決策寫入（登出／樂觀更新）：同步回應必須失效，不得寫回舊權益。
+        let syncGeneration = mgr.claimEntitlementsGeneration()
+        mgr.commitEntitlements(KGEntitlements(pro: status(status: "inactive")))
+
+        let applied = mgr.applySyncResponse(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            requestedAt: syncGeneration
+        )
+        #expect(!applied)
+        #expect(!mgr.hasProAccess)
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。

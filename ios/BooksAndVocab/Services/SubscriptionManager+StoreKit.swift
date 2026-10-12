@@ -21,10 +21,10 @@ extension SubscriptionManager {
             price_display: product?.displayPrice,
             signed_transaction_info: environment == "xcode" ? nil : signedTransactionInfo
         )
-        // 世代於請求發出時取得：較晚發出的寫入已套用時，此回應不得覆寫（#2800）
+        // 於請求發出時標記世代：發出後的本地寫入（登出、樂觀更新）使此回應失效；refresh GET 不影響（#2800）
         let generation = claimEntitlementsGeneration()
         let response = try await kgService.syncAppStoreSubscription(snapshot)
-        applyEntitlements(response, generation: generation)
+        applySyncResponse(response, requestedAt: generation)
     }
 
     func syncCurrentEntitlements(using kgService: any KGServing) async {
