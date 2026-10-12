@@ -141,6 +141,15 @@ got="$(in_proc "kg_ios_verdict_commit_kv '$repo'" 2>/dev/null || true)"
 [[ "$got" =~ ^commit=[0-9a-f]{40}\ tree=dirty$ ]] \
   && ok "dirty repo (untracked file): tree=dirty after commit=" || fail_t "dirty commit kv wrong: '$got'"
 rm -f "$repo/untracked-dirty-marker"
+# tracked-file edit (#3314): untracked-only coverage would miss a regression limited to modified tracked files
+echo base > "$repo/tracked.txt"
+git -C "$repo" add tracked.txt
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -q -m tracked
+echo change >> "$repo/tracked.txt"
+got="$(in_proc "kg_ios_verdict_commit_kv '$repo'" 2>/dev/null || true)"
+[[ "$got" =~ ^commit=[0-9a-f]{40}\ tree=dirty$ ]] \
+  && ok "dirty repo (modified tracked file): tree=dirty after commit=" || fail_t "tracked-dirty commit kv wrong: '$got'"
+git -C "$repo" checkout -q -- tracked.txt
 got="$(GIT_CEILING_DIRECTORIES="$TMP" in_proc "kg_ios_verdict_commit_kv '$TMP'" 2>/dev/null || true)"
 [[ "$got" == "commit=unknown tree=unknown" ]] && ok "non-repo root degrades to commit=unknown tree=unknown" || fail_t "non-repo commit kv: '$got'"
 # wiring: every RESULT= verdict line in the iOS entry points (echo or printf) carries the helper.
