@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 2906,
+  "raise": {
+    "ops": 12
+  },
+  "note": "r5 fix of #3212 review: static ordering guard in ops/tests/test_ios_run_verdict.sh adds 11 lines; the ops area was already at the ceiling after rebase"
+}
