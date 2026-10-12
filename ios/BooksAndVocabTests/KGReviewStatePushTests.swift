@@ -108,6 +108,42 @@ struct KGReviewStatePushTests {
         #expect(transport.requests.count == 2)
         #expect(try await BackgroundSyncActor(modelContainer: container).buildReviewStatePushPayload().count == 1001)
     }
+
+    // MARK: - Card preference PATCH (#2042 stage 2)
+
+    /// Minimal `KGCard` body the preferences PATCH decodes into.
+    private static let cardResponseJSON = #"{"id":"c1","content":"deft","meaning":"靈巧的","pos":null,"difficulty":null,"difficultyTier":null,"note":null,"collocations":[],"examples":["an example"],"mode":"production","isDeleted":false,"isArchived":false,"notebookId":"default"}"#
+
+    private func patchBody(_ transport: ReviewPushRecordingTransport) throws -> [String: Any] {
+        let data = try #require(transport.requests.first?.httpBody)
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// Converting a card's direction is a mode-only PATCH. It must send just
+    /// `{"mode": ...}` and must not trip the at-least-one-preference precondition.
+    @Test func modeOnlyPreferencesPatchSendsOnlyTheMode() async throws {
+        let transport = ReviewPushRecordingTransport(responseBody: Self.cardResponseJSON)
+        _ = try await makeService(transport).updateCardPreferences(
+            word: "deft", readerHidden: nil, reviewExcluded: nil, mode: .production, notebookId: "default"
+        )
+
+        #expect(transport.requests.count == 1)
+        #expect(transport.requests.first?.httpMethod == "PATCH")
+        #expect(transport.requests.first?.url?.path == "/api/vocab/deft/preferences")
+        let body = try patchBody(transport)
+        #expect(body.keys.sorted() == ["mode"])
+        #expect(body["mode"] as? String == "production")
+    }
+
+    /// Guards the existing reader-hidden PATCH: an omitted field stays off the wire.
+    @Test func readerHiddenPatchStillSendsOnlyThatField() async throws {
+        let transport = ReviewPushRecordingTransport(responseBody: Self.cardResponseJSON)
+        _ = try await makeService(transport).updateCardPreferences(
+            word: "deft", readerHidden: true, reviewExcluded: nil, notebookId: "default"
+        )
+
+        #expect(try patchBody(transport).keys.sorted() == ["reader_hidden"])
+    }
 }
 
 /// Recording transport for the review-state PATCH. `onRequest` runs inside the
