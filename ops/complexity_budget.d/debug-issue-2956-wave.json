@@ -1,0 +1,9 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 2956,
+  "raise": {
+    "ops": 35,
+    "workflows": 30
+  },
+  "note": "Issue #2956: merge-queue ops-suite job plus fail-closed required assertions and pinned tests (workflow and test-pin growth required by CM decision 2026-10-12)"
+}

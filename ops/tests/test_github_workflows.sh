@@ -297,6 +297,42 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
   if grep -Eq 'ops-suite|ios-quality|llm-eval|ui-quality-gate|confidence' <<<"$merge_group_required_block"; then
     fail "merge-group required gate imports slow confidence jobs"
   fi
+  # ops-suite joins the merge queue's blocking set (#2956, CM decision 2026-10-12): its
+  # Linux shards run as their own job behind the router's ops decision, and `required`
+  # fails closed unless they pass or were not requested. macOS native ops stay off the
+  # queue (macos_ops=false), so only the Linux pool is spent per merge group.
+  ops_wiring_err="$(ruby -ryaml -e '
+    jobs = YAML.load_file(ARGV[0])["jobs"]
+    ops = jobs["ops-suite"] || {}
+    errs = []
+    errs << "short-gate does not expose the router ops decision" unless jobs.dig("short-gate", "outputs", "ops").to_s.include?("steps.scope.outputs.ops")
+    errs << "no ops-suite job" if ops.empty?
+    errs << "ops-suite does not call ./.github/workflows/ops-suite.yml" unless ops["uses"] == "./.github/workflows/ops-suite.yml"
+    errs << "ops-suite is not gated on the router ops decision" unless ops["if"].to_s.match?(/needs\.short-gate\.outputs\.ops == [\x27"]true[\x27"]/)
+    errs << "ops-suite does not pin macos_ops to false" unless ops.dig("with", "macos_ops") == "false"
+    errs << "ops-suite does not wait for short-gate" unless Array(ops["needs"]).include?("short-gate")
+    errs << "required does not need ops-suite" unless Array(jobs.dig("required", "needs")).include?("ops-suite")
+    puts errs
+  ' "$MERGE_GROUP_REQUIRED")" || ops_wiring_err="ruby could not parse the merge-group workflow"
+  [[ -z "$ops_wiring_err" ]] || fail "merge-group ops-suite wiring: $ops_wiring_err"
+  # Behavioural pin: run the required aggregator's own step against router/shard outcomes.
+  # A red routed ops shard must fail `required`; skipped is a pass only when not requested.
+  ops_gate_run="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["steps"].last["run"]' "$MERGE_GROUP_REQUIRED")" \
+    || fail "cannot extract the merge-group required aggregator step"
+  mkdir -p "$ROOT/.cache"
+  ops_gate_tmp="$(mktemp -d "$ROOT/.cache/test-ops-gate-XXXXXX")"
+  printf '%s\n' "$ops_gate_run" >"$ops_gate_tmp/step.sh"
+  ops_gate_case() {  # $1 = router ops decision, $2 = ops-suite result; exit status is the verdict
+    NEEDS_JSON="{\"short-gate\":{\"result\":\"success\",\"outputs\":{\"ios\":\"false\",\"ops\":\"$1\"}},\"ios-quality\":{\"result\":\"skipped\"},\"ops-suite\":{\"result\":\"$2\"}}" \
+      bash "$ops_gate_tmp/step.sh" >/dev/null 2>&1
+  }
+  ops_gate_case true success || fail "merge-group required rejects a green routed ops-suite"
+  ops_gate_case true failure && fail "merge-group required passes with a red routed ops-suite"
+  ops_gate_case true cancelled && fail "merge-group required passes with a cancelled routed ops-suite"
+  ops_gate_case true skipped && fail "merge-group required passes with a skipped routed ops-suite"
+  ops_gate_case false skipped || fail "merge-group required fails when ops-suite was not requested"
+  ops_gate_case maybe skipped && fail "merge-group required accepts a malformed router ops decision"
+  rm -rf "$ops_gate_tmp"
   if grep -Eq 'uses:[[:space:]]*\./\.github/workflows/backend-quality\.yml' <<<"$merge_group_required_block"; then
     fail "merge-group required gate must run the backend suite inline, not import backend-quality"
   fi
@@ -1550,8 +1586,8 @@ unless agg["name"] == "required"
   out << "merge-group aggregator is missing or not named required (the context branch protection reads)"
 end
 out << "merge-group required must run under if: always()" unless agg["if"].to_s.include?("always()")
-unless Array(agg["needs"]).sort == %w[ios-quality short-gate]
-  out << "merge-group required must need exactly short-gate and ios-quality"
+unless Array(agg["needs"]).sort == %w[ios-quality ops-suite short-gate]
+  out << "merge-group required must need exactly short-gate, ios-quality and ops-suite"
 end
 out << "merge-group required must be bounded to five minutes" unless agg["timeout-minutes"] == 5
 if Array(agg["needs"]).include?("agent-review")

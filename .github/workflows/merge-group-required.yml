@@ -6,8 +6,9 @@ name: merge-group-required
 # backend=true (docs/ops-only groups stay on the short gate).  When the router
 # reports iOS, the iOS quality suite runs here, once per change, behind
 # short-gate (owner decision 2026-10-11).  `required`, the only context branch
-# protection reads, aggregates both.  The group never runs LLM, UI-gate or
-# confidence jobs.
+# protection reads, aggregates both.  When the router reports ops, the Linux ops
+# suite (macOS native ops excluded) also gates `required` (#2956).  The group never
+# runs LLM, UI-gate or PR-level confidence jobs.
 on:
   merge_group:
     types: [checks_requested]
@@ -28,6 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     outputs:
+      ops: ${{ steps.scope.outputs.ops }}
       ios: ${{ steps.scope.outputs.ios }}
       ios_mode: ${{ steps.scope.outputs.ios_mode }}
       ios_selectors: ${{ steps.scope.outputs.ios_selectors }}
@@ -141,6 +143,20 @@ jobs:
           uv sync --locked
           uv run python -m pytest -q -rs --skip-allowlist=tests/skip_allowlist.json
 
+  # The Linux ops suite (ops/ci_scope_router.sh ops=true), once per merge group, as
+  # the same reusable workflow pr-gate uses. macos_ops=false keeps the scarce
+  # macOS pool off the queue; `required` below fails closed on a red shard.
+  ops-suite:
+    name: ops-suite
+    needs: short-gate
+    if: ${{ needs.short-gate.outputs.ops == 'true' }}
+    uses: ./.github/workflows/ops-suite.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      macos_ops: 'false'
+
   # The iOS quality suite, once per change, with the router's decision from
   # short-gate. run_tests=true runs the simulator test jobs; PRs compile only.
   ios-quality:
@@ -158,13 +174,13 @@ jobs:
       run_tests: 'true'
 
   # The only context branch protection and the merge queue read. It passes only
-  # when short-gate succeeded and the iOS suite either succeeded or was not
-  # requested by the router. A skipped ios-quality with ios requested, or a
-  # missing or malformed router decision, fails closed.
+  # when short-gate succeeded, and the iOS and routed ops suites each either
+  # succeeded or were not requested by the router. A skipped suite that was
+  # requested, or a missing or malformed router decision, fails closed.
   required:
     name: required
     if: ${{ always() }}
-    needs: [short-gate, ios-quality]
+    needs: [short-gate, ios-quality, ops-suite]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -177,6 +193,8 @@ jobs:
           printf '%s\n' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
           short_result="$(jq -r '."short-gate".result // "missing"' <<<"$NEEDS_JSON")"
           ios_result="$(jq -r '."ios-quality".result // "missing"' <<<"$NEEDS_JSON")"
+          ops_result="$(jq -r '."ops-suite".result // "missing"' <<<"$NEEDS_JSON")"
+          ops_requested="$(jq -r '."short-gate".outputs.ops // "missing"' <<<"$NEEDS_JSON")"
           ios_requested="$(jq -r '."short-gate".outputs.ios // "missing"' <<<"$NEEDS_JSON")"
           if [[ "$short_result" != success ]]; then
             echo "short-gate did not succeed: $short_result" >&2
@@ -184,6 +202,18 @@ jobs:
           fi
           if [[ "$ios_requested" != true && "$ios_requested" != false ]]; then
             echo "router iOS decision is missing or malformed: $ios_requested" >&2
+            exit 1
+          fi
+          if [[ "$ops_requested" != true && "$ops_requested" != false ]]; then
+            echo "router ops decision is missing or malformed: $ops_requested" >&2
+            exit 1
+          fi
+          if [[ "$ops_requested" == true && "$ops_result" != success ]]; then
+            echo "ops-suite result $ops_result with ops requested=true" >&2
+            exit 1
+          fi
+          if [[ "$ops_requested" == false && "$ops_result" != success && "$ops_result" != skipped ]]; then
+            echo "ops-suite result $ops_result with ops requested=false" >&2
             exit 1
           fi
           if [[ "$ios_result" == success ]]; then
