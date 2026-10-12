@@ -603,6 +603,66 @@ struct SubscriptionManagerTests {
         #expect(!mgr.hasProAccess)
     }
 
+    // MARK: - account switch ownership (#2592)
+
+    @MainActor
+    @Test func refresh_after_account_switch_drops_previous_account_pro_when_fetch_fails() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedOwner = mgr.entitlementsOwnerUserId
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.entitlementsOwnerUserId = savedOwner
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 帳號 A 的 Pro 已綁定 A；未經登出，直接切換為 B，且 B 的 refresh 失敗。
+        mgr.commitEntitlements(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            owner: "A"
+        )
+        let auth = RefreshOrderAuthStub()
+        auth.userId = "B"
+
+        // responses 為空 → fetch 拋錯。B 不得沿用 A 的 Pro。
+        let service = GatedSubscriptionService(responses: [:], suspended: [])
+        await mgr.refreshEntitlements(using: service, authManager: auth, force: true)
+        #expect(!mgr.hasProAccess)
+        #expect(mgr.lastError != nil)
+    }
+
+    @MainActor
+    @Test func refresh_keeps_same_account_pro_when_fetch_fails() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedOwner = mgr.entitlementsOwnerUserId
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.entitlementsOwnerUserId = savedOwner
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = nil
+        mgr.lastError = nil
+
+        // 對照組：同一帳號的網路失敗不應清除既有權益（既有行為：只寫 lastError）。
+        mgr.commitEntitlements(
+            KGEntitlements(pro: status(isActive: true, status: "active", willRenew: true, source: "admin")),
+            owner: "test_user"
+        )
+        let service = GatedSubscriptionService(responses: [:], suspended: [])
+        await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: true)
+        #expect(mgr.hasProAccess)
+        #expect(mgr.lastError != nil)
+    }
+
     // MARK: - session end (#2592, #3222)
 
     @MainActor

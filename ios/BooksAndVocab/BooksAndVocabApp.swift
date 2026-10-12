@@ -297,6 +297,8 @@ struct BooksAndVocabApp: App {
                             progress: PodcastBackgroundSyncStatusStore.report
                         )
                         await kgService.fetchQuota()
+                        // 登入後立即以新帳號重新取得權益，不等待下一次 scenePhase／啟動 refresh（#2592）。
+                        await subscriptionManager.refresh(using: kgService, authManager: authManager, force: true)
                         // Rebuild the Apple-ID-scoped book library on login. Books
                         // bind to the Apple ID (CloudStore/CloudKit + per-Apple-ID
                         // files), not the app account, so any prior logout that

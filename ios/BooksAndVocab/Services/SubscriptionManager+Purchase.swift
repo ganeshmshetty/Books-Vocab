@@ -109,7 +109,10 @@ extension SubscriptionManager {
                 let transaction = try checkVerified(verification)
                 await transaction.finish()
                 purchaseStatusMessage = L10n.string("購買成功，正在同步訂閱狀態⋯")
-                commitEntitlements(optimisticEntitlements(from: product, status: inferredStatus(for: product)))
+                commitEntitlements(
+                    optimisticEntitlements(from: product, status: inferredStatus(for: product)),
+                    owner: authManager.userId
+                )
                 do {
                     try await syncTransaction(
                         transaction,

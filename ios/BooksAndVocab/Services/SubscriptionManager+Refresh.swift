@@ -8,12 +8,22 @@ extension SubscriptionManager {
     /// 核心 refresh 只需要 `fetchEntitlements`，依窄能力協定 `SubscriptionServing` 實作，
     /// 讓回應順序語義能以確定性替身測試（#2800）。
     func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async {
+        // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
+        let requestUserId = authManager.userId
+
         guard authManager.isLoggedIn else {
             commitEntitlements(Self.defaultEntitlements)
             lastError = nil
             expiryTimer?.cancel()
             expiryTimer = nil
             return
+        }
+
+        // 未經登出直接換成另一帳號：屬於前一帳號的權益不得沿用，且 refresh 失敗時也不得保留（#2592）。
+        if let owner = entitlementsOwnerUserId, owner != requestUserId {
+            AppLog.subscription.warning("Entitlements owner changed; discarding previous account's state")
+            commitEntitlements(Self.defaultEntitlements)
+            lastRefreshTime = nil
         }
 
         // Cooldown：防止短時間重複 refresh，force 可跳過
@@ -26,9 +36,6 @@ extension SubscriptionManager {
         let previousRefreshTime = lastRefreshTime
         lastRefreshTime = Date()
         let generation = claimEntitlementsGeneration()
-
-        // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
-        let requestUserId = authManager.userId
 
         beginLoading()
         defer { endLoading() }
@@ -65,7 +72,7 @@ extension SubscriptionManager {
                 return
             }
             // 期間可能已有更新的寫入發出；由 applyEntitlements 再守一次世代
-            guard applyEntitlements(remote, generation: generation) else { return }
+            guard applyEntitlements(remote, generation: generation, owner: requestUserId) else { return }
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
         } catch is CancellationError {

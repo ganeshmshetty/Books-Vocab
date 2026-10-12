@@ -94,6 +94,8 @@ final class SubscriptionManager: SubscriptionManaging {
     var lastAppliedEntitlementsGeneration = 0
     /// 最近一次本地決策寫入（樂觀更新、登出）的世代。只有它會使較早發出的 App Store 同步回應失效（#2800）。
     var lastLocalWriteGeneration = 0
+    /// `entitlements` 所屬的帳號。nil 代表未綁定（預設值，或無法確定歸屬）；帳號切換時不得沿用他人的權益（#2592）。
+    var entitlementsOwnerUserId: String?
     static let refreshCooldown: TimeInterval = 2.0
 
     var transactionListener: Task<Void, Never>?
@@ -134,18 +136,19 @@ final class SubscriptionManager: SubscriptionManaging {
 
     /// 只有 `generation` 仍新於已套用世代時才寫入，回傳是否套用；過期回應不論到達順序一律丟棄（#2800）。
     @discardableResult
-    func applyEntitlements(_ value: KGEntitlements, generation: Int) -> Bool {
+    func applyEntitlements(_ value: KGEntitlements, generation: Int, owner: String? = nil) -> Bool {
         guard generation > lastAppliedEntitlementsGeneration else { return false }
         entitlements = value
+        entitlementsOwnerUserId = owner
         lastAppliedEntitlementsGeneration = generation
         return true
     }
 
     /// 本地決策寫入（樂觀更新、登出）：取新世代並立即套用，使此前發出、尚未返回的請求全部失效（#2800）。
-    func commitEntitlements(_ value: KGEntitlements) {
+    func commitEntitlements(_ value: KGEntitlements, owner: String? = nil) {
         let generation = claimEntitlementsGeneration()
         lastLocalWriteGeneration = generation
-        applyEntitlements(value, generation: generation)
+        applyEntitlements(value, generation: generation, owner: owner)
     }
 
     /// 登出（含 delete_account、401 teardown）：權益回到預設，並以本地寫入世代使所有在途請求失效，
@@ -161,9 +164,9 @@ final class SubscriptionManager: SubscriptionManaging {
     /// App Store 同步回應是伺服器對本次交易的權威結果。較晚發出的 refresh GET 可能先被伺服器處理（尚未含本次交易），
     /// 不得擋住它；只有發出後發生的本地寫入（登出、樂觀更新）才使其失效。回傳是否套用（#2800）。
     @discardableResult
-    func applySyncResponse(_ value: KGEntitlements, requestedAt generation: Int) -> Bool {
+    func applySyncResponse(_ value: KGEntitlements, requestedAt generation: Int, owner: String? = nil) -> Bool {
         guard lastLocalWriteGeneration < generation else { return false }
-        return applyEntitlements(value, generation: claimEntitlementsGeneration())
+        return applyEntitlements(value, generation: claimEntitlementsGeneration(), owner: owner)
     }
 
     /// 在 app 啟動時呼叫，持續監聽 Transaction.updates 以捕捉中斷購買、續訂等事件
