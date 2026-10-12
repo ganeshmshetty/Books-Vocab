@@ -62,6 +62,39 @@ struct KGServiceLastSyncDateTests {
         )
     }
 
+    /// Every cleaner in this file gets temp derived roots: the default `.production` purge would
+    /// otherwise delete the real podcast-downloads, podcast-covers and NotebookCovers trees (#3228).
+    private struct DerivedFixture {
+        let base: URL
+        let roots: LocalDataCleanerService.DerivedLocalStateRoots
+        let sentinel: URL
+
+        init() throws {
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let covers = base.appendingPathComponent("NotebookCovers", isDirectory: true)
+            let podcastCovers = base.appendingPathComponent("podcast-covers", isDirectory: true)
+            let downloads = base.appendingPathComponent("podcast-downloads", isDirectory: true)
+            let series = downloads.appendingPathComponent("series-1", isDirectory: true)
+            for dir in [covers, podcastCovers, series] {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
+            let sentinel = series.appendingPathComponent("e.mp3")
+            FileManager.default.createFile(atPath: sentinel.path, contents: Data([1, 2, 3]))
+            self.base = base
+            self.sentinel = sentinel
+            self.roots = LocalDataCleanerService.DerivedLocalStateRoots(
+                notebookCovers: covers,
+                podcastCovers: podcastCovers,
+                podcastDownloads: downloads
+            )
+        }
+
+        func remove() {
+            try? FileManager.default.removeItem(at: base)
+        }
+    }
+
     /// `clearLocalData` is the single logout / account-switch cleanup path; it
     /// must drop the persisted sync time so a cold start never shows account A's
     /// "synced ..." under account B.
@@ -74,8 +107,10 @@ struct KGServiceLastSyncDateTests {
         }
         KGService.persistLastSyncDate(Date(timeIntervalSince1970: 1_800_000_000))
         #expect(KGService.loadPersistedLastSyncDate() != nil)
+        let fixture = try DerivedFixture()
+        defer { fixture.remove() }
 
-        await LocalDataCleanerService().clearLocalData(
+        await LocalDataCleanerService(derivedRoots: fixture.roots).clearLocalData(
             container: try makeEmptyContainer(), reason: "user_logout", deletedAccountID: nil
         )
 
@@ -93,8 +128,10 @@ struct KGServiceLastSyncDateTests {
         }
         let service = KGService()
         service.lastSyncDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let fixture = try DerivedFixture()
+        defer { fixture.remove() }
 
-        await LocalDataCleanerService().clearLocalData(
+        await LocalDataCleanerService(derivedRoots: fixture.roots).clearLocalData(
             container: try makeEmptyContainer(), reason: "account_switch", deletedAccountID: nil
         )
         // The observer hops to the main actor; let it run.
@@ -128,7 +165,9 @@ struct KGServiceLastSyncDateTests {
         defaults.set("cursor-A", forKey: KGService.SyncKeys.incrementalBoundary)
         defaults.set("events-A", forKey: KGService.SyncKeys.reviewEventPullBoundary)
         let flaky = FlakyWipe()
-        let cleaner = LocalDataCleanerService(wipeRows: flaky.run, defaults: defaults)
+        let fixture = try DerivedFixture()
+        defer { fixture.remove() }
+        let cleaner = LocalDataCleanerService(wipeRows: flaky.run, defaults: defaults, derivedRoots: fixture.roots)
         let container = try makeEmptyContainer()
 
         let ok = await cleaner.clearLocalDataReportingFailure(
@@ -161,6 +200,34 @@ struct KGServiceLastSyncDateTests {
         let again = await cleaner.retryPendingLocalWipe(container: container, signedInUserId: nil)
         #expect(again == true)
         #expect(flaky.calls.count == 2, "no marker, no retry")
+    }
+
+    /// A failed row wipe still purges derived files, and only under the injected roots: the sentinel
+    /// sits in the temp podcast-downloads tree, so its removal proves the purge used the fixture and
+    /// never the production Documents tree (#3228).
+    @Test func failedWipePurgesInjectedDerivedRootsOnly() async throws {
+        let suite = "kg.test.failedWipe.derived"
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let fixture = try DerivedFixture()
+        defer { fixture.remove() }
+        #expect(FileManager.default.fileExists(atPath: fixture.sentinel.path))
+        let cleaner = LocalDataCleanerService(
+            wipeRows: FlakyWipe().run,
+            defaults: defaults,
+            derivedRoots: fixture.roots
+        )
+
+        let ok = await cleaner.clearLocalDataReportingFailure(
+            container: try makeEmptyContainer(),
+            reason: "user_logout",
+            owner: "user-a",
+            deletedAccountID: nil
+        )
+
+        #expect(ok == false)
+        #expect(!FileManager.default.fileExists(atPath: fixture.sentinel.path), "derived purge must run on a failed wipe")
     }
 }
 
