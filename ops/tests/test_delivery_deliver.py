@@ -807,8 +807,10 @@ def test_a_merged_pr_goes_straight_to_cleanup() -> None:
     assert world.names() == ["cleanup-merged", "sync-main"]
 
 
-def test_a_local_tip_inside_a_merged_pr_history_is_cleaned_up_end_to_end() -> None:
-    # #3323: "Update branch" left the lane tip as an ancestor of the merged head
+def test_a_local_tip_inside_a_merged_pr_history_is_routed_to_cleanup_merged() -> None:
+    # #3323: "Update branch" left the lane tip as an ancestor of the merged head.
+    # FakeWorld stubs cleanup-merged; the real cleanup path is covered by
+    # test_delivery_cleanup.py (merged head containing the lane tip).
     world = FakeWorld(
         prs=[{"number": 9, "state": "MERGED", "headRefOid": "f" * 40}],
         tip_is_ancestor=True,
