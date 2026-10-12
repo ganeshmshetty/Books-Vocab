@@ -440,7 +440,18 @@ final class FixtureDatasetUITests: UITestCase {
         // for its projection, not tap an already-selected tab while AX is
         // still materialising the shell.
         let bookshelf = BookshelfPage(app: app)
+        // Two readiness stages with separate budgets: the shell (toolbar) mounts
+        // first, then the seeded projection. A single 10 s window covering both
+        // could not say which stage stalled. The shell budget matches the 15 s
+        // toolbar settle in `tapSettings` plus margin. Each failure attaches
+        // diagnostics so the next recurrence names the stage and app state.
+        guard bookshelf.waitForShell(timeout: 30) else {
+            attachDiagnostics(for: app, namePrefix: "Bookshelf Shell")
+            XCTFail("bookshelf shell (import toolbar) should mount before the fixture projection is awaited")
+            return
+        }
         guard bookshelf.anyBookCard.waitUntilExists(timeout: 10) else {
+            attachDiagnostics(for: app, namePrefix: "Bookshelf Projection")
             XCTFail("bookshelf fixture (with_books_library) should render at least one book card")
             return
         }

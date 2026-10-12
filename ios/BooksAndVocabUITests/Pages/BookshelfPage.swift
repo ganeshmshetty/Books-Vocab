@@ -35,6 +35,14 @@ struct BookshelfPage {
             .matching(NSPredicate(format: "identifier BEGINSWITH[c] %@", "book.card."))
     }
 
+    /// Shell readiness: the Bookshelf toolbar import control is mounted in AX.
+    /// It is disabled, not removed, while the library is loading, so it exists
+    /// as soon as the root tab does, independent of the projected card count.
+    @discardableResult
+    func waitForShell(timeout: TimeInterval = 30) -> Bool {
+        importButton.waitUntilExists(timeout: timeout)
+    }
+
     /// Presence is enough for bookshelf-only state assertions; no element is
     /// returned, so it cannot accidentally become an action shortcut.
     @discardableResult
