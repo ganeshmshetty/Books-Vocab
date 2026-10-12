@@ -54,6 +54,15 @@ protocol VocabularySyncExecuting: AnyObject {
 /// Owns the transport, outbox mutation and persistence ordering for an explicit vocab sync.
 @MainActor
 final class VocabularySyncEngine: VocabularySyncExecuting {
+    /// 4xx 是後端對此請求的確定性拒收，回傳終態 `rejectedReason`；401（認證）與 429（限流）屬可重試，回 nil。
+    /// 5xx 與網路錯誤亦回 nil。
+    static func permanentEditRejectionReason(_ error: Error) -> String? {
+        guard case let KGError.httpError(statusCode, _) = error,
+              (400..<500).contains(statusCode), statusCode != 401, statusCode != 429
+        else { return nil }
+        return "HTTP \(statusCode)"
+    }
+
     func execute(
         pendingEntries: [VocabularyEntry],
         modelContext: ModelContext,
@@ -221,7 +230,12 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                 } catch is CancellationError {
                     return cancelledResult(since: start)
                 } catch {
-                    entry.markSyncFailed()
+                    // A 4xx is the server's deterministic rejection: retrying re-sends the same request forever (#3207).
+                    if let reason = Self.permanentEditRejectionReason(error) {
+                        entry.markEditRejected(reason: reason)
+                    } else {
+                        entry.markSyncFailed()
+                    }
                     encounteredFailure = true
                 }
             }

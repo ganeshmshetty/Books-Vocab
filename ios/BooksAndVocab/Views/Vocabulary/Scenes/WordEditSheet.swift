@@ -172,7 +172,8 @@ struct WordEditSheet: View {
             explanation: entry.explanation,
             explanationClearPending: entry.explanationClearPending,
             syncAction: entry.syncAction,
-            syncState: entry.syncState
+            syncState: entry.syncState,
+            rejectedReason: entry.rejectedReason
         )
 
         entry.translation = validated.translation
@@ -187,9 +188,9 @@ struct WordEditSheet: View {
             entry.explanation = nil
         }
 
-        if entry.isSynced {
-            entry.syncAction = .edit
-            entry.syncState = .pending
+        // 終態拒收的 edit 不會被 sync 重新排入，必須由這裡重新排入（T12，#3207）。
+        if entry.isSynced || entry.isRejectedEdit {
+            entry.queueEdit()
         }
 
         do {
@@ -200,6 +201,7 @@ struct WordEditSheet: View {
             entry.explanationClearPending = original.explanationClearPending
             entry.syncAction = original.syncAction
             entry.syncState = original.syncState
+            entry.rejectedReason = original.rejectedReason
             throw error
         }
     }

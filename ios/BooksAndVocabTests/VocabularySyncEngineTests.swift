@@ -542,6 +542,78 @@ struct VocabularySyncEngineTests {
         #expect(!entry.shouldUploadOnNextSync)
     }
 
+    @Test("a permanently rejected edit (4xx) is terminal and is not re-sent on the next sync (#3207)")
+    func permanentlyRejectedEditIsTerminal() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 422, detail: "")
+
+        let firstResult = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(firstResult.terminalOutcome == .partial)
+        #expect(entry.isFailedEdit)
+        #expect(entry.rejectedReason != nil)
+        #expect(!entry.shouldUploadOnNextSync)
+        #expect(service.editRequests.count == 1)
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(service.editRequests.count == 1)
+        #expect(entry.isFailedEdit)
+        #expect(entry.rejectedReason != nil)
+    }
+
+    @Test("a server-side (5xx) edit failure stays retryable, not terminal (#3207)")
+    func serverErrorEditStaysRetryable() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 500, detail: "")
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(entry.isFailedEdit)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("a delete queued during a rejected edit's flight survives the terminal state (#3207, #2733)")
+    func deleteDuringRejectedEditSurvives() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = makePendingEdit()
+        context.insert(entry)
+        try context.save()
+
+        let service = FakeVocabularySyncService()
+        service.editError = KGError.httpError(statusCode: 422, detail: "")
+        service.onEditInFlight = { entry.deleteLocally(in: context) }
+
+        _ = await VocabularySyncEngine().execute(
+            pendingEntries: [entry], modelContext: context, service: service, emit: { _ in }
+        )
+
+        #expect(entry.syncAction == .delete)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+        #expect(entry.kgCardId == "card-1")
+    }
+
     @Test("cancelling an edit keeps it pending for retry")
     func editCancellationKeepsRetryableState() async throws {
         let container = try makeContainer()

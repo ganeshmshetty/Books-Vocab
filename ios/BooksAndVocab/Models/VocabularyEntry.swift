@@ -136,9 +136,11 @@ final class VocabularyEntry {
     var isFailedEdit: Bool { syncState == .failed && syncAction == .edit }
     /// 後端拒收的 add（終態，見 `rejectedReason`）。
     var isRejectedAdd: Bool { isFailedAdd && rejectedReason != nil }
+    /// 後端確定性拒收的 edit（4xx，見 T12）。
+    var isRejectedEdit: Bool { isFailedEdit && rejectedReason != nil }
     var shouldUploadOnNextSync: Bool {
         isPendingAdd || isPendingDelete || isPendingEdit
-            || (isFailedAdd && !isRejectedAdd) || isFailedDelete || isFailedEdit
+            || (isFailedAdd && !isRejectedAdd) || isFailedDelete || (isFailedEdit && !isRejectedEdit)
     }
     var shouldAppearInReader: Bool { syncAction != .delete && !isArchived && !isReaderHidden }
     var shouldAppearInReview: Bool { shouldAppearInKnowledgeList && !isReviewExcluded }
@@ -247,6 +249,9 @@ extension VocabularyEntry {
     // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
     //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
     // T11 NotebookReconciler cascade 的 queueDelete 可作用於 kgCardId 為空的 add：delete+pending，交 T5 以 not_found 收斂。
+    // T12 edit 回 4xx（401／429 除外）：markEditRejected → edit+failed（rejectedReason 終態，不再納入 shouldUploadOnNextSync）；
+    //     action 為 delete 則維持 pending delete（同 T3，#2733）。使用者再次編輯 → queueEdit 清除 rejectedReason 並重新 pending。
+    //     5xx／網路錯誤維持 T4 的可重試 markSyncFailed。
 
     func queueDelete() {
         syncAction = .delete
@@ -323,8 +328,25 @@ extension VocabularyEntry {
         rejectedReason = reason
     }
 
+    /// 後端確定性拒收的 edit（T12）：進終態，delete 在 in-flight 期間覆寫時保留 pending delete。
+    func markEditRejected(reason: String) {
+        guard syncAction != .delete else {
+            syncState = .pending
+            return
+        }
+        syncState = .failed
+        rejectedReason = reason
+    }
+
+    /// 使用者再次編輯已同步或已拒收的卡：重新排入 pending edit，清除上次的拒收原因（T12）。
+    func queueEdit() {
+        syncAction = .edit
+        syncState = .pending
+        rejectedReason = nil
+    }
+
     func prepareForRetryAttempt() {
-        if isFailed && !isRejectedAdd {
+        if isFailed && !isRejectedAdd && !isRejectedEdit {
             syncState = .pending
         }
     }

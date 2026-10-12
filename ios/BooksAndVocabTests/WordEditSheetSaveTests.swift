@@ -90,6 +90,42 @@ struct WordEditSheetSaveTests {
         #expect(entry.explanationUpdateValue == "新筆記")
     }
 
+    /// #3207：後端拒收（終態）的 edit，使用者再次編輯必須重新排入 pending 並清除拒收原因，否則永遠不會再送。
+    @Test func editingRejectedEditRequeuesIt() throws {
+        let entry = makeSyncedEntry()
+        entry.kgCardId = "card-1"
+        entry.syncAction = .edit
+        entry.syncState = .failed
+        entry.rejectedReason = "HTTP 422"
+
+        try WordEditSheet.commitEdit(entry: entry, translation: "新翻譯", explanation: "", save: {})
+
+        #expect(entry.syncAction == .edit)
+        #expect(entry.syncState == .pending)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test func failedSaveRestoresRejectedEditState() {
+        let entry = makeSyncedEntry()
+        entry.kgCardId = "card-1"
+        entry.syncAction = .edit
+        entry.syncState = .failed
+        entry.rejectedReason = "HTTP 422"
+
+        #expect(throws: SaveFailure.self) {
+            try WordEditSheet.commitEdit(
+                entry: entry,
+                translation: "新翻譯",
+                explanation: "新筆記",
+                save: { throw SaveFailure() }
+            )
+        }
+
+        #expect(entry.syncState == .failed)
+        #expect(entry.rejectedReason == "HTTP 422")
+    }
+
     @Test func emptyOrWhitespaceTranslationIsRejectedBeforeMutation() {
         for blank in ["", "   \n\t"] {
             let entry = makeSyncedEntry()
