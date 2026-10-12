@@ -332,6 +332,8 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             self.avatarURL = nil
             self.sessionStore.clearSession()
             self.isLoggedIn = false
+            // 與 userId 清除同一同步區段：在途的權益請求此時必定看到帳號已變更，不會再寫回舊帳號權益（#2592, #3222）。
+            SubscriptionManager.shared.resetForSessionEnd()
             PerfLog.auth.mark("auth.state.logout", "reason=\(reason)")
 
             // Chain：等前一次 logout 的 cleanup 收尾再動工。連續「登出→重登→登出」

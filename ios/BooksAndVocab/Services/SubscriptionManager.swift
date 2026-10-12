@@ -148,6 +148,16 @@ final class SubscriptionManager: SubscriptionManaging {
         applyEntitlements(value, generation: generation)
     }
 
+    /// 登出（含 delete_account、401 teardown）：權益回到預設，並以本地寫入世代使所有在途請求失效，
+    /// 包括登出前發出、尚未返回的 App Store 同步回應（#2592, #3222）。
+    func resetForSessionEnd() {
+        commitEntitlements(Self.defaultEntitlements)
+        lastError = nil
+        lastRefreshTime = nil
+        expiryTimer?.cancel()
+        expiryTimer = nil
+    }
+
     /// App Store 同步回應是伺服器對本次交易的權威結果。較晚發出的 refresh GET 可能先被伺服器處理（尚未含本次交易），
     /// 不得擋住它；只有發出後發生的本地寫入（登出、樂觀更新）才使其失效。回傳是否套用（#2800）。
     @discardableResult
