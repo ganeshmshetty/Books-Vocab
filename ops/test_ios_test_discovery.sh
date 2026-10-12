@@ -553,14 +553,49 @@ bare_names_of() { awk -F/ 'NF>=3 { id = $3; sub(/\(.*$/, "", id); print id }' <<
 UNIT_BARES="$(bare_names_of "$UNIT_FLAGS")"
 UI_BARES="$(bare_names_of "$UI_FLAGS")"
 pick_exclusive() {  # $1=flags；$2=要排除的裸名集合（換行分隔）→ 印 "Class|bare"
-  # BSD awk（macOS 內建）的 -v 值**不接受換行**，會噴 "newline in string" 並 exit 2。
-  # 故先壓成空白分隔再 split —— Swift 方法名不含空白，這個攤平是無損的。
-  local excl_flat; excl_flat="$(tr '\n' ' ' <<<"$2")"
-  awk -F/ -v excl="$excl_flat" '
-    BEGIN { n = split(excl, a, " "); for (i = 1; i <= n; i++) if (a[i] != "") seen[a[i]] = 1 }
+  # 排除集不走 argv（`awk -v`）：Linux 單一 argv 字串上限 128 KiB（MAX_ARG_STRLEN），
+  # unit 測試數一長就 rc=126（#3260）。改把「排除名單 + 分隔行 + flags」合成同一份
+  # here-string 當 stdin 資料餵 awk：先讀名單進 seen、遇分隔行切到 flags 模式。
+  # 名單逐行讀，不需 tr 攤平，也不受 BSD awk「-v 不接受換行」限制。here-string 非 pipe，
+  # 無 SIGPIPE 風險（見上方 IMP-0058 註記）。分隔行 @@flags@@ 不會是合法 selector 或裸名。
+  awk -F/ '
+    $0 == "@@flags@@" { flags = 1; next }
+    !flags { if ($0 != "") seen[$0] = 1; next }
     NF>=3 { bare = $3; sub(/\(.*$/, "", bare); if (!(bare in seen)) { print $2 "|" bare; exit } }
-  ' <<<"$1"
+  ' <<<"$(printf '%s\n' "$2"; printf '%s\n' '@@flags@@'; printf '%s\n' "$1")"
 }
+
+# ── 19. 排除集超過單一 argv 字串上限仍可運作（#3260）───────────────────────────
+# Linux 把單一 argv 字串限在 128 KiB（MAX_ARG_STRLEN），unit 測試數一長，把名單塞進
+# `awk -v` 就 rc=126。macOS 沒有這個上限（已實測 200 KB 的 -v 可過），直接跑不會紅，
+# 故以 awk shim 模擬同一上限：任一 argv 字串 ≥128 KiB 即回 126 並印 Linux 的訊息，讓
+# 回歸在兩平台都重現同一個失敗。shim 只在本節存活，結束即 unset。
+section "exclusion set larger than argv string limit (#3260)"
+awk() {
+  local a
+  for a in "$@"; do
+    if [[ "${#a}" -ge 131072 ]]; then
+      echo "awk: Argument list too long" >&2
+      return 126
+    fi
+  done
+  command awk "$@"
+}
+BIG_EXCL="$(printf 'testSynthesizedExclusionNameNumber%05d\n' $(seq 1 4200))"
+[[ "${#BIG_EXCL}" -ge 131072 ]] \
+  && ok "合成排除集 ${#BIG_EXCL} bytes，超過 128 KiB argv 上限" \
+  || fail_t "合成排除集僅 ${#BIG_EXCL} bytes，未達 128 KiB，本節失去鑑別力"
+BIG_OUT="$(pick_exclusive "$UI_FLAGS" "$BIG_EXCL" 2>"$FIX/big.err")" && BIG_RC=0 || BIG_RC=$?
+[[ "$BIG_RC" -eq 0 ]] \
+  && ok "超大排除集下 pick_exclusive exit 0" \
+  || fail_t "超大排除集下 pick_exclusive rc=$BIG_RC，stderr: $(cat "$FIX/big.err")"
+grep -qF 'Argument list too long' "$FIX/big.err" \
+  && fail_t "超大排除集下 stderr 出現 Argument list too long" \
+  || ok "超大排除集下 stderr 無 Argument list too long"
+[[ "$BIG_OUT" == *"|"* ]] \
+  && ok "超大排除集仍挑出一個未被排除的 Class|bare（${BIG_OUT}）" \
+  || fail_t "超大排除集未挑出任何 Class|bare，實得：'$BIG_OUT'"
+unset -f awk
 
 XS_PAIR="$(pick_exclusive "$UI_FLAGS" "$UNIT_BARES")"
 XS_CLASS="${XS_PAIR%%|*}"; XS_BARE="${XS_PAIR##*|}"
