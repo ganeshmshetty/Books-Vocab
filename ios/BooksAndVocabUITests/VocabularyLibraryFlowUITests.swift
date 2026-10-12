@@ -184,15 +184,14 @@ final class VocabularyLibraryFlowUITests: UITestCase {
 
         // Candidate rows only: the create entry (`addLink.create`) stays listed next
         // to partial matches and its sentence repeats the typed word (#2030/#2037).
-        // The per-row expand toggle (`<row id>.expand`, label "<word>, 展開") also
-        // carries the word, so it is excluded here: one row per word stays one match (#2407).
+        // A row is one body button (word, POS, meaning); its 新增連結 / 打開卡片 buttons carry
+        // no word, so one row per word stays one match (#2407, #3111).
         func candidateQuery(for word: String) -> XCUIElementQuery {
             app.buttons.matching(
                 NSPredicate(
-                    format: "label CONTAINS[c] %@ AND identifier != %@ AND NOT (identifier ENDSWITH %@)",
+                    format: "label CONTAINS[c] %@ AND identifier != %@",
                     word,
-                    "addLink.create",
-                    ".expand"
+                    "addLink.create"
                 )
             )
         }
@@ -206,14 +205,14 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             return query.count == 0
         }
 
-        // Collapsed candidates expose only the first sense; detail assertions below run
-        // after the row is expanded (#2407).
+        // Collapsed candidates expose only one line; detail assertions below run after the
+        // row body is tapped, which expands it (#2407, #3111).
         func expandCandidate(_ detailID: String, named: String) -> Bool {
-            guard let toggle = app.descendants(matching: .any)
-                .matching(identifier: "\(detailID).expand")
+            guard let row = app.buttons
+                .matching(identifier: detailID)
                 .exactlyOneElement(timeout: 5, named: named) else { return false }
-            toggle.scrollIntoView()
-            toggle.tapWhenReady()
+            row.scrollIntoView()
+            row.tapWhenReady()
             return true
         }
 
@@ -411,6 +410,13 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             return
         }
         let revelationDetailID = "addLink.local.result.vocab-linked-revelation"
+        // The decode-error message and its retry live only in the expanded detail (#3111), so the
+        // row is expanded before the provider state is asserted.
+        guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
+            captureStep("add-link-revelation-expand-missing", app: app)
+            XCTFail("AddLink revelation expand control must exist before its detail is asserted")
+            return
+        }
         guard let providerErrorState = app.descendants(matching: .any)
             .matching(identifier: "\(revelationDetailID).state")
             .exactlyOneElement(timeout: 5, named: "AddLink provider decode-error state"),
@@ -434,11 +440,6 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             "provider retry must recover to a deterministic local detail"
         )
         XCTAssertTrue(providerError.waitUntilGone(timeout: 5))
-        guard expandCandidate(revelationDetailID, named: "AddLink revelation expand") else {
-            captureStep("add-link-revelation-expand-missing", app: app)
-            XCTFail("AddLink revelation expand control must exist before its detail is asserted")
-            return
-        }
         guard let recoveredSense = app.descendants(matching: .any)
             .matching(identifier: "\(revelationDetailID).sense.1")
             .exactlyOneElement(timeout: 5, named: "AddLink recovered revelation sense"),
@@ -575,7 +576,9 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         // Collapsed row: the visible first sense and the verdict only. The example and provenance
         // stay hidden until the row is expanded, so the row value must not name them (#2407).
         let rowSummary = fortuitous.value as? String ?? ""
-        XCTAssertTrue(rowSummary.contains("sense=Happening by chance"))
+        XCTAssertTrue(rowSummary.contains("pos=adj."))
+        XCTAssertTrue(rowSummary.contains("expansion=collapsed"))
+        XCTAssertFalse(rowSummary.contains("sense="))
         XCTAssertTrue(rowSummary.contains("detail.state=ready-senses-2"))
         XCTAssertFalse(
             rowSummary.contains("example=The fortuitous meeting"),

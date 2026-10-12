@@ -241,12 +241,13 @@ final class AddLinkCoordinator {
     }
 
     /// Accessibility value of a candidate row, collapsed or expanded. It names only what the
-    /// collapsed row draws (word, translation, first sense) and the materialization verdict over
-    /// every sense. Examples, forms, provenance and further senses are exposed only through the
-    /// expanded hierarchy, never through the row value (#2407).
+    /// collapsed row draws (word, translation, part of speech), whether the row is open, and the
+    /// materialization verdict over every sense. Definitions, examples, forms and provenance are
+    /// exposed only through the expanded hierarchy, never through the row value (#2407, #3111).
     nonisolated static func rowAccessibilityValue(
         for entry: VocabularyEntry,
-        detail: AddLinkDetailProjection
+        detail: AddLinkDetailProjection,
+        isExpanded: Bool = false
     ) -> String {
         func normalized(_ value: String?) -> String {
             guard let value else { return "" }
@@ -255,14 +256,35 @@ final class AddLinkCoordinator {
 
         var summary = [
             "word=\(normalized(entry.word))",
-            "translation=\(normalized(entry.translation))",
-            "sense=\(normalized(detail.senses.first?.definition))",
-            "detail.state=\(detail.state.accessibilityValue)"
+            "translation=\(normalized(entry.translation))"
         ]
+        let partOfSpeech = normalized(detail.senses.first?.partOfSpeech)
+        if !partOfSpeech.isEmpty {
+            summary.append("pos=\(partOfSpeech)")
+        }
+        summary.append("expansion=\(isExpanded ? "expanded" : "collapsed")")
+        summary.append("detail.state=\(detail.state.accessibilityValue)")
         if case .providerDecodeError = detail.state {
             summary.append("detail.recovery=retryable")
         }
         return summary.joined(separator: " | ")
+    }
+
+    /// One example line of the expanded row: the localized label, then the card's inline-markdown
+    /// runs, so `**word**` draws as a highlight and never as literal asterisks (#3111).
+    nonisolated static func exampleParagraph(for example: String) -> CardDocumentParagraph {
+        CardDocumentParagraph(
+            inlines: [CardDocumentInline.text(L10n.string("reviewCardLayout.field.example") + ": ")]
+                + CardMarkdownInlineParser.parseParagraph(example).inlines
+        )
+    }
+
+    nonisolated static func openCardIdentifier(for entry: VocabularyEntry) -> String {
+        "\(detailIdentifier(for: entry)).openCard"
+    }
+
+    nonisolated static func linkIdentifier(for entry: VocabularyEntry) -> String {
+        "\(detailIdentifier(for: entry)).link"
     }
 
     /// Full projection: every sense, example, form and provenance level.
@@ -355,10 +377,6 @@ final class AddLinkCoordinator {
 
     nonisolated static func detailProvenanceIdentifier(for entry: VocabularyEntry) -> String {
         "\(detailIdentifier(for: entry)).provenance"
-    }
-
-    nonisolated static func detailExpandIdentifier(for entry: VocabularyEntry) -> String {
-        "\(detailIdentifier(for: entry)).expand"
     }
 
     nonisolated static func detailRetryIdentifier(for entry: VocabularyEntry) -> String {
