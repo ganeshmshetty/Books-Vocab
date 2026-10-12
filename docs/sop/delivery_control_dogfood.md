@@ -36,7 +36,7 @@ verified_against: 9d1fc2de80eb235fa74410b319324e3085cc07b2
 預設 `dogfood-preflight` 等同 `--mode qualification`，其 `result.ready=true` 只代表 clean-slate qualification 成立。要啟動 production-mode pilot，使用 `--mode pilot`；pilot 不要求 PR 清零、raw backlog 清零、candidate reservoir 補滿或所有 lane 沒有 review／CI blocker，但必須沒有 global freeze，且至少有一個可驗證 candidate 或 direct-assignment packet。preflight 必須同時觀測：
 
 - canonical checkout 是 clean `main`，且 local `main == origin/main`；
-- `main` 已 protected、required contexts 包含 `required`（聚合 `short-gate`、merge queue 的 `ios-quality` 與 routed `ops-suite`）、native merge queue 已啟用；
+- `main` 已 protected、required contexts 包含 `required`（merge-group 版 `required` 聚合 `short-gate`、merge queue 的 `ios-quality` 與 routed `ops-suite`；同名 `required` 在 PR 側 `pr-gate.yml` 只 needs `repo-gate`，merge queue 才讀前者）、native merge queue 已啟用；
 - delivery inventory 中只剩 canonical main；若啟動器使用 detached supervision checkout，必須以
   `--supervision-worktree` 逐一列出 exact path。未列出的 worktree 一律仍算 delivery／unknown
   blocker；不得用 `.codex` 路徑前綴或名稱猜測來排除；
