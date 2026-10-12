@@ -321,6 +321,49 @@ final class WordDetailFlowUITests: UITestCase {
         captureStep("word-detail-archive-failed-pill", app: app)
     }
 
+    /// #3125: the collocation pill's 解釋 item must open the explain sheet, not do nothing.
+    @MainActor
+    func testWordDetailCollocationExplainOpensExplainSheet() throws {
+        let app = launchIsolatedApp(fixtures: [.vocabulary("wordDetail")])
+        let notebooks = AppPage(app: app).goToNotebooks()
+        guard notebooks.waitForNotebookCard(id: Fixture.notebookID, timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize its notebook")
+            return
+        }
+        notebooks.notebookCard(id: Fixture.notebookID).tapWhenReady()
+        XCTAssertTrue(app.waitForNavigationToSettle())
+
+        let vocabulary = VocabularySearchPage(app: app)
+        guard vocabulary.searchField.waitUntilExists(timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize the vocabulary search field")
+            return
+        }
+        vocabulary.search(Fixture.word)
+        guard vocabulary.waitForRowMaterialized(word: Fixture.word, timeout: 10) else {
+            XCTFail("Word Detail fixture must materialize the target word row")
+            return
+        }
+        vocabulary.row(word: Fixture.word).tapWhenReady()
+        guard vocabulary.detailHeroWord.waitUntilExists(timeout: 10) else {
+            XCTFail("Selecting the target word must open Word Detail")
+            return
+        }
+
+        let collocation = app.staticTexts["ephemeral nature"].firstMatch
+        XCTAssertTrue(collocation.waitUntilExists(timeout: 10), "Word Detail fixture must show the collocation pill")
+        collocation.press(forDuration: 1.2)
+
+        let explain = app.buttons["解釋"].firstMatch
+        XCTAssertTrue(explain.waitUntilExists(timeout: 5), "an unexplained pill must offer 解釋")
+        explain.tapWhenReady()
+
+        // The sheet either shows its loading state or, offline, its failure card.
+        let sheetState = app.staticTexts.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "正在解釋…", "解釋失敗")
+        ).firstMatch
+        XCTAssertTrue(sheetState.waitUntilExists(timeout: 10), "解釋 must open the collocation explain sheet")
+    }
+
     private func appendText(_ text: String, to editor: XCUIElement) -> String {
         editor.tapWhenReady()
         editor.typeText(text)
