@@ -156,6 +156,45 @@ final class AddLinkSheetUXUITests: UITestCase {
         captureStep("add-link-failed-pill", app: app)
     }
 
+    // MARK: - #3111 打開卡片 return path
+
+    /// 打開卡片 presents the word detail over the sheet (#3111), so the query and
+    /// its result list must survive the round trip back.
+    @MainActor
+    func testOpenCardReturnKeepsAddLinkQuery() throws {
+        guard let app = openAddLinkSheet(perfLog: "add-link-open-card-return") else { return }
+        let searchField = app.textFields["addLink.searchField"]
+        XCTAssertTrue(searchField.waitUntilValue(hasKeyboardFocus: true, timeout: 5))
+        app.typeText("fort")
+        XCTAssertTrue(lookupState(in: app).waitUntilValueEquals("results-2", timeout: 5))
+
+        let openCard = app.buttons
+            .matching(NSPredicate(format: "label == %@", "打開卡片"))
+            .firstMatch
+        XCTAssertTrue(openCard.waitUntilExists(timeout: 5), "a collapsed row must expose 打開卡片")
+        openCard.tapWhenReady()
+
+        let heroWord = app.staticTexts["cardDocument.hero.word"]
+        XCTAssertTrue(heroWord.waitUntilExists(timeout: 10), "打開卡片 must present the word detail")
+
+        // The detail is the topmost sheet; its close control is the last hittable 關閉.
+        let close = app.buttons
+            .matching(NSPredicate(format: "label == %@", "關閉"))
+            .allElementsBoundByIndex
+            .last(where: { $0.exists && $0.isHittable })
+        XCTAssertNotNil(close, "the presented word detail must expose a hittable 關閉")
+        close?.tap()
+        XCTAssertTrue(heroWord.waitUntilGone(timeout: 10), "closing the detail must return to the sheet")
+
+        XCTAssertTrue(app.textFields["addLink.searchField"].waitUntilExists(timeout: 5))
+        XCTAssertEqual(searchField.value as? String, "fort", "the query must survive 打開卡片 and return")
+        XCTAssertTrue(
+            lookupState(in: app).waitUntilValueEquals("results-2", timeout: 5),
+            "the result list must survive 打開卡片 and return"
+        )
+        captureStep("add-link-open-card-return", app: app)
+    }
+
     // MARK: - Helpers
 
     /// Launches the linked-cards world, opens `serendipity`'s detail and its
