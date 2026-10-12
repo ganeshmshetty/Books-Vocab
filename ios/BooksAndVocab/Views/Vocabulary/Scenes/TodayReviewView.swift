@@ -227,7 +227,9 @@ struct TodayReviewView: View {
                 )
             },
             onDeleteCollocationExplanation: { collocation in
-                state.updateCollocationExplanation(nil, for: collocation, modelContext: modelContext)
+                if !state.updateCollocationExplanation(nil, for: collocation, modelContext: modelContext) {
+                    toastCoordinator.error(L10n.string("todayReview.saveFailure"))
+                }
             },
             collocationExplanations: state.currentCollocationExplanations,
             notebookBadges: notebookBadges,
@@ -351,18 +353,14 @@ struct TodayReviewView: View {
                 context: item.context,
                 existingExplanation: item.existingExplanation,
                 onSave: { explanation in
-                    state.updateCollocationExplanation(
-                        explanation,
-                        for: item.collocation,
-                        modelContext: modelContext
-                    )
+                    if !state.updateCollocationExplanation(explanation, for: item.collocation, modelContext: modelContext) {
+                        toastCoordinator.error(L10n.string("todayReview.saveFailure"))
+                    }
                 },
                 onDelete: {
-                    state.updateCollocationExplanation(
-                        nil,
-                        for: item.collocation,
-                        modelContext: modelContext
-                    )
+                    if !state.updateCollocationExplanation(nil, for: item.collocation, modelContext: modelContext) {
+                        toastCoordinator.error(L10n.string("todayReview.saveFailure"))
+                    }
                 }
             )
             .appSheet(.medium)

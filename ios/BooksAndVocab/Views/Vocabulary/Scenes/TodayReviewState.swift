@@ -33,6 +33,30 @@ struct FlingGradeBuffer: Equatable {
     }
 }
 
+/// 寫入與本地鏡像的原子化提交（#3320）：save 失敗時 entry 與 state 都回到寫入前的快照。
+@MainActor
+enum TodayReviewCollocationCommit {
+    @discardableResult
+    static func commit(
+        _ explanation: String?,
+        for collocation: String,
+        entry: VocabularyEntry?,
+        state: inout TodayReviewCollocationState,
+        save: () -> Bool
+    ) -> Bool {
+        let previousStored = entry?.collocationExplanations
+        state.update(explanation, for: collocation, entry: entry)
+        guard save() else {
+            if let entry {
+                entry.collocationExplanations = previousStored ?? [:]
+                state.sync(from: entry)
+            }
+            return false
+        }
+        return true
+    }
+}
+
 @Observable @MainActor
 final class TodayReviewState {
     struct SubmittedAnswer {
@@ -470,13 +494,17 @@ final class TodayReviewState {
         autoplay.toggleSound()
     }
 
+    /// 回傳 false 代表儲存失敗，entry 與本地鏡像已回滾到呼叫前（#3320）；呼叫端必須回報使用者。
+    @discardableResult
     func updateCollocationExplanation(
         _ explanation: String?,
         for collocation: String,
         modelContext: ModelContext
-    ) {
-        collocationState.update(explanation, for: collocation, entry: currentEntry)
-        modelContext.safeSave()
+    ) -> Bool {
+        TodayReviewCollocationCommit.commit(
+            explanation, for: collocation, entry: currentEntry, state: &collocationState,
+            save: { modelContext.safeSave() }
+        )
     }
 
     /// 自動播放中會被擋掉的操作（#2046）：評分與洗牌要等使用者先關閉自動播放（暫停不算：`isAutoPlaying` 在暫停時仍為 true，
