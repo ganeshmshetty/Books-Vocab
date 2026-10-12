@@ -55,6 +55,11 @@ final class VocabularyEntry {
     /// 因此本地刪除必須排 server delete 而非硬刪，否則下一輪 pull 會復活卡片。server 確認（cardIds 命中、
     /// `markSynced`）後清除。Optional，lightweight migration 時既有 row 為 nil。
     var uploadSubmittedAt: Date?
+    /// 排入刪除（`queueDelete`）前仍未送出的 edit 標記（rawValue `edit`，#3059 (5)）；其餘情況為 nil。
+    /// 撤銷刪除時據此回到 pending edit 保留編輯內容，不得經 `markSynced` 丟掉。被 T12 拒收的 edit 不記錄（終態不復活）。
+    /// 第二次 `queueDelete` 不覆寫此值。`markSynced`／`restorePendingEntry`／`restoreUnsentEdit` 清除。
+    /// Optional，SwiftData lightweight migration 時既有 row 為 nil。
+    var actionBeforeDeleteRaw: String?
     var difficultyTier: String?     // "core" / "intermediate" / "advanced" / "rare"
     var actionType: String = "add"  // "add" | "delete" | "edit"
     var reviewModeRaw: String = VocabularyCardMode.recognition.rawValue
@@ -243,7 +248,7 @@ extension VocabularyEntry {
     // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete；uploadSubmittedAt 保留，server 是否已建卡未知）。
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
-    // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
+    // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → 排入前為未送出 edit 則 restoreUnsentEdit（edit+pending，保留編輯，#3059 (5)），否則 markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
     // T8 edit 成功：action 仍為 edit 且送出的 translation／note 與目前列相符才 markSynced（清除 explanationClearPending）；
     //     成功前被刪者維持 delete；送出後被改寫者維持 pending edit，交下一輪上傳較新內容（#3248）。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
@@ -255,6 +260,11 @@ extension VocabularyEntry {
     //     5xx／網路錯誤維持 T4 的可重試 markSyncFailed。
 
     func queueDelete() {
+        // 只記錄排入前仍未送出的 edit（pending 或可重試的 failed）。被 T12 拒收的 edit 是終態，不記錄，
+        // 否則撤銷刪除會把已被 server 4xx 拒收的內容重新排入上傳。第二次 queueDelete 不覆寫（syncAction 已是 delete）。
+        if syncAction != .delete {
+            actionBeforeDeleteRaw = (syncAction == .edit && shouldUploadOnNextSync) ? VocabularySyncAction.edit.rawValue : nil
+        }
         syncAction = .delete
         syncState = .pending
         rejectedReason = nil
@@ -285,12 +295,17 @@ extension VocabularyEntry {
 
     /// 撤銷尚未送出的刪除（SyncView「還原」）。in-flight 時為 no-op（I3）：列的去留由進行中的 sync 回應決定，
     /// 撤銷會與回應競態（#2484 r8）；sync 返回後仍存在的 delete 列才可撤銷。
-    /// 只有 server 確認持有卡片（`hasServerCard`）才能回到 synced；否則 server 從未確認此卡，必須重新排入 pending add，由下一輪 batchAdd 建立（T7）。
+    /// 只有 server 確認持有卡片（`hasServerCard`）才能回到 synced 或未送出的 edit（T7）；否則 server 從未確認此卡，必須重新排入 pending add，由下一輪 batchAdd 建立（T7）。
     /// 無 kgCardId 卻 markSynced 會得到「synced 但 server 沒有」的列，full pull 的 orphan cleanup 會把它刪掉（#2484）。
     func undoQueuedDelete() {
         guard syncAction == .delete, !isUploadInFlight else { return }
         if hasServerCard {
-            markSynced()
+            // 排入刪除前的未送出編輯：server 卡仍是編輯前的內容，回到 pending edit 待上傳（T7，#3059 (5)）。
+            if actionBeforeDeleteRaw == VocabularySyncAction.edit.rawValue {
+                restoreUnsentEdit()
+            } else {
+                markSynced()
+            }
         } else {
             restorePendingEntry()
         }
@@ -300,6 +315,14 @@ extension VocabularyEntry {
         syncAction = .add
         syncState = .pending
         rejectedReason = nil
+        actionBeforeDeleteRaw = nil
+    }
+
+    func restoreUnsentEdit() {
+        syncAction = .edit
+        syncState = .pending
+        rejectedReason = nil
+        actionBeforeDeleteRaw = nil
     }
 
     func markSynced() {
@@ -308,6 +331,7 @@ extension VocabularyEntry {
         rejectedReason = nil
         explanationClearPending = false
         uploadSubmittedAt = nil
+        actionBeforeDeleteRaw = nil
     }
 
     func markSyncFailed() {
