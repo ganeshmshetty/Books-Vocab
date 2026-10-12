@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3218,
+  "raise": {
+    "ops": 18
+  },
+  "note": "issue #3218: dirty-tree marker in kg_ios_verdict_commit_kv (+ regression tests); ops grows ~+10 lines"
+}
