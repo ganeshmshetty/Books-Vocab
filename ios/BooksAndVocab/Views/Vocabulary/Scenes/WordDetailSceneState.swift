@@ -215,13 +215,14 @@ final class WordDetailSceneState {
         _ explanation: String?,
         for collocation: String,
         entry: VocabularyEntry,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        save: (ModelContext) -> Bool = { $0.safeSave() }
     ) {
         var collocations = TodayReviewCollocationState()
         collocations.sync(from: entry)
         collocations.update(explanation, for: collocation, entry: entry)
         // 存檔失敗走同一條 actionError banner（WordDetailSheet 轉成頂端 toast），與本檔其他卡片動作一致。
-        if modelContext.safeSave() {
+        if save(modelContext) {
             clearActionError(for: .collocation)
         } else {
             setActionError(L10n.string("儲存失敗"), kind: .collocation)
