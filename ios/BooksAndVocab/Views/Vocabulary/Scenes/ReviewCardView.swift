@@ -57,6 +57,7 @@ struct ReviewCardActions {
 /// its content without changing the measured front height.
 /// 連結列「+N」／「收合」的膠囊版面（#3295）。獨立成 view，讓命中帶與單元測試渲染的是同一顆膠囊。
 struct ReviewCardLinkOverflowLabel: View {
+    @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
     let title: String
     let isExpanded: Bool
@@ -73,6 +74,7 @@ struct ReviewCardLinkOverflowLabel: View {
         .padding(.horizontal, AppSpacing.s2)
         .padding(.vertical, AppSpacing.s1)
         .background(AppRoundedRect(roundness: appSkin.roundness.pill).fill(appSkin.palette.cardBorder))
+        .enableInjection()
     }
 }
 
