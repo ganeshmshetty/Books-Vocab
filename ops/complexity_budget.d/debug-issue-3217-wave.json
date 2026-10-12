@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3217,
+  "raise": {
+    "ops": 32
+  },
+  "note": "issue #3217: landing-probe fix (+8) and missing-base-ref regression test (+25); ops ceiling already over at the merge-base"
+}
