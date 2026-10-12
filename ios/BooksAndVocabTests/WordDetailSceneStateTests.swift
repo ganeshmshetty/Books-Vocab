@@ -451,6 +451,31 @@ struct WordDetailSceneStateTests {
         return ModelContext(container)
     }
 
+    /// #3125: Word Detail must show the collocation explanations written in review.
+    @Test func refreshPresentation_exposesCollocationExplanations() {
+        let entry = makeEntry(cardId: "root-card", word: "meticulous")
+        entry.collocationExplanations = ["take shape": "become clear gradually"]
+
+        let state = WordDetailSceneState()
+        state.refreshPresentation(for: entry, in: [entry])
+
+        #expect(state.presenterState?.collocationExplanations == ["take shape": "become clear gradually"])
+    }
+
+    /// #3125: 解釋 on Word Detail persists through the same field review writes.
+    @Test func updateCollocationExplanation_persistsAndClearsOnEntry() throws {
+        let context = try makeContext()
+        let entry = makeEntry(cardId: "root-card", word: "meticulous")
+        context.insert(entry)
+
+        let state = WordDetailSceneState()
+        state.updateCollocationExplanation("be precise", for: "take shape", entry: entry, modelContext: context)
+        #expect(entry.collocationExplanations["take shape"] == "be precise")
+
+        state.updateCollocationExplanation(nil, for: "take shape", entry: entry, modelContext: context)
+        #expect(entry.collocationExplanations["take shape"] == nil)
+    }
+
     @Test func metadataLinkCount_usesPluralKey() {
         let entry = makeEntry(cardId: "root-card", word: "meticulous")
         entry.insertLink(
