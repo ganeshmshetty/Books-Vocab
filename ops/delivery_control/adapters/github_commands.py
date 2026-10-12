@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from ..domain.errors import CompareAndSwapConflict
 from ..domain.observations import PullRequestSnapshot
 from ..ports.github import RequiredTriggerOutcome
+from ..ports.process import CommandResult
 from .errors import AdapterCommandError, AdapterPayloadError
 from .github_client import GitHubCliClient
 from .github_queue import GitHubQueueGraphQLAdapter
@@ -37,6 +38,11 @@ _CANCEL_COMPLETED_RACE_MARKER = "cannot cancel a workflow run that is completed"
 # createdAt survives a rerun; startedAt/updatedAt restart with each attempt and
 # anchor the wedged-run age (see _attempt_started_at).
 _REQUIRED_RUN_LIST_FIELDS = "databaseId,headBranch,headSha,event,status,conclusion,createdAt,startedAt,updatedAt"
+
+
+def _is_already_running(result: CommandResult) -> bool:
+    detail = f"{result.stdout}\n{result.stderr}".casefold()
+    return "403" in detail and "already running" in detail
 
 
 def _required_run_list_command(*, branch: str, head_sha: str) -> tuple[str, ...]:
@@ -273,7 +279,16 @@ class GitHubCommands:
             if failed_only
             else ("gh", "run", "rerun", str(database_id))
         )
-        self.client.run(argv)
+        try:
+            self.client.run(argv)
+        except AdapterCommandError as error:
+            if not _is_already_running(error.result):
+                raise
+            # GitHub refuses to rerun a run that is still in progress (HTTP 403
+            # "already running"): that run is the evidence to wait on, not a failure.
+            return RequiredTriggerOutcome(
+                (), "wait", f"{reason}; rerun refused, the run is already running"
+            )
         return RequiredTriggerOutcome(argv, action, reason)
 
     def _cancel_wedged_run(
