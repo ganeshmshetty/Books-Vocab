@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3001,
+  "raise": {
+    "ops": 495
+  },
+  "note": "Re-lane r8 (CM auto-fix): rebased #3001 r7 onto origin/main 4bb1add5f to clear DIRTY merge state of #3191; ops ceiling re-measured after rebase, budget file taken from main, only this lane fragment changed"
+}
