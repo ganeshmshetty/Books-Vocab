@@ -333,6 +333,33 @@ struct ActiveNotebookStoreTests {
         #expect(accountB.activeNotebookIdIfSet == nil)
     }
 
+    /// #3172: device X adopts the legacy active notebook for account A and must publish the
+    /// iCloud marker. Never-adopted device Y must not copy the legacy cloud value into account B.
+    @Test func unadoptedDeviceDoesNotReAdoptLegacyActiveNotebookAdoptedElsewhere() {
+        let suiteX = "ActiveNotebookCloudMarker-x-\(UUID().uuidString)"
+        let suiteY = "ActiveNotebookCloudMarker-y-\(UUID().uuidString)"
+        let deviceX = UserDefaults(suiteName: suiteX)!
+        let deviceY = UserDefaults(suiteName: suiteY)!
+        defer {
+            deviceX.removePersistentDomain(forName: suiteX)
+            deviceY.removePersistentDomain(forName: suiteY)
+        }
+        let cloud = FakeCloudKVStore()
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "active-notebook")
+        deviceX.set("legacy-notebook", forKey: "activeNotebookId")
+        deviceX.set(100.0, forKey: "active_notebook_updated_at")
+        cloud.set("legacy-notebook", forKey: "activeNotebookId")
+        cloud.set(100.0, forKey: "active_notebook_updated_at")
+
+        let adopting = ActiveNotebookStore(defaults: deviceX, cloud: cloud, accountID: "account-a")
+        #expect(adopting.activeNotebookId == "legacy-notebook")
+        #expect(cloud.string(forKey: marker) != nil)
+
+        let accountBOnY = ActiveNotebookStore(defaults: deviceY, cloud: cloud, accountID: "account-b")
+        #expect(accountBOnY.activeNotebookId == ActiveNotebookStore.defaultNotebookId)
+        #expect(accountBOnY.activeNotebookIdIfSet == nil)
+    }
+
     @Test func staleUserConfigResponseIsDiscardedAfterAccountSwitch() async {
         let d = makeDefaults()
         let store = ActiveNotebookStore(defaults: d, cloud: FakeCloudKVStore())

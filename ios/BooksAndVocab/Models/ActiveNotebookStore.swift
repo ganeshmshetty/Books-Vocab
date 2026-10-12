@@ -134,6 +134,7 @@ final class ActiveNotebookStore {
         AccountPreferenceNamespace.migrateLegacyIfNeeded(
             accountID: accountID,
             defaults: defaults,
+            cloud: cloud,
             feature: "active-notebook"
         ) {
             for key in [Keys.activeId, Keys.updatedAt] {

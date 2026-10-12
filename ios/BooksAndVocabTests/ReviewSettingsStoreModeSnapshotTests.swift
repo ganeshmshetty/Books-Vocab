@@ -128,4 +128,22 @@ struct ReviewSettingsStoreModeSnapshotTests {
         #expect(cloud.double(forKey: "review_settings_mode_updated_at") == nil)
         #expect(cloud.string(forKey: "review_settings_mode") == nil)
     }
+
+    /// #3172: the review-settings migration must publish its adoption marker to iCloud KVS and
+    /// check it. Device X adopts the legacy cloud mode for account A; never-adopted device Y must
+    /// not copy that legacy mode into account B (its settings must equal a fresh default store).
+    @Test func unadoptedDeviceDoesNotReAdoptLegacyReviewModeAdoptedElsewhere() {
+        let cloud = FakeCloudKVStore()
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "review-settings")
+        cloud.set("intensive", forKey: "review_settings_mode")
+        cloud.set(100.0, forKey: "review_settings_mode_updated_at")
+
+        let adopting = ReviewSettingsStore(defaults: makeDefaults(), cloud: cloud, accountID: "account-a")
+        #expect(adopting.settings.mode == .intensive)
+        #expect(cloud.string(forKey: marker) != nil)
+
+        let accountBOnY = ReviewSettingsStore(defaults: makeDefaults(), cloud: cloud, accountID: "account-b")
+        let fresh = ReviewSettingsStore(defaults: makeDefaults(), cloud: FakeCloudKVStore(), accountID: "account-b")
+        #expect(accountBOnY.settings == fresh.settings)
+    }
 }

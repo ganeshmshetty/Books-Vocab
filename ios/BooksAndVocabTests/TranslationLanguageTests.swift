@@ -378,4 +378,35 @@ struct TranslationLanguageTests {
             ) == nil
         )
     }
+
+    /// #3172: device X adopts the legacy pair for account A and must publish the iCloud marker.
+    /// Never-adopted device Y (with its own legacy local values) must not copy them into account B.
+    @Test @MainActor func unadoptedDeviceDoesNotReAdoptLegacyTranslationPairAdoptedElsewhere() {
+        let suiteX = "test.translation-cloud-marker-x.\(UUID().uuidString)"
+        let suiteY = "test.translation-cloud-marker-y.\(UUID().uuidString)"
+        let deviceX = UserDefaults(suiteName: suiteX)!
+        let deviceY = UserDefaults(suiteName: suiteY)!
+        let cloud = FakeCloudKVStore()
+        let marker = AccountPreferenceNamespace.legacyMigrationMarker(feature: "translation-language")
+        defer {
+            deviceX.removePersistentDomain(forName: suiteX)
+            deviceY.removePersistentDomain(forName: suiteY)
+            TranslationLanguage.activateAccount(nil)
+        }
+        deviceX.set("ja", forKey: "translation_source_lang")
+        deviceX.set(100.0, forKey: "translation_source_lang_updated_at")
+        deviceY.set("ja", forKey: "translation_source_lang")
+        deviceY.set(100.0, forKey: "translation_source_lang_updated_at")
+
+        TranslationLanguage.activateAccount("account-a", defaults: deviceX, cloud: cloud)
+        #expect(TranslationLanguage.currentSource == .ja)
+        #expect(cloud.string(forKey: marker) != nil)
+
+        TranslationLanguage.activateAccount("account-b", defaults: deviceY, cloud: cloud)
+        let expectedSource =
+            TranslationLanguage.inferFromPreferredLanguages(
+                allowed: TranslationLanguage.sourceLanguages
+            ) ?? .en
+        #expect(TranslationLanguage.currentSource == expectedSource)
+    }
 }
