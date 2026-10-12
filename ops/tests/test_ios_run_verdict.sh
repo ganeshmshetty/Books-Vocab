@@ -143,20 +143,28 @@ got="$(in_proc "kg_ios_verdict_commit_kv '$repo'" 2>/dev/null || true)"
 rm -f "$repo/untracked-dirty-marker"
 got="$(GIT_CEILING_DIRECTORIES="$TMP" in_proc "kg_ios_verdict_commit_kv '$TMP'" 2>/dev/null || true)"
 [[ "$got" == "commit=unknown tree=unknown" ]] && ok "non-repo root degrades to commit=unknown tree=unknown" || fail_t "non-repo commit kv: '$got'"
-# wiring: every RESULT= verdict line in ios_test.sh (echo or printf) carries the helper
+# wiring: every RESULT= verdict line in the iOS entry points (echo or printf) carries the helper.
+# ios_test.sh and ios_build.sh name the repo root PROJECT_ROOT; ios_release.sh names it ROOT.
 ios_test="$WORKSPACE/ops/ios_test.sh"
-unwired="$(grep -E 'RESULT=(ok|fail|inconclusive) ' "$ios_test" | grep -vc 'kg_ios_verdict_commit_kv "\$PROJECT_ROOT"' || true)"
+ios_entrypoints=("$ios_test" "$WORKSPACE/ops/ios_build.sh" "$WORKSPACE/ops/ios_release.sh")
+unwired=0
+for ios_script in "${ios_entrypoints[@]}"; do
+  n="$(grep -E 'RESULT=(ok|fail|inconclusive) ' "$ios_script" | grep -vcE 'kg_ios_verdict_commit_kv "\$[A-Z_]*ROOT"' || true)"
+  unwired=$((unwired + n))
+done
 [[ "$unwired" == 0 ]] && grep -q 'all tests passed.*kg_ios_verdict_commit_kv "\$PROJECT_ROOT"' "$ios_test" \
-  && ok "all RESULT= verdict lines and the success summary embed the commit" || fail_t "verdict lines without commit: $unwired"
+  && ok "all RESULT= verdict lines (test/build/release) and the success summary embed the commit" || fail_t "verdict lines without commit: $unwired"
 # identity stays the line tail: cwd may hold spaces, and the ops tests read cwd= as rest-of-line
 misordered=0
-while IFS= read -r verdict_line; do
-  if [[ "$verdict_line" == *'RESULT='* && "$verdict_line" == *'kg_ios_verdict_identity_kv'* \
-        && "$verdict_line" == *'kg_ios_verdict_commit_kv'* ]]; then
-    before_commit="${verdict_line%%kg_ios_verdict_commit_kv*}"
-    if [[ "$before_commit" == *'kg_ios_verdict_identity_kv'* ]]; then misordered=$((misordered+1)); fi
-  fi
-done < "$ios_test"
+for ios_script in "${ios_entrypoints[@]}"; do
+  while IFS= read -r verdict_line; do
+    if [[ "$verdict_line" == *'RESULT='* && "$verdict_line" == *'kg_ios_verdict_identity_kv'* \
+          && "$verdict_line" == *'kg_ios_verdict_commit_kv'* ]]; then
+      before_commit="${verdict_line%%kg_ios_verdict_commit_kv*}"
+      if [[ "$before_commit" == *'kg_ios_verdict_identity_kv'* ]]; then misordered=$((misordered+1)); fi
+    fi
+  done < "$ios_script"
+done
 [[ "$misordered" == 0 ]] && ok "commit precedes identity on every verdict line (cwd= stays the tail)" \
   || fail_t "identity precedes commit on $misordered verdict line(s); cwd= would swallow commit="
 
