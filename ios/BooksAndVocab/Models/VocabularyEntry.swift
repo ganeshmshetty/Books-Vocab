@@ -51,6 +51,10 @@ final class VocabularyEntry {
     /// 才會清除伺服器 note；nil 在 wire 上是「未變更」。`markSynced`（編輯成功）時清除。
     /// Lightweight migration：既有 row 預設 false。
     var explanationClearPending: Bool = false
+    /// 送出 batchAdd 的時點（持久化，#3073）。送出後若回應未確認（取消、失敗），server 可能已建立此卡，
+    /// 因此本地刪除必須排 server delete 而非硬刪，否則下一輪 pull 會復活卡片。server 確認（cardIds 命中、
+    /// `markSynced`）後清除。Optional，lightweight migration 時既有 row 為 nil。
+    var uploadSubmittedAt: Date?
     var difficultyTier: String?     // "core" / "intermediate" / "advanced" / "rare"
     var actionType: String = "add"  // "add" | "delete" | "edit"
     var reviewModeRaw: String = VocabularyCardMode.recognition.rawValue
@@ -231,10 +235,10 @@ extension VocabularyEntry {
     //     唯一允許的使用者轉移是 → delete（T1）。擷取時為 delete 的列，回應到達時仍為 delete，
     //     故 sync 的 post-await 只守 syncAction == .delete 與 in-flight，不需撤銷競態分支（#2484 r8）。
     //
-    // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 → queueDelete（列保留）；其餘 → 硬刪。
-    // T2 batchAdd cardIds 命中：寫 kgCardId；action 為 add 才 markSynced，為 delete 則維持 pending delete。
+    // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 ∨ uploadSubmittedAt 非 nil → queueDelete（列保留）；其餘 → 硬刪。
+    // T2 batchAdd cardIds 命中：寫 kgCardId、清 uploadSubmittedAt；action 為 add 才 markSynced，為 delete 則維持 pending delete。
     // T3 batchAdd rejected：markRejected → add+failed（rejectedReason 終態）；action 為 delete 則維持 pending delete。
-    // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete）。
+    // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete；uploadSubmittedAt 保留，server 是否已建卡未知）。
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
     // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
@@ -261,7 +265,8 @@ extension VocabularyEntry {
         explanationClearPending ? "" : explanation
     }
 
-    var requiresServerDelete: Bool { isSynced || isUploadInFlight || hasServerCard }
+    /// `uploadSubmittedAt` 代表 add 已送出但未獲確認：server 可能持有此卡（#3073）。
+    var requiresServerDelete: Bool { isSynced || isUploadInFlight || hasServerCard || uploadSubmittedAt != nil }
 
     /// Single local delete entry point for user-initiated deletes.
     func deleteLocally(in modelContext: ModelContext) {
@@ -296,6 +301,7 @@ extension VocabularyEntry {
         syncState = .synced
         rejectedReason = nil
         explanationClearPending = false
+        uploadSubmittedAt = nil
     }
 
     func markSyncFailed() {

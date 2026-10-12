@@ -315,6 +315,8 @@ final class SyncCoordinator: SyncCoordinating {
                 unresolved.append(entry)
             } else if let cardId = response.cardIds[entry.word] {
                 entry.kgCardId = cardId
+                // The server confirmed the card: the submit marker has done its job (#3073).
+                entry.uploadSubmittedAt = nil
                 // A delete queued while the add was in flight stays queued: the card now exists server-side (#2733).
                 if entry.syncAction != .delete {
                     entry.markSynced()

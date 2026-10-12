@@ -167,6 +167,11 @@ final class VocabularySyncEngine: VocabularySyncExecuting {
                     guard !uploadable.isEmpty else { continue }
                     do {
                         uploadable.forEach { $0.prepareForRetryAttempt() }
+                        // Persist the submit marker before the request leaves: a cancel or crash after this point may
+                        // leave the card on the server, so a local delete must still reach the server (#3073).
+                        let submittedAt = Date()
+                        uploadable.forEach { $0.uploadSubmittedAt = submittedAt }
+                        modelContext.safeSave()
                         let response = try await service.batchAdd(entries: uploadable, notebookId: notebookId)
                         SyncCoordinator.convergeAddedEntries(response: response, entries: uploadable)
                         if !response.rejected.isEmpty {
