@@ -473,10 +473,11 @@ struct TodayReviewView: View {
         switch press.key {
         case .space:
             return perform(state.revealStage == .front ? .reveal : .collapse)
+        // 鍵盤評分走甩出路徑（#3127）：與按鈕、滑動同一條 fling，不直接 submit。
         case .leftArrow:
-            return perform(state.isAutoPlaying ? .previous : .forgot)
+            return state.isAutoPlaying ? perform(.previous) : state.requestKeyboardGrade(remember: false)
         case .rightArrow:
-            return perform(state.isAutoPlaying ? .next : .remembered)
+            return state.isAutoPlaying ? perform(.next) : state.requestKeyboardGrade(remember: true)
         case .upArrow:
             return perform(.previous)
         case .downArrow:
