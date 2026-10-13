@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import tarfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -138,6 +140,38 @@ def cmd_user_create(args: argparse.Namespace) -> int:
     return ctx.run(action="user-create", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
 
 
+_logger = logging.getLogger(__name__)
+
+# Same quarantine the in-app erasure uses (user_handlers._QUARANTINE_DIRNAME):
+# the directory is renamed out of users/ before rmtree, so a partial removal
+# never leaves a live path behind.
+_QUARANTINE_DIRNAME = ".deleting"
+
+
+def _sweep_quarantine(data_dir_path: Path) -> None:
+    """Best-effort removal of leftovers from earlier failed removals."""
+    root = data_dir_path / _QUARANTINE_DIRNAME
+    if not root.is_dir():
+        return
+    for batch in root.iterdir():
+        try:
+            shutil.rmtree(batch)
+        except OSError:
+            _logger.exception("Failed to sweep quarantined user data %s", batch)
+
+
+def _remove_user_dir_quarantined(data_dir_path: Path, uid: str) -> None:
+    target = user_dir_for(data_dir_path, uid)
+    if not target.exists():
+        return
+    batch = data_dir_path / _QUARANTINE_DIRNAME / uuid.uuid4().hex
+    batch.mkdir(parents=True)
+    quarantined = batch / uid
+    target.rename(quarantined)
+    shutil.rmtree(quarantined)
+    batch.rmdir()
+
+
 def _library_object_storage() -> tuple[str | None, Any]:
     """Library bucket and S3 client as the app wires them; ``(None, None)`` when local-only."""
     settings = load_settings()
@@ -213,14 +247,13 @@ def cmd_user_delete(args: argparse.Namespace) -> int:
         # users.json and the directory untouched, so the command stays retryable.
         # Marked destructive before the first S3 delete, since that is irreversible.
         ctx.mark_destructive()
+        _sweep_quarantine(dd)
         library_bucket, library_s3_client = _library_object_storage()
         delete_account_assets(dd, [uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
         result = _mutate_users(dd, mutate)
         # Runs after the tombstone: a presigned PUT minted earlier can land after the ledger delete.
         sweep_account_prefixes([uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
-        target = user_dir_for(dd, uid)
-        if target.exists():
-            shutil.rmtree(target)
+        _remove_user_dir_quarantined(dd, uid)
         return result
 
     def verify_fn() -> dict[str, Any]:

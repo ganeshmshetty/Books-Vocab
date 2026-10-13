@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -569,3 +570,32 @@ class TestUserDeleteApiKeys:
         assert authenticate_api_key(issued["apiKey"], load_users=load) is None
         index = load().get("_external_api_keys", {})
         assert not any(record.get("user_id") == "doomed" for record in index.values())
+
+
+# ── cmd_user_delete: partial removal (#3430) ─────────────────────────────
+
+
+class TestUserDeleteQuarantine:
+    def test_commit_partial_removal_failure_leaves_no_live_path(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        with sqlite3.connect(tmp_path / "users" / "doomed" / "cards.db") as conn:
+            conn.execute("CREATE TABLE cards (id TEXT)")
+        capsys.readouterr()
+
+        real_rmtree = user_cmd.shutil.rmtree
+
+        def partial(path, *a, **k):
+            # shutil 是全域模組:只對 user 目錄模擬「刪一半後 I/O 失敗」,備份清理放行。
+            if Path(path).name == "doomed":
+                (Path(path) / "cards.db").unlink()
+                raise OSError("I/O error mid-removal")
+            return real_rmtree(path, *a, **k)
+
+        monkeypatch.setattr(user_cmd.shutil, "rmtree", partial)
+        rc = user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True))
+
+        assert rc == 1
+        assert not (tmp_path / "users" / "doomed").exists()
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        assert not (tmp_path / "users" / "doomed" / "cards.db").exists()
