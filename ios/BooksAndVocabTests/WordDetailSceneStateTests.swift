@@ -257,6 +257,31 @@ struct WordDetailSceneStateTests {
         #expect(state.actionError == "刪除連結失敗", "封存成功不得吃掉別類動作的錯誤")
     }
 
+    /// #3413：封存 in-flight 期間，背景 pull 讀到 commit 前的舊值（isArchived = false）寫回本機，
+    /// 隨後請求成功。伺服器已封存，成功路徑必須以請求值重新斷言，否則樂觀的「已封存」會靜默翻回。
+    @Test func setArchived_successReassertsRequestedValueAfterPullDuringFlight() async throws {
+        let context = try makeContext()
+        let entry = makeEntry(cardId: "root-card", word: "abate")
+        entry.notebookId = "nb-1"
+        context.insert(entry)
+
+        let spy = SuspendingArchiveSpy()
+        let state = WordDetailSceneState()
+
+        let inFlight = Task { @MainActor in
+            await state.setArchived(true, for: entry, kgService: spy, modelContext: context)
+        }
+        while !spy.isSuspended { await Task.yield() }
+
+        // 模擬 BackgroundSyncActor 的 merge（BackgroundSyncActor.swift:241）。
+        entry.isArchived = false
+        spy.resume()
+        await inFlight.value
+
+        #expect(entry.isArchived, "伺服器已成功封存，in-flight pull 的舊值不可覆蓋成功結果")
+        #expect(state.actionError == nil)
+    }
+
     // MARK: - Per-card preferences
 
     @Test func setCardPreferences_updatesBothFlagsWithoutChangingReviewState() async throws {
@@ -362,7 +387,9 @@ struct WordDetailSceneStateTests {
         #expect(entry.isReviewExcluded, "an independent preference must not be overwritten by a stale full-card response")
     }
 
-    @Test func setCardPreferences_doesNotProjectStaleSameFieldResponseAfterPull() async throws {
+    /// #3413：pull 在 in-flight 期間讀到 commit 前的舊值（false）寫回，但伺服器其實已套用請求（true）。
+    /// 成功路徑必須以權威回應覆寫舊值；不可因為「值已被改動」就丟掉回應，否則舊值會留到下次 pull。
+    @Test func setCardPreferences_successReassertsServerValueAfterPullDuringFlight() async throws {
         let context = try makeContext()
         let entry = makeEntry(cardId: "root-card", word: "abate")
         entry.markSynced()
@@ -370,7 +397,7 @@ struct WordDetailSceneStateTests {
 
         let spy = PreferenceSpy()
         spy.responseReaderHidden = true
-        // Simulate a pull installing a newer value while the request is in flight.
+        // 模擬 pull 在請求 in-flight 期間寫回舊值（伺服器回應尚未抵達）。
         spy.beforeResponse = { entry.isReaderHidden = false }
         let state = WordDetailSceneState()
 
@@ -382,7 +409,8 @@ struct WordDetailSceneStateTests {
             modelContext: context
         )
 
-        #expect(entry.isReaderHidden == false, "a newer pull value must not be overwritten by the stale response")
+        #expect(entry.isReaderHidden, "成功回應必須覆寫 in-flight pull 寫回的舊值")
+        #expect(state.actionError == nil)
     }
 
     // MARK: - In-flight hooks must stay on the main thread (#2166)
@@ -526,6 +554,25 @@ struct WordDetailSceneStateTests {
         )
         entry.kgCardId = cardId
         return entry
+    }
+}
+
+/// 讓測試在 `archiveCard` 掛起期間模擬背景 pull，再以成功結束（#3413）。
+@MainActor
+private final class SuspendingArchiveSpy: CardArchiving {
+    private var continuation: CheckedContinuation<Void, Error>?
+    private(set) var isSuspended = false
+
+    func archiveCard(word: String, archived: Bool, notebookId: String) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            isSuspended = true
+        }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 
