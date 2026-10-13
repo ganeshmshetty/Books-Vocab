@@ -73,6 +73,8 @@ final class SyncCoordinator: SyncCoordinating {
 
     @ObservationIgnored private let executor: any VocabularySyncExecuting
     @ObservationIgnored private var pipelineTask: Task<Void, Never>?
+    /// 每次 `startSync` 遞增。只有最新一輪可以改寫 handle、步驟進度與終態（#3407）。
+    @ObservationIgnored private var runGeneration = 0
     /// 使用者已按取消。`cancelSync()` 已搶先把終態設成 `.cancelled`;pipeline
     /// 收尾(success path 或 catch path)看到此旗標就不覆寫終態。
     /// `Task.isCancelled` 不夠用——非 cancel 的真實錯誤也可能在 cancel 之外發生,
@@ -112,19 +114,31 @@ final class SyncCoordinator: SyncCoordinating {
         wasCancelledByUser = false
         AppAnalytics.track(.syncStarted)
 
+        runGeneration += 1
+        let generation = runGeneration
+        // cancelSync() 會立即把 phase 設為 failed，但上一輪可能仍在 executor 內 unwind 並持有 outbox。
+        // 新一輪必須等它返回才 execute，兩輪不得併發改寫同一批列（#3407）。
+        let previousRun = pipelineTask
         let adapter = KGServingVocabularySyncAdapter(base: kgService)
         pipelineTask = Task { [weak self] in
-            defer { self?.pipelineTask = nil }
-            guard let self else { return }
+            await previousRun?.value
+            guard let self, !Task.isCancelled else { return }
+            defer {
+                if self.runGeneration == generation { self.pipelineTask = nil }
+            }
 
-            let result = await executor.execute(
+            let result = await self.executor.execute(
                 pendingEntries: pendingEntries,
                 modelContext: modelContext,
                 service: adapter,
                 emit: { [weak self] event in
-                    self?.project(event)
+                    // 被取代的輪次不得再改寫目前這一輪的步驟進度（#3407）。
+                    guard let self, self.runGeneration == generation else { return }
+                    self.project(event)
                 }
             )
+            // 被取代的上一輪結果不得覆寫正在進行的新一輪的 phase／summary（#3407）。
+            guard self.runGeneration == generation else { return }
 
             switch result.terminalOutcome {
             case .keepCancelled:
