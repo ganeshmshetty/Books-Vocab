@@ -472,19 +472,20 @@ def delete_user_account_response(
         # linked id even if a failure interrupted the loop.
         for uid in ids_to_delete:
             evict_user_store_cache(data_dir / "users" / uid)
-    # The tombstone is durable and registration is now rejected under the lock
-    # (#2702), but a presigned PUT minted earlier can still land after the
-    # ledger-driven delete. Sweep the whole account prefix, outside the lock and
-    # after local removal (#2929), so a stalled S3 call cannot delay it. Best-
-    # effort: the client cannot retry (its token is revoked), so a failure is
-    # logged and reported to Sentry, which is the operator alert path. A PUT
-    # completing after this sweep is bounded by the URL TTL (one hour, see
-    # docs/sop/architecture.md), not by this request.
-    try:
-        sweep_account_prefixes(ids_to_delete, library_bucket=library_bucket, library_s3_client=library_s3_client)
-    except Exception as exc:
-        capture_handled(exc, context="account_erasure.prefix_sweep")
-        logger.exception("Library prefix sweep failed after account tombstone for %s", ids_to_delete)
+        # The tombstone is durable and registration is now rejected under the lock
+        # (#2702), but a presigned PUT minted earlier can still land after the
+        # ledger-driven delete. Sweep the whole account prefix, outside the lock and
+        # after local removal (#2929), so a stalled S3 call cannot delay it. Runs in
+        # the finally (#3360) so an unexpected non-OSError from the removal loop
+        # cannot skip it. Best-effort: the client cannot retry (its token is
+        # revoked), so a failure is logged and reported to Sentry, which is the
+        # operator alert path. A PUT completing after this sweep is bounded by the
+        # URL TTL (one hour, see docs/sop/architecture.md), not by this request.
+        try:
+            sweep_account_prefixes(ids_to_delete, library_bucket=library_bucket, library_s3_client=library_s3_client)
+        except Exception as exc:
+            capture_handled(exc, context="account_erasure.prefix_sweep")
+            logger.exception("Library prefix sweep failed after account tombstone for %s", ids_to_delete)
     if failed_uids:
         raise HTTPException(status_code=500, detail=f"Failed to remove user data for {', '.join(failed_uids)}")
 
