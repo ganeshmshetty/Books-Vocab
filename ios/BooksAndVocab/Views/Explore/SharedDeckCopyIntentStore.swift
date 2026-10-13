@@ -17,6 +17,22 @@ struct PendingDeckCopyIntent: Codable, Equatable {
     let deckId: String
     let idempotencyKey: String
     let notebookName: String?
+    /// 意圖首次落盤的時間（#3501），供行程重啟時判定是否仍在到期期限內。nil＝舊版落盤、無年齡證明。
+    let createdAt: Date?
+
+    init(
+        owner: String?,
+        deckId: String,
+        idempotencyKey: String,
+        notebookName: String?,
+        createdAt: Date? = nil
+    ) {
+        self.owner = owner
+        self.deckId = deckId
+        self.idempotencyKey = idempotencyKey
+        self.notebookName = notebookName
+        self.createdAt = createdAt
+    }
 }
 
 protocol SharedDeckCopyIntentStoring: AnyObject {
