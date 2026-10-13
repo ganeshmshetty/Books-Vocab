@@ -576,6 +576,42 @@ def test_an_ancestry_check_that_cannot_run_fails_loudly_not_as_reuse() -> None:
         )
 
 
+def _ancestry_of(tmp_path: Path, stderr: str) -> Callable[[str, str], bool]:
+    """``is_ancestor`` of a Delivery whose every git call fails with rc 128."""
+    args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
+    return deliver.Delivery(
+        args, lambda _cmd, _cwd: deliver.Proc(128, "", stderr), lambda _s: None
+    ).is_ancestor
+
+
+def test_an_absent_merged_head_is_not_an_ancestor_instead_of_a_crash(
+    tmp_path: Path,
+) -> None:
+    # the merged head was never fetched into this clone: nothing here can be
+    # contained in it, so the answer is a plain no (#3356, as git_queries does)
+    absent = "b" * 40
+    is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {absent}\n")
+    assert is_ancestor("a" * 40, absent) is False
+
+
+def test_an_absent_lane_head_is_not_an_ancestor_either(tmp_path: Path) -> None:
+    absent = "a" * 40
+    is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {absent}")
+    assert is_ancestor(absent, "b" * 40) is False
+
+
+def test_a_128_naming_some_other_commit_still_fails_loudly(tmp_path: Path) -> None:
+    is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {'c' * 40}")
+    with pytest.raises(deliver.DeliverError, match="rc=128"):
+        is_ancestor("a" * 40, "b" * 40)
+
+
+def test_an_unrelated_128_still_fails_loudly(tmp_path: Path) -> None:
+    is_ancestor = _ancestry_of(tmp_path, "fatal: not a git repository")
+    with pytest.raises(deliver.DeliverError, match="rc=128"):
+        is_ancestor("a" * 40, "b" * 40)
+
+
 def test_a_merged_pr_with_no_local_branch_is_cleanup() -> None:
     # nothing local to drop: the branch is gone, so cleanup cannot lose commits
     pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
@@ -2908,7 +2944,8 @@ def _include(status: int, body: str = "", etag: str | None = None) -> deliver.Pr
     lines = [f"HTTP/2.0 {status} X"]
     if etag is not None:
         lines.append(f"ETag: {etag}")
-    code = 0 if status < 400 else 1
+    # gh exits 0 only for 2xx; a 304 (or any other 3xx/4xx) is exit 1
+    code = 0 if 200 <= status < 300 else 1
     return deliver.Proc(code, "\r\n".join(lines) + "\r\n\r\n" + body, "")
 
 
@@ -2927,6 +2964,13 @@ class _ReplayGh:
 def _delivery(tmp_path: Path, runner: _ReplayGh) -> deliver.Delivery:
     args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
     return deliver.Delivery(args, runner, lambda _s: None)
+
+
+def test_gh_exit_codes_follow_the_status_line_2xx_only() -> None:
+    # a 304 is exit 1 like gh's non-2xx: the cache must not lean on the exit code
+    assert _include(200, "[]").returncode == 0
+    assert _include(304, "", '"c1"').returncode == 1
+    assert _include(404, "").returncode == 1
 
 
 def test_paginated_comment_reads_revalidate_with_etag(tmp_path: Path) -> None:

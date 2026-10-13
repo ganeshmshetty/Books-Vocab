@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3356,
+  "raise": {
+    "ops": 73
+  },
+  "note": "issue #3356 #3378: absent-commit ancestry mapping (+mirror of git_queries helper) and 304 exit-code fixture regression tests"
+}

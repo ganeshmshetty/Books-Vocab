@@ -155,6 +155,17 @@ def progress(message: str) -> None:
     print(f"deliver: {message}", file=sys.stderr, flush=True)
 
 
+_ABSENT_COMMIT_RE = re.compile(
+    r"^fatal: Not a valid (?:commit|object) name ([0-9a-f]{40})$"
+)
+
+
+def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> bool:
+    """Whether git reported one of ``shas`` as a missing object (exact match only)."""
+    match = _ABSENT_COMMIT_RE.fullmatch(stderr.strip())
+    return match is not None and match.group(1) in shas
+
+
 def failure_detail(done: Proc) -> str:
     """Everything a failed command said, never a tail.
 
@@ -750,6 +761,10 @@ class Delivery:
         proc = self.runner(["git", "merge-base", "--is-ancestor", old, new], self.home)
         if proc.returncode in (0, 1):
             return proc.returncode == 0
+        if proc.returncode == 128 and _absent_commit_named(proc.stderr, (old, new)):
+            # #3356: an object this clone never fetched cannot be contained in
+            # anything here; "not contained" is the typed refusal, as in git_queries.
+            return False
         raise DeliverError(
             f"compare {old} with {new} failed (rc={proc.returncode}): "
             f"{failure_detail(proc) or 'no output'}"
