@@ -77,16 +77,10 @@ final class ReviewScoringState {
         submittedAnswers[index]?.feedback
     }
 
-    /// Mark an answer as DB-flush-confirmed. Called from the flush success
-    /// callback so the snapshot can record `flushed=true` and restore won't
-    /// re-flush it. No-op if the index has no recorded answer.
-    func markFlushed(at index: Int) {
-        submittedAnswers[index]?.flushed = true
-    }
-
-    /// Mark only the submission that the flush actually wrote (#3409). The flush is async: the same
-    /// card may have been regraded since, and that replacement was never written, so it must stay
-    /// un-flushed. No-op when the index now holds a different submission.
+    /// Mark only the submission that the flush actually wrote (#3409), so the snapshot can record
+    /// `flushed=true` and restore won't re-flush it. The flush is async: the same card may have been
+    /// regraded since, and that replacement was never written, so it must stay un-flushed. No-op when
+    /// the index now holds a different submission (or none).
     func markFlushed(at index: Int, confirming sent: TodayReviewState.SubmittedAnswer) {
         guard submittedAnswers[index]?.isSameSubmission(as: sent) == true else { return }
         submittedAnswers[index]?.flushed = true

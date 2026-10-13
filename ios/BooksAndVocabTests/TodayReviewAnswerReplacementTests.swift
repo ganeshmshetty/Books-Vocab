@@ -19,9 +19,9 @@ struct TodayReviewAnswerReplacementTests {
 
     @Test func replacingAnswerMovesTheCountsAndKeepsTheRecordID() {
         let scoring = ReviewScoringState()
-        scoring.record(.remembered, at: 0)
+        let sent = scoring.record(.remembered, at: 0)
         let recordID = scoring.submittedAnswers[0]?.reviewRecordID
-        scoring.markFlushed(at: 0)
+        scoring.markFlushed(at: 0, confirming: sent)
 
         let outcome = scoring.score(.forgot, at: 0)
 
@@ -34,10 +34,11 @@ struct TodayReviewAnswerReplacementTests {
         #expect(scoring.submittedAnswers[0]?.flushed == false)
     }
 
-    @Test func sameFeedbackIsIdempotentAndDoesNotTouchCountsOrFlushFlag() {
+    @Test func sameFeedbackIsIdempotentAndDoesNotTouchCountsOrFlushFlag() throws {
         let scoring = ReviewScoringState()
         #expect(scoring.score(.remembered, at: 0) == .recorded)
-        scoring.markFlushed(at: 0)
+        let sent = try #require(scoring.submittedAnswers[0])
+        scoring.markFlushed(at: 0, confirming: sent)
         let triggerBefore = scoring.rememberedFeedbackTrigger
 
         #expect(scoring.score(.remembered, at: 0) == .unchanged)
