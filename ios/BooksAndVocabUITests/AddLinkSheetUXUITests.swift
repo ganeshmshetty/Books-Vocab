@@ -233,7 +233,7 @@ final class AddLinkSheetUXUITests: UITestCase {
         page.row(word: "serendipity").tapWhenReady()
 
         guard let trigger = app.buttons
-            .matching(NSPredicate(format: "label == %@", "新增知識連結"))
+            .matching(NSPredicate(format: "identifier == %@", "wordDetail.card.addLink"))
             .exactlyOneElement(timeout: 10, named: "AddLink detail trigger") else {
             return nil
         }

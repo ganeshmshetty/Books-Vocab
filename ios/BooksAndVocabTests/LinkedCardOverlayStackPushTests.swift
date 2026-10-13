@@ -71,6 +71,23 @@ struct OneTermPerConceptTests {
         }
     }
 
+    /// #3339 — UITests must locate the add-link trigger by its shipped zh-Hant label.
+    /// The retired "新增知識連結" predicate matched nothing, so detail-step lookups failed.
+    @Test func uiTestsUseShippedAddLinkLabelNotRetiredOne() throws {
+        let uiTests = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // BooksAndVocabTests
+            .deletingLastPathComponent() // ios
+            .appendingPathComponent("BooksAndVocabUITests")
+        let swiftFiles = try FileManager.default.subpathsOfDirectory(atPath: uiTests.path)
+            .filter { $0.hasSuffix(".swift") }
+        #expect(!swiftFiles.isEmpty)
+        for file in swiftFiles {
+            let text = try String(contentsOf: uiTests.appendingPathComponent(file), encoding: .utf8)
+            #expect(!text.contains("新增知識連結"), "\(file) still matches the retired add-link label")
+        }
+        #expect(Self.strings("zh-Hant")["vocab.card.addLink"] == "新增連結")
+    }
+
     @Test func zhHantConceptsResolveToOneTerm() {
         let zh = Self.strings("zh-Hant")
         #expect(zh["vocab.card.addLink"] == zh["新增連結"])
