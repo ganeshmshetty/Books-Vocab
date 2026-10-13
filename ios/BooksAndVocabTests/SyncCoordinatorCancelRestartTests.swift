@@ -14,6 +14,8 @@ struct SyncCoordinatorCancelRestartTests {
     @MainActor
     private final class GatedExecutor: VocabularySyncExecuting {
         private(set) var log: [String] = []
+        /// 每次 execute 收到的列 id（依 execute 順序）。
+        private(set) var executedIDs: [[UUID]] = []
         private var runCount = 0
         private var blocked: [CheckedContinuation<Void, Never>] = []
 
@@ -25,6 +27,7 @@ struct SyncCoordinatorCancelRestartTests {
         ) async -> VocabularySyncResult {
             runCount += 1
             let run = runCount
+            executedIDs.append(pendingEntries.map(\.id))
             log.append("start\(run)")
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 blocked.append(continuation)
@@ -54,6 +57,13 @@ struct SyncCoordinatorCancelRestartTests {
             sessionInvalidator: PullTestSessionInvalidator(),
             connectivityGate: FixedConnectivityGate(isConnected: true)
         )
+    }
+
+    private func makePendingAdd(_ word: String, in context: ModelContext) -> VocabularyEntry {
+        let entry = VocabularyEntry(word: word, translation: "t", context: "ctx", bookTitle: "B")
+        entry.restorePendingEntry()
+        context.insert(entry)
+        return entry
     }
 
     /// 讓 MainActor 上已排程的 Task 有機會執行，用於斷言「某事沒有發生」。
@@ -99,6 +109,38 @@ struct SyncCoordinatorCancelRestartTests {
         )
         #expect(coordinator.phase == .failed)
         #expect(coordinator.failureKind == .cancelled)
+    }
+
+    @Test("排隊的新一輪：等待期間被硬刪的快照 add 不得交給 execute")
+    func deletedSnapshotAddIsDroppedBeforeQueuedRunExecutes() async throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let executor = GatedExecutor()
+        let coordinator = SyncCoordinator(executor: executor)
+        let service = makeService()
+
+        coordinator.startSync(pendingEntries: [], modelContext: context, kgService: service)
+        await waitUntil { executor.log == ["start1"] }
+
+        let kept = makePendingAdd("kept", in: context)
+        let doomed = makePendingAdd("doomed", in: context)
+        try context.save()
+        coordinator.cancelSync()
+        coordinator.startSync(pendingEntries: [kept, doomed], modelContext: context, kgService: service)
+        // 未送出的 add 不受 in-flight 保護：使用者在上一輪仍執行時硬刪它。
+        context.delete(doomed)
+        try context.save()
+
+        executor.releaseOldest()
+        await waitUntil { executor.log.count == 3 }
+        #expect(executor.log == ["start1", "end1-cancelled", "start2"])
+        #expect(
+            executor.executedIDs.last == [kept.id],
+            "a snapshot row deleted while the previous run was in flight must not reach the queued run's execute"
+        )
+
+        executor.releaseOldest()
+        await waitUntil { executor.log.count == 4 }
     }
 
     @Test("排隊中的新一輪若在上一輪返回前已被取消，不得 execute")
