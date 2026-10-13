@@ -2944,7 +2944,8 @@ def _include(status: int, body: str = "", etag: str | None = None) -> deliver.Pr
     lines = [f"HTTP/2.0 {status} X"]
     if etag is not None:
         lines.append(f"ETag: {etag}")
-    code = 0 if status < 400 else 1
+    # gh exits 0 only for 2xx; a 304 (or any other 3xx/4xx) is exit 1
+    code = 0 if 200 <= status < 300 else 1
     return deliver.Proc(code, "\r\n".join(lines) + "\r\n\r\n" + body, "")
 
 
@@ -2963,6 +2964,13 @@ class _ReplayGh:
 def _delivery(tmp_path: Path, runner: _ReplayGh) -> deliver.Delivery:
     args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
     return deliver.Delivery(args, runner, lambda _s: None)
+
+
+def test_gh_exit_codes_follow_the_status_line_2xx_only() -> None:
+    # a 304 is exit 1 like gh's non-2xx: the cache must not lean on the exit code
+    assert _include(200, "[]").returncode == 0
+    assert _include(304, "", '"c1"').returncode == 1
+    assert _include(404, "").returncode == 1
 
 
 def test_paginated_comment_reads_revalidate_with_etag(tmp_path: Path) -> None:
