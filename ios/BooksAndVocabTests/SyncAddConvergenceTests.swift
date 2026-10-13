@@ -231,6 +231,37 @@ struct SyncAddConvergenceTests {
         #expect(entry.isPendingDelete)
     }
 
+    // MARK: - 待刪的 server 卡被重新擷取（#3408）
+
+    @Test("server 已持有卡的待刪列被重新擷取收斂 → 成為帶新 translation 的 pending edit，不得經 batchAdd 重送")
+    func recaptured_delete_of_server_card_becomes_edit_not_add() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let queuedDelete = VocabularyEntry(word: "harbor", translation: "港A", context: "ctx", bookTitle: "B")
+        queuedDelete.kgCardId = "card-harbor"
+        queuedDelete.markSynced()
+        queuedDelete.queueDelete()
+        let recapture = makePendingAdd("harbor")
+        recapture.translation = "港B"
+        context.insert(queuedDelete)
+        context.insert(recapture)
+
+        let removed = SyncCoordinator.sanitizeOutbox(
+            pendingEntries: [queuedDelete, recapture],
+            modelContext: context
+        )
+
+        #expect(removed.contains(recapture.id), "the recaptured add must be collapsed away")
+        #expect(queuedDelete.kgCardId == "card-harbor", "the server card must not be re-added")
+        #expect(queuedDelete.isPendingEdit)
+        #expect(queuedDelete.translation == "港B", "the recaptured translation must reach the server")
+        // 與 startSync 的 adds 篩選一致：被收斂的列不計入；其餘 pending add 才會經 batchAdd 上傳。
+        let uploadedAdds = [queuedDelete, recapture].filter {
+            !removed.contains($0.id) && $0.syncAction == .add && $0.shouldUploadOnNextSync
+        }
+        #expect(uploadedAdds.isEmpty, "batchAdd must never receive a word the server already holds")
+    }
+
     // MARK: - 撤銷待刪（SyncView「還原」，#2484）
 
     @Test("未送出的 add 被刪除後撤銷 → 回到 pending add，絕不 markSynced（server 從未確認此卡）")
