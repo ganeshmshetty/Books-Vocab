@@ -176,4 +176,35 @@ struct ReviewGradeProgressTests {
         state.goPrevious()
         #expect(state.currentCardForTesting?.gradedBadge == ReviewGradedBadge(feedback: .forgot))
     }
+
+    // MARK: - Header progress on the presenter (#3371, #3390)
+
+    @Test func headerProgressIsTheGradedCountAndIgnoresBrowsing() {
+        let state = makeState(cardCount: 5)
+        state.scoring.record(.remembered, at: 0)
+        #expect(state.progressText == "1 / 5")
+        #expect(state.progressText == ReviewGradeProgress(graded: state.scoring.gradedCount, total: state.queue.count).text)
+
+        state.goNext()
+        state.goPrevious()
+        state.goNext()
+        #expect(state.currentIndex == 1)
+        #expect(state.progressText == "1 / 5")
+    }
+
+    @Test func regradingKeepsTheHeaderCount() {
+        let state = makeState(cardCount: 5)
+        state.scoring.record(.remembered, at: 0)
+        state.scoring.score(.forgot, at: 0)
+        #expect(state.progressText == "1 / 5")
+    }
+
+    @Test func positionSignalStillMovesWhileTheHeaderStaysGraded() {
+        let state = makeState(cardCount: 5)
+        #expect(state.positionText == "1 / 5")
+
+        state.goNext()
+        #expect(state.positionText == "2 / 5")
+        #expect(state.progressText == "0 / 5")
+    }
 }

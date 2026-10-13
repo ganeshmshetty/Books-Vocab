@@ -432,7 +432,7 @@ struct TodayReviewPresenter: View {
                     DispatchQueue.main.async { suppressFoldAnimation = false }
                 }
             }
-            .onChange(of: state.progressText) { _, _ in
+            .onChange(of: state.positionText) { _, _ in
                 if lastAutoplaySpokenCardKey != nil { lastAutoplaySpokenCardKey = nil }
             }
             .onChange(of: state.keyboardGrade) { _, request in
@@ -592,7 +592,7 @@ struct TodayReviewPresenter: View {
             #if DEBUG
             PerfLog.review.mark(
                 "gap.geom",
-                "slot=-1 role=deck kind=deck w=\(card.word) h=\(String(format: "%.1f", h)) reveal=\(state.revealStage.rawValue) dismiss=\(dismissPhase == .idle ? 0 : 1) off=\(Int(swipeOffset)) idx=\(state.progressText)"
+                "slot=-1 role=deck kind=deck w=\(card.word) h=\(String(format: "%.1f", h)) reveal=\(state.revealStage.rawValue) dismiss=\(dismissPhase == .idle ? 0 : 1) off=\(Int(swipeOffset)) idx=\(state.positionText)"
             )
             #endif
         }

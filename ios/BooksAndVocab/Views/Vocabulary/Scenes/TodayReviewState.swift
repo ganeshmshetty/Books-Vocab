@@ -211,8 +211,14 @@ final class TodayReviewState {
         session.currentEntry
     }
 
+    /// header 與 toolbar 的進度：已評數 / 總數（#3371、#3390）。瀏覽（‹ ›、autoplay）不改變它。
     var progressText: String {
-        session.progressText
+        ReviewGradeProgress(graded: scoring.gradedCount, total: session.queue.count).text
+    }
+
+    /// 瀏覽位置（不顯示）：autoplay 換卡時重置旁白狀態的訊號（見 TodayReviewPresenter）。
+    var positionText: String {
+        session.positionText
     }
 
     var presenterState: TodayReviewPresenterState {

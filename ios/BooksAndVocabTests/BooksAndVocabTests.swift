@@ -261,7 +261,7 @@ struct BooksAndVocabTests {
         #expect(restored.currentIndex == 1)
         #expect(restored.rememberedCount == 1)
         #expect(restored.forgotCount == 0)
-        #expect(restored.progressText == "2 / 2")
+        #expect(restored.progressText == "1 / 2")
         TodayReviewSessionSnapshotStore.clear(for: nil)
     }
 
