@@ -1152,6 +1152,15 @@ ios_test_prepare_status() {
 handle_cache_action() {
   local cache_key derived_root xctestrun_path products_ready payload build_log build_result_dir build_result_bundle build_exit prepare_status prepare_error_key prepare_error_message
   local action="$1"
+  # Under --json, stdout carries exactly one payload document (#3331). Fence fd 1 to
+  # stderr before any work, so every progress line the cache build emits (build-for-
+  # testing, disk budget, locks) stays off the payload, which is written to fd 9 below.
+  # The fence lives here, not in the dispatcher, because this function owns the fd 9
+  # contract: a caller that skips the fence makes `>&9` fail under errexit and aborts
+  # with rc 1 before the 77/75 propagation (regression in 3f898a980).
+  if (( JSON_MODE )); then
+    exec 9>&1 1>&2
+  fi
   cache_key="$(ios_test_build_cache_key)"
   derived_root="$(ios_test_derived_data_root)"
   DERIVED_DATA_ROOT="$derived_root"
@@ -2012,12 +2021,6 @@ PY
 }
 
 if [[ -n "$TEST_CACHE_ACTION" ]]; then
-  # Under --json, stdout carries exactly one payload document (#3331). Every progress
-  # line the cache build emits (build-for-testing, disk budget, locks) goes to stderr,
-  # so no helper can corrupt the payload, and the payload is written to fd 9.
-  if (( JSON_MODE )); then
-    exec 9>&1 1>&2
-  fi
   handle_cache_action "$TEST_CACHE_ACTION"
 fi
 
