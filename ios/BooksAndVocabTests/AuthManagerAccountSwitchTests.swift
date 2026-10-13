@@ -553,3 +553,74 @@ struct AuthManagerAccountSwitchTests {
         )
     }
 }
+
+// MARK: - #3416 a stale 401 must not end the current session
+
+/// Holds one request in flight until the test answers it, so a session change can land between
+/// the token being sent and the 401 coming back.
+private final class SuspendedKGTransport: KGHTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: CheckedContinuation<(Data, URLResponse), Error>?
+
+    var isWaiting: Bool { lock.withLock { pending != nil } }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.withLock { pending = continuation }
+        }
+    }
+
+    func respond(statusCode: Int) {
+        let continuation = lock.withLock { () -> CheckedContinuation<(Data, URLResponse), Error>? in
+            let taken = pending
+            pending = nil
+            return taken
+        }
+        let response = HTTPURLResponse(
+            url: URL(string: "https://kg.test")!,
+            statusCode: statusCode,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        continuation?.resume(returning: (Data(), response))
+    }
+}
+
+extension AuthManagerAccountSwitchTests {
+    /// #3416: a 401 answers the token that was sent. When the session moved to another account
+    /// while the request was in flight, that 401 describes a superseded session: it must not log
+    /// out the current account, wipe its rows, or raise the expired banner.
+    @Test func stale401FromPreviousAccountDoesNotEndTheCurrentSession() async throws {
+        let cleaner = RecordingCleaner()
+        let manager = makeManager(priorUserId: "account-a", cleaner: cleaner)
+        let transport = SuspendedKGTransport()
+        let service = KGService(
+            authSession: manager,
+            sessionInvalidator: manager,
+            transport: transport,
+            connectivityGate: FixedConnectivityGate(isConnected: true)
+        )
+
+        let request = Task {
+            try await service.authenticatedRequest(path: "/api/user/config", retryPolicy: .none)
+        }
+        while !transport.isWaiting {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        manager.login(userId: "account-b", token: "token-b")
+        transport.respond(statusCode: 401)
+
+        var thrown: Error?
+        do {
+            _ = try await request.value
+        } catch {
+            thrown = error
+        }
+
+        #expect(thrown is CancellationError)
+        #expect(manager.isLoggedIn == true)
+        #expect(manager.userId == "account-b")
+        #expect(cleaner.clearCount == 0)
+        #expect(service.sessionExpiredReason == nil)
+    }
+}

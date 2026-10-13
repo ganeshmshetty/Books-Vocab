@@ -107,3 +107,16 @@ private extension UserDefaults {
         UserDefaults(suiteName: "test-auto-link-\(UUID().uuidString)")!
     }
 }
+
+extension AutoLinkSettingsTests {
+    @Test func accountNamespaceKeepsGuestKeysUntouched() {
+        let defaults = UserDefaults.makeSuite()
+        let store = AutoLinkSettingsStore(defaults: defaults, accountID: "account-a")
+        store.setEnabled(false, updatedAt: 100.0)
+        #expect(defaults.object(forKey: "auto_link_enabled") == nil)
+
+        let reopened = AutoLinkSettingsStore(defaults: defaults, accountID: "account-a")
+        #expect(reopened.isEnabled == false)
+        #expect(reopened.updatedAt == 100.0)
+    }
+}

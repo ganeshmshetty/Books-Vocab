@@ -40,6 +40,14 @@ extension KGService {
         return components.url
     }
 
+    /// How `authenticatedRequest` treats a 401 from the server. `.invalidateSession` (default)
+    /// ends the session at that point. `.returnResponse` hands the 401 to a caller that owns the
+    /// teardown itself (#3417: account deletion completes its account-scoped erase).
+    enum UnauthorizedHandling: Equatable {
+        case invalidateSession
+        case returnResponse
+    }
+
     func authenticatedRequest(
         path: String,
         method: String = "GET",
@@ -47,6 +55,7 @@ extension KGService {
         body: Data? = nil,
         headers: [String: String] = [:],
         retryPolicy: RetryPolicy = .default,
+        unauthorized: UnauthorizedHandling = .invalidateSession,
         onRetry: ((Int, Int) -> Void)? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         let token = try await currentAuthToken()
@@ -110,6 +119,18 @@ extension KGService {
                 )
 
                 if httpResponse.statusCode == 401 {
+                    // #3416: the 401 answers the token that was sent. If the session has moved on
+                    // while the request was in flight (account switch or logout), the response
+                    // describes a superseded session and must not end the current one.
+                    let currentToken = await authSession.token
+                    guard currentToken == token else {
+                        AppLog.kg.info("stale 401 for \(path) ignored: session changed during request request_id=\(responseRequestID)")
+                        throw CancellationError()
+                    }
+                    if unauthorized == .returnResponse {
+                        AppLog.kg.info("401 for \(path) returned to caller request_id=\(responseRequestID)")
+                        return (data, httpResponse)
+                    }
                     // No client-side token refresh exists (AuthManager.token is a plain
                     // stored credential; there is no refresh-token flow). The server's 401 is
                     // the only authority that a session is invalid (#2806: the local clock is
