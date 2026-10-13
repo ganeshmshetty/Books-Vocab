@@ -74,6 +74,20 @@ _GH_API_FLAG_OPTIONS = frozenset(
 )
 
 
+def _nearest_existing_dir(path: Path) -> Path:
+    """Return the lane dir, or its nearest existing ancestor once the lane is removed.
+
+    A removed lane must not be recreated just to host gh; subprocess would raise
+    FileNotFoundError on a missing cwd. gh reads its repo from --repo / env, so
+    any live ancestor serves as its working directory.
+    """
+
+    for candidate in (path, *path.parents):
+        if candidate.is_dir():
+            return candidate
+    return path
+
+
 @dataclass(frozen=True)
 class CommandAttempt:
     """Exact evidence for one subprocess attempt made by the client."""
@@ -280,15 +294,16 @@ class GitHubCliClient:
         allow_nonzero: bool = False,
         retry_read_only: bool = False,
     ) -> CommandResult:
-        result = self.runner.run(argv, cwd=self.repo)
-        attempts = [CommandAttempt(argv=argv, cwd=self.repo, result=result)]
+        cwd = _nearest_existing_dir(self.repo)
+        result = self.runner.run(argv, cwd=cwd)
+        attempts = [CommandAttempt(argv=argv, cwd=cwd, result=result)]
         if (
             retry_read_only
             and is_read_only_json_query(argv)
             and _is_transient_failure(result)
         ):
-            result = self.runner.run(argv, cwd=self.repo)
-            attempts.append(CommandAttempt(argv=argv, cwd=self.repo, result=result))
+            result = self.runner.run(argv, cwd=cwd)
+            attempts.append(CommandAttempt(argv=argv, cwd=cwd, result=result))
         self.last_command_attempts = tuple(attempts)
         if result.exit_code != 0 and (not allow_nonzero or not result.stdout.strip()):
             raise AdapterCommandError(result)
