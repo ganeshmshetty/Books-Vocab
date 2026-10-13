@@ -29,6 +29,7 @@ protocol SubscriptionManaging: AnyObject {
     var entitlements: KGEntitlements { get }
     var isLoading: Bool { get }
     var lastError: String? { get }
+    var productLoadFailed: Bool { get }
     var activePaywallSource: PaywallSource? { get set }
     var proProduct: Product? { get }
     var proProductIdentifier: String { get }
@@ -77,6 +78,9 @@ final class SubscriptionManager: SubscriptionManaging {
     func beginLoading() { loadingDepth += 1 }
     func endLoading() { loadingDepth = max(0, loadingDepth - 1) }
     var lastError: String?
+    /// 商品載入是否已耗盡重試仍失敗。只由 loadProducts 設定／清除；refresh 寫入的 `lastError = nil`
+    /// 不得清掉它，否則 paywall 會從重試回到永久載入中（#3420）。
+    var productLoadFailed = false
     var activePaywallSource: PaywallSource?
     var proProduct: Product?
     var proProductIdentifier: String { Self.proProductID }

@@ -299,7 +299,7 @@ struct SubscriptionPaywallSheet: View {
         SubscriptionManager.productLoadState(
             isLoading: subscriptionManager.isLoading,
             hasProduct: subscriptionManager.proProduct != nil,
-            hasError: subscriptionManager.lastError != nil
+            hasError: subscriptionManager.productLoadFailed
         )
     }
 

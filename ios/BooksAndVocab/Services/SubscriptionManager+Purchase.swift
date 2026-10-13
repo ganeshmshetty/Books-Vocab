@@ -80,6 +80,7 @@ extension SubscriptionManager {
         beginLoading()
         defer { endLoading() }
         lastError = nil
+        productLoadFailed = false
         for attempt in 1...Self.productRetryAttempts {
             do {
                 let products = try await Product.products(for: [Self.proProductID])
@@ -106,6 +107,7 @@ extension SubscriptionManager {
         }
         // All retries exhausted — product still unavailable
         proProduct = nil
+        productLoadFailed = true
         lastError = L10n.string("尚未取得訂閱方案，請稍後再試。")
     }
 
