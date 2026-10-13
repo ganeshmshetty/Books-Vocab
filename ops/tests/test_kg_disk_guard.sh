@@ -188,10 +188,12 @@ echo "── active build: only an xcodebuild executable or a live build lock co
 # in-process: $1 is the argv snapshot (text the old detection grepped), $2 the
 # executable snapshot (ps -axo comm=, one path per line), $3 the build lock.
 active_build_probe() {
-  local argv_snapshot="$1" command_snapshot="$2" lock_file="$3"
+  local argv_snapshot="$1" command_snapshot="$2" lock_file="$3" held="${4:-0}"
   (
     unset KG_DISK_GUARD_ACTIVE_BUILD
     export KG_DISK_GUARD_BUILD_LOCK_FILE="$lock_file"
+    # $4 is BUILD_LOCK_HELD: the caller declares it holds the iOS build lock.
+    export KG_DISK_GUARD_BUILD_LOCK_HELD="$held"
     # source inherits this function's positional parameters, and the guard's
     # argument loop would reject them; a sourced load takes no arguments.
     set --
@@ -203,7 +205,7 @@ active_build_probe() {
 }
 expect_active_build() {
   local want="$1" label="$2" got
-  got="$(active_build_probe "$3" "$4" "$5")"
+  got="$(active_build_probe "$3" "$4" "$5" "${6:-0}")"
   [[ "$got" == "$want" ]] && ok "$label" || bad "$label (want active_build=$want, got $got)"
 }
 active_lock_dir="$TMP/active-build"; mkdir -p "$active_lock_dir"
@@ -233,7 +235,59 @@ expect_active_build 0 "stale iOS build lock with a dead owner is not a build" \
   '' '/bin/bash' "$active_lock_dir/dead.lock"
 expect_active_build 0 "guard never counts a lock it holds itself" \
   '' '/bin/bash' "$active_lock_dir/self.lock"
+expect_active_build 0 "caller-held iOS lock (BUILD_LOCK_HELD=1) is not a competing build" \
+  '' '/bin/bash' "$active_lock_dir/live.lock" 1
+# A guard run as a child of the lock holder (ios_ops.sh -> guard) is not a
+# separate process: the holder is an ancestor, so it is the caller's own tree.
+# A child process is required; the probe subshell shares the test's PID.
+tree_active_probe() {
+  env -u KG_DISK_GUARD_ACTIVE_BUILD KG_DISK_GUARD_BUILD_LOCK_FILE="$1" KG_DISK_GUARD_BUILD_LOCK_HELD=0 \
+    bash -c 'set --; source "$0"; process_command_snapshot() { printf "%s\n" /bin/bash; }; active_build' "$SCRIPT"
+}
+printf '%s\n' "$$" > "$active_lock_dir/caller-tree.lock"
+got="$(tree_active_probe "$active_lock_dir/caller-tree.lock")"
+[[ "$got" == "0" ]] && ok "lock held by an ancestor (the caller's process tree) is not a build" \
+  || bad "lock held by an ancestor counted as a build (want active_build=0, got $got)"
+got="$(tree_active_probe "$active_lock_dir/live.lock")"
+[[ "$got" == "1" ]] && ok "live lock held outside the caller's process tree is a build" \
+  || bad "live foreign lock not counted from a child (want active_build=1, got $got)"
 kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+
+echo "── docker build: argv[0] and subcommand decide; argv text that mentions a build does not ──"
+# $1 is the argv snapshot (ps -axww -o args=, one line per process), $2 the
+# executable snapshot (ps -axo comm=).  Stubbed in-process like active_build.
+docker_active_probe() {
+  local argv_snapshot="$1" command_snapshot="$2"
+  (
+    unset KG_DISK_GUARD_DOCKER_ACTIVE
+    set --
+    source "$SCRIPT"
+    process_snapshot() { printf '%s\n' "$argv_snapshot"; }
+    process_command_snapshot() { printf '%s\n' "$command_snapshot"; }
+    docker_active
+  )
+}
+expect_docker_active() {
+  local want="$1" label="$2" got
+  got="$(docker_active_probe "$3" "$4")"
+  [[ "$got" == "$want" ]] && ok "$label" || bad "$label (want docker_active=$want, got $got)"
+}
+expect_docker_active 0 "a shell whose argv mentions docker build is not a build" \
+  '/bin/bash -c docker build -t kg .' '/bin/bash'
+expect_docker_active 0 "a log tail naming docker build is not a build" \
+  'tail -f /tmp/docker build.log' '/usr/bin/tail'
+expect_docker_active 0 "a deliver note quoting docker build is not a build" \
+  '/opt/homebrew/bin/python3.13 ops/deliver.py --note docker build' '/opt/homebrew/bin/python3.13'
+expect_docker_active 0 "docker ps is not a build" \
+  'docker ps -a' '/usr/local/bin/docker'
+expect_docker_active 0 "docker builder prune is cache maintenance, not a build" \
+  'docker builder prune -f' '/usr/local/bin/docker'
+expect_docker_active 1 "docker build CLI is a build" \
+  'docker build -t kg .' '/usr/local/bin/docker'
+expect_docker_active 1 "docker compose build CLI is a build" \
+  '/usr/local/bin/docker compose build api' '/usr/local/bin/docker'
+expect_docker_active 1 "buildx plugin process is a build" \
+  '' '/usr/local/lib/docker/cli-plugins/docker-buildx'
 
 echo "── global DerivedData: active consumer defers repair ──"
 root="$TMP/global-dd-active"; global_derived="$root/global-derived-data"; state="$root/state.json"
