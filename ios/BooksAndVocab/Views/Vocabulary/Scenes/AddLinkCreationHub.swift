@@ -42,6 +42,9 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// Warning jobs whose `retry(jobKey:)` is still running. The publish that settles
     /// such a retry is a new outcome; a plain re-publish of the same phase is not (#3393).
     @ObservationIgnored private var warningRetriesInFlight: Set<String> = []
+    /// Pending-link detail sheets on screen, counted per job. Such a sheet shows its job's
+    /// outcome itself, whichever coordinator runs the job, so the hub posts no notice (#3512).
+    @ObservationIgnored private var presentedDetailJobCounts: [String: Int] = [:]
 
     init(
         store: any PendingLinkCreationStoring = PendingLinkCreationStores.makeDefault(),
@@ -82,6 +85,17 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
 
     func sheetDidDisappear(_ coordinator: AddLinkCreationCoordinator) {
         presentingCoordinators.removeAll { $0.value == nil || $0.value === coordinator }
+    }
+
+    /// A pending-link detail sheet for `jobKey` is on screen. It is keyed by job, not by
+    /// coordinator: a warning retry from that sheet may create its coordinator only now (#3512).
+    func detailSheetDidAppear(jobKey: String) {
+        presentedDetailJobCounts[jobKey, default: 0] += 1
+    }
+
+    func detailSheetDidDisappear(jobKey: String) {
+        guard let count = presentedDetailJobCounts[jobKey] else { return }
+        presentedDetailJobCounts[jobKey] = count > 1 ? count - 1 : nil
     }
 
     /// Source card ids whose cached card must be rebuilt because their pending
@@ -172,7 +186,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// dismissed job straight back onto the source card.
     func dismiss(jobKey: String) {
         guard let job = jobs[jobKey], job.record.state != .creating else { return }
-        job.coordinator?.cancel()
+        cancelRetired(job.coordinator)
         remove(jobKey: jobKey)
     }
 
@@ -187,7 +201,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         let sourceCardIDs = jobs.values.map(\.record.sourceCardID)
         jobs.removeAll()
         warningRetriesInFlight.removeAll()
-        for coordinator in coordinators { coordinator.cancel() }
+        for coordinator in coordinators { cancelRetired(coordinator) }
         store.save([])
         publishProjection()
         dirtySourceCardIDs.formUnion(sourceCardIDs)
@@ -242,9 +256,17 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         let owner = userIDProvider()
         let foreign = jobs.filter { $0.value.record.userId != owner }.map(\.key)
         for jobKey in foreign {
-            jobs[jobKey]?.coordinator?.cancel()
+            cancelRetired(jobs[jobKey]?.coordinator)
             remove(jobKey: jobKey)
         }
+    }
+
+    /// Cancels the coordinator of a job the hub is retiring. The hub detaches first: a
+    /// cancelled warning retry publishes its state, and that publish must not upsert the
+    /// job back onto its source card or post a notice for a job the hub already removed.
+    private func cancelRetired(_ coordinator: AddLinkCreationCoordinator?) {
+        coordinator?.observer = nil
+        coordinator?.cancel()
     }
 
     private func owns(_ coordinator: AddLinkCreationCoordinator, jobKey: String) -> Bool {
@@ -271,7 +293,8 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         guard let recordState = jobs[state.jobKey]?.record.state,
               Self.completesUnattended(recordState: recordState, phase: state.phase, retryEnded: retryEnded),
               owns(coordinator, jobKey: state.jobKey),
-              !isPresenting(coordinator) else { return nil }
+              !isPresenting(coordinator),
+              presentedDetailJobCounts[state.jobKey] == nil else { return nil }
         return AddLinkJobNotice.item(
             phase: state.phase,
             jobKey: state.jobKey,

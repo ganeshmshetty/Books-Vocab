@@ -1213,4 +1213,134 @@ struct AddLinkJobCompletionNoticeTests {
         for _ in 0..<5 { await Task.yield() }
         #expect(rig.poster.items.count == 1)
     }
+
+    /// A warning job restored from disk: its retry runs in a new coordinator the hub
+    /// creates itself. `pipelineGate` holds that retry in flight; without it the retry
+    /// ends still partial (the pipeline call fails).
+    private func restoredWarningRig(pipelineGate: Gate? = nil) throws -> Rig {
+        let service = ScriptedCreationService(
+            onStart: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 1) },
+            onFetch: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 2) }
+        )
+        if let pipelineGate {
+            service.onTriggerPipeline = { await pipelineGate.wait() }
+        } else {
+            service.onTriggerPipeline = { throw URLError(.notConnectedToInternet) }
+        }
+        let record = PendingLinkCreationRecord(
+            jobKey: jobKey,
+            word: "luminous",
+            sourceCardID: "src",
+            notebookId: "nb",
+            idempotencyKey: "persisted-key",
+            operationId: "op-1",
+            operationTerminal: true,
+            state: .warning,
+            message: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue],
+            userId: nil
+        )
+        let rig = try makeRig(service: service, records: [record])
+        rig.hub.resume(services: AddLinkCreationServices(
+            operationService: service,
+            syncService: service,
+            container: rig.container
+        ))
+        return rig
+    }
+
+    @Test("a warning retry started from a presented detail sheet that ends partial posts nothing (#3512)")
+    func detailSheetRetryEndingPartialIsSilent() async throws {
+        let rig = try restoredWarningRig()
+        // The detail sheet is on screen; the sheet that created the job closed long ago.
+        rig.hub.detailSheetDidAppear(jobKey: jobKey)
+        #expect(rig.hub.retry(jobKey: jobKey))
+        #expect(await CreationFixtures.eventually {
+            rig.hub.job(forJobKey: jobKey)?.coordinator?.isRetryingWarnings == false
+        })
+        for _ in 0..<10 { await Task.yield() }
+        #expect(rig.poster.items.isEmpty)
+        #expect(rig.hub.job(forJobKey: jobKey)?.record.state == .warning)
+
+        rig.hub.detailSheetDidDisappear(jobKey: jobKey)
+        #expect(rig.hub.retry(jobKey: jobKey))
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        #expect(rig.poster.items.first?.style == .warning)
+    }
+
+    @Test("dismissing a warning whose retry is in flight posts no notice for the removed job (#3512)")
+    func dismissDuringWarningRetryPostsNothing() async throws {
+        let gate = Gate()
+        let rig = try restoredWarningRig(pipelineGate: gate)
+        #expect(rig.hub.retry(jobKey: jobKey))
+        #expect(await CreationFixtures.eventually { rig.service.pipelineNotebookIds.count == 1 })
+
+        rig.hub.dismiss(jobKey: jobKey)
+        #expect(rig.hub.jobs.isEmpty)
+        await gate.release()
+        for _ in 0..<10 { await Task.yield() }
+        #expect(rig.poster.items.isEmpty)
+        #expect(rig.hub.jobs.isEmpty)
+    }
+}
+
+/// Counts the coordinator's publishes (the observer the hub is in production).
+@MainActor
+final class CancelRecordingObserver: AddLinkCreationObserving {
+    private(set) var changes = 0
+    func creationDidChange(_ coordinator: AddLinkCreationCoordinator) { changes += 1 }
+    func creationIsActive(jobKey: String, excluding coordinator: AddLinkCreationCoordinator) -> Bool { false }
+}
+
+@Suite("Add Link warning retry cancellation (#3512)", .serialized)
+@MainActor
+struct AddLinkWarningRetryCancelTests {
+    @Test("cancelling a warning retry clears its flag and publishes the change, and nothing settles afterwards")
+    func cancelClearsFlagAndPublishes() async throws {
+        let gate = Gate()
+        let service = ScriptedCreationService(
+            onStart: { _, _ in
+                CreationFixtures.status("op-1", "succeeded_with_warnings", sequence: 1,
+                                        warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue])
+            },
+            onFetch: { _, _ in
+                CreationFixtures.status("op-1", "succeeded_with_warnings", sequence: 2,
+                                        warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue])
+            }
+        )
+        service.onTriggerPipeline = { await gate.wait() }
+        let observer = CancelRecordingObserver()
+        let container = try CreationFixtures.container()
+        let source = CreationFixtures.entry("source", cardID: "src")
+        let coordinator = AddLinkCreationCoordinator(
+            environment: CreationFixtures.environment(),
+            observer: observer
+        )
+        coordinator.start(
+            word: "luminous",
+            sourceEntry: source,
+            allEntries: [source],
+            operationService: service,
+            syncService: service,
+            container: container
+        )
+        #expect(await CreationFixtures.eventually { coordinator.phase == .succeededWithWarnings })
+
+        coordinator.retryWarnings()
+        #expect(await CreationFixtures.eventually { service.pipelineNotebookIds.count == 1 })
+        #expect(coordinator.isRetryingWarnings)
+
+        let before = observer.changes
+        coordinator.cancel()
+        #expect(!coordinator.isRetryingWarnings)
+        #expect(observer.changes == before + 1)
+
+        // The held pipeline call returns after the cancel; its settle must stay silent.
+        await gate.release()
+        for _ in 0..<10 { await Task.yield() }
+        #expect(observer.changes == before + 1)
+        #expect(coordinator.phase == .succeededWithWarnings)
+        #expect(!coordinator.isRetryingWarnings)
+    }
 }

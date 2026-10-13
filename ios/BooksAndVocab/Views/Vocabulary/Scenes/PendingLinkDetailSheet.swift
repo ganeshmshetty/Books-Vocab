@@ -86,6 +86,13 @@ struct PendingLinkDetailSheet: View {
             // Completed: the pending item has become a real link behind this sheet.
             if gone { dismiss() }
         }
+        .onAppear {
+            // Tells the hub this sheet shows the job's outcome, so it posts no duplicate notice (#3512).
+            if let jobKey { hub.detailSheetDidAppear(jobKey: jobKey) }
+        }
+        .onDisappear {
+            if let jobKey { hub.detailSheetDidDisappear(jobKey: jobKey) }
+        }
         .enableInjection()
     }
 
