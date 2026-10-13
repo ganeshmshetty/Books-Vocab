@@ -82,8 +82,8 @@ agent_facing_surface:
     - top.md
 EOF
 surface_out="$($ROOT/ops/docs_impact.py --root "$TMP/tree" --registry "$TMP/tree/registry.yml" --surface-scan 'NEEDLE-XYZ')"
-printf '%s\n' "$surface_out" | grep -qE '^SURFACE \.claude/agents/w\.md:1:'
-printf '%s\n' "$surface_out" | grep -qE '^SURFACE top\.md:1:'
+grep -qE '^SURFACE \.claude/agents/w\.md:1:' <<< "$surface_out"
+grep -qE '^SURFACE top\.md:1:' <<< "$surface_out"
 
 if "$ROOT/ops/docs_impact.py" --root "$TMP/tree" --registry "$TMP/tree/missing.yml" --surface-paths >"$TMP/missing-registry.out" 2>&1; then
   echo "missing registry unexpectedly passed" >&2

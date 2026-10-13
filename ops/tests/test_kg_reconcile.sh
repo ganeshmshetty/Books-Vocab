@@ -370,7 +370,7 @@ bash -n "$RECON" && ok "kg_reconcile syntax" || bad "kg_reconcile syntax"
 [[ -x "$RECON" ]] && ok "kg_reconcile executable" || bad "kg_reconcile not executable"
 help_out="$("$RECON" --help 2>&1)"; help_rc=$?
 [[ "$help_rc" -eq 0 ]] && ok "--help exit 0" || bad "--help exit $help_rc"
-printf '%s' "$help_out" | grep -qi "reconcile" && ok "--help mentions reconcile" || bad "--help missing usage"
+grep -qi "reconcile" <<< "$help_out" && ok "--help mentions reconcile" || bad "--help missing usage"
 
 section "paths_need_deploy 觸發正則"
 need   "backend/src/x.py"

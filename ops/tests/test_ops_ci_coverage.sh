@@ -14,7 +14,7 @@ LINUX_GROUPS=(
   backup-verify devops deploy-smoke infra-health disk-guard reconcile sentry-release branch-audit
   exit-code-contract worktree delivery-control capability-matrix context-routing doctor ui-token plain-deadzone tap-a11y
   ui-deadcode ui-graph log-assert python-entrypoints
-  lint-baselines injection-lint ui-fixture-lint ops-ci-coverage
+  lint-baselines injection-lint ui-fixture-lint ops-ci-coverage pipefail-echo-grep
   ui-quality-plane ui-quality-gate review-card-golden docs-lint gen-ios-baseline
   github-workflows
   ios-signal-traps ios-install-provenance ios-run-verdict ios-device-lock

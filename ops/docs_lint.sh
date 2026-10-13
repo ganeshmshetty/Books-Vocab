@@ -214,7 +214,7 @@ validate_registry() {
         bad=$((bad+1))
         continue
       fi
-      if ! printf '%s' "$check" | grep -qF -- "$path"; then
+      if ! grep -qF -- "$path" <<< "$check"; then
         echo "ERROR registry — $id check 未指名 path: $path"
         bad=$((bad+1))
         continue
@@ -330,7 +330,7 @@ EOF
 validate_doc() {
   file="$1"
   meta="$(sed -n '1,/^-->/p' "$file" 2>/dev/null || true)"
-  if ! printf '%s\n' "$meta" | grep -q '^<!-- doc-meta'; then
+  if ! grep -q '^<!-- doc-meta' <<< "$meta"; then
     echo "ERROR $file — 缺少 doc-meta frontmatter"
     errors=$((errors+1))
     return

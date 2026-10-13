@@ -137,9 +137,9 @@ joiner_fix="$TMPROOT/joiner.sh"
 } > "$joiner_fix"
 joined="$(logical_lines "$joiner_fix")"
 joiner_ok=1
-printf '%s\n' "$joined" | grep -q "^1:.*grep -r.*| head -"     || joiner_ok=0   # 續行接起來了
-printf '%s\n' "$joined" | grep -q "^3:.*grep -r.*sed -n '1p'"  || joiner_ok=0   # 安全版也接起來
-printf '%s\n' "$joined" | grep -q "^6:INNOCENT"                || joiner_ok=0   # 註解沒吃掉下一行
+grep -q "^1:.*grep -r.*| head -" <<< "$joined"     || joiner_ok=0   # 續行接起來了
+grep -q "^3:.*grep -r.*sed -n '1p'" <<< "$joined"  || joiner_ok=0   # 安全版也接起來
+grep -q "^6:INNOCENT" <<< "$joined"                || joiner_ok=0   # 註解沒吃掉下一行
 [[ "$joiner_ok" -eq 1 ]] && ok "續行 joiner 有效（接續行、不吃註解後的下一行）" \
   || { fail_t "續行 joiner 負控失敗 — 多行管線會整條漏掉"; printf '%s\n' "$joined" | sed 's/^/      /' >&2; }
 

@@ -221,7 +221,7 @@ require_grep 'docker compose up -d.*允許' "$TMP/sop_25a.txt"
 # #3264: tech_index CI row names every merge-group required input; SOP states the PR-side clarification.
 ci_row="$(grep -m1 '^| CI |' docs/reference/tech_index.md || true)"
 for ctx in short-gate ios-quality ops-suite; do
-  printf '%s' "$ci_row" | grep -q "\`$ctx\`" || { echo "tech_index.md CI row lacks required input $ctx (#3264)" >&2; exit 1; }
+  grep -q "\`$ctx\`" <<< "$ci_row" || { echo "tech_index.md CI row lacks required input $ctx (#3264)" >&2; exit 1; }
 done
 
 # #3300: the CI row's merge-group `required` contexts must equal the required job's `needs` as an exact set.

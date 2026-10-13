@@ -724,10 +724,10 @@ chmod +x "$SSH_STUB" "$SCP_STUB"
 PLAN="$(mktemp)"
 printf '{"schema":"kg.ops_edit_batch.v1","ops":[["world-snapshot","--json"]]}\n' > "$PLAN"
 batch_out=$(KG_SSH_CMD="$SSH_STUB" KG_SCP_CMD="$SCP_STUB" bash "$KG" ops-edit-batch "$PLAN" 2>/dev/null || true)
-echo "$batch_out" | grep -q 'docker exec knowledge-graph-api python3 /tmp/ops_edit_batch' \
+grep -q 'docker exec knowledge-graph-api python3 /tmp/ops_edit_batch' <<< "$batch_out" \
   && ok "ops-edit-batch docker exec runner" \
   || fail_t "ops-edit-batch missing runner docker exec"
-echo "$batch_out" | grep -q '/tmp/ops_edit_batch_plan' \
+grep -q '/tmp/ops_edit_batch_plan' <<< "$batch_out" \
   && ok "ops-edit-batch passes uploaded plan path" \
   || fail_t "ops-edit-batch missing uploaded plan path"
 rm -f "$SSH_STUB" "$SCP_STUB" "$PLAN"
@@ -755,7 +755,7 @@ vuid 'abc_123-XYZ' >/dev/null 2>&1 \
 LONG65=$(printf 'x%.0s' $(seq 1 65))
 for bad in '..' '../etc' 'a..b' '.hidden' 'a/b' 'a b' 'a;rm' '' "$LONG65"; do
   _out=$(vuid "$bad" 2>&1) || true
-  echo "$_out" | grep -q '非法\|不可' \
+  grep -q '非法\|不可' <<< "$_out" \
     && ok "blocks bad uid: '${bad:0:24}'" \
     || fail_t "did NOT block bad uid: '$bad'"
 done
@@ -771,7 +771,7 @@ _pf_stdout=$(bash "$WORKSPACE/ops/devops_kg_safe.sh" preflight 2>/dev/null)
   || fail_t "preflight banner leaked to stdout: $_pf_stdout"
 # 10b. wrapper preflight banner 必須出現在 stderr
 _pf_stderr=$(bash "$WORKSPACE/ops/devops_kg_safe.sh" preflight 2>&1 >/dev/null)
-echo "$_pf_stderr" | grep -q '\[Preflight\]' \
+grep -q '\[Preflight\]' <<< "$_pf_stderr" \
   && ok "preflight banner on stderr" \
   || fail_t "preflight banner missing from stderr"
 # 10c. devops.sh info() 須導向 stderr（progress 非 payload）
@@ -979,12 +979,12 @@ typed_out=$(typed_all docker-stats)
   || fail_t "docker-stats mapping drifted: $typed_out"
 
 typed_out=$(bash "$SAFE_KG" run "docker ps" 2>&1 || true)
-echo "$typed_out" | grep -q 'use typed command: docker-ps' \
+grep -q 'use typed command: docker-ps' <<< "$typed_out" \
   && ok "raw docker ps redirected to typed command" \
   || fail_t "raw docker ps was not redirected"
 
 typed_out=$(bash "$SAFE_KG" run "sudo systemctl status caddy" 2>&1 || true)
-echo "$typed_out" | grep -q 'use typed command: caddy-status --json' \
+grep -q 'use typed command: caddy-status --json' <<< "$typed_out" \
   && ok "raw caddy status redirected to typed command" \
   || fail_t "raw caddy status was not redirected"
 rm -f "$STUB_BASE"

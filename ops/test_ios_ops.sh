@@ -172,8 +172,8 @@ done
 
 section "Unified entrypoint help is safe"
 help_out="$(bash "$IOS_OPS" --help 2>&1)"
-echo "$help_out" | grep -q 'Usage:' && ok "ios_ops help prints Usage" || fail_t "ios_ops help missing Usage"
-echo "$help_out" | grep -qE 'xcodebuild archive|xcodebuild test|xcodebuild .*build' \
+grep -q 'Usage:' <<< "$help_out" && ok "ios_ops help prints Usage" || fail_t "ios_ops help missing Usage"
+grep -qE 'xcodebuild archive|xcodebuild test|xcodebuild .*build' <<< "$help_out" \
   && fail_t "ios_ops help appears to run xcodebuild" || ok "ios_ops help is side-effect free"
 
 section "Dispatch surface"
@@ -223,16 +223,16 @@ capabilities_json="$(bash "$IOS_OPS" capabilities --json)"
 echo "$capabilities_json" | jq -e '.schema=="kg.ios.commands.v1" and any(.commands[]; .key=="commands")' >/dev/null \
   && ok "capabilities alias exposes command catalog" || fail_t "capabilities --json invalid: $capabilities_json"
 commands_text="$(bash "$IOS_OPS" commands)"
-echo "$commands_text" | grep -q 'key=snapshot' \
+grep -q 'key=snapshot' <<< "$commands_text" \
   && ok "commands text lists snapshot" || fail_t "commands text missing snapshot: $commands_text"
-echo "$commands_text" | grep -q 'key=catalog' \
+grep -q 'key=catalog' <<< "$commands_text" \
   && ok "commands text lists catalog" || fail_t "commands text missing catalog: $commands_text"
-echo "$commands_text" | grep -q 'key=quality' \
+grep -q 'key=quality' <<< "$commands_text" \
   && ok "commands text lists quality" || fail_t "commands text missing quality: $commands_text"
-echo "$commands_text" | grep -q 'kg.ios.commands.v1' \
+grep -q 'kg.ios.commands.v1' <<< "$commands_text" \
   && ok "commands text lists catalog schema" || fail_t "commands text missing schema: $commands_text"
 catalog_help="$(bash "$IOS_OPS" catalog --help)"
-echo "$catalog_help" | grep -q -- '--dataset <name>|--dataset-file <path>' \
+grep -q -- '--dataset <name>|--dataset-file <path>' <<< "$catalog_help" \
   && ok "catalog help requires explicit UI World dataset" || fail_t "catalog help missing dataset requirement: $catalog_help"
 
 section "Xcode environment surface"
@@ -240,13 +240,13 @@ status_json="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" status --json)"
 echo "$status_json" | jq -e '.schema=="kg.ios.status.v1" and .project.version=="1.6" and .project.build=="4" and .organizer.latest.version=="1.6" and .organizer.latest.build=="4" and (.organizer.latest.archive|contains("BooksAndVocab.xcarchive")) and .testflight.latestBuild=="3"' >/dev/null \
   && ok "status --json exposes project, Organizer, and TestFlight summary" || fail_t "status --json invalid: $status_json"
 status_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" status)"
-echo "$status_text" | grep -q 'project_version=1.6 project_build=4' && echo "$status_text" | grep -q 'organizer_latest=1.6(4)' && echo "$status_text" | grep -q 'testflight_latest_build=3' \
+grep -q 'project_version=1.6 project_build=4' <<< "$status_text" && grep -q 'organizer_latest=1.6(4)' <<< "$status_text" && grep -q 'testflight_latest_build=3' <<< "$status_text" \
   && ok "status text reports normalized summary lines" || fail_t "status text invalid: $status_text"
 xcode_json="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" xcode --json)"
 echo "$xcode_json" | jq -e '.schema=="kg.ios.xcode.v1" and (.errors|length)==0 and .xcode.version=="16.4" and .project.scheme=="BooksAndVocab" and (.project.list.schemes|index("BooksAndVocab")) and any(.destinations.available[]; .id=="fixture-iphone-17-pro-max" and .platform=="iOS Simulator" and .name=="iPhone 17 Pro Max") and any(.destinations.ineligible[]; .id=="fixture-ineligible" and (.error|contains("OS mismatch, please download runtime"))) and all(.destinations.available[]; .id!="fixture-ineligible") and .simulators.summary.booted==1' >/dev/null \
   && ok "xcode --json exposes project destinations and simulators" || fail_t "xcode --json invalid: $xcode_json"
 xcode_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" environment)"
-echo "$xcode_text" | grep -q 'schema=kg.ios.xcode.v1' && echo "$xcode_text" | grep -q 'destination id=fixture-iphone-17-pro-max' \
+grep -q 'schema=kg.ios.xcode.v1' <<< "$xcode_text" && grep -q 'destination id=fixture-iphone-17-pro-max' <<< "$xcode_text" \
   && ok "environment text lists xcode schema and destination" || fail_t "environment text invalid: $xcode_text"
 xcode_fail_json="$(KG_IOS_OPS_FIXTURE=1 KG_IOS_OPS_XCODE_FAIL_FIXTURE=1 bash "$IOS_OPS" xcode --json)"
 echo "$xcode_fail_json" | jq -e '.schema=="kg.ios.xcode.v1" and (.errors|length)==4 and all(.sources[]; .status=="error") and (.destinations.available|length)==0 and .simulators.summary.total==0' >/dev/null \
@@ -260,7 +260,7 @@ sim_json="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" simulator status --json)"
 echo "$sim_json" | jq -e '.schema=="kg.ios.simulator.v1" and .action=="status" and .status=="ok" and .device.udid=="fixture-iphone-17-pro-max" and .device.state=="Booted" and .app.bundleID=="com.Max0228.BooksBrowser" and .app.container.data=="/tmp/kg-sim-fixture/container" and .app.container.status=="ok" and .app.process.status=="running" and .app.process.pid=="74736" and .sources.app_process.status=="ok" and (.timings.totalMs|type)=="number" and (.timings.simctlDevicesMs|type)=="number" and (.timings.appContainerMs|type)=="number" and (.timings.appProcessMs|type)=="number"' >/dev/null \
   && ok "simulator status --json exposes booted device, app container, and process" || fail_t "simulator status --json invalid: $sim_json"
 sim_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" sim status)"
-echo "$sim_text" | grep -q 'schema=kg.ios.simulator.v1' && echo "$sim_text" | grep -q 'udid=fixture-iphone-17-pro-max' && echo "$sim_text" | grep -q 'app_process status=running pid=74736' && echo "$sim_text" | grep -q 'timings totalMs=' \
+grep -q 'schema=kg.ios.simulator.v1' <<< "$sim_text" && grep -q 'udid=fixture-iphone-17-pro-max' <<< "$sim_text" && grep -q 'app_process status=running pid=74736' <<< "$sim_text" && grep -q 'timings totalMs=' <<< "$sim_text" \
   && ok "sim alias text lists booted simulator" || fail_t "sim text invalid: $sim_text"
 sim_stopped_json="$(KG_IOS_OPS_FIXTURE=1 KG_IOS_OPS_SIM_APP_STOPPED_FIXTURE=1 bash "$IOS_OPS" simulator status --json)"
 echo "$sim_stopped_json" | jq -e '.schema=="kg.ios.simulator.v1" and .status=="ok" and .app.process.status=="stopped" and .app.process.pid==null and .sources.app_process.exitCode==1 and (.errors|length)==0' >/dev/null \
@@ -269,7 +269,7 @@ sim_launch_json="$(KG_IOS_OPS_FIXTURE=1 KG_IOS_OPS_SIM_APP_STOPPED_FIXTURE=1 bas
 echo "$sim_launch_json" | jq -e '.schema=="kg.ios.simulator.v1" and .action=="launch" and .status=="ok" and .device.udid=="fixture-iphone-17-pro-max" and .app.bundleID=="com.Max0228.BooksBrowser" and .app.lifecycle.exitCode==0 and .app.lifecycle.output=="74736" and .app.process.status=="running" and .app.process.pid=="74736" and (.timings.totalMs|type)=="number" and (.timings.statusMs|type)=="number" and (.timings.lifecycleMs|type)=="number" and (.timings.appProcessMs|type)=="number"' >/dev/null \
   && ok "simulator launch --json starts installed app and refreshes process state" || fail_t "simulator launch invalid: $sim_launch_json"
 sim_launch_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" sim launch)"
-echo "$sim_launch_text" | grep -q 'action=launch status=ok' && echo "$sim_launch_text" | grep -q 'app_process status=running pid=74736' && echo "$sim_launch_text" | grep -q 'timings totalMs=' \
+grep -q 'action=launch status=ok' <<< "$sim_launch_text" && grep -q 'app_process status=running pid=74736' <<< "$sim_launch_text" && grep -q 'timings totalMs=' <<< "$sim_launch_text" \
   && ok "simulator launch text reports process state" || fail_t "simulator launch text invalid: $sim_launch_text"
 sim_terminate_json="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" simulator terminate --json)"
 echo "$sim_terminate_json" | jq -e '.schema=="kg.ios.simulator.v1" and .action=="terminate" and .status=="ok" and .device.udid=="fixture-iphone-17-pro-max" and .app.bundleID=="com.Max0228.BooksBrowser" and .app.lifecycle.exitCode==0 and .app.process.status=="stopped" and .app.process.pid==null and (.timings.totalMs|type)=="number" and (.timings.statusMs|type)=="number" and (.timings.lifecycleMs|type)=="number" and (.timings.appProcessMs|type)=="number"' >/dev/null \
@@ -278,7 +278,7 @@ sim_ensure_booted_json="$(KG_IOS_OPS_FIXTURE=1 KG_IOS_OPS_SIM_NO_BOOTED_FIXTURE=
 echo "$sim_ensure_booted_json" | jq -e '.schema=="kg.ios.simulator.v1" and .action=="ensure-booted" and .status=="ok" and .device.udid=="fixture-iphone-17-pro-max" and .device.state=="Booted" and .boot.status=="ok" and .boot.exitCode==0 and .boot.wasAlreadyBooted==false and .boot.waitedForBootstatus==true and (.timings.totalMs|type)=="number" and (.timings.resolveMs|type)=="number" and (.timings.bootMs|type)=="number" and (.timings.bootstatusMs|type)=="number"' >/dev/null \
   && ok "simulator ensure-booted --json boots the default simulator when none are booted" || fail_t "simulator ensure-booted invalid: $sim_ensure_booted_json"
 sim_ensure_booted_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" simulator ensure-booted)"
-echo "$sim_ensure_booted_text" | grep -q 'action=ensure-booted status=ok' && echo "$sim_ensure_booted_text" | grep -q 'wasAlreadyBooted=true' && echo "$sim_ensure_booted_text" | grep -q 'timings totalMs=' \
+grep -q 'action=ensure-booted status=ok' <<< "$sim_ensure_booted_text" && grep -q 'wasAlreadyBooted=true' <<< "$sim_ensure_booted_text" && grep -q 'timings totalMs=' <<< "$sim_ensure_booted_text" \
   && ok "simulator ensure-booted text reports warm-boot reuse" || fail_t "simulator ensure-booted text invalid: $sim_ensure_booted_text"
 sim_shot_tmp="$(mktemp -d)"
 sim_shot="$sim_shot_tmp/screenshot with spaces.png"
@@ -289,7 +289,7 @@ echo "$sim_shot_json" | jq -e --arg path "$sim_shot" '.schema=="kg.ios.simulator
 echo "$sim_shot_json" | jq -e '(.timings.totalMs|type)=="number" and (.timings.statusMs|type)=="number" and (.timings.screenshotMs|type)=="number"' >/dev/null \
   && ok "simulator screenshot --json exposes timing breakdown" || fail_t "simulator screenshot timings invalid: $sim_shot_json"
 sim_shot_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" simulator screenshot --out "$sim_shot_tmp/text.png")"
-echo "$sim_shot_text" | grep -q 'artifact=' && echo "$sim_shot_text" | grep -q 'text.png' && echo "$sim_shot_text" | grep -q 'timings totalMs=' \
+grep -q 'artifact=' <<< "$sim_shot_text" && grep -q 'text.png' <<< "$sim_shot_text" && grep -q 'timings totalMs=' <<< "$sim_shot_text" \
   && ok "simulator screenshot text reports artifact path" || fail_t "simulator screenshot text invalid: $sim_shot_text"
 if KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" simulator screenshot --out /dev/null/kg-shot.png --json >"$sim_shot_tmp/bad_parent.json" 2>"$sim_shot_tmp/bad_parent.err"; then
   fail_t "simulator screenshot reports unwritable parent as JSON error"
@@ -609,7 +609,7 @@ echo "$sentry_fixture_json" | jq -e '.readiness.build_can_import == true and .bu
   || fail_t "fixture Sentry readiness lacks deterministic build evidence: $sentry_fixture_json"
 gate_text_rc=0
 gate_text="$(sentry_gate_fixture gate release)" || gate_text_rc=$?
-echo "$gate_text" | grep -q 'verdict=pass' \
+grep -q 'verdict=pass' <<< "$gate_text" \
   && ok "gate release text emits verdict" || fail_t "gate release text missing verdict rc=$gate_text_rc: $gate_text"
 gate_warn_tmp="$(mktemp -d)"
 if KG_IOS_OPS_FIXTURE_TF_LATEST=unknown sentry_gate_fixture gate release --json >"$gate_warn_tmp/out" 2>"$gate_warn_tmp/err"; then
@@ -637,7 +637,7 @@ sentry_json="$(bash "$IOS_OPS" sentry --json)"
 echo "$sentry_json" | jq -e '.schema=="kg.ios.sentry.v1" and .source.path=="'"$WORKSPACE"'/ios/BooksAndVocab/Services/AppCrashReporting.swift" and .source.exists==true and (.wiring.canImportGuard|type)=="boolean" and (.wiring.dsnKeyReference|type)=="boolean" and .debug.requiresEnv=="SENTRY_ENABLED_IN_DEBUG=1" and .debug.testArgument=="-sentryTest" and .release.name=="bundleId@MARKETING_VERSION+CURRENT_PROJECT_VERSION" and .release.dist=="CURRENT_PROJECT_VERSION"' >/dev/null \
   && ok "sentry --json exposes machine-readable wiring summary" || fail_t "sentry --json invalid: $sentry_json"
 sentry_text="$(bash "$IOS_OPS" sentry)"
-echo "$sentry_text" | grep -q '\[ios\]\[sentry\] source=' && echo "$sentry_text" | grep -q 'can_import_guard=' && echo "$sentry_text" | grep -q 'debug_requires_env=' && echo "$sentry_text" | grep -q 'release_name=' \
+grep -q '\[ios\]\[sentry\] source=' <<< "$sentry_text" && grep -q 'can_import_guard=' <<< "$sentry_text" && grep -q 'debug_requires_env=' <<< "$sentry_text" && grep -q 'release_name=' <<< "$sentry_text" \
   && ok "sentry text reports wiring summary" || fail_t "sentry text invalid: $sentry_text"
 sentry_warn_json="$(KG_IOS_OPS_SENTRY_SOURCE_FIXTURE=/tmp/kg-missing-sentry.swift KG_IOS_OPS_SENTRY_SOURCE_EXISTS_FIXTURE=0 KG_IOS_OPS_SENTRY_CAN_IMPORT_FIXTURE=0 KG_IOS_OPS_SENTRY_DSN_FIXTURE=0 bash "$IOS_OPS" sentry --json)"
 echo "$sentry_warn_json" | jq -e '.schema=="kg.ios.sentry.v1" and .source.path=="/tmp/kg-missing-sentry.swift" and .source.exists==false and .wiring.canImportGuard==false and .wiring.dsnKeyReference==false' >/dev/null \
@@ -658,9 +658,9 @@ logs_leading_zero_json="$(KG_IOS_OPS_LOG_FIXTURE=1 bash "$IOS_OPS" logs --json -
 echo "$logs_leading_zero_json" | jq -e '.limit==1 and .summary.emittedCount==1' >/dev/null \
   && ok "logs --json normalizes numeric limit" || fail_t "logs --json leading-zero limit invalid: $logs_leading_zero_json"
 logs_text="$(KG_IOS_OPS_LOG_FIXTURE=1 bash "$IOS_OPS" logs --since 1m --limit 5 2>/dev/null)"
-echo "$logs_text" | grep -q 'sync completed' \
+grep -q 'sync completed' <<< "$logs_text" \
   && ok "logs text emits app log entries" || fail_t "logs text missing app entry: $logs_text"
-echo "$logs_text" | grep -q 'RBSServiceErrorDomain' \
+grep -q 'RBSServiceErrorDomain' <<< "$logs_text" \
   && fail_t "logs text failed to filter framework noise: $logs_text" || ok "logs text filters framework noise"
 bad_logs_tmp="$(mktemp -d)"
 if KG_IOS_OPS_LOG_FIXTURE=1 bash "$IOS_OPS" logs --limit nope >"$bad_logs_tmp/out" 2>"$bad_logs_tmp/err"; then
@@ -688,12 +688,12 @@ rm -rf "$fail_logs_tmp"
 
 # logs --follow (live stream) fixtures
 follow_text="$(KG_IOS_OPS_LOG_FIXTURE=1 bash "$IOS_OPS" logs --follow 2>/dev/null)"
-echo "$follow_text" | grep -q 'sync completed' && echo "$follow_text" | grep -q 'reader opened' \
+grep -q 'sync completed' <<< "$follow_text" && grep -q 'reader opened' <<< "$follow_text" \
   && ok "logs --follow streams app entries" || fail_t "logs --follow missing app entries: $follow_text"
-echo "$follow_text" | grep -q 'RBSServiceErrorDomain' \
+grep -q 'RBSServiceErrorDomain' <<< "$follow_text" \
   && fail_t "logs --follow failed to filter framework noise: $follow_text" || ok "logs --follow filters framework noise"
 follow_limit_text="$(KG_IOS_OPS_LOG_FIXTURE=1 bash "$IOS_OPS" logs --follow --limit 1 2>/dev/null)"
-[[ "$(echo "$follow_limit_text" | grep -c .)" -eq 1 ]] && echo "$follow_limit_text" | grep -q 'sync completed' \
+[[ "$(echo "$follow_limit_text" | grep -c .)" -eq 1 ]] && grep -q 'sync completed' <<< "$follow_limit_text" \
   && ok "logs --follow honors --limit" || fail_t "logs --follow limit invalid: $follow_limit_text"
 follow_json="$(KG_IOS_OPS_LOG_FIXTURE=1 bash "$IOS_OPS" logs --follow --json --limit 1 2>/dev/null)"
 echo "$follow_json" | jq -e '.schema=="kg.ios.log-stream.v1" and .message=="sync completed" and .category=="sync"' >/dev/null \
@@ -708,7 +708,7 @@ fi
 rm -rf "$follow_fail_tmp"
 # real SIGPIPE(141) path: unbounded producer + --limit stop gate must exit 0 with N lines
 stream_text="$(KG_IOS_OPS_LOG_STREAM_FIXTURE=1 bash "$IOS_OPS" logs --follow --limit 1 2>/dev/null)"; stream_rc=$?
-[[ "$stream_rc" -eq 0 && "$(echo "$stream_text" | grep -c .)" -eq 1 ]] && echo "$stream_text" | grep -q 'sync completed' \
+[[ "$stream_rc" -eq 0 && "$(echo "$stream_text" | grep -c .)" -eq 1 ]] && grep -q 'sync completed' <<< "$stream_text" \
   && ok "logs --follow handles producer SIGPIPE at limit (text)" || fail_t "logs --follow SIGPIPE text rc=$stream_rc out=$stream_text"
 stream_json="$(KG_IOS_OPS_LOG_STREAM_FIXTURE=1 bash "$IOS_OPS" logs --follow --json --limit 1 2>/dev/null)"; stream_json_rc=$?
 [[ "$stream_json_rc" -eq 0 ]] && echo "$stream_json" | jq -e '.schema=="kg.ios.log-stream.v1" and .message=="sync completed"' >/dev/null \
@@ -735,7 +735,7 @@ run_sigpipe_ignored() {
 }
 ignored_rc=0
 ignored_text="$(run_sigpipe_ignored env KG_IOS_OPS_LOG_STREAM_FIXTURE=1 bash "$IOS_OPS" logs --follow --limit 1 2>/dev/null)" || ignored_rc=$?
-[[ "$ignored_rc" -eq 0 && "$(echo "$ignored_text" | grep -c .)" -eq 1 ]] && echo "$ignored_text" | grep -q 'sync completed' \
+[[ "$ignored_rc" -eq 0 && "$(echo "$ignored_text" | grep -c .)" -eq 1 ]] && grep -q 'sync completed' <<< "$ignored_text" \
   && ok "logs --follow stops at limit with SIGPIPE ignored (text)" || fail_t "logs --follow SIGPIPE-ignored text rc=$ignored_rc out=$ignored_text"
 ignored_rc=0
 ignored_json="$(run_sigpipe_ignored env KG_IOS_OPS_LOG_STREAM_FIXTURE=1 bash "$IOS_OPS" logs --follow --json --limit 1 2>/dev/null)" || ignored_rc=$?
@@ -768,7 +768,7 @@ SH
 cat > "$delegate_tmp/test_stub.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-if printf '%s\n' "$@" | grep -qx -- '--cache-status'; then
+if grep -qx -- '--cache-status' <<< "$(printf '%s\n' "$@")"; then
   jq -nc '{schema:"kg.ios.test-cache.v1",scope:"unit",status:"ok",cache:{status:"hit"}}'
   exit 0
 fi
@@ -867,7 +867,7 @@ echo "$runs_json" | jq -e '.schema=="kg.ios.runs.v1" and .summary.verdict=="warn
 echo "$runs_json" | jq -e 'all([.build,.test,.archive][]; has("kind") and has("status") and has("result") and has("exit") and has("reason") and has("caller") and has("elapsed") and has("executed") and has("device") and has("options") and has("cache") and has("timings") and has("verdictFile") and has("jsonVerdictFile") and has("artifacts") and has("uiVisualReview") and has("diagnostics"))' >/dev/null \
   && ok "runs --json uses stable verdict object keys" || fail_t "runs --json missing stable keys: $runs_json"
 runs_text="$(TMPDIR="$runs_tmp" bash "$IOS_OPS" runs)"
-printf '%s\n' "$runs_text" | grep -q '^\[ios\]\[runs\] summary verdict=warn errors=0 warnings=2 failedTests=0 missing=0 malformed=0 failing=0' \
+grep -q '^\[ios\]\[runs\] summary verdict=warn errors=0 warnings=2 failedTests=0 missing=0 malformed=0 failing=0' <<< "$runs_text" \
   && ok "runs text reports aggregate summary" || fail_t "runs text missing summary: $runs_text"
 missing_runs_tmp="$(mktemp -d)"
 missing_runs_json="$(TMPDIR="$missing_runs_tmp" bash "$IOS_OPS" runs --json)"
@@ -887,7 +887,7 @@ echo "$malformed_runs_json" | jq -e 'all([.build,.test,.archive][]; has("jsonVer
 [[ ! -s "$malformed_runs_tmp/stderr" ]] \
   && ok "runs --json suppresses malformed verdict parser noise" || fail_t "runs malformed-verdict stderr not clean: $(cat "$malformed_runs_tmp/stderr")"
 malformed_runs_text="$(TMPDIR="$malformed_runs_tmp" bash "$IOS_OPS" runs 2>"$malformed_runs_tmp/text_stderr")"
-echo "$malformed_runs_text" | grep -q 'kind=build status=ok' \
+grep -q 'kind=build status=ok' <<< "$malformed_runs_text" \
   && ok "runs text uses normalized verdict fallback" || fail_t "runs text malformed fallback invalid: $malformed_runs_text"
 [[ ! -s "$malformed_runs_tmp/text_stderr" ]] \
   && ok "runs text suppresses malformed verdict parser noise" || fail_t "runs text malformed-verdict stderr not clean: $(cat "$malformed_runs_tmp/text_stderr")"
@@ -899,7 +899,7 @@ doctor_sentry_warn_json="$(KG_IOS_OPS_FIXTURE=1 KG_IOS_OPS_SENTRY_SOURCE_FIXTURE
 echo "$doctor_sentry_warn_json" | jq -e '.summary.verdict=="warn" and .summary.counts.warn >= 1 and .sentry.source.path=="/tmp/kg-missing-sentry.swift" and .sentry.source.exists==false and .sentry.wiring.canImportGuard==false and .sentry.wiring.dsnKeyReference==false and any(.readiness[]; .key=="sentry" and .status=="warn" and (.detail|contains("source_exists=false")) and (.detail|contains("can_import_guard=false")) and (.detail|contains("dsn_key_reference=false")))' >/dev/null \
   && ok "doctor --json reuses sentry fixture-driven warning surface" || fail_t "doctor sentry warning invalid: $doctor_sentry_warn_json"
 doctor_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" doctor)"
-echo "$doctor_text" | grep -Eq '^\[ios\]\[doctor\] summary verdict=(pass|warn|block) ok=' \
+grep -Eq '^\[ios\]\[doctor\] summary verdict=(pass|warn|block) ok=' <<< "$doctor_text" \
   && ok "doctor text reports readiness summary" || fail_t "doctor text missing summary: $doctor_text"
 workflow_json="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" workflow release --json)"
 echo "$workflow_json" | jq -e '.schema=="kg.ios.workflow.v1" and .appReviewGate.verdict.status=="pass" and (.summary.verdict|inside("passwarnblock")) and .summary.counts.ready >= 1 and .summary.counts.todo >= 1 and .summary.counts.manual == 1 and (.summary.counts.ready + .summary.counts.todo + .summary.counts.block + .summary.counts.warn + .summary.counts.manual == .summary.counts.total) and .summary.counts.total == (.steps|length) and (.steps|length == 8) and any(.steps[]; .key=="upload")' >/dev/null \
@@ -917,7 +917,7 @@ rm -f "$invalid_review_gate_fixture"
 echo "$workflow_review_invalid_json" | jq -e '.summary.verdict=="block" and .appReviewGate.blocks[0].code=="gate.report.invalid" and any(.steps[]; .key=="submit" and .status=="block")' >/dev/null \
   && ok "workflow malformed App Review report fails closed as structured BLOCK" || fail_t "workflow malformed gate report escaped fail-closed handling: $workflow_review_invalid_json"
 workflow_text="$(KG_IOS_OPS_FIXTURE=1 bash "$IOS_OPS" workflow release)"
-echo "$workflow_text" | grep -Eq '^\[ios\]\[workflow\] summary verdict=(pass|warn|block) ready=' \
+grep -Eq '^\[ios\]\[workflow\] summary verdict=(pass|warn|block) ready=' <<< "$workflow_text" \
   && ok "workflow text reports aggregate summary" || fail_t "workflow text missing summary: $workflow_text"
 snapshot_json="$(TMPDIR="$runs_tmp" sentry_gate_fixture snapshot --json)"
 echo "$snapshot_json" | jq -e '.schema=="kg.ios.snapshot.v1" and (.readiness|length >= 7) and (.workflow.steps|length == 8) and .gate.schema=="kg.ios.gate.v1" and .gate.verdict=="pass" and .gate.exitCode==0 and .summary.verdict=="warn" and .summary.counts.readinessOk==([.readiness[] | select(.status=="ok")] | length) and .summary.counts.readinessWarns==([.readiness[] | select(.status=="warn")] | length) and .summary.counts.readinessBlocks==([.readiness[] | select(.status=="block")] | length) and .summary.counts.workflowReady==.workflow.summary.counts.ready and .summary.counts.workflowTodos==.workflow.summary.counts.todo and .summary.counts.workflowWarns==.workflow.summary.counts.warn and .summary.counts.workflowBlocks==.workflow.summary.counts.block and .summary.counts.workflowManual==.workflow.summary.counts.manual and .summary.counts.buildWarnings==1 and .summary.counts.archiveWarnings==1 and .summary.counts.sentryWarnings==0 and .summary.timings.build.totalMs==3120 and .summary.timings.build.lockWaitMs==90 and .summary.timings.build.probeMs==777 and .summary.timings.test.lockWaitMs==140 and .summary.timings.test.cacheStatus=="hit" and .summary.timings.test.appLaunchAverageMs==1450 and .summary.timings.test.appLaunchSamples==5 and .summary.timings.archive.totalMs==13510 and .summary.timings.archive.archiveMs==12000 and (.summary.timings.simulator.totalMs|type)=="number" and (.summary.timings.simulator.simctlDevicesMs|type)=="number" and (.summary.timings.simulator.appContainerMs|type)=="number" and (.summary.timings.simulator.appProcessMs|type)=="number" and any(.summary.nextActions[]; .source=="runs.build.diagnostics" and .severity=="warn" and .category=="storekit" and (.message|contains("StoreKit Configuration"))) and any(.summary.nextActions[]; .source=="runs.archive.diagnostics" and .severity=="warn" and .category=="storekit" and (.message|contains("StoreKit Configuration"))) and any(.summary.nextActions[]; .source=="gate" and .severity=="manual" and .key=="submit") and .sentry.schema=="kg.ios.sentry.v1" and .sentry.source.exists==true and .sentry.wiring.canImportGuard==true and .sentry.wiring.dsnKeyReference==true and .xcode.schema=="kg.ios.xcode.v1" and .xcode.simulators.summary.booted==1 and .simulator.schema=="kg.ios.simulator.v1" and .simulator.app.process.status=="running" and .project.version=="1.6" and .runs.test.executed=="12" and .runs.archive.result=="ok" and .runs.archive.diagnostics.counts.warnings==1 and .logs==null' >/dev/null \
@@ -962,13 +962,13 @@ printf '%s\n' "$snapshot_text" | sed -n '4p' | grep -q '^\[ios\]\[timing\] archi
   && ok "snapshot text prints archive timing line" || fail_t "snapshot text missing archive timing line: $snapshot_text"
 printf '%s\n' "$snapshot_text" | sed -n '5p' | grep -q '^\[ios\]\[timing\] simulator totalMs=n/a simctlDevicesMs=n/a appContainerMs=n/a appProcessMs=n/a' \
   && ok "snapshot text prints simulator timing line when simulator is skipped" || fail_t "snapshot text missing simulator timing line: $snapshot_text"
-echo "$snapshot_text" | grep -q '\[ios\]\[next\].*source=runs.build.diagnostics.*severity=warn.*category=storekit' \
+grep -q '\[ios\]\[next\].*source=runs.build.diagnostics.*severity=warn.*category=storekit' <<< "$snapshot_text" \
   && ok "snapshot text lists next actions" || fail_t "snapshot text missing next action: $snapshot_text"
-echo "$snapshot_text" | grep -q '\[ios\]\[next\].*source=gate.*severity=manual.*key=submit' \
+grep -q '\[ios\]\[next\].*source=gate.*severity=manual.*key=submit' <<< "$snapshot_text" \
   && ok "snapshot text surfaces manual workflow action" || fail_t "snapshot text missing manual action: $snapshot_text"
-echo "$snapshot_text" | grep -q '\[ios\]\[snapshot\] sentry sourceExists=true canImportGuard=true dsnKeyReference=true' \
+grep -q '\[ios\]\[snapshot\] sentry sourceExists=true canImportGuard=true dsnKeyReference=true' <<< "$snapshot_text" \
   && ok "snapshot text reports sentry wiring summary" || fail_t "snapshot text missing sentry summary: $snapshot_text"
-echo "$snapshot_text" | grep -q 'phase=doctor' \
+grep -q 'phase=doctor' <<< "$snapshot_text" \
   && fail_t "snapshot text should not start with phase dump: $snapshot_text" || ok "snapshot text avoids phase dump"
 rm -rf "$runs_parent"
 bad_args_tmp="$(mktemp -d)"
@@ -1017,10 +1017,10 @@ cat > "$archive/Info.plist" <<'PLIST'
 </plist>
 PLIST
 list_out="$(bash "$IOS_ARCHIVE" list --root "$tmp")"
-echo "$list_out" | grep -q $'1.6\t4' && ok "archive list includes version/build" || fail_t "archive list missing version/build: $list_out"
+grep -q $'1.6\t4' <<< "$list_out" && ok "archive list includes version/build" || fail_t "archive list missing version/build: $list_out"
 json_out="$(bash "$IOS_ARCHIVE" latest --root "$tmp" --json)"
-echo "$json_out" | grep -q '"version":"1.6"' && ok "archive latest --json includes version" || fail_t "archive json missing version"
-echo "$json_out" | grep -q '"build":"4"' && ok "archive latest --json includes build" || fail_t "archive json missing build"
+grep -q '"version":"1.6"' <<< "$json_out" && ok "archive latest --json includes version" || fail_t "archive json missing version"
+grep -q '"build":"4"' <<< "$json_out" && ok "archive latest --json includes build" || fail_t "archive json missing build"
 
 section "ios_build emits diagnostics"
 lock_heartbeat_probe="$(
@@ -1153,7 +1153,7 @@ monitor_probe="$(
     wait "$pid" 2>/dev/null || true
   ' 2>/dev/null
 )"
-echo "$monitor_probe" | grep -qE '^pid=[0-9]+$' \
+grep -qE '^pid=[0-9]+$' <<< "$monitor_probe" \
   && ok "ios_build progress monitor returns PID from command substitution" || fail_t "ios_build progress monitor command substitution hung/failed: $monitor_probe"
 
 section "ios_test emits xcresult-first diagnostics"
@@ -1888,7 +1888,7 @@ missing_log_marker="$(
       cat "$TMPOUT"
     '
 )"
-echo "$missing_log_marker" | grep -q 'xcodebuild log path disappeared before diagnostics could read it' \
+grep -q 'xcodebuild log path disappeared before diagnostics could read it' <<< "$missing_log_marker" \
   && ok "ios_test can synthesize a readable placeholder when the log path disappears" || fail_t "ios_test missing-log marker invalid: $missing_log_marker"
 missing_diag_json="$("$IOS_DIAG" --kind test --xcresult "$ios_test_retry_tmp/Missing.xcresult" --log "$ios_test_retry_tmp/never-created.log" --json --result fail)"
 echo "$missing_diag_json" | jq -e --arg log "$ios_test_retry_tmp/never-created.log" '.schema=="kg.ios.diagnostics.v1" and .source=="raw-log-missing" and .result=="fail" and .counts.errors==0 and .logError=="log file not found: \($log)" and (.xcresultError|length > 0) and .artifacts.log==$log' >/dev/null \
