@@ -856,3 +856,42 @@ def test_fix_refuses_when_notebooks_db_missing(env, dry_run):
     with pytest.raises(UserRegistryUnavailable):
         fix(data_dir=env.data_dir, confirm=True, dry_run=dry_run)
     assert _live_card_states(env) == before
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_fix_refuses_when_cards_db_missing_with_graph_and_judge_rows(env, dry_run):
+    """#3434: a vanished cards.db must not make graph links / judge_log rows orphans."""
+    import kg.judge_log as jl
+    from kg.orphan_scan import UserRegistryUnavailable, fix
+
+    link = {
+        "id": "lk_live",
+        "from_id": env.real_card_id,
+        "to_id": env.real_card_id,
+        "kind": "shares_usage",
+        "confidence": 0.9,
+        "reason": "test",
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "status": "active",
+    }
+    graph_path = env.user_dir / f"graph_{env.real_notebook_id}.json"
+    graph_path.write_text(json.dumps([link]))
+    jl.record(
+        user_id=env.user_id,
+        notebook_id=env.real_notebook_id,
+        from_id=env.real_card_id,
+        to_id=env.real_card_id,
+        similarity=0.7,
+        verdict="accept",
+        confidence=0.9,
+        accepted=True,
+    )
+    graph_before = graph_path.read_text()
+    (env.user_dir / "cards.db").unlink()
+
+    with pytest.raises(UserRegistryUnavailable):
+        fix(data_dir=env.data_dir, confirm=True, dry_run=dry_run)
+
+    assert graph_path.read_text() == graph_before
+    with sqlite3.connect(str(env.data_dir / "judge_log.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM judge_log").fetchone()[0] == 1
