@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import tarfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from kg.account_erasure import delete_account_assets, sweep_account_prefixes
 from kg.api_models.graph import AutoLinkConfig
 from kg.api_models.notebook import VocabUIConfig
 from kg.api_models.review import ReviewClockConfig, ReviewModeConfig
 from kg.api_models.translate import TranslationLanguageConfig
+from kg.external_api_keys import purge_external_api_keys
 from kg.ops_shared import data_dir
+from kg.settings import load_settings
 from kg.user_store import load_users_from, parse_datetime
 
 from .ops_edit_shared import EditContext, EditError, assert_safe_uid, emit, user_dir_for, users_file
@@ -135,6 +140,48 @@ def cmd_user_create(args: argparse.Namespace) -> int:
     return ctx.run(action="user-create", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
 
 
+_logger = logging.getLogger(__name__)
+
+# Same quarantine the in-app erasure uses (user_handlers._QUARANTINE_DIRNAME):
+# the directory is renamed out of users/ before rmtree, so a partial removal
+# never leaves a live path behind.
+_QUARANTINE_DIRNAME = ".deleting"
+
+
+def _sweep_quarantine(data_dir_path: Path) -> None:
+    """Best-effort removal of leftovers from earlier failed removals."""
+    root = data_dir_path / _QUARANTINE_DIRNAME
+    if not root.is_dir():
+        return
+    for batch in root.iterdir():
+        try:
+            shutil.rmtree(batch)
+        except OSError:
+            _logger.exception("Failed to sweep quarantined user data %s", batch)
+
+
+def _remove_user_dir_quarantined(data_dir_path: Path, uid: str) -> None:
+    target = user_dir_for(data_dir_path, uid)
+    if not target.exists():
+        return
+    batch = data_dir_path / _QUARANTINE_DIRNAME / uuid.uuid4().hex
+    batch.mkdir(parents=True)
+    quarantined = batch / uid
+    target.rename(quarantined)
+    shutil.rmtree(quarantined)
+    batch.rmdir()
+
+
+def _library_object_storage() -> tuple[str | None, Any]:
+    """Library bucket and S3 client as the app wires them; ``(None, None)`` when local-only."""
+    settings = load_settings()
+    if not settings.library_bucket:
+        return None, None
+    from .routers.library import _library_s3_client
+
+    return settings.library_bucket, _library_s3_client(settings)
+
+
 def cmd_user_delete(args: argparse.Namespace) -> int:
     """刪除用戶:移除 user dir + users.json record + email/subscription index。
 
@@ -189,16 +236,24 @@ def cmd_user_delete(args: argparse.Namespace) -> int:
             terminated_ids = set(terminated) if isinstance(terminated, list) else set()
             terminated_ids.add(uid)
             current["_terminated"] = sorted(terminated_ids)
+            # 與 app 內刪帳一致:撤銷外部 API key,否則重新登入後舊 key 仍可通過 authenticate_api_key。
+            purge_external_api_keys(current, [uid])
             return {
                 "removed_record": removed_record is not None,
                 "dropped_index_keys": dropped,
             }
 
+        # Remote assets go first, as in the in-app erasure: a failure here leaves
+        # users.json and the directory untouched, so the command stays retryable.
+        # Marked destructive before the first S3 delete, since that is irreversible.
         ctx.mark_destructive()
+        _sweep_quarantine(dd)
+        library_bucket, library_s3_client = _library_object_storage()
+        delete_account_assets(dd, [uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
         result = _mutate_users(dd, mutate)
-        target = user_dir_for(dd, uid)
-        if target.exists():
-            shutil.rmtree(target)
+        # Runs after the tombstone: a presigned PUT minted earlier can land after the ledger delete.
+        sweep_account_prefixes([uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
+        _remove_user_dir_quarantined(dd, uid)
         return result
 
     def verify_fn() -> dict[str, Any]:

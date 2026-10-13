@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -472,3 +473,129 @@ class TestDestructiveFailureReporting:
             tar.add(wrong, arcname="other")
         with pytest.raises(EditError):
             user_cmd.cmd_restore(_make_args(uid="u1", commit=True))
+
+
+# ── cmd_user_delete: remote library assets (#3428) ───────────────────────
+
+
+class _FakeObjectStorage:
+    """In-memory stand-in for the S3 calls the erasure path makes."""
+
+    def __init__(self, keys=()):
+        self.objects = set(keys)
+        self.deleted: list[str] = []
+
+    def delete_object(self, *, Bucket, Key):  # noqa: N803
+        self.deleted.append(Key)
+        self.objects.discard(Key)
+        return {}
+
+    def list_objects_v2(self, *, Bucket, Prefix, **_):  # noqa: N803
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))
+        return {"Contents": [{"Key": k} for k in keys], "IsTruncated": False}
+
+    def delete_objects(self, *, Bucket, Delete):  # noqa: N803
+        for item in Delete["Objects"]:
+            self.deleted.append(item["Key"])
+            self.objects.discard(item["Key"])
+        return {}
+
+
+def _seed_library_books(data_dir: Path, uid: str, keys: list[str]) -> None:
+    from sqlmodel import Session
+
+    from kg.library.store import LibraryBook, LibraryStore
+
+    store = LibraryStore(data_dir / "users" / uid / "library.db")
+    try:
+        with Session(store.engine) as session:
+            for index, key in enumerate(keys):
+                session.add(
+                    LibraryBook(id=f"book-{index}", title=f"b{index}", asset_storage="object", asset_object_key=key)
+                )
+            session.commit()
+    finally:
+        store.close()
+
+
+class TestUserDeleteRemoteAssets:
+    def test_commit_erases_remote_library_assets_before_removing_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        fake = _FakeObjectStorage(["library/doomed/a.epub", "library/doomed/b.epub", "library/keeper/c.epub"])
+        monkeypatch.setattr(user_cmd, "_library_object_storage", lambda: ("kg-library", fake), raising=False)
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        _seed_library_books(tmp_path, "doomed", ["library/doomed/a.epub", "library/doomed/b.epub"])
+
+        rc = user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True))
+
+        assert rc == 0
+        assert {"library/doomed/a.epub", "library/doomed/b.epub"} <= set(fake.deleted)
+        assert not any(k.startswith("library/doomed/") for k in fake.objects)
+        assert "library/keeper/c.epub" in fake.objects
+        assert not (tmp_path / "users" / "doomed").exists()
+
+
+# ── cmd_user_delete: external API keys (#3429) ───────────────────────────
+
+
+class TestUserDeleteApiKeys:
+    def test_commit_purges_external_api_keys_so_recreated_account_cannot_reuse_them(self, tmp_path, monkeypatch):
+        from kg.auth_service import resolve_and_link_user
+        from kg.external_api_keys import authenticate_api_key, issue_api_key
+
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        users_path = tmp_path / "users.json"
+        lock = tmp_path / "users.json.lock"
+
+        def load():
+            return load_users_from(users_path, lambda x: (x, False))
+
+        def save(payload):
+            users_path.write_text(json.dumps(payload))
+
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        issued = issue_api_key("doomed", label="ci", users_lock_file=lock, load_users=load, save_users=save)
+        assert authenticate_api_key(issued["apiKey"], load_users=load) is not None
+
+        assert user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True)) == 0
+        resolve_and_link_user(
+            "doomed",
+            "google",
+            users_lock_file=str(lock),
+            load_users_fn=load,
+            save_users_fn=save,
+            email="doomed@test.com",
+        )
+
+        assert authenticate_api_key(issued["apiKey"], load_users=load) is None
+        index = load().get("_external_api_keys", {})
+        assert not any(record.get("user_id") == "doomed" for record in index.values())
+
+
+# ── cmd_user_delete: partial removal (#3430) ─────────────────────────────
+
+
+class TestUserDeleteQuarantine:
+    def test_commit_partial_removal_failure_leaves_no_live_path(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        with sqlite3.connect(tmp_path / "users" / "doomed" / "cards.db") as conn:
+            conn.execute("CREATE TABLE cards (id TEXT)")
+        capsys.readouterr()
+
+        real_rmtree = user_cmd.shutil.rmtree
+
+        def partial(path, *a, **k):
+            # shutil 是全域模組:只對 user 目錄模擬「刪一半後 I/O 失敗」,備份清理放行。
+            if Path(path).name == "doomed":
+                (Path(path) / "cards.db").unlink()
+                raise OSError("I/O error mid-removal")
+            return real_rmtree(path, *a, **k)
+
+        monkeypatch.setattr(user_cmd.shutil, "rmtree", partial)
+        rc = user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True))
+
+        assert rc == 1
+        assert not (tmp_path / "users" / "doomed").exists()
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        assert not (tmp_path / "users" / "doomed" / "cards.db").exists()
