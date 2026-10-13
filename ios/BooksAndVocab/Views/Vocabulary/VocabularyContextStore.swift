@@ -80,7 +80,13 @@ extension VocabularyContextStore {
             // 原列若仍留存（刪除失敗），下一輪 sync 的 collapse（SyncCoordinator.collapseRecapturedDeletes）把兩列收斂回原列；
             // 若已刪除，新增列單獨上傳。
             guard !existing.isUploadInFlight else { return nil }
-            existing.restorePendingEntry()
+            // server 已持有卡（kgCardId 非空）：還原為 pending edit，不重送 add。batchAdd 對既有卡回 skipped 並仍回傳
+            // 既有 cardId，convergeAddedEntries 會 markSynced，新譯文就永遠不會到 server（#3408 reader 路徑）。
+            if existing.hasServerCard {
+                existing.queueEdit()
+            } else {
+                existing.restorePendingEntry()
+            }
             existing.translation = translation
             if let rootForm { existing.rootForm = rootForm }
             modelContext.safeSaveWithToast(toastCoordinator)
