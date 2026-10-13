@@ -121,6 +121,31 @@ struct NotebookCoverCommitTests {
         try? FileManager.default.removeItem(atPath: old)
     }
 
+    // MARK: - 寫檔與 Save 交錯（#3498）
+
+    /// #3498：Save 已把 staged 交給 onSave（committed）後才寫出的新 JPEG 沒有 owner，必須丟棄，
+    /// 不可指派給 coverImagePath（否則孤兒檔且 onDisappear 不會清）。
+    @Test func lateWriteAfterCommitIsDiscarded() {
+        #expect(NotebookCoverCommit.shouldDiscardLateWrite(committed: true, dismissed: false))
+    }
+
+    /// #3498：sheet 已關閉（取消 / 下滑）後才寫出的新 JPEG 同樣沒有 owner，必須丟棄。
+    @Test func lateWriteAfterDismissIsDiscarded() {
+        #expect(NotebookCoverCommit.shouldDiscardLateWrite(committed: false, dismissed: true))
+    }
+
+    /// 仍在編輯中（未 commit、未關閉）的寫入才收為 staged。
+    @Test func lateWriteWhileEditingIsAdopted() {
+        #expect(!NotebookCoverCommit.shouldDiscardLateWrite(committed: false, dismissed: false))
+    }
+
+    /// #3498：處理照片中禁止 Save，避免 staged 交接與 processPhoto 寫檔交錯；空白名稱同樣禁止。
+    @Test func saveDisabledWhilePhotoProcessing() {
+        #expect(!NotebookEditSaveGate.isSaveEnabled(name: "N", isProcessingPhoto: true))
+        #expect(NotebookEditSaveGate.isSaveEnabled(name: "N", isProcessingPhoto: false))
+        #expect(!NotebookEditSaveGate.isSaveEnabled(name: "  ", isProcessingPhoto: false))
+    }
+
     // MARK: - coordinator 提交路徑（#2428 create / #2731 failed update）
 
     @MainActor

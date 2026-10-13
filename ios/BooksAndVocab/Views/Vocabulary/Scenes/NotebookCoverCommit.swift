@@ -63,4 +63,10 @@ extension NotebookCoverCommit {
         guard !committed else { return }
         discardStagedFile(staged: staged, original: original)
     }
+
+    /// processPhoto 寫出新 JPEG 後，若 sheet 已 commit（staged 已交給 onSave）或已關閉，
+    /// 該檔沒有 owner，必須丟棄；只有仍在編輯中才可收為 staged（#3498）。
+    static func shouldDiscardLateWrite(committed: Bool, dismissed: Bool) -> Bool {
+        committed || dismissed
+    }
 }
