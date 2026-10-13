@@ -140,10 +140,15 @@ struct ReviewModeSwitchTests {
         let entries = (0..<3).map { _ in makeEntry() }
         let state = makeState(entries)
         state.toggleAutoPlay()
-        // 正控：自動播放確實在跑，否則「暫停」的斷言沒有意義。
+        // 正控：自動播放確實在跑且未暫停，否則「暫停」的斷言沒有意義。
         #expect(state.isAutoPlaying)
+        #expect(state.isAutoPlayPaused == false)
         state.beginReviewModeSwitch()
-        #expect(state.isAutoPlaying == false)
+        #expect(state.isReviewModeSheetPresented)
+        // 暫停而非停止：isAutoPlaying 仍為 true（與 TodayReviewAutoplayGatingTests 同一契約）；
+        // 開面板不呼叫任何恢復路徑，paused 態必須保持。
+        #expect(state.isAutoPlayPaused)
+        #expect(state.isAutoPlaying)
         state.stopAutoPlay()
     }
 }
