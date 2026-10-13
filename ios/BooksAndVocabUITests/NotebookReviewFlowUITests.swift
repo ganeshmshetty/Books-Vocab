@@ -72,8 +72,8 @@ final class NotebookReviewFlowUITests: UITestCase {
         try step("review-started", app: app) {
             XCTAssertEqual(
                 review.progressText,
-                "1 / \(Self.deckSize)",
-                "deck fixture 應產生 \(Self.deckSize) 張卡的 session"
+                "0 / \(Self.deckSize)",
+                "deck fixture 應產生 \(Self.deckSize) 張卡的 session；header 為已評數（#3371）"
             )
             review.cardFront.assertExists()
             XCTAssertFalse(review.cardBack.exists, "翻卡前背面內容不得已掛載（應為 stub）")
@@ -108,8 +108,8 @@ final class NotebookReviewFlowUITests: UITestCase {
         // ── 5. Grade remembered: the queue really advances ──────────────────
         review.tapRemembered()
         XCTAssertTrue(
-            review.waitForProgress("2 / \(Self.deckSize)"),
-            "評分後 progress 必須前進到 2 / \(Self.deckSize)，實際：\(review.progressText)"
+            review.waitForProgress("1 / \(Self.deckSize)"),
+            "評分後 progress（已評數）必須前進到 1 / \(Self.deckSize)，實際：\(review.progressText)"
         )
         try step("graded-remembered", app: app) {
             XCTAssertTrue(
@@ -133,8 +133,8 @@ final class NotebookReviewFlowUITests: UITestCase {
         // ── 7. Grade forgot: independent counter + further advance ──────────
         review.tapForgot()
         XCTAssertTrue(
-            review.waitForProgress("3 / \(Self.deckSize)"),
-            "第二次評分後 progress 必須前進到 3 / \(Self.deckSize)，實際：\(review.progressText)"
+            review.waitForProgress("2 / \(Self.deckSize)"),
+            "第二次評分後 progress（已評數）必須前進到 2 / \(Self.deckSize)，實際：\(review.progressText)"
         )
         try step("graded-forgot", app: app) {
             XCTAssertTrue(
