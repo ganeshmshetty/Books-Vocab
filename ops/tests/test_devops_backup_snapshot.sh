@@ -22,15 +22,20 @@ RSYNC_LOG="$TMP/rsync.log"
 : >"$RSYNC_LOG"
 
 # ssh 替身：把「遠端」shell 字串在本機執行（stdin 原樣轉給 bash），並記下每次呼叫。
-# 只放行指向本測試 fixture（SNAP_TEST_FIXTURE_ROOT）或 devops.sh 的一致快照暫存路徑
-# （/tmp/kg-db-snapshot__*）的字串；其餘（例如預設 ~/kg-data）一律拒絕、exit 97、留 tripwire 痕跡，
-# 確保 seam 永遠不會在本機對非 fixture 路徑執行任何指令。
+# 只放行指向本測試 fixture（SNAP_TEST_FIXTURE_ROOT）或 devops.sh 遠端 mktemp -d 產生的
+# 一致快照暫存目錄（kg-db-snapshot.XXXXXX）的字串；其餘（例如預設 ~/kg-data）一律拒絕、exit 97、
+# 留 tripwire 痕跡，確保 seam 永遠不會在本機對非 fixture 路徑執行任何指令。
+# 對 tar 串流前的暫存目錄記下權限（#3464：必須 0700，不可 world-readable）。
 SSH_STUB="$TMP/bin/local-exec-ssh-stub"
 cat >"$SSH_STUB" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${SNAP_TEST_SSH_LOG:?}"
 case "$*" in
-  *"${SNAP_TEST_FIXTURE_ROOT:?}"*|*/tmp/kg-db-snapshot__*) exec bash -c "$*" ;;
+  *"${SNAP_TEST_FIXTURE_ROOT:?}"*|*/kg-db-snapshot.*)
+    case "$*" in
+      "tar -C "*) read -r _t _c stage _r <<<"$*"; stat -f '%Lp' "$stage" >>"${SNAP_TEST_MODE_LOG:?}" ;;
+    esac
+    exec bash -c "$*" ;;
 esac
 printf 'FORBIDDEN: snapshot test refuses non-fixture remote command: %s\n' "$*" >&2
 [ -n "${KG_OPS_TEST_TRIPWIRE_LOG:-}" ] && printf 'snapshot-stub deny: %s\n' "$*" >>"$KG_OPS_TEST_TRIPWIRE_LOG"
@@ -85,11 +90,17 @@ raw_count="$(sqlite3 "$TMP/raw-main-only.db" 'SELECT COUNT(*) FROM card;')"
 [[ "$raw_count" == 1 ]] || fail "fixture: main file alone must lack the WAL-only row (got $raw_count)"
 
 # ── 1. 一致快照：WAL-only 已 commit 的 row 必須出現在備份輸出 ───────────────
+# 遠端暫存根目錄（TMPDIR 指到這裡，便於斷言失敗後無殘留 kg-db-snapshot.*）。
+REMOTE_TMP="$TMP/remote-tmp"
+mkdir -p "$REMOTE_TMP"
+MODE_LOG="$TMP/stage-mode.log"
+: >"$MODE_LOG"
 run_backup() { # <data_dir> <backup_dir> <cmd>
   ROOT="$ROOT" TARGET="$2" DATA="$1" CMD="$3" DEVOPS_SOURCE_ONLY=1 \
     KG_OPS_TEST=1 KG_SERVER=test-host KG_REMOTE_DATA_DIR="$1" \
-    KG_SSH_CMD="$SSH_STUB" PATH="$RSYNC_BIN:$PATH" \
+    KG_SSH_CMD="$SSH_STUB" PATH="$RSYNC_BIN:$PATH" TMPDIR="$REMOTE_TMP" \
     SNAP_TEST_SSH_LOG="$SSH_LOG" SNAP_TEST_RSYNC_LOG="$RSYNC_LOG" SNAP_TEST_FIXTURE_ROOT="$TMP" \
+    SNAP_TEST_MODE_LOG="$MODE_LOG" \
     bash -c 'source "$ROOT/devops.sh"; BACKUP_DIR="$TARGET"; eval "$CMD"'
 }
 
@@ -105,6 +116,11 @@ snap_count="$(sqlite3 "$snap_db" 'SELECT COUNT(*) FROM card;')"
 [[ "$snap_count" == 2 ]] \
   || fail "backup lost a committed WAL-only row (rows=$snap_count, want 2): raw rsync of live WAL-mode DB"
 pass "cmd_backup snapshot keeps the committed WAL-only row"
+
+# 遠端暫存目錄必須是 mktemp -d 建立的 0700（不可為可預測、world-readable 的 /tmp 路徑）
+[[ "$(cat "$MODE_LOG")" == 700 ]] \
+  || fail "remote snapshot stage must be mktemp -d 0700 (got mode $(cat "$MODE_LOG"))"
+pass "remote snapshot stage is mode 0700"
 
 # ── 2. 快照失敗 → migrate-run 中止，不 pull、不進容器 ─────────────────────────
 DATA_BAD="$TMP/remote-bad"
@@ -122,5 +138,20 @@ if grep -Fq 'migration-ran' "$TMP/migrate.out" || grep -Fq 'docker' "$SSH_LOG"; 
 fi
 [[ ! -s "$RSYNC_LOG" ]] || fail "migrate-run pulled data after a failed snapshot"
 pass "migrate-run aborts before pull and migration when the snapshot fails"
+
+
+# ── 4. #3464：快照失敗（損毀 DB）時遠端暫存目錄必須被清掉 ────────────────────
+DATA_CORRUPT="$TMP/remote-corrupt"
+mkdir -p "$DATA_CORRUPT/users/u1"
+printf 'not a sqlite database\n' >"$DATA_CORRUPT/users/u1/cards.db"
+OUT_CORRUPT="$TMP/backups-corrupt"; mkdir -p "$OUT_CORRUPT"
+set +e
+run_backup "$DATA_CORRUPT" "$OUT_CORRUPT" cmd_backup >"$TMP/corrupt.out" 2>&1
+corrupt_rc=$?
+set -e
+(( corrupt_rc != 0 )) || fail "cmd_backup must fail on a corrupt DB"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
+[[ -z "$leftover" ]] || fail "failed snapshot left a remote stage behind: $leftover"
+pass "failed snapshot removes its remote stage"
 
 printf 'backup snapshot: all checks passed\n'
