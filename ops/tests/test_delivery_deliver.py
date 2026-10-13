@@ -600,6 +600,40 @@ def test_an_absent_lane_head_is_not_an_ancestor_either(tmp_path: Path) -> None:
     assert is_ancestor(absent, "b" * 40) is False
 
 
+def test_an_unfetched_merged_head_is_fetched_from_origin_before_answering(
+    tmp_path: Path,
+) -> None:
+    # #3399: the merged head is on origin but was never fetched here; answering
+    # "not an ancestor" would call a fresh merged lane "reused after a merge".
+    # Fetch the named commit from origin, then answer from the real history.
+    merged = "b" * 40
+    local_tip = "a" * 40
+    fetched: list[list[str]] = []
+
+    def runner(cmd: list[str], _cwd: Path) -> deliver.Proc:
+        if cmd[:2] == ["git", "fetch"]:
+            fetched.append(cmd)
+            return deliver.Proc(0, "", "")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"] and not fetched:
+            return deliver.Proc(128, "", f"fatal: Not a valid commit name {merged}\n")
+        return deliver.Proc(0, "", "")
+
+    args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
+    delivery = deliver.Delivery(args, runner, lambda _s: None)
+    pr = {"number": 1, "state": "MERGED", "headRefOid": merged}
+    assert (
+        deliver.next_stage(
+            {"status": "published"},
+            pr,
+            head=local_tip,
+            branch="debug/x",
+            is_ancestor=delivery.is_ancestor,
+        )
+        == "cleanup"
+    )
+    assert any(merged in cmd for cmd in fetched)
+
+
 def test_a_128_naming_some_other_commit_still_fails_loudly(tmp_path: Path) -> None:
     is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {'c' * 40}")
     with pytest.raises(deliver.DeliverError, match="rc=128"):

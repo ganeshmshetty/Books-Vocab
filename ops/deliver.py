@@ -160,10 +160,10 @@ _ABSENT_COMMIT_RE = re.compile(
 )
 
 
-def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> bool:
-    """Whether git reported one of ``shas`` as a missing object (exact match only)."""
+def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> str | None:
+    """The one of ``shas`` git reported as missing, else None (exact match only)."""
     match = _ABSENT_COMMIT_RE.fullmatch(stderr.strip())
-    return match is not None and match.group(1) in shas
+    return match.group(1) if match is not None and match.group(1) in shas else None
 
 
 def failure_detail(done: Proc) -> str:
@@ -756,15 +756,29 @@ class Delivery:
         )
         return proc.stdout.strip() if proc.returncode == 0 else None
 
+    def _merge_base_is_ancestor(self, old: str, new: str) -> Proc:
+        return self.runner(["git", "merge-base", "--is-ancestor", old, new], self.home)
+
     def is_ancestor(self, old: str, new: str) -> bool:
         """Whether commit ``old`` is contained in ``new``; rc 1 is a plain no."""
-        proc = self.runner(["git", "merge-base", "--is-ancestor", old, new], self.home)
+        proc = self._merge_base_is_ancestor(old, new)
+        absent = (
+            _absent_commit_named(proc.stderr, (old, new))
+            if proc.returncode == 128
+            else None
+        )
+        if absent is not None:
+            # #3399: the object is on origin but was never fetched into this clone;
+            # fetch exactly that commit, then answer from the real history (as
+            # git_queries does).  Still absent after the fetch: not contained (#3356).
+            self.runner(
+                ["git", "fetch", "-q", "--no-tags", "origin", absent], self.home
+            )
+            proc = self._merge_base_is_ancestor(old, new)
+            if proc.returncode == 128 and _absent_commit_named(proc.stderr, (old, new)):
+                return False
         if proc.returncode in (0, 1):
             return proc.returncode == 0
-        if proc.returncode == 128 and _absent_commit_named(proc.stderr, (old, new)):
-            # #3356: an object this clone never fetched cannot be contained in
-            # anything here; "not contained" is the typed refusal, as in git_queries.
-            return False
         raise DeliverError(
             f"compare {old} with {new} failed (rc={proc.returncode}): "
             f"{failure_detail(proc) or 'no output'}"
