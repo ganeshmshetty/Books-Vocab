@@ -50,12 +50,19 @@ struct PodcastNotebookPicker: View {
     }
 
     /// 綁定的 notebook 已刪除 → 清除綁定（下次播放器開啟會 re-seed）。
+    /// 只在清單已 settle 時清除；只有 clear 分支才寫入（keep 不寫）。
     private func sanitizeStaleBoundNotebook() {
         guard let boundId = series.preferredNotebookId else { return }
-        if !notebooks.contains(where: { $0.remoteId == boundId }) {
-            series.preferredNotebookId = nil
-            _ = modelContext.safeSave()
-        }
+        let liveIds = Set(notebooks.map(\.remoteId))
+        guard Self.shouldClearBinding(bound: boundId, liveNotebookIds: liveIds) else { return }
+        series.preferredNotebookId = nil
+        _ = modelContext.safeSave()
+    }
+
+    /// 清理決策（純函式）：僅「清單非空（已 settle）且不含綁定 id」才 clear。
+    /// 空清單視為尚未載入，保留綁定，避免 @Query 未就緒時把綁定清成 nil。
+    static func shouldClearBinding(bound: String, liveNotebookIds: Set<String>) -> Bool {
+        !liveNotebookIds.isEmpty && !liveNotebookIds.contains(bound)
     }
 }
 #endif
