@@ -1168,4 +1168,49 @@ struct AddLinkJobCompletionNoticeTests {
         #expect(rig.poster.items.first?.style == .success)
         #expect(rig.poster.items.first?.key == AddLinkJobNotice.key(jobKey: jobKey))
     }
+
+    /// A warning retry that settles back on `.succeededWithWarnings` (the pipeline
+    /// still has not written the explanation) is a new outcome, not a re-publish:
+    /// the user asked for the retry with the sheet closed, so it must notice (#3393).
+    @Test("a warning retry that still ends partial after close posts one warning notice (#3393)")
+    func warningRetryEndingPartialNoticesOnce() async throws {
+        let service = ScriptedCreationService(
+            onStart: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 1) },
+            onFetch: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 2) }
+        )
+        service.onTriggerPipeline = { throw URLError(.notConnectedToInternet) }
+        let record = PendingLinkCreationRecord(
+            jobKey: jobKey,
+            word: "luminous",
+            sourceCardID: "src",
+            notebookId: "nb",
+            idempotencyKey: "persisted-key",
+            operationId: "op-1",
+            operationTerminal: true,
+            state: .warning,
+            message: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue],
+            userId: nil
+        )
+        let rig = try makeRig(service: service, records: [record])
+        rig.hub.resume(services: AddLinkCreationServices(
+            operationService: service,
+            syncService: service,
+            container: rig.container
+        ))
+        #expect(rig.hub.retry(jobKey: jobKey))
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        #expect(rig.poster.items.first?.style == .warning)
+        #expect(rig.poster.items.first?.key == AddLinkJobNotice.key(jobKey: jobKey))
+        #expect(rig.hub.job(forJobKey: jobKey)?.record.state == .warning)
+
+        // A plain re-publish of the same partial outcome, with no retry running, stays silent.
+        let live = try #require(rig.hub.jobs[jobKey]?.coordinator)
+        rig.hub.creationDidChange(live)
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+    }
 }

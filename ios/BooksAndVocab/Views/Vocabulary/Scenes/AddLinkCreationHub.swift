@@ -39,6 +39,9 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// Weak, never raw `ObjectIdentifier`: a freed coordinator's address can be reused by a
     /// later job, which would then have its completion notice silenced (#3116).
     @ObservationIgnored private var presentingCoordinators: [WeakCoordinator] = []
+    /// Warning jobs whose `retry(jobKey:)` is still running. The publish that settles
+    /// such a retry is a new outcome; a plain re-publish of the same phase is not (#3393).
+    @ObservationIgnored private var warningRetriesInFlight: Set<String> = []
 
     init(
         store: any PendingLinkCreationStoring = PendingLinkCreationStores.makeDefault(),
@@ -92,7 +95,8 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
 
     func creationDidChange(_ coordinator: AddLinkCreationCoordinator) {
         guard let state = coordinator.jobState else { return }
-        let notice = unattendedNotice(for: state, coordinator: coordinator)
+        let retryEnded = settleWarningRetry(for: state, coordinator: coordinator)
+        let notice = unattendedNotice(for: state, coordinator: coordinator, retryEnded: retryEnded)
         switch state.phase {
         case .running:
             upsert(from: state, coordinator: coordinator, recordState: .creating)
@@ -144,12 +148,19 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
             )
             return true
         case .warning:
+            warningRetriesInFlight.insert(jobKey)
             if let live = job.coordinator, live.phase == .succeededWithWarnings {
                 live.retryWarnings()
+                if !live.isRetryingWarnings { warningRetriesInFlight.remove(jobKey) }
                 return true
             }
-            guard let context = job.context else { return false }
-            makeCoordinator().relaunchWarningRetry(record: job.record, context: context)
+            guard let context = job.context else {
+                warningRetriesInFlight.remove(jobKey)
+                return false
+            }
+            let coordinator = makeCoordinator()
+            coordinator.relaunchWarningRetry(record: job.record, context: context)
+            if !coordinator.isRetryingWarnings { warningRetriesInFlight.remove(jobKey) }
             return true
         }
     }
@@ -175,6 +186,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         let coordinators = jobs.values.compactMap(\.coordinator)
         let sourceCardIDs = jobs.values.map(\.record.sourceCardID)
         jobs.removeAll()
+        warningRetriesInFlight.removeAll()
         for coordinator in coordinators { coordinator.cancel() }
         store.save([])
         publishProjection()
@@ -253,10 +265,11 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// the previous record state still says "running" (#3116).
     private func unattendedNotice(
         for state: AddLinkCreationJobState,
-        coordinator: AddLinkCreationCoordinator
+        coordinator: AddLinkCreationCoordinator,
+        retryEnded: Bool
     ) -> AppToastItem? {
         guard let recordState = jobs[state.jobKey]?.record.state,
-              Self.completesUnattended(recordState: recordState, phase: state.phase),
+              Self.completesUnattended(recordState: recordState, phase: state.phase, retryEnded: retryEnded),
               owns(coordinator, jobKey: state.jobKey),
               !isPresenting(coordinator) else { return nil }
         return AddLinkJobNotice.item(
@@ -268,21 +281,37 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     }
 
     /// Whether a job's transition is an unattended completion worth a notice. A
-    /// `.creating` job may reach any terminal phase. A `.warning` job only settles
-    /// `.succeeded` from a warning retry (`retryWarnings()` has no `.running` phase);
-    /// its `.succeededWithWarnings` re-publishes are not new outcomes (#3380).
+    /// `.creating` job may reach any terminal phase. A `.warning` job settles from a
+    /// warning retry (`retryWarnings()` has no `.running` phase): `.succeeded`, or
+    /// `.succeededWithWarnings` when the retry ends still partial (`retryEnded`).
+    /// Other `.succeededWithWarnings` re-publishes are not new outcomes (#3380, #3393).
     private static func completesUnattended(
         recordState: PendingLinkCreationRecord.State,
-        phase: AddLinkCreationPhase
+        phase: AddLinkCreationPhase,
+        retryEnded: Bool
     ) -> Bool {
         switch recordState {
         case .creating:
             return true
         case .warning:
-            return phase == .succeeded
+            return phase == .succeeded || (retryEnded && phase == .succeededWithWarnings)
         case .failed:
             return false
         }
+    }
+
+    /// Whether a warning retry for this job has settled, consuming its in-flight
+    /// mark. The coordinator clears `isRetryingWarnings` before its settling publish,
+    /// so the mark is only consumed by that publish, never by the retry's start.
+    private func settleWarningRetry(
+        for state: AddLinkCreationJobState,
+        coordinator: AddLinkCreationCoordinator
+    ) -> Bool {
+        guard owns(coordinator, jobKey: state.jobKey),
+              warningRetriesInFlight.contains(state.jobKey),
+              !coordinator.isRetryingWarnings else { return false }
+        warningRetriesInFlight.remove(state.jobKey)
+        return true
     }
 
     private func upsert(
@@ -319,6 +348,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     }
 
     private func remove(jobKey: String) {
+        warningRetriesInFlight.remove(jobKey)
         guard let job = jobs.removeValue(forKey: jobKey) else { return }
         persist()
         publishProjection()
