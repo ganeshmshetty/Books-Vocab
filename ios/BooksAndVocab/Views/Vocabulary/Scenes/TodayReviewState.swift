@@ -642,6 +642,8 @@ final class TodayReviewState {
                 }
                 self.syncCurrentEntryDerivedState()
                 self.prewarmCardWindow()
+                // #3410：與 goNext() 一致，autoplay 推進後也要寫回快照，否則 kill 後還原停在播放前的卡。
+                self.persistSnapshot()
                 return true
             }
         )
