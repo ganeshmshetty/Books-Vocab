@@ -184,12 +184,15 @@ def create_manual_link(
 
     # Blocked pair → unblock only after the link is in. A refused add must leave a
     # user-deleted (blocked) pair blocked so the auto pipeline cannot re-create it.
-    if graph.is_blocked(from_id, to_id):
-        graph.unblock_pair(from_id, to_id)
-
-    # New link is not cleanly reversible (add_link's inverse, hard_delete, would
-    # introduce a blocked pair). Rely on the barrier: observable + re-raise.
-    _touch_both(cards_store, from_id, to_id)
+    # try/finally: the link is already persisted, so the touch barrier must run even
+    # if unblock_pair raises (otherwise a client retry sees 409 with no bumped cards).
+    try:
+        if graph.is_blocked(from_id, to_id):
+            graph.unblock_pair(from_id, to_id)
+    finally:
+        # New link is not cleanly reversible (add_link's inverse, hard_delete, would
+        # introduce a blocked pair). Rely on the barrier: observable + re-raise.
+        _touch_both(cards_store, from_id, to_id)
     return link
 
 

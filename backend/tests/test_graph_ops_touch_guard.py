@@ -260,6 +260,29 @@ class _RaisingJudge:
         raise QuotaExceededError(60)
 
 
+class TestCreateManualLinkUnblockFailureStillTouches:
+    """#3524: unblock_pair raising after add_link persisted must still touch both cards."""
+
+    def test_unblock_failure_still_touches_both_endpoints(self, store, monkeypatch):
+        lk = store.add_link("a", "b", LinkKind.CONTRASTS_WITH, 0.9, "r")
+        store.hard_delete_link(lk.id)
+        assert store.is_blocked("a", "b")
+
+        def _boom(from_id, to_id):
+            raise RuntimeError("simulated unblock failure")
+
+        monkeypatch.setattr(store, "unblock_pair", _boom)
+        cards = FakeCardsStore(
+            [FakeCard("a", content="apple", meaning="蘋果"), FakeCard("b", content="banana", meaning="香蕉")]
+        )
+        judge = _make_judge('{"link": "shares_usage", "confidence": 0.9, "reason": "r"}')
+        with pytest.raises(RuntimeError, match="simulated unblock failure"):
+            create_manual_link(
+                from_id="a", to_id="b", graph=store, cards_store=cards, judge=judge, notebook_id="default"
+            )
+        assert "a" in cards.touched and "b" in cards.touched
+
+
 class TestBlockedPairSurvivesJudgeFailure:
     def test_judge_failure_keeps_pair_blocked(self, store):
         from kg.exceptions import QuotaExceededError
