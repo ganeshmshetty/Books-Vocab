@@ -1086,7 +1086,17 @@ def _plan_checks(
         and item.endswith(".md")
         and (worktree is None or (worktree / item).is_file())
     ]
-    if "docs/registry.yml" in files or docs:
+    # A deleted doc leaves a registry entry that only the registry pass can
+    # catch; --files validates present docs only, so a mixed change needs both.
+    deleted_docs = [
+        item
+        for item in files
+        if item.startswith("docs/")
+        and item.endswith(".md")
+        and worktree is not None
+        and not (worktree / item).is_file()
+    ]
+    if "docs/registry.yml" in files or docs or deleted_docs:
         checks.append(
             {
                 "name": "docs-lint",
@@ -1097,6 +1107,16 @@ def _plan_checks(
                     if not docs
                     else ["./ops/docs_lint.sh", "--files", *docs]
                 ),
+                "level": "block",
+            }
+        )
+    if deleted_docs and docs:
+        checks.append(
+            {
+                "name": "docs-lint-registry",
+                "kind": "shell",
+                "cwd": ".",
+                "cmd": ["./ops/docs_lint.sh", "--registry"],
                 "level": "block",
             }
         )

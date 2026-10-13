@@ -1532,6 +1532,29 @@ def test_gate_plan_docs_lint_skips_deleted_docs_in_target_worktree(
     assert docs_lint["cmd"] == ["./ops/docs_lint.sh", "--files", "docs/new.md"]
 
 
+def test_gate_plan_docs_lint_runs_registry_for_deleted_only_docs(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "docs").mkdir()
+
+    plan = coordinator._plan_checks(["docs/old.md"], worktree=tmp_path)
+    docs_lint = next(item for item in plan if item["name"] == "docs-lint")
+
+    assert docs_lint["cmd"] == ["./ops/docs_lint.sh", "--registry"]
+
+
+def test_gate_plan_docs_lint_registry_covers_deleted_doc_in_mixed_change(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "new.md").write_text("# new\n", encoding="utf-8")
+
+    plan = coordinator._plan_checks(["docs/new.md", "docs/old.md"], worktree=tmp_path)
+    registry_lint = next(item for item in plan if item["name"] == "docs-lint-registry")
+
+    assert registry_lint["cmd"] == ["./ops/docs_lint.sh", "--registry"]
+
+
 def test_gate_plan_docs_lint_keeps_unfiltered_docs_without_worktree() -> None:
     plan = coordinator._plan_checks(["docs/new.md", "docs/old.md"])
     docs_lint = next(item for item in plan if item["name"] == "docs-lint")
