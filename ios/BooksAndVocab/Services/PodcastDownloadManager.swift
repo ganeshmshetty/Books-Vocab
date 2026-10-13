@@ -332,28 +332,41 @@ extension PodcastDownloadManager: URLSessionDownloadDelegate {
         let dir = Self.downloadsRoot().appendingPathComponent(seriesKey, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let finalURL = dir.appendingPathComponent("\(remoteId).mp3")
-        try? FileManager.default.removeItem(at: finalURL)
+        let fm = FileManager.default
+        let previousPath = episode.localAudioPath
+        // The persisted record may still point at finalURL (re-download). Keep
+        // that file aside instead of deleting it, so each failure below can put
+        // it back and disk keeps agreeing with the stored path (#3502).
+        let aside = finalURL.appendingPathExtension("prev")
+        try? fm.removeItem(at: aside)
+        var keptPrevious = false
+        if previousPath == finalURL.path {
+            keptPrevious = (try? fm.moveItem(at: finalURL, to: aside)) != nil
+        }
+        try? fm.removeItem(at: finalURL)
         do {
-            try FileManager.default.moveItem(at: stash, to: finalURL)
+            try fm.moveItem(at: stash, to: finalURL)
         } catch {
             // moveItem failed → stash still on disk; clear it so it doesn't
-            // accumulate across retries.
-            try? FileManager.default.removeItem(at: stash)
+            // accumulate across retries, and restore the kept previous file.
+            try? fm.removeItem(at: stash)
+            if keptPrevious { try? fm.moveItem(at: aside, to: finalURL) }
             failed[remoteId] = error.localizedDescription
             cleanup(taskId: taskId, remoteId: remoteId)
             return
         }
-        let previousPath = episode.localAudioPath
         episode.localAudioPath = finalURL.path
         do {
             try saveContext(context)
+            try? fm.removeItem(at: aside)
             cleanup(taskId: taskId, remoteId: remoteId)
         } catch {
-            // Save failed after the move: undo both the file and the in-memory
-            // field so disk and record agree and no orphaned mp3 remains (#3427).
-            // A previous path pointing at finalURL was already deleted above.
-            try? FileManager.default.removeItem(at: finalURL)
-            episode.localAudioPath = previousPath == finalURL.path ? nil : previousPath
+            // Save failed after the move: drop the new file, restore the kept
+            // previous one, and revert the in-memory field so disk and the
+            // persisted record agree and no orphaned mp3 remains (#3427, #3502).
+            try? fm.removeItem(at: finalURL)
+            if keptPrevious { try? fm.moveItem(at: aside, to: finalURL) }
+            episode.localAudioPath = previousPath == finalURL.path && !keptPrevious ? nil : previousPath
             failed[remoteId] = error.localizedDescription
             cleanup(taskId: taskId, remoteId: remoteId)
         }
