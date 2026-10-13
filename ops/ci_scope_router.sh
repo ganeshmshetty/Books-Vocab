@@ -138,7 +138,7 @@ classify_path() {
   # does. Unit-test-only sources (ios/BooksAndVocabTests) do not.
   case "$path" in
     ios/BooksAndVocabTests/*) ;;
-    ios/*|ops/ios_*|ops/lib/ios_*|ops/lib/heavy_slots.sh|ops/lib/lock_wait.py|ops/lib/exit_codes.py|ops/lib/streaming_command.py|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py|.github/workflows/ios-quality.yml)
+    ios/*|ops/ios_*|ops/lib/ios_*|ops/lib/heavy_slots.sh|ops/lib/lock_wait.py|ops/lib/exit_codes.py|ops/lib/streaming_command.py|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py|ops/demo/ui_world_seed/*|ops/demo/generated/*|ops/fixtures/assets/*|.github/workflows/ios-quality.yml)
       ui_smoke=true
       ;;
   esac
@@ -166,7 +166,8 @@ classify_path() {
   # returns, so the path still gets its normal tree selection below. Keep both
   # lists aligned with backend-quality.yml / ops-suite.yml push.paths.
   case "$path" in
-    ops/data_inspect.py|ops/official_decks/*|ops/seeds/marketing_demo.json|docs/registry.yml|docs/reference/testing/backend_strategy.md|ios/BooksAndVocab/Views/Podcast/PodcastAccess.swift)
+    ops/data_inspect.py|ops/official_decks/*|ops/seeds/marketing_demo.json|docs/registry.yml|docs/reference/testing/backend_strategy.md|docs/sop/architecture.md|ios/BooksAndVocab/Views/Podcast/PodcastAccess.swift)
+      # docs/sop/architecture.md: backend test_library_assets asserts its late-PUT bound (#3440).
       backend=true
       ;;
     backend/ops_cli.py|backend/ops_edit.py|backend/src/kg/ops_*|backend/tests/ops_helpers.py)
@@ -222,7 +223,9 @@ classify_path() {
       ios=true
       return
       ;;
-    ops/ios_*.sh|ops/ios_*.py|ops/lib/ios_*.sh|ops/lib/heavy_slots.sh|ops/lib/lock_wait.py|ops/lib/exit_codes.py|ops/lib/streaming_command.py|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py)
+    ops/ios_*.sh|ops/ios_*.py|ops/lib/ios_*.sh|ops/lib/heavy_slots.sh|ops/lib/lock_wait.py|ops/lib/exit_codes.py|ops/lib/streaming_command.py|ops/lib/signal_traps.sh|ops/lib/project_python.sh|ops/lib/fixture_dataset_env.sh|ops/lib/userland_compat.sh|ops/lib/provenance.py|ops/fixtures/ui_worlds/*|ops/ui_world_manifest.py|ops/review_calendar_clock.py|ops/demo/ui_world_seed/*|ops/demo/generated/*|ops/fixtures/assets/*)
+      # #3440: ops/demo and ops/fixtures/assets are read by path from ios/ tests and
+      # the app-side fixture resolver, so they are iOS inputs as well as ops inputs.
       ops=true
       ios=true
       return

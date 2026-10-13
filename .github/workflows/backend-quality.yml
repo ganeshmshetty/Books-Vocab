@@ -17,6 +17,7 @@ on:
       - 'ops/seeds/marketing_demo.json'
       - 'docs/registry.yml'
       - 'docs/reference/testing/backend_strategy.md'
+      - 'docs/sop/architecture.md'
       - 'ios/BooksAndVocab/Views/Podcast/PodcastAccess.swift'
       - '.github/workflows/backend-quality.yml'
   schedule:
