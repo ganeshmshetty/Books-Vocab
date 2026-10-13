@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3565,
+  "raise": {
+    "ops": 1500
+  },
+  "note": "Issue #3565 (CM rebaseline 2026-10-13): concurrent ops lanes each fit their own headroom at delivery but sum past the ceiling in the merge queue; groups for #3540/#3553/#3559 failed short-gate at ops 220,244/220,242. Ratchet pulls it back as deletions land; root fix for deliver-time lift composition is #3004."
+}
