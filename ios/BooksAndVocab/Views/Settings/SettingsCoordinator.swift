@@ -419,6 +419,8 @@ final class SettingsCoordinator: SettingsCoordinating {
         kgService: any KGServing,
         toastCoordinator: AppToastCoordinator
     ) async -> Bool {
+        let requestGeneration = accountGeneration
+        let requestedUserID = authenticatedUserID(authManager)
         let prevEnabled = autoLinkStore.isEnabled
         let prevUpdatedAt = autoLinkStore.updatedAt
 
@@ -433,6 +435,15 @@ final class SettingsCoordinator: SettingsCoordinating {
             )
             return true
         } catch {
+            // Rollback 只屬於發起它的帳號：await 期間換帳號時，還原會蓋掉新帳號已套用的值（#3503）。
+            guard acceptsAccountRequest(
+                generation: requestGeneration,
+                requestedUserID: requestedUserID,
+                authManager: authManager
+            ) else {
+                AppLog.kg.debug("Ignoring stale auto-link failure")
+                return true
+            }
             autoLinkStore.restore(enabled: prevEnabled, updatedAt: prevUpdatedAt)
             reportConfigSaveFailure(
                 error,
