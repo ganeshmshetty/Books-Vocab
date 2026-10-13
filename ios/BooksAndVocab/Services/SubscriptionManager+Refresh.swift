@@ -7,7 +7,9 @@ extension SubscriptionManager {
 
     /// 核心 refresh 只需要 `fetchEntitlements`，依窄能力協定 `SubscriptionServing` 實作，
     /// 讓回應順序語義能以確定性替身測試（#2800）。
-    func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async {
+    /// 回傳 `false` 僅表示本次 fetch 失敗或被取消；未發出請求的早退（登出、cooldown）與已被取代的回應皆回傳 `true`（#3418）。
+    @discardableResult
+    func refreshEntitlements(using service: any SubscriptionServing, authManager: any AuthManaging, force: Bool) async -> Bool {
         // 記住發起 refresh 時的 userId，用於 async 返回後的一致性檢查
         let requestUserId = authManager.userId
 
@@ -16,7 +18,7 @@ extension SubscriptionManager {
             lastError = nil
             expiryTimer?.cancel()
             expiryTimer = nil
-            return
+            return true
         }
 
         // 未經登出直接換成另一帳號：屬於前一帳號的權益不得沿用，且 refresh 失敗時也不得保留（#2592）。
@@ -30,7 +32,7 @@ extension SubscriptionManager {
         if !force {
             let now = Date()
             if let last = lastRefreshTime, now.timeIntervalSince(last) < Self.refreshCooldown {
-                return
+                return true
             }
         }
         let previousRefreshTime = lastRefreshTime
@@ -48,7 +50,7 @@ extension SubscriptionManager {
             // 已有更新的世代套用過（refresh 或樂觀／同步寫入）：本回應已過期（無論到達順序）
             guard generation > lastAppliedEntitlementsGeneration else {
                 AppLog.subscription.debug("Discarding superseded refresh #\(generation), applied #\(self.lastAppliedEntitlementsGeneration)")
-                return
+                return true
             }
 
             // 後端可能不知道用戶已在裝置端取消自動續訂，用 StoreKit 本地狀態覆寫
@@ -71,26 +73,29 @@ extension SubscriptionManager {
             // 而登出不取世代，僅靠 applyEntitlements 的世代守衛會把舊帳號的權益寫回。
             guard authManager.userId == requestUserId else {
                 AppLog.subscription.warning("Discarding stale refresh: requested for \(requestUserId ?? "nil"), current is \(authManager.userId ?? "nil")")
-                return
+                return true
             }
             // 期間可能已有更新的寫入發出；由 applyEntitlements 再守一次世代
-            guard applyEntitlements(remote, generation: generation, owner: requestUserId) else { return }
+            guard applyEntitlements(remote, generation: generation, owner: requestUserId) else { return true }
             lastError = nil
             scheduleExpiryRefresh(for: remote.pro)
+            return true
         } catch is CancellationError {
             // 被取消（如 .task(id:) 重啟）不是失敗；還原冷卻時間避免擋住下一次 refresh。
             // 過期請求不得還原，否則會蓋掉較新請求寫入的冷卻時間。
             if refreshSequence == refreshRequestSequence { lastRefreshTime = previousRefreshTime }
+            return false
         } catch {
             // 只有最新發出的 refresh 可寫入錯誤：較早 refresh 的失敗若較新 refresh 已發出，即已被取代，
             // 不得寫入 lastError（否則 paywall 會對已過時的請求顯示重試）。判斷只看 refresh 自己的序號：
             // 同步取號會推進共用世代，不得吞掉 refresh 自身的錯誤（#3233）。
             // 較新的請求（同步）已寫入的錯誤仍優先（#3223）。
-            guard refreshSequence == refreshRequestSequence,
-                  lastError == nil || generation > lastErrorGeneration
-            else { return }
-            lastError = error.localizedDescription
-            lastErrorGeneration = generation
+            if refreshSequence == refreshRequestSequence,
+               lastError == nil || generation > lastErrorGeneration {
+                lastError = error.localizedDescription
+                lastErrorGeneration = generation
+            }
+            return false
         }
     }
 

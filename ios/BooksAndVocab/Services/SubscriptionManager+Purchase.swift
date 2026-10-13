@@ -5,6 +5,13 @@ import StoreKit
 /// syncCurrentEntitlements), so the user is never sent to a missing 重新同步.
 enum SubscriptionPurchaseCopy {
     static let backendSyncPendingKey = "Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。"
+    static let activatedKey = "訂閱已啟用，感謝支持！"
+
+    /// 購買後的結果文案（純函式）。樂觀寫入的 Pro 不算成功：只有後端同步與重新整理都套用、
+    /// 且權益為 Pro 時才回報已啟用，否則導向「恢復購買」重試（#3418）。
+    static func purchaseOutcomeMessage(syncApplied: Bool, refreshApplied: Bool, hasProAccess: Bool) -> String {
+        syncApplied && refreshApplied && hasProAccess ? activatedKey : backendSyncPendingKey
+    }
 }
 
 enum SubscriptionProductLoadState: Equatable {
@@ -113,6 +120,7 @@ extension SubscriptionManager {
                     optimisticEntitlements(from: product, status: inferredStatus(for: product)),
                     owner: authManager.userId
                 )
+                var syncApplied = false
                 do {
                     try await syncTransaction(
                         transaction,
@@ -120,6 +128,7 @@ extension SubscriptionManager {
                         product: product,
                         using: kgService
                     )
+                    syncApplied = true
                     AppLog.subscription.info("Sync succeeded")
                 } catch {
                     AppLog.subscription.warning("Sync failed: \(error.localizedDescription)")
@@ -127,12 +136,15 @@ extension SubscriptionManager {
                         AppCrashReporting.record(error, context: "subscription.purchase.sync")
                     }
                 }
-                await refresh(using: kgService, authManager: authManager, force: true)
-                if hasProAccess {
-                    purchaseStatusMessage = L10n.string("訂閱已啟用，感謝支持！")
+                let refreshApplied = await refreshEntitlements(using: kgService, authManager: authManager, force: true)
+                let outcome = SubscriptionPurchaseCopy.purchaseOutcomeMessage(
+                    syncApplied: syncApplied,
+                    refreshApplied: refreshApplied,
+                    hasProAccess: hasProAccess
+                )
+                purchaseStatusMessage = L10n.string(outcome)
+                if outcome == SubscriptionPurchaseCopy.activatedKey {
                     scheduleClearPurchaseMessage()
-                } else {
-                    purchaseStatusMessage = L10n.string(SubscriptionPurchaseCopy.backendSyncPendingKey)
                 }
             case .userCancelled:
                 purchaseStatusMessage = L10n.string("已取消購買。")

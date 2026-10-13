@@ -167,6 +167,35 @@ struct SubscriptionPaywallCopyTests {
         #expect(!text.contains(resyncLabel))
     }
 
+    // MARK: - Purchase outcome message (#3418)
+
+    /// Optimistic Pro committed before the backend sync must never be reported as success
+    /// when the sync did not apply, even if the follow-up refresh still reports Pro.
+    @Test(arguments: [true, false])
+    func purchaseOutcome_optimisticProWithoutBackendSyncIsPending(refreshApplied: Bool) {
+        let key = SubscriptionPurchaseCopy.purchaseOutcomeMessage(
+            syncApplied: false,
+            refreshApplied: refreshApplied,
+            hasProAccess: true
+        )
+        #expect(key == SubscriptionPurchaseCopy.backendSyncPendingKey)
+    }
+
+    @Test func purchaseOutcome_successOnlyWhenSyncRefreshAndProAllApply() {
+        #expect(
+            SubscriptionPurchaseCopy.purchaseOutcomeMessage(syncApplied: true, refreshApplied: true, hasProAccess: true)
+                == SubscriptionPurchaseCopy.activatedKey
+        )
+        #expect(
+            SubscriptionPurchaseCopy.purchaseOutcomeMessage(syncApplied: true, refreshApplied: false, hasProAccess: true)
+                == SubscriptionPurchaseCopy.backendSyncPendingKey
+        )
+        #expect(
+            SubscriptionPurchaseCopy.purchaseOutcomeMessage(syncApplied: true, refreshApplied: true, hasProAccess: false)
+                == SubscriptionPurchaseCopy.backendSyncPendingKey
+        )
+    }
+
     // MARK: - SubscriptionPresentation has no backend-derived trial claim
 
     @Test func presentation_detailAndCtaMakeNoTrialClaim() {
