@@ -147,7 +147,30 @@ Migration 順序：
 - metadata tombstone 同步到後端，其他裝置隱藏該書。
 - 本機檔案可立即刪除；object storage asset 在 tombstone commit 後 best-effort 立即 `delete_object`（`DELETE /api/library/books/{id}`），asset 格式 / local-only 變更時同樣刪除被取代的舊 key；刪除失敗只記 log、不使請求失敗，舊 key 留在 `library.db` 的 `librarypendingobjectdelete` ledger，於下一次 library 寫入重試，並由帳號刪除（erasure）兜底回收。目前沒有「刪書後 recovery window」：tombstone 不可還原 asset。
 - 帳號刪除（erasure）的 late PUT 上界：tombstone 後仍有效的 presigned PUT（`_ASSET_URL_TTL` = 3600 秒 = 1 小時）可能落地為 `library/<uid>/` 下的孤兒物件。erasure 於本地目錄移除之後執行前綴 sweep（`sweep_account_prefixes`）清除；已接受的保留上界是「erasure 之後至多 1 小時內的上傳」，reconciler 不在範圍內。
-- 帳號持有人需套用的 IAM 語句（agent 不執行 aws）：bucket ARN 上 `s3:ListBucket`，條件 `s3:prefix` 限 `library/*`；物件 ARN `library/*` 上 `s3:DeleteObject`。唯讀驗證：`aws s3api list-objects-v2 --bucket <bucket> --prefix library/ --max-keys 1`（只列不刪）。
+- 帳號持有人需套用的 IAM policy（agent 不執行 aws；`<bucket>` 換成實際 bucket 名）：
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "ListLibraryPrefix",
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::<bucket>",
+        "Condition": {"StringLike": {"s3:prefix": ["library/*"]}}
+      },
+      {
+        "Sid": "DeleteLibraryObjects",
+        "Effect": "Allow",
+        "Action": "s3:DeleteObject",
+        "Resource": "arn:aws:s3:::<bucket>/library/*"
+      }
+    ]
+  }
+  ```
+
+  唯讀驗證：`aws s3api list-objects-v2 --bucket <bucket> --prefix library/ --max-keys 1`（只列不刪）。
 - 詞卡的 `bookId` 關聯不應硬刪詞卡；只解除來源書關聯或保留書名 snapshot。
 
 ### Rollout PR sequence（目標順序）
