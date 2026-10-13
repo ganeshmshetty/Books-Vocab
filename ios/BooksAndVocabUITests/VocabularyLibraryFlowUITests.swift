@@ -179,7 +179,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         captureStep("add-link-source-detail", app: app)
 
         func addLinkTriggerQuery() -> XCUIElementQuery {
-            app.buttons.matching(NSPredicate(format: "label == %@", "新增知識連結"))
+            app.buttons.matching(NSPredicate(format: "identifier == %@", "wordDetail.card.addLink"))
         }
 
         // Candidate rows only: the create entry (`addLink.create`) stays listed next
@@ -539,7 +539,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         }
 
         let addLinkTrigger = app.buttons.matching(
-            NSPredicate(format: "label == %@", "新增知識連結")
+            NSPredicate(format: "identifier == %@", "wordDetail.card.addLink")
         )
         guard let trigger = addLinkTrigger.exactlyOneElement(
             timeout: 10,
@@ -679,7 +679,7 @@ final class VocabularyLibraryFlowUITests: UITestCase {
         page.row(word: "serendipity").tapWhenReady()
 
         let addLinkTrigger = app.buttons.matching(
-            NSPredicate(format: "label == %@", "新增知識連結")
+            NSPredicate(format: "identifier == %@", "wordDetail.card.addLink")
         )
         guard let trigger = addLinkTrigger.exactlyOneElement(
             timeout: 10,
