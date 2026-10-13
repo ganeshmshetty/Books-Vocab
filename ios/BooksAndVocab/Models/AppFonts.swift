@@ -42,13 +42,15 @@ enum AppFonts {
 
     // MARK: - Font Builders
 
-    /// Dynamic Type 縮放後的 point size。RED 階段：尚未套用縮放。
+    /// Dynamic Type 縮放後的 point size（以 body 的 UIFontMetrics 曲線換算）。
+    /// default category 下等於輸入值，故既有預設字級不變。
+    /// 字型在建構時固定 size；category 變更由 typography cache 重建時生效。
     static func scaledPointSize(_ size: CGFloat, compatibleWith traits: UITraitCollection? = nil) -> CGFloat {
-        size
+        UIFontMetrics(forTextStyle: .body).scaledValue(for: size, compatibleWith: traits)
     }
 
     private static func platformFont(descriptor: PlatformFontDescriptor, size: CGFloat) -> PlatformFont {
-        PlatformFont(descriptor: descriptor, size: size)
+        PlatformFont(descriptor: descriptor, size: scaledPointSize(size))
     }
 
     private static let cascadeListKey = PlatformFontDescriptor.AttributeName(
@@ -118,7 +120,7 @@ enum AppFonts {
     static func mono(size: CGFloat, bold: Bool = false) -> Font {
         let primary = bold ? "ElmsSans-Bold" : "ElmsSans-Regular"
         let sysMono = PlatformFont.monospacedSystemFont(
-            ofSize: size, weight: bold ? .bold : .regular
+            ofSize: scaledPointSize(size), weight: bold ? .bold : .regular
         ).fontDescriptor
         let base = PlatformFontDescriptor(fontAttributes: [.name: primary])
         let descriptor = base.addingAttributes([cascadeListKey: [sysMono]])
@@ -137,7 +139,7 @@ enum AppFonts {
 
     /// System Mono: SF Mono — 單字渲染專用（需系統等寬的字面對齊感）
     static func systemMono(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        .system(size: scaledPointSize(size), weight: weight, design: .monospaced)
     }
 
     /// SF Symbol 字型 — symbol 一律以系統字繪製，此 builder 收斂散落的 .system(design:.default)
@@ -263,7 +265,7 @@ enum AppFonts {
         let base = UIFontDescriptor(fontAttributes: [.name: primary])
         let cjk = UIFontDescriptor(fontAttributes: [.name: fallback])
         let descriptor = base.addingAttributes([cascadeListKey: [cjk]])
-        return UIFont(descriptor: descriptor, size: size)
+        return UIFont(descriptor: descriptor, size: scaledPointSize(size))
     }
 
     /// UIKit sans font — ElmsSans + PingFang TC cascade
@@ -273,7 +275,7 @@ enum AppFonts {
         let base = UIFontDescriptor(fontAttributes: [.name: primary])
         let cjk = UIFontDescriptor(fontAttributes: [.name: fallback])
         let descriptor = base.addingAttributes([cascadeListKey: [cjk]])
-        return UIFont(descriptor: descriptor, size: size)
+        return UIFont(descriptor: descriptor, size: scaledPointSize(size))
     }
 
     /// 建立 serif 導航列 appearance（opaque + transparent pair）
