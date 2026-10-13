@@ -1077,7 +1077,15 @@ def _plan_checks(
                 "level": "block",
             }
         )
-    docs = [item for item in files if item.startswith("docs/") and item.endswith(".md")]
+    # Same deleted-path rule as shell_files: a renamed doc's old path is in the
+    # diff but absent from the target worktree, and docs_lint would exit 64.
+    docs = [
+        item
+        for item in files
+        if item.startswith("docs/")
+        and item.endswith(".md")
+        and (worktree is None or (worktree / item).is_file())
+    ]
     if "docs/registry.yml" in files or docs:
         checks.append(
             {

@@ -1520,6 +1520,30 @@ def test_gate_plan_skips_deleted_shell_file_in_target_worktree(tmp_path: Path) -
     assert "shell-syntax:.claude/skills/app-debug/find-polluter.sh" not in names
 
 
+def test_gate_plan_docs_lint_skips_deleted_docs_in_target_worktree(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "new.md").write_text("# new\n", encoding="utf-8")
+
+    plan = coordinator._plan_checks(["docs/new.md", "docs/old.md"], worktree=tmp_path)
+    docs_lint = next(item for item in plan if item["name"] == "docs-lint")
+
+    assert docs_lint["cmd"] == ["./ops/docs_lint.sh", "--files", "docs/new.md"]
+
+
+def test_gate_plan_docs_lint_keeps_unfiltered_docs_without_worktree() -> None:
+    plan = coordinator._plan_checks(["docs/new.md", "docs/old.md"])
+    docs_lint = next(item for item in plan if item["name"] == "docs-lint")
+
+    assert docs_lint["cmd"] == [
+        "./ops/docs_lint.sh",
+        "--files",
+        "docs/new.md",
+        "docs/old.md",
+    ]
+
+
 def test_gate_plan_never_mutates_remote_or_integrates_branches() -> None:
     plan = coordinator._plan_checks(["ops/worktree_orchestrate.py"])
     commands = [" ".join(item["cmd"]) for item in plan]
