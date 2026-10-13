@@ -236,7 +236,7 @@ struct SubscriptionPaywallCopyTests {
     }
 
     @Test func presentation_priceDetailShowsFormattedExpiryNotRawISO() {
-        let s = status(priceDisplay: "NT$170", expiresAt: "2026-11-13T08:00:00Z")
+        let s = status(expiresAt: "2026-11-13T08:00:00Z", priceDisplay: "NT$170")
         let detail = SubscriptionPresentation.detail(for: s, proProduct: nil)
         #expect(!detail.contains("2026-11-13T08:00:00Z"))
         #expect(detail == L10n.format("%@ · 到期 %@", "NT$170", s.formattedExpiryDate))
