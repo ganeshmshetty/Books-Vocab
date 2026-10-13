@@ -262,7 +262,6 @@ def test_git_adapter_ancestor_query_treats_absent_object_as_not_contained(
     assert adapter.is_ancestor(base, absent) is False
 
 
-
 def test_git_adapter_reads_patch_equivalence_without_mutation(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

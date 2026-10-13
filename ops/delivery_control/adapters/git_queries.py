@@ -62,6 +62,8 @@ def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> bool:
 
     match = _ABSENT_COMMIT_RE.fullmatch(stderr.strip())
     return match is not None and match.group(1) in shas
+
+
 _HUNK_HEADER_RE = re.compile(r"^@@ -[0-9]+(?:,[0-9]+)? \+[0-9]+(?:,[0-9]+)? @@")
 _RANGE_DIFF_MATCH_RE = re.compile(
     r"^\s*\d+:\s+([0-9a-f]{40})\s+([=!])\s+\d+:\s+([0-9a-f]{40})(?:\s+.*)?$"
