@@ -239,6 +239,29 @@ def test_git_adapter_reads_ancestor_relation_without_mutation(tmp_path: Path) ->
     assert not adapter.is_ancestor(tip, base)
 
 
+def test_git_adapter_ancestor_query_treats_absent_object_as_not_contained(
+    tmp_path: Path,
+) -> None:
+    # #3348: a merged PR head that was never fetched locally is an absent
+    # object (git rc 128, "Not a valid commit name").  That is a typed "not
+    # contained" answer, not an adapter command failure.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-qm", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    absent = "c" * 40
+
+    adapter = GitCliAdapter(repo=repo)
+
+    assert adapter.is_ancestor(absent, base) is False
+    assert adapter.is_ancestor(base, absent) is False
+
+
 def test_git_adapter_reads_patch_equivalence_without_mutation(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
