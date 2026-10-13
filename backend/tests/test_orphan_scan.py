@@ -895,3 +895,31 @@ def test_fix_refuses_when_cards_db_missing_with_graph_and_judge_rows(env, dry_ru
     assert graph_path.read_text() == graph_before
     with sqlite3.connect(str(env.data_dir / "judge_log.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM judge_log").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_fix_refuses_when_registered_user_dir_missing_with_judge_rows(env, dry_run):
+    """#3460: a registered uid whose whole users/<uid>/ dir is gone must not
+    make its judge_log rows look like orphans (they would be hard-deleted)."""
+    import shutil
+
+    import kg.judge_log as jl
+    from kg.orphan_scan import UserRegistryUnavailable, fix
+
+    jl.record(
+        user_id=env.user_id,
+        notebook_id=env.real_notebook_id,
+        from_id=env.real_card_id,
+        to_id=env.real_card_id,
+        similarity=0.7,
+        verdict="accept",
+        confidence=0.9,
+        accepted=True,
+    )
+    shutil.rmtree(env.user_dir)
+
+    with pytest.raises(UserRegistryUnavailable):
+        fix(data_dir=env.data_dir, confirm=True, dry_run=dry_run)
+
+    with sqlite3.connect(str(env.data_dir / "judge_log.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM judge_log").fetchone()[0] == 1

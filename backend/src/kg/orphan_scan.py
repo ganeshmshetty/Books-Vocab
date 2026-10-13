@@ -490,6 +490,15 @@ def fix(
             f"user registry in {data_dir / 'users.json'} is empty but log tables have rows; refusing to treat all as orphans"
         )
 
+    # A registered uid whose whole users/<uid>/ dir vanished is skipped by
+    # _iter_user_dirs, so its judge_log rows would look orphaned and be
+    # hard-deleted (#3460). Fail closed instead.
+    for uid in sorted(user_ids):
+        if not (data_dir / "users" / uid).is_dir() and _judge_rows_for_user(data_dir, uid):
+            raise UserRegistryUnavailable(
+                f"user dir missing for registered user {uid} while judge_log rows exist; refusing to treat them as orphans"
+            )
+
     # A missing notebooks.db would make every live card look orphaned (#2705).
     for uid, udir in _iter_user_dirs(data_dir, user_ids):
         nb_db = udir / "notebooks.db"
