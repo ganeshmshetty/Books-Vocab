@@ -67,6 +67,14 @@ final class TodayReviewState {
         /// confirmed success. New answers start `false`; restore re-flushes any
         /// answer left `false`.
         var flushed: Bool = false
+
+        /// 同一筆作答？replace 會保留 `reviewRecordID` 但換掉 feedback 與 `answeredAt`，
+        /// 所以只比 record ID 不夠（#3409）。
+        func isSameSubmission(as other: SubmittedAnswer) -> Bool {
+            feedback == other.feedback
+                && answeredAt == other.answeredAt
+                && reviewRecordID == other.reviewRecordID
+        }
     }
 
     // MARK: - Card Navigation
@@ -708,15 +716,21 @@ final class TodayReviewState {
         onFinalize: @escaping @MainActor () -> Void = {},
         onFailure: (@MainActor @Sendable () -> Void)? = nil
     ) {
+        // Snapshot what this flush writes: a confirmation may only mark that exact submission
+        // flushed, not whatever the index holds once the flush returns (#3409).
+        let sent = scoring.submittedAnswers
         persistence.flushPendingAnswers(
-            submittedAnswers: scoring.submittedAnswers,
+            submittedAnswers: sent,
             container: container,
             notebookSettingsSnapshot: notebookSettingsSnapshot,
             onFinalize: onFinalize,
             onFailure: onFailure,
             onFlushed: { [weak self] indices in
                 if let self {
-                    for i in indices { self.scoring.markFlushed(at: i) }
+                    for i in indices {
+                        guard let answer = sent[i] else { continue }
+                        self.scoring.markFlushed(at: i, confirming: answer)
+                    }
                 }
             }
         )

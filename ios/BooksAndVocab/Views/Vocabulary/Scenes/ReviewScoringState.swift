@@ -84,6 +84,14 @@ final class ReviewScoringState {
         submittedAnswers[index]?.flushed = true
     }
 
+    /// Mark only the submission that the flush actually wrote (#3409). The flush is async: the same
+    /// card may have been regraded since, and that replacement was never written, so it must stay
+    /// un-flushed. No-op when the index now holds a different submission.
+    func markFlushed(at index: Int, confirming sent: TodayReviewState.SubmittedAnswer) {
+        guard submittedAnswers[index]?.isSameSubmission(as: sent) == true else { return }
+        submittedAnswers[index]?.flushed = true
+    }
+
     func restore(
         submittedAnswers: [Int: TodayReviewState.SubmittedAnswer],
         rememberedCount: Int,
