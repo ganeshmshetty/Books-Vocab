@@ -637,17 +637,27 @@ final class TodayReviewState {
             shouldReveal: { [weak self] in self?.revealStage == .front },
             reveal: { [weak self] in self?.advanceReveal() },
             advance: { [weak self] in
-                guard let self, !self.session.isComplete, self.session.canGoNext else { return false }
-                withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
-                    _ = self.session.advanceAfterSubmission()
-                }
-                self.syncCurrentEntryDerivedState()
-                self.prewarmCardWindow()
-                // #3410：與 goNext() 一致，autoplay 推進後也要寫回快照，否則 kill 後還原停在播放前的卡。
-                self.persistSnapshot()
-                return true
+                guard let self else { return false }
+                return self.autoplayAdvanceStep()
             }
         )
+    }
+
+    /// One autoplay advance: move the session forward, sync derived state, and
+    /// persist the restore snapshot. Returns false when there is no next card.
+    /// The autoplay loop is the only production caller; tests drive it directly
+    /// so they do not depend on real per-card timers (#3528).
+    @discardableResult
+    func autoplayAdvanceStep() -> Bool {
+        guard !session.isComplete, session.canGoNext else { return false }
+        withAnimation(AppMotionResolver.systemAnimation(.navigation)) {
+            _ = session.advanceAfterSubmission()
+        }
+        syncCurrentEntryDerivedState()
+        prewarmCardWindow()
+        // #3410：與 goNext() 一致，autoplay 推進後也要寫回快照，否則 kill 後還原停在播放前的卡。
+        persistSnapshot()
+        return true
     }
 
     // MARK: - Submit (Scoring only — persistence deferred to session end)
