@@ -1271,13 +1271,18 @@ class Delivery:
                 return self.summary(branch, lane, number, "ready-to-merge")
             self.extra["review"] = review = self.review_gate(repo, number)
             self.area_quality_gate(repo, number, review["head"])
-            self.mutate(
-                [*delivery, "queue", "--pr", str(number)],
-                self.home,
-                "queue",
-            )
+            # A rerun may find the PR already in the queue (an earlier run queued
+            # it); GitHub rejects a second enqueue, so wait for that entry instead (#3481).
+            if self._queue_entry(repo, number) is None:
+                self.mutate(
+                    [*delivery, "queue", "--pr", str(number)],
+                    self.home,
+                    "queue",
+                )
+                self.say(f"queued #{number}")
+            else:
+                self.say(f"#{number} is already in the merge queue; waiting for merge")
             self.queued = True
-            self.say(f"queued #{number}")
             self.wait_for("merge", lambda: self._merged(repo, number))
             stage = "cleanup"
         if stage == "cleanup":
