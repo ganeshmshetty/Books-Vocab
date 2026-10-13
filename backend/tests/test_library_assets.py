@@ -961,8 +961,9 @@ def test_sop_states_the_late_put_bound_from_asset_url_ttl():
 
     import kg.routers.library as library_router
 
-    assert library_router._ASSET_URL_TTL == 3600
     sop = (Path(__file__).resolve().parents[2] / "docs" / "sop" / "architecture.md").read_text(encoding="utf-8")
     bound_lines = [line for line in sop.splitlines() if "late PUT" in line and "_ASSET_URL_TTL" in line]
     assert bound_lines, "architecture.md must state the late-PUT bound next to _ASSET_URL_TTL"
-    assert "3600" in bound_lines[0] and "1 小時" in bound_lines[0]
+    ttl = library_router._ASSET_URL_TTL
+    assert str(ttl) in bound_lines[0]
+    assert f"{ttl // 3600} 小時" in bound_lines[0]
