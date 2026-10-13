@@ -149,7 +149,7 @@ def _world_snapshot_members(data_dir: Path) -> list[Path]:
         _AUDIT_FILENAME,
         "users.json.lock",
     }
-    return [p for p in sorted(Path(data_dir).iterdir()) if p.name not in excluded]
+    return [p for p in sorted(Path(data_dir).iterdir()) if p.name not in excluded and not _is_sqlite_sidecar(p)]
 
 
 def _is_sqlite_sidecar(path: Path) -> bool:
@@ -280,7 +280,8 @@ def backup_world(data_dir: Path, *, label: str = "world") -> Path:
     }
     # live WAL 必須先經 online backup 固化成單檔再打包：直接 tar 會把 main .db 與
     # -wal/-shm 分時讀取，遇到並發 checkpoint 即得到互不一致的 torn snapshot。
-    with tempfile.TemporaryDirectory(prefix="kg-world-backup-") as staging:
+    # staging 與 archive 同卷，避免把整份 data 暫存到 TMPDIR（峰值 ≈ data+archive）。
+    with tempfile.TemporaryDirectory(prefix="kg-world-backup-", dir=root) as staging:
         staged_root = Path(staging) / _WORLD_ROOT_ARCNAME
         _copy_snapshot_children(members, staged_root)
         with tarfile.open(dest, "w:gz") as tar:
