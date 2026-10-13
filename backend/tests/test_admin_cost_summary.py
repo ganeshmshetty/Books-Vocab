@@ -263,3 +263,38 @@ def test_cost_summary_uses_cached_tokens(cost_env):
     tt.record("u1", "judge", 1000, 100, cached_input_tokens=800, provider="deepseek")
     r = get_user_cost_summary("u1", range_="all")
     assert r["total_cost_usd"] == pytest.approx((200 * 0.14 + 800 * 0.0028 + 100 * 0.28) / 1e6, abs=1e-6)
+
+
+def test_range_all_reports_retention_window(cost_env):
+    """range='all' must disclose the token_usage retention window: lifetime
+    totals are only lifetime up to the prune horizon (#3437)."""
+    from kg import log_retention
+    from kg.admin_cost_summary import get_user_cost_summary
+
+    now = datetime.now(UTC)
+    _record("u1", "judge", t_in=1000, t_out=200, when=now - timedelta(days=200))
+    _record("u1", "judge", t_in=1000, t_out=200, when=now - timedelta(days=5))
+    log_retention.run_all()
+
+    r = get_user_cost_summary("u1", range_="all")
+    assert r["retention_days"] == 90
+    assert r["oldest_retained_at"] is not None
+    assert r["oldest_retained_at"] >= (now - timedelta(days=6)).isoformat()
+
+
+def test_range_all_retention_days_honours_env_override(cost_env, monkeypatch: pytest.MonkeyPatch):
+    from kg.admin_cost_summary import get_user_cost_summary
+
+    monkeypatch.setenv("TOKEN_USAGE_RETENTION_DAYS", "30")
+    _record("u1", "judge", t_in=1, t_out=1, when=datetime.now(UTC) - timedelta(days=1))
+    r = get_user_cost_summary("u1", range_="all")
+    assert r["retention_days"] == 30
+    assert r["oldest_retained_at"] is not None
+
+
+def test_range_all_empty_table_has_null_oldest(cost_env):
+    from kg.admin_cost_summary import get_user_cost_summary
+
+    r = get_user_cost_summary("ghost-user", range_="all")
+    assert r["retention_days"] == 90
+    assert r["oldest_retained_at"] is None
