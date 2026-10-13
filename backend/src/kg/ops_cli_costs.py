@@ -7,6 +7,7 @@ import json
 import sys
 
 from kg.admin_cost_summary import fold_user_summary, query_cost_rows, since_iso
+from kg.log_retention import _effective_days
 from kg.ops_shared import column_expr, connect_ro, data_dir, emit_json, print_table, provider_column_expr, resolve_uid
 from kg.quota_service import token_cost_usd
 
@@ -28,9 +29,13 @@ def cmd_cost(args: argparse.Namespace) -> None:
         "by_call_type": {},
     }
 
+    # range=all is only lifetime up to the token_usage prune horizon; disclose it (#3459).
+    oldest: str | None = None
     if db_path.exists():
         conn = connect_ro(db_path)
         folded = fold_user_summary(query_cost_rows(conn, user_id=uid, since=since))
+        if range_ == "all":
+            oldest = conn.execute("SELECT MIN(created_at) FROM token_usage").fetchone()[0]
         conn.close()
         summary["total_calls"] = folded["total_calls"]
         summary["total_input_tokens"] = folded["total_input_tokens"]
@@ -38,12 +43,19 @@ def cmd_cost(args: argparse.Namespace) -> None:
         summary["total_cost_usd"] = folded["total_cost_usd"]
         summary["by_call_type"] = folded["by_call_type"]
 
+    retention_days = _effective_days("token", None) if range_ == "all" else None
+    if retention_days is not None:
+        summary["retention_days"] = retention_days
+        summary["oldest_retained_at"] = oldest
+
     if args.json:
         emit_json(summary)
         return
 
     window = f"since {since}" if since else "all-time"
     print(f"User: {uid}  |  Range: {range_} ({window})")
+    if retention_days is not None:
+        print(f"Retention: {retention_days} days  |  oldest retained: {oldest or '-'}")
     print(f"Total: ${summary['total_cost_usd']:.6f}  |  {summary['total_calls']} calls")
     print()
     table_rows = sorted(
