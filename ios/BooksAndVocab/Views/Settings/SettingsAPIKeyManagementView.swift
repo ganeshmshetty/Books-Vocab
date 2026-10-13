@@ -167,19 +167,12 @@ struct SettingsAPIKeyManagementView: View {
             )
 
             if !key.isRevoked {
-                Button {
+                SettingsAPIKeyRevokeButton(
+                    isDisabled: isWorking,
+                    accessibilityIdentifier: "settings.apiKeys.revoke.\(key.id)"
+                ) {
                     revokeTarget = key
-                } label: {
-                    Image(systemName: "xmark.circle")
-                        .font(appSkin.typography.iconMedium)
-                        .foregroundStyle(appSkin.palette.destructive)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(SettingsAPIKeyCopy.revokeTitle)
-                .accessibilityIdentifier("settings.apiKeys.revoke.\(key.id)")
-                .disabled(isWorking)
             }
         }
         .padding(.horizontal, appSkin.spacing.cardPadding)
@@ -302,6 +295,32 @@ struct SettingsAPIKeyManagementView: View {
         } catch {
             loader.errorMessage = SettingsAPIKeyCopy.errorMessage(for: error)
         }
+    }
+}
+
+/// Revoke control for an active key row. The glyph keeps its own footprint while
+/// the tappable area is the full frame, which must meet the 44pt hit-target floor (#3426).
+struct SettingsAPIKeyRevokeButton: View {
+    @ObserveInjection private var inject
+    @Environment(\.appSkin) private var appSkin
+
+    let isDisabled: Bool
+    let accessibilityIdentifier: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark.circle")
+                .font(appSkin.typography.iconMedium)
+                .foregroundStyle(appSkin.palette.destructive)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(SettingsAPIKeyCopy.revokeTitle)
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .disabled(isDisabled)
+        .enableInjection()
     }
 }
 
