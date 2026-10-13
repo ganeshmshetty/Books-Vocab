@@ -292,3 +292,85 @@ def test_losing_snapshot_cannot_restore_duplicate_after_reconciliation(tmp_path:
     )
     assert [link.id for link in _active_links_for_pair(reloaded, "card_a", "card_b")] == [winner.id]
     assert loser_store.find_link_between("card_a", "card_b").id == winner.id
+
+
+class _LiveCard:
+    def __init__(self, card_id: str):
+        self.id = card_id
+        self.content = "word"
+        self.meaning = "meaning"
+        self.is_deleted = False
+        self.is_archived = False
+        self.notebook_id = "default"
+
+
+class _LiveCards:
+    def __init__(self, *card_ids: str):
+        self._cards = {card_id: _LiveCard(card_id) for card_id in card_ids}
+        self.touched: list[str] = []
+
+    def get(self, card_id):
+        return self._cards.get(card_id)
+
+    def touch(self, card_id):
+        self.touched.append(card_id)
+
+    def delete(self, card_id):
+        self._cards[card_id].is_deleted = True
+
+
+def test_endpoint_deleted_between_recheck_and_add_link_gets_no_live_edge(store):
+    """The delete path marks the card deleted, then runs cleanup_for_card; a manual link
+    whose add_link lands after that cleanup must be refused, not persisted as a live edge."""
+    from unittest.mock import MagicMock
+
+    from kg.exceptions import NotFoundError
+    from kg.vocab_graph_ops import create_manual_link
+
+    cards = _LiveCards("card_a", "card_b")
+    judge = MagicMock()
+    judge.evaluate.return_value = MagicMock(link="shares_usage", reason="r")
+    original_add_link = store.add_link
+
+    def delete_cleanup_then_add(*args, **kwargs):
+        cards.delete("card_b")
+        store.cleanup_for_card("card_b", source="manual")
+        return original_add_link(*args, **kwargs)
+
+    store.add_link = delete_cleanup_then_add
+
+    with pytest.raises(NotFoundError):
+        create_manual_link(
+            from_id="card_a", to_id="card_b", cards_store=cards, graph=store, judge=judge, notebook_id="default"
+        )
+    assert store.find_link_between("card_a", "card_b") is None
+
+
+def test_refused_manual_link_keeps_user_deleted_pair_blocked(store):
+    """A refused manual link must not unblock a pair the user deleted earlier."""
+    from unittest.mock import MagicMock
+
+    from kg.exceptions import NotFoundError
+    from kg.vocab_graph_ops import create_manual_link
+
+    cards = _LiveCards("card_a", "card_b")
+    lk = store.add_link("card_a", "card_b", LinkKind.CONTRASTS_WITH, 0.9, "r")
+    store.hard_delete_link(lk.id)
+    assert store.is_blocked("card_a", "card_b") is True
+
+    judge = MagicMock()
+    judge.evaluate.return_value = MagicMock(link="shares_usage", reason="r")
+    original_add_link = store.add_link
+
+    def delete_cleanup_then_add(*args, **kwargs):
+        cards.delete("card_b")
+        store.cleanup_for_card("card_b", remove_blocked=False, source="manual")
+        return original_add_link(*args, **kwargs)
+
+    store.add_link = delete_cleanup_then_add
+
+    with pytest.raises(NotFoundError):
+        create_manual_link(
+            from_id="card_a", to_id="card_b", cards_store=cards, graph=store, judge=judge, notebook_id="default"
+        )
+    assert store.is_blocked("card_a", "card_b") is True
