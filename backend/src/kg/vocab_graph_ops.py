@@ -110,6 +110,14 @@ def _get_link_or_404(link_id: str, graph: Any) -> Any:
     return lk
 
 
+def _require_live_card(cards_store: Any, card_id: str, notebook_id: str) -> Any:
+    """Return the card if it is live (not deleted/archived) in ``notebook_id``, else 404."""
+    card = cards_store.get(card_id)
+    if not card or card.is_deleted or card.is_archived or card.notebook_id != notebook_id:
+        raise NotFoundError("Card", card_id)
+    return card
+
+
 def create_manual_link(
     *,
     from_id: str,
@@ -130,12 +138,8 @@ def create_manual_link(
     """
     from .graph import LinkKind
 
-    card_a = cards_store.get(from_id)
-    card_b = cards_store.get(to_id)
-    if not card_a or card_a.is_deleted or card_a.is_archived or card_a.notebook_id != notebook_id:
-        raise NotFoundError("Card", from_id)
-    if not card_b or card_b.is_deleted or card_b.is_archived or card_b.notebook_id != notebook_id:
-        raise NotFoundError("Card", to_id)
+    card_a = _require_live_card(cards_store, from_id, notebook_id)
+    card_b = _require_live_card(cards_store, to_id, notebook_id)
     if from_id == to_id:
         raise BadRequestError("cannot link a card to itself")
 
@@ -164,6 +168,11 @@ def create_manual_link(
         from_id=from_id,
         to_id=to_id,
     )
+
+    # The judge is a multi-second LLM call: re-validate both endpoints against the
+    # store as it is now, so a card deleted or archived meanwhile never gets a live edge.
+    _require_live_card(cards_store, from_id, notebook_id)
+    _require_live_card(cards_store, to_id, notebook_id)
 
     # Blocked pair → unblock only now (add_link treats a blocked pair as existing).
     if graph.is_blocked(from_id, to_id):

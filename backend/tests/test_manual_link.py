@@ -99,6 +99,12 @@ class FakeCardsStore:
     def touch(self, card_id):
         self.touched.append(card_id)
 
+    def delete(self, card_id):
+        self._cards[card_id].is_deleted = True
+
+    def archive(self, card_id):
+        self._cards[card_id].is_archived = True
+
 
 def _make_judge(response_json: str):
     client = MagicMock()
@@ -235,6 +241,30 @@ class TestCreateManualLink:
         assert result.kind == LinkKind.CONTRASTS_WITH  # original preserved, LLM skipped
         assert result.reason == "old reason"  # original preserved, LLM skipped
         assert result.id == lk.id  # same link, not new
+
+
+class TestEndpointLivenessAfterJudge:
+    # judge.evaluate is a multi-second LLM call. An endpoint deleted or archived
+    # during it must not yield a persisted active link (GET /api/graph/links
+    # would expose an edge to a dead card).
+    @pytest.mark.parametrize("mutation", ["delete", "archive"])
+    def test_endpoint_removed_during_judge_is_refused(self, store, mutation):
+        cards = FakeCardsStore([FakeCard("a"), FakeCard("b")])
+        judge = MagicMock()
+
+        def evaluate(*_args, **_kwargs):
+            getattr(cards, mutation)("b")
+            return MagicMock(link="shares_usage", reason="r")
+
+        judge.evaluate.side_effect = evaluate
+        from kg.exceptions import NotFoundError
+
+        with pytest.raises(NotFoundError) as exc:
+            create_manual_link(
+                from_id="a", to_id="b", cards_store=cards, graph=store, judge=judge, notebook_id="default"
+            )
+        assert exc.value.status_code == 404
+        assert [lk for lk in store.get_links_for("a") if lk.status == "active"] == []
 
 
 class TestDeleteGraphLink:
