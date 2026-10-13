@@ -654,15 +654,21 @@ rsync_progress_flags() {
 # 主檔與 checkpoint 之後的新 -wal 不成一組，會靜默漏 frame。這裡沿用 ops/kg_backup.sh
 # snapshot_db 的模式：SQLite online backup API + no_ckpt_on_close（絕不 checkpoint／寫 live
 # DB）+ 快照非空且 quick_check=ok 才算成功。任一 DB 失敗即 exit 1，stage 由 trap 清掉。
+# stage 由遠端 mktemp -d 建立（0700、不可預測；同 ops/kg_backup.sh snapshot 的做法），
+# 路徑印到 stdout 第一行供本機 tar 拉回；INT/TERM/HUP 經 exit 轉成 EXIT trap 清理（#3464）。
 remote_db_snapshot_script() {
   cat <<'REMOTE'
 set -euo pipefail
-stage="$1"
-data="$2"
+data="$1"
 made=0
+stage=""
 trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$made" = 1 ]; then rm -rf "$stage"; fi' EXIT
-mkdir "$stage"
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+stage="$(mktemp -d "${TMPDIR:-/tmp}/kg-db-snapshot.XXXXXX")"
 made=1
+printf '%s\n' "$stage"
 cd "$data"
 data_abs="$(pwd -P)"
 while IFS= read -r -d '' rel; do
@@ -729,9 +735,8 @@ cmd_backup() {
   # *.db 不走 rsync（#3442）：先在遠端產生一致快照（失敗即中止，不 pull、不進 migrate），
   # 非 DB 檔照常 rsync，最後把快照 tar 串流拉回覆蓋 dest 內的 *.db。
   local snap_stage snap_rc=0
-  snap_stage="$(make_remote_tmp_path kg-db-snapshot "")"
-  info "遠端 *.db 一致快照（SQLite online backup）→ $snap_stage"
-  if ! run_remote "bash -s -- $snap_stage $REMOTE_DATA_DIR" < <(remote_db_snapshot_script); then
+  info "遠端 *.db 一致快照（SQLite online backup）"
+  if ! snap_stage="$(run_remote "bash -s -- $REMOTE_DATA_DIR" < <(remote_db_snapshot_script))" || [[ -z "$snap_stage" ]]; then
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
     err "本地冷快照失敗：遠端 *.db 一致快照未完成（見上方）。此指令沒有產出可用備份；不得進行 migrate-run。"
   fi
