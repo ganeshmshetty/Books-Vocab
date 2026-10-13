@@ -227,6 +227,36 @@ struct KGVocabCoordinatorBannerTests {
         #expect(entry.rejectedReason != nil)
     }
 
+    /// #3394: 被 server 拒收的 edit（仍持有 kgCardId）排入刪除後，batch 回應前被撤銷（T7 還原為終態拒收 edit），
+    /// 回應到達時 settleResolvedDelete 依 add-over-edit 規則：server 卡已不存在，清除 kgCardId 並還原為終態拒收 add，
+    /// 不得復活為 pending 重新上傳，拒收原因保留。
+    @Test func retryPendingDeletesKeepsRejectedEditUndoneDuringAwait() async throws {
+        let container = try ModelContainer(
+            for: VocabularyEntry.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "rejected-edit", translation: "t", context: "c", bookTitle: "b")
+        entry.markSynced()
+        entry.kgCardId = "card-rejected-edit"
+        entry.queueEdit()
+        entry.markEditRejected(reason: "invalid")
+        entry.queueDelete()
+        context.insert(entry)
+        let stub = StubDeleter()
+        stub.batchResponse = KGBatchDeleteResponse(deleted: 0, deleted_words: [], not_found: ["rejected-edit"])
+        stub.beforeBatchReply = { entry.undoQueuedDelete() }
+        let coordinator = KGVocabCoordinator()
+
+        await coordinator.retryPendingDeletes(pendingDeletes: [entry], kgService: stub, modelContext: context)
+
+        #expect(try context.fetch(FetchDescriptor<VocabularyEntry>()).count == 1)
+        #expect(entry.syncAction == .add)
+        #expect(entry.syncState == .failed)
+        #expect(entry.rejectedReason != nil)
+        #expect(entry.kgCardId == nil)
+    }
+
     @Test func dismissingTheStateDoesNotEmitANotice() {
         let coordinator = KGVocabCoordinator()
         coordinator.bannerError = .archivePartial(message: "1/3")

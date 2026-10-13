@@ -231,6 +231,8 @@ final class KGVocabCoordinator: KGVocabCoordinating {
         case .add, .edit:
             entry.kgCardId = nil
             // 排入刪除前已被 server 拒收（rejectedReason 非 nil）：server 卡已不存在，依 T7 還原為終態拒收，不重送（#3370）。
+            // 拒收的 edit 同此分支（#3394，add-over-edit）：kgCardId 已清空，server 卡不存在即等同從未建立，
+            // 結果是 syncAction 轉為 .add、syncState .failed、保留 rejectedReason，而非 edit；這是刻意的終態，不是 edit 還原。
             if entry.rejectedReason != nil {
                 entry.restoreRejectedAdd()
             } else {
