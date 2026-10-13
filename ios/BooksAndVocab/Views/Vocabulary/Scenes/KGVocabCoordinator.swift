@@ -230,7 +230,12 @@ final class KGVocabCoordinator: KGVocabCoordinating {
             modelContext.delete(entry)
         case .add, .edit:
             entry.kgCardId = nil
-            entry.restorePendingEntry()
+            // 排入刪除前已被 server 拒收（rejectedReason 非 nil）：server 卡已不存在，依 T7 還原為終態拒收，不重送（#3370）。
+            if entry.rejectedReason != nil {
+                entry.restoreRejectedAdd()
+            } else {
+                entry.restorePendingEntry()
+            }
         }
     }
 
