@@ -56,4 +56,11 @@ extension NotebookCoverCommit {
         guard let staged, staged != original else { return }
         try? FileManager.default.removeItem(atPath: staged)
     }
+
+    /// sheet 關閉（取消、下滑或 API / save 之外的任何 dismiss）時的 staged 清理（#3414）。
+    /// `committed == true` 表示 staged 已交給 onSave，所有權轉給 coordinator，這裡一律不動檔案。
+    static func discardUncommittedStaged(staged: String?, original: String?, committed: Bool) {
+        guard !committed else { return }
+        discardStagedFile(staged: staged, original: original)
+    }
 }

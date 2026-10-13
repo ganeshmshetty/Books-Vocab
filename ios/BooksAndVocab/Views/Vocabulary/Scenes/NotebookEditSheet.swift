@@ -53,6 +53,10 @@ struct NotebookEditSheet: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isProcessingPhoto = false
     @State private var photoError: String?
+    /// staged 封面已交給 onSave（所有權轉給 coordinator）；未設為 true 時關閉即須清掉 staged 檔（#3414）。
+    @State private var isCommitted = false
+    /// sheet 已關閉；processPhoto 若在關閉後才寫出檔案，必須立即清掉（#3414）。
+    @State private var isDismissed = false
 
     init(mode: Mode, onSave: @escaping (NotebookAppearance) -> Void) {
         self.mode = mode
@@ -176,11 +180,8 @@ struct NotebookEditSheet: View {
             .inlineNavigationBarTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
+                    // 未保存的 staged 新檔由 onDisappear 統一清理（取消與下滑關閉共用同一路徑）
                     Button(NotebookEditCopy.cancelTitle) {
-                        // 捨棄未保存的新檔（使用者選了圖但按取消）
-                        if let staged = coverImagePath, staged != originalCoverImagePath {
-                            try? FileManager.default.removeItem(atPath: staged)
-                        }
                         dismiss()
                     }
                 }
@@ -189,6 +190,7 @@ struct NotebookEditSheet: View {
                         // 舊原檔的刪除延到 updateNotebook API 成功後才做（見
                         // NotebookCoverCommit），失敗則原檔保留 + coverImagePath 不變，
                         // 避免「新封面 + server 舊欄位」drift（track-23）。
+                        isCommitted = true
                         onSave(NotebookAppearance(
                             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                             color: selectedColor,
@@ -205,8 +207,18 @@ struct NotebookEditSheet: View {
                 guard let item else { return }
                 Task { await processPhoto(item) }
             }
+            // 處理中禁止下滑關閉，避免關閉與寫檔交錯（#3414）
+            .interactiveDismissDisabled(isProcessingPhoto)
         }
         .appSheet(.large)
+        .onDisappear {
+            isDismissed = true
+            NotebookCoverCommit.discardUncommittedStaged(
+                staged: coverImagePath,
+                original: originalCoverImagePath,
+                committed: isCommitted
+            )
+        }
         .enableInjection()
     }
 
@@ -291,6 +303,11 @@ struct NotebookEditSheet: View {
             try jpegData.write(to: fileURL)
         } catch {
             photoError = NotebookEditCopy.photoErrorMessage(.saveFailed)
+            return
+        }
+        // sheet 已關閉（取消 / 存檔後才完成）：沒有 owner 會接手這個新檔，立即清掉（#3414）
+        if isDismissed {
+            try? FileManager.default.removeItem(at: fileURL)
             return
         }
         // 清掉本次編輯中已 staged 的舊新檔（非 original），避免 orphan
