@@ -242,8 +242,7 @@ final class TodayReviewState {
     }
 
     private var currentCardState: TodayReviewPresenterState.CurrentCard? {
-        guard let current = currentEntry else { return nil }
-        return cachedOrBuildCard(for: current)
+        cardContent(at: currentIndex)
     }
 
     var currentCardForTesting: TodayReviewPresenterState.CurrentCard? {
@@ -251,16 +250,14 @@ final class TodayReviewState {
     }
 
     private var nextCardState: TodayReviewPresenterState.CurrentCard? {
-        let nextIndex = currentIndex + 1
-        guard nextIndex < queue.count else { return nil }
-        return cachedOrBuildCard(for: queue[nextIndex])
+        cardContent(at: currentIndex + 1)
     }
 
     /// 常駐三 slot 投影（Phase 4）— 指派純推導自 (currentIndex, queue.count)，
     /// 內容走與 current/next 相同的 render-safe cache 路徑（非 mutating）。
     private var slotModels: [TodayReviewCardSlotModel] {
         TodayReviewCardSlotModel.make(currentIndex: currentIndex, queueCount: queue.count) { index in
-            cachedOrBuildCard(for: queue[index])
+            cardContent(at: index)
         }
     }
 
@@ -277,6 +274,15 @@ final class TodayReviewState {
         // prewarm-covered, near-impossible miss builds an ephemeral card without
         // writing the observed cache (self-heals on the next prewarmCardWindow()).
         cardCache.cached(for: entry) ?? TodayReviewCardCache.buildOne(entry, peers: linkedEntryLookup)
+    }
+
+    /// 指定 queue index 的卡片內容，附上此位置的已評標示（#3371）。標示逐 index 讀評分 state，
+    /// 不寫進 `cardCache`（cache 以 entry 為鍵，同一張卡在不同位置的評分各自不同）。
+    private func cardContent(at index: Int) -> TodayReviewPresenterState.CurrentCard? {
+        guard index >= 0, index < queue.count,
+              var content = cachedOrBuildCard(for: queue[index]) else { return nil }
+        content.gradedBadge = ReviewGradedBadge.resolve(scoring.gradedFeedback(at: index))
+        return content
     }
 
     // MARK: - Actions
