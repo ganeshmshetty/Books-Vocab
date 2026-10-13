@@ -199,7 +199,11 @@ class Routing:
             if directory_token is not None:
                 return directory_token in text
             if path.endswith(".py"):
-                return any(pattern.search(text) for pattern in patterns)
+                # ops/ modules are reached by import; any other .py path can only
+                # be reached by a routed test naming it literally (Issue #3480).
+                if patterns:
+                    return any(pattern.search(text) for pattern in patterns)
+                return path in text
             return path in text
 
         groups: set[str] = set()

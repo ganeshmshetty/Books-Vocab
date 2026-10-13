@@ -105,13 +105,15 @@ linux_json="$("$ROOT/ops/tests/test_ops_ci_coverage.sh" --print-linux-groups | j
 # would otherwise name its own fixtures and select a group by accident.
 doc_leaf="vocabulary.md"
 docs_fixture="docs/reference/feature_boundary/$doc_leaf"
+backend_leaf="vocab_graph_ops.py"
+backend_fixture="backend/src/kg/$backend_leaf"
 probe="new_tool"
 unmapped_fixture="ops/unmapped_$probe.xyz"
 
 # (a) backend-only and docs-only changes yield zero Linux shards.
 expect_plan 'backend-only and docs-only change yields zero Linux groups' targeted \
   '.mode == "targeted" and .groups == [] and .shard_count == 0' \
-  backend/src/kg/vocab_graph_ops.py "$docs_fixture"
+  "$backend_fixture" "$docs_fixture"
 # (b) ops/deliver.py yields the delivery-control group plus the contract groups.
 expect_plan 'ops/deliver.py yields delivery-control plus the contract groups' targeted \
   '.mode == "targeted" and (.groups | sort) == ["delivery-control", "docs-lint", "ops-ci-coverage"] and .shard_count == 2' \
@@ -137,6 +139,12 @@ expect_plan 'ops module with no test reference falls back to the full suite' tar
 expect_plan 'complexity budget fragment selects the groups that read its directory' targeted \
   '.mode == "targeted" and (.groups | index("doctor")) != null and .shard_count == 2' \
   "ops/complexity_budget.d/probe_$probe.json"
+# (g) a backend .py path that a routed test names literally selects that test's group (Issue #3480).
+main_leaf="main.py"
+backend_main_fixture="backend/src/kg/$main_leaf"
+expect_plan 'backend .py path named literally by a routed test selects its group' targeted \
+  '.mode == "targeted" and (.groups | index("ui-quality-plane")) != null' \
+  "$backend_main_fixture"
 # A range that is not two exact commit SHAs is a mapping error: fail safe to full.
 bad_range="$("$UV_CMD" run --no-project --python 3.13 "$PLAN" --scope targeted --base not-a-sha --head also-not-a-sha 2>/dev/null || true)"
 if ! jq -e '.mode == "full"' <<<"$bad_range" >/dev/null 2>&1; then
@@ -145,7 +153,7 @@ fi
 # (d) the full scope ignores the diff: the merge group always gets every group.
 expect_plan 'full scope runs every Linux group regardless of the diff' full \
   ".mode == \"full\" and .shard_count == 8 and .groups == $linux_json" \
-  backend/src/kg/vocab_graph_ops.py
+  "$backend_fixture"
 if ! [[ -f "$PLAN" ]]; then
   fail "ops/ci_ops_suite_plan.py is missing"
 fi
