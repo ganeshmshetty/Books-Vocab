@@ -367,10 +367,13 @@ jobs:
       - name: Upload test products
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ios-test-products-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ios-test-products-${{ github.run_id }}
           path: ${{ runner.temp }}/ios-test-products.tar
           if-no-files-found: error
           retention-days: 1
+          # Run-scoped name (no run_attempt) so "Re-run failed jobs" finds these products;
+          # overwrite replaces them when a full re-run builds again (#3591).
+          overwrite: true
 
   ios-tests:
     name: ios-tests (${{ matrix.scope }})
@@ -401,10 +404,25 @@ jobs:
             exit 1
           fi
 
+      # Bounded and retried once (#3591): a hung or failed download is cut at 3
+      # minutes instead of holding the leg to the 25-minute job timeout. The retry
+      # runs only when this attempt did not succeed; if it fails too, the unpack step
+      # below does not run and the leg fails red (no silent rebuild).
       - name: Download build-once test products
+        id: download-test-products
+        continue-on-error: true
+        timeout-minutes: 3
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: ios-test-products-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ios-test-products-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-test-products
+
+      - name: Retry download build-once test products
+        if: ${{ steps.download-test-products.outcome != 'success' }}
+        timeout-minutes: 3
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ios-test-products-${{ github.run_id }}
           path: ${{ runner.temp }}/ios-test-products
 
       - name: Unpack build-once test products
@@ -596,18 +614,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Fail closed (#3331): a targeted run never compiles. A failed, cancelled or
-          # skipped build leaves no products, so the run fails here and ios-verdict
-          # reads the missing targeted result.
+          # Fail closed (#3331): a targeted run never compiles. needs gates this job,
+          # so a failed, cancelled or skipped build skips the whole job and this step
+          # never runs; ios-verdict then reads the skipped targeted result. This check
+          # only holds if the build result is ever not success while the job runs.
           if [[ "$BUILD_FOR_TESTING_RESULT" != 'success' ]]; then
             echo "::error::ios-build-for-testing is $BUILD_FOR_TESTING_RESULT; no prebuilt test products to run" >&2
             exit 1
           fi
 
+      # Bounded and retried once (#3591): a hung or failed download is cut at 3
+      # minutes instead of holding the leg to the 25-minute job timeout. The retry
+      # runs only when this attempt did not succeed; if it fails too, the unpack step
+      # below does not run and the leg fails red (no silent rebuild).
       - name: Download build-once test products
+        id: download-test-products
+        continue-on-error: true
+        timeout-minutes: 3
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: ios-test-products-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ios-test-products-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-test-products
+
+      - name: Retry download build-once test products
+        if: ${{ steps.download-test-products.outcome != 'success' }}
+        timeout-minutes: 3
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ios-test-products-${{ github.run_id }}
           path: ${{ runner.temp }}/ios-test-products
 
       - name: Unpack build-once test products
