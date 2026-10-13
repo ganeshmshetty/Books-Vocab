@@ -196,6 +196,29 @@ struct SubscriptionPaywallCopyTests {
         )
     }
 
+    // MARK: - Restore outcome message (#3419)
+
+    /// A missing StoreKit entitlement and a backend 403 (transaction bound to another account)
+    /// must not collapse into the transient "backend sync failed, retry" copy.
+    @Test func restoreOutcome_noEntitlementAndRejectedDoNotShowRetryCopy() {
+        let retry = SubscriptionPurchaseCopy.restoreOutcomeMessage(result: .failed, hasProAccess: false)
+        let none = SubscriptionPurchaseCopy.restoreOutcomeMessage(result: .noEntitlement, hasProAccess: false)
+        let rejected = SubscriptionPurchaseCopy.restoreOutcomeMessage(result: .rejected, hasProAccess: false)
+        #expect(retry == SubscriptionPurchaseCopy.restoreSyncRetryKey)
+        #expect(none != retry)
+        #expect(rejected != retry)
+        #expect(none != rejected)
+    }
+
+    @Test func restoreOutcome_proAccessAlwaysReportsRestored() {
+        for result in [CurrentEntitlementSyncOutcome.noEntitlement, .synced, .rejected, .failed] {
+            #expect(
+                SubscriptionPurchaseCopy.restoreOutcomeMessage(result: result, hasProAccess: true)
+                    == SubscriptionPurchaseCopy.restoredKey
+            )
+        }
+    }
+
     // MARK: - SubscriptionPresentation has no backend-derived trial claim
 
     @Test func presentation_detailAndCtaMakeNoTrialClaim() {
