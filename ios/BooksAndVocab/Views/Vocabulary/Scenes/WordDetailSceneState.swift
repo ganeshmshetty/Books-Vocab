@@ -100,6 +100,11 @@ final class WordDetailSceneState {
                 archived: archived,
                 notebookId: entry.notebookId
             )
+            // 伺服器已套用請求。await 期間背景 pull 可能讀到 commit 前的舊值並寫回（#3413），
+            // 此時以請求值重新斷言，否則成功的封存會靜默翻回，直到下次 pull。
+            if !entry.isDeleted, entry.isArchived != archived {
+                entry.isArchived = archived
+            }
             modelContext.safeSave()
             clearActionError(for: .archive)
         } catch {
@@ -172,18 +177,15 @@ final class WordDetailSceneState {
                 notebookId: entry.notebookId
             )
             if !entry.isDeleted {
-                // The response is a full card, but an independent preference
-                // request must not overwrite the other field while that field
-                // has its own in-flight optimistic mutation.
-                if let change = changes[.readerHidden],
-                   entry.isReaderHidden == change.requested,
-                   let responseValue = card.isReaderHidden {
-                    entry.isReaderHidden = responseValue
+                // 只投影本次請求的欄位：回應是整張卡，但未請求的欄位可能已被別的
+                // in-flight 動作改寫，不可由這個回應蓋掉。請求欄位以伺服器回應（缺值時以請求值）
+                // 重新斷言，因為伺服器已套用它；背景 pull 若在 in-flight 期間寫回舊值（#3413）
+                // 不得讓成功結果失效。
+                if let change = changes[.readerHidden] {
+                    entry.isReaderHidden = card.isReaderHidden ?? change.requested
                 }
-                if let change = changes[.reviewExcluded],
-                   entry.isReviewExcluded == change.requested,
-                   let responseValue = card.isReviewExcluded {
-                    entry.isReviewExcluded = responseValue
+                if let change = changes[.reviewExcluded] {
+                    entry.isReviewExcluded = card.isReviewExcluded ?? change.requested
                 }
                 modelContext.safeSave()
             }
