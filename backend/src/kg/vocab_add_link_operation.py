@@ -248,15 +248,19 @@ def create_operation(
             if existing is None:
                 raise
             result = _row_to_dict(existing)
-            if result["request_hash"] != request_hash:
+            if result["request_hash"] != request_hash or result["notebook_id"] != notebook_id:
                 raise IdempotencyConflict("Idempotency-Key was reused with a different request") from None
             return result, False
         return _select(operation_id) or {}, True
 
 
-def find_operation(*, user_id: str, idempotency_key: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the stored operation for this key, or ``None``; a changed payload conflicts.
+def find_operation(
+    *, user_id: str, notebook_id: str, idempotency_key: str, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return the stored operation for this key, or ``None``; a changed payload or notebook conflicts.
 
+    The notebook is part of the replay identity: the payload alone does not carry
+    it, so a replay under another notebook must not return the stored operation.
     Lets a replay be answered before any live-state validation (e.g. source card
     lookup) that may have changed since the original admission.
     """
@@ -269,7 +273,7 @@ def find_operation(*, user_id: str, idempotency_key: str, payload: dict[str, Any
     if row is None:
         return None
     existing = _row_to_dict(row)
-    if existing["request_hash"] != _request_hash(payload):
+    if existing["request_hash"] != _request_hash(payload) or existing["notebook_id"] != notebook_id:
         raise IdempotencyConflict("Idempotency-Key was reused with a different request")
     return existing
 

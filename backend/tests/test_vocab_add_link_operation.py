@@ -587,14 +587,39 @@ def test_link_persist_failure_is_failed_not_warning(tmp_path, monkeypatch):
 def test_find_operation_replays_by_key_and_rejects_changed_payload():
     from kg.vocab_add_link_operation import find_operation
 
-    assert find_operation(user_id="user-1", idempotency_key="tap-1", payload=payload()) is None
+    assert find_operation(user_id="user-1", notebook_id="default", idempotency_key="tap-1", payload=payload()) is None
     first, _ = create_operation(user_id="user-1", notebook_id="default", idempotency_key="tap-1", payload=payload())
 
-    found = find_operation(user_id="user-1", idempotency_key="tap-1", payload=payload())
+    found = find_operation(user_id="user-1", notebook_id="default", idempotency_key="tap-1", payload=payload())
     assert found is not None and found["operation_id"] == first["operation_id"]
-    assert find_operation(user_id="user-2", idempotency_key="tap-1", payload=payload()) is None
+    assert find_operation(user_id="user-2", notebook_id="default", idempotency_key="tap-1", payload=payload()) is None
     with pytest.raises(IdempotencyConflict):
-        find_operation(user_id="user-1", idempotency_key="tap-1", payload=payload("different"))
+        find_operation(user_id="user-1", notebook_id="default", idempotency_key="tap-1", payload=payload("different"))
+
+
+def test_replay_with_another_notebook_conflicts_instead_of_returning_foreign_operation():
+    first, created = create_operation(user_id="user-1", notebook_id="nb-a", idempotency_key="tap-nb", payload=payload())
+    assert created is True
+
+    with pytest.raises(IdempotencyConflict):
+        create_operation(user_id="user-1", notebook_id="nb-b", idempotency_key="tap-nb", payload=payload())
+
+    replay, replay_created = create_operation(
+        user_id="user-1", notebook_id="nb-a", idempotency_key="tap-nb", payload=payload()
+    )
+    assert replay_created is False
+    assert replay["operation_id"] == first["operation_id"]
+
+
+def test_find_operation_rejects_replay_under_another_notebook():
+    from kg.vocab_add_link_operation import find_operation
+
+    first, _ = create_operation(user_id="user-1", notebook_id="nb-a", idempotency_key="tap-fo", payload=payload())
+
+    found = find_operation(user_id="user-1", notebook_id="nb-a", idempotency_key="tap-fo", payload=payload())
+    assert found is not None and found["operation_id"] == first["operation_id"]
+    with pytest.raises(IdempotencyConflict):
+        find_operation(user_id="user-1", notebook_id="nb-b", idempotency_key="tap-fo", payload=payload())
 
 
 class _AddLinkMeaningCards:

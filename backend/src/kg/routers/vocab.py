@@ -134,7 +134,9 @@ async def enqueue_add_link_operation(
     # A replay is answered from the stored operation before any live-state
     # validation: the source may have been archived since the first admission.
     try:
-        existing = find_operation(user_id=user["id"], idempotency_key=normalized_key, payload=payload)
+        existing = find_operation(
+            user_id=user["id"], notebook_id=notebook_id, idempotency_key=normalized_key, payload=payload
+        )
     except IdempotencyConflict as exc:
         raise ConflictError(str(exc)) from exc
     if existing is not None:
