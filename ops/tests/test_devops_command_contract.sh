@@ -150,4 +150,10 @@ set -e
 grep -Fq '第三方整合映射' <<<"$del_out" && fail "base delete-user output still claims third-party mappings are deleted"
 pass "base delete-user refuses before any remote rm and does not overclaim erasure"
 
+# #3442：備份一致快照與 migrate-run 中止契約由獨立測試守住；經由本 contract 測試執行，
+# 讓 devops 套件無需另行登記即會跑到它。
+"$ROOT/ops/tests/test_devops_backup_snapshot.sh" >/dev/null \
+  || fail "backup snapshot contract (#3442) failed: run ops/tests/test_devops_backup_snapshot.sh"
+pass "backup snapshot contract (#3442): WAL-only row kept, migrate-run aborts on snapshot failure"
+
 printf 'contract: all checks passed\n'
