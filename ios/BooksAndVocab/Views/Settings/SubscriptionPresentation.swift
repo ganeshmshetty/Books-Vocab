@@ -72,7 +72,7 @@ enum SubscriptionPresentation {
     static func detail(for status: KGSubscriptionStatus, proProduct: Product?) -> String {
         if status.source == "admin", status.is_active {
             if let expiresAt = status.expires_at, !expiresAt.isEmpty {
-                return L10n.format("來源：管理員授權 · 有效至 %@", expiresAt)
+                return L10n.format("來源：管理員授權 · 有效至 %@", status.formattedExpiryDate)
             }
             return L10n.string("來源：管理員授權")
         }
@@ -81,7 +81,7 @@ enum SubscriptionPresentation {
         }
         if let price = status.price_display, !price.isEmpty {
             if let expiresAt = status.expires_at, !expiresAt.isEmpty {
-                return L10n.format("%@ · 到期 %@", price, expiresAt)
+                return L10n.format("%@ · 到期 %@", price, status.formattedExpiryDate)
             }
             return price
         }
