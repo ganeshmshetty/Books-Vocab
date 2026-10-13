@@ -580,12 +580,22 @@ def test_an_ancestry_check_that_cannot_run_fails_loudly_not_as_reuse() -> None:
         )
 
 
-def _ancestry_of(tmp_path: Path, stderr: str) -> Callable[[str, str], bool]:
-    """``is_ancestor`` of a Delivery whose every git call fails with rc 128."""
+def _ancestry_of(
+    tmp_path: Path, stderr: str, fetch: deliver.Proc | None = None
+) -> Callable[[str, str], bool]:
+    """``is_ancestor`` of a Delivery whose git calls fail with rc 128.
+
+    ``git fetch`` answers ``fetch`` (default: success), so the same fixture
+    covers "fetched, still absent" and, with a failing ``fetch``, an offline one.
+    """
+
+    def runner(cmd: list[str], _cwd: Path) -> deliver.Proc:
+        if cmd[:2] == ["git", "fetch"]:
+            return fetch or deliver.Proc(0, "", "")
+        return deliver.Proc(128, "", stderr)
+
     args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
-    return deliver.Delivery(
-        args, lambda _cmd, _cwd: deliver.Proc(128, "", stderr), lambda _s: None
-    ).is_ancestor
+    return deliver.Delivery(args, runner, lambda _s: None).is_ancestor
 
 
 def test_an_absent_merged_head_is_not_an_ancestor_instead_of_a_crash(
@@ -602,6 +612,56 @@ def test_an_absent_lane_head_is_not_an_ancestor_either(tmp_path: Path) -> None:
     absent = "a" * 40
     is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {absent}")
     assert is_ancestor(absent, "b" * 40) is False
+
+
+def test_a_fetch_that_succeeds_but_leaves_the_commit_absent_is_not_an_ancestor(
+    tmp_path: Path,
+) -> None:
+    # P3 gap of #3472: the fetch exits 0, yet the object is still missing, so
+    # the answer is a plain no and never a fetch failure
+    absent = "b" * 40
+    is_ancestor = _ancestry_of(
+        tmp_path, f"fatal: Not a valid commit name {absent}", deliver.Proc(0, "", "")
+    )
+    assert is_ancestor("a" * 40, absent) is False
+
+
+def test_a_failed_fetch_of_an_absent_commit_raises_its_detail_not_a_no(
+    tmp_path: Path,
+) -> None:
+    # #3472: an offline or auth fetch failure used to fall through to "not an
+    # ancestor", which next_stage reports as a reused branch name
+    absent = "b" * 40
+    offline = deliver.Proc(128, "", "fatal: unable to access: Could not resolve host")
+    is_ancestor = _ancestry_of(
+        tmp_path, f"fatal: Not a valid commit name {absent}", offline
+    )
+    with pytest.raises(deliver.DeliverError, match="Could not resolve host") as error:
+        is_ancestor("a" * 40, absent)
+    assert "fetch" in str(error.value)
+    assert "reused" not in str(error.value)
+
+
+def test_a_failed_fetch_is_never_reported_as_a_reused_branch(tmp_path: Path) -> None:
+    absent = "b" * 40
+    args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
+
+    def runner(cmd: list[str], _cwd: Path) -> deliver.Proc:
+        if cmd[:2] == ["git", "fetch"]:
+            return deliver.Proc(128, "", "fatal: Authentication failed")
+        return deliver.Proc(128, "", f"fatal: Not a valid commit name {absent}")
+
+    delivery = deliver.Delivery(args, runner, lambda _s: None)
+    pr = {"number": 1, "state": "MERGED", "headRefOid": absent}
+    with pytest.raises(deliver.DeliverError, match="Authentication failed") as error:
+        deliver.next_stage(
+            {"status": "published"},
+            pr,
+            head="a" * 40,
+            branch="debug/x",
+            is_ancestor=delivery.is_ancestor,
+        )
+    assert "reused" not in str(error.value)
 
 
 def test_an_unfetched_merged_head_is_fetched_from_origin_before_answering(
