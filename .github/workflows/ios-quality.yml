@@ -596,9 +596,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Fail closed (#3331): a targeted run never compiles. A failed, cancelled or
-          # skipped build leaves no products, so the run fails here and ios-verdict
-          # reads the missing targeted result.
+          # Fail closed (#3331): a targeted run never compiles. needs gates this job,
+          # so a failed, cancelled or skipped build skips the whole job and this step
+          # never runs; ios-verdict then reads the skipped targeted result. This check
+          # only holds if the build result is ever not success while the job runs.
           if [[ "$BUILD_FOR_TESTING_RESULT" != 'success' ]]; then
             echo "::error::ios-build-for-testing is $BUILD_FOR_TESTING_RESULT; no prebuilt test products to run" >&2
             exit 1

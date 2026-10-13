@@ -141,6 +141,16 @@ for job in ios-tests ios-targeted; do
   done
 done
 
+# --- 2b. Guard comment matches the topology (#3478) -------------------------
+# `needs` skips ios-targeted when the build fails or is skipped, so the guard step
+# never runs on a red build. Its comment must not claim it fails the run there;
+# the fail-closed verdict is ios-verdict, which reads the targeted result.
+awk '/^  ios-targeted:/{on=1} /^  ios-verdict:/{on=0} on' "$IOS" >"$tmp/targeted-job.yml"
+grep -q 'so the run fails here' "$tmp/targeted-job.yml" \
+  && fail "ios-targeted guard comment claims a skipped build fails here; needs skips the job so the guard never runs"
+grep -q 'ios-verdict' "$tmp/targeted-job.yml" \
+  || fail "ios-targeted guard comment does not name ios-verdict as the fail-closed path"
+
 # --- 3. ios_test.sh --xctestrun: validation refuses before any build or lock --
 products="$tmp/products"
 mkdir -p "$products/Build/Products"
