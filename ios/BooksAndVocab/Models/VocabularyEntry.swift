@@ -264,8 +264,8 @@ extension VocabularyEntry {
     // T8 edit 成功：action 仍為 edit 且送出的 translation／note 與目前列相符才 markSynced（清除 explanationClearPending）；
     //     成功前被刪者維持 delete；送出後被改寫者維持 pending edit，交下一輪上傳較新內容（#3248）。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
-    // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取）：add+pending，永不宣稱 synced。
-    //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add。
+    // T10 restorePendingEntry（sanitize 收斂、非 in-flight 的撤銷與重新擷取，且 kgCardId 為空）：add+pending，永不宣稱 synced。
+    //     閱讀器重新擷取遇到 in-flight 的 delete 列時不呼叫它（I3），改新增一筆 add；遇到 server 已持卡（kgCardId 非空）的 delete 列改走 queueEdit()（pending edit，#3408）。
     // T11 NotebookReconciler cascade 的 queueDelete 可作用於 kgCardId 為空的 add：delete+pending，交 T5 以 not_found 收斂。
     // T12 edit 回 4xx（401／429 除外）：markEditRejected → edit+failed（rejectedReason 終態，不再納入 shouldUploadOnNextSync）；
     //     action 為 delete 則維持 pending delete（同 T3，#2733）。使用者再次編輯 → queueEdit 清除 rejectedReason 並重新 pending。
