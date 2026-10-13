@@ -132,7 +132,9 @@ def _repository_name(client: GitHubCliClient) -> tuple[str, str]:
     return owner, name
 
 
-def _snapshot_from_node(node: object, *, number: int) -> CheckSnapshot:
+def _snapshot_from_node(
+    node: object, *, number: int, observed_at: datetime
+) -> CheckSnapshot:
     if not isinstance(node, Mapping):
         raise AdapterPayloadError(f"required PR {number} is malformed")
     if node.get("number") != number:
@@ -257,7 +259,7 @@ def _snapshot_from_node(node: object, *, number: int) -> CheckSnapshot:
     return CheckSnapshot(
         status=_status_from_states({item[0] for item in observations.values()}),
         head_sha=head_sha,
-        observed_at=datetime.now(tz=UTC),
+        observed_at=observed_at,
         names=tuple(sorted(observations)),
         started_at=(
             min(item for item in starts if item is not None)
@@ -304,12 +306,17 @@ def batch_required_snapshots(
             raise AdapterPayloadError(
                 "GitHub required-check GraphQL response contains errors"
             )
+        fetched_at = client.last_fetched_at
+        if fetched_at is None:
+            raise AdapterPayloadError("GitHub required-check read has no fetch time")
+        # A body served from cache is observed when it was fetched, not when it was reused.
+        observed_at = datetime.fromtimestamp(fetched_at, tz=UTC)
         data = payload.get("data")
         repository = data.get("repository") if isinstance(data, Mapping) else None
         if not isinstance(repository, Mapping):
             raise AdapterPayloadError("GitHub required-check repository is malformed")
         for number in chunk:
             snapshots[number] = _snapshot_from_node(
-                repository.get(f"pr_{number}"), number=number
+                repository.get(f"pr_{number}"), number=number, observed_at=observed_at
             )
     return snapshots

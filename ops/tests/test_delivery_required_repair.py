@@ -130,7 +130,9 @@ class FakeGitHub:
         assert number == 17
         return self.paths
 
-    def required_check_snapshot(self, number: int) -> CheckSnapshot:
+    def required_check_snapshot(
+        self, number: int, *, fresh: bool = False
+    ) -> CheckSnapshot:
         assert number == 17
         status = self.statuses.pop(0)
         return CheckSnapshot(

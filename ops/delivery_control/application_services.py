@@ -934,6 +934,7 @@ class DeliveryApplication:
             git=self.git,
             github_query=self.github,
             github_command=self.github,
+            clock=self.clock,
         ).enqueue(
             receipt=receipt,
             pull_request_number=pull_request_number,

@@ -35,6 +35,12 @@ class StaticRunner:
         return self.responses.pop(0)
 
 
+def _with_include(argv: tuple[str, ...]) -> tuple[str, ...]:
+    """Expected outgoing argv for a governed ``gh api`` read."""
+
+    return (argv[0], argv[1], "--include", *argv[2:])
+
+
 JOBS_COMMAND = ("gh", "run", "view", "12345", "--json", "jobs")
 ZERO_JOBS = json.dumps(
     {
@@ -291,7 +297,7 @@ def test_github_graphql_query_with_flags_before_endpoint_retries() -> None:
     assert GitHubCliClient(repo=Path("/tmp/kg-github-retry"), runner=runner).load_json(
         argv
     ) == {"data": {"viewer": {"login": "octocat"}}}
-    assert runner.calls == [argv, argv]
+    assert runner.calls == [_with_include(argv), _with_include(argv)]
 
 
 def test_github_json_query_exposes_each_command_attempt() -> None:
@@ -347,7 +353,7 @@ def test_github_api_without_method_or_input_retries() -> None:
     assert GitHubCliClient(repo=Path("/tmp/kg-github-retry"), runner=runner).load_json(
         argv
     ) == {"ok": True}
-    assert runner.calls == [argv, argv]
+    assert runner.calls == [_with_include(argv), _with_include(argv)]
 
 
 def test_github_api_explicit_get_retries() -> None:
@@ -362,7 +368,7 @@ def test_github_api_explicit_get_retries() -> None:
     assert GitHubCliClient(repo=Path("/tmp/kg-github-retry"), runner=runner).load_json(
         argv
     ) == {"ok": True}
-    assert runner.calls == [argv, argv]
+    assert runner.calls == [_with_include(argv), _with_include(argv)]
 
 
 @pytest.mark.parametrize("method", ("POST", "PATCH", "DELETE"))
@@ -535,7 +541,7 @@ def test_github_adapter_reads_branch_history_with_one_snapshot() -> None:
 
     assert [item.number for item in inventory.records] == [12, 13]
     assert len(runner.calls) == 2
-    assert runner.calls[1][:3] == ("gh", "api", "graphql")
+    assert runner.calls[1][:4] == ("gh", "api", "--include", "graphql")
     query_argument = next(item for item in runner.calls[1] if item.startswith("query="))
     assert "DeliveryPullRequestHistoryByBranch" in query_argument
     assert "headRefName: $branch0" in query_argument
@@ -587,14 +593,12 @@ def test_github_changed_paths_preserve_rename_source_and_destination() -> None:
                 0,
                 json.dumps(
                     [
-                        [
-                            {
-                                "filename": "ops/new.py",
-                                "previous_filename": "ops/old.py",
-                                "status": "renamed",
-                            },
-                            {"filename": "ops/added.py", "status": "added"},
-                        ]
+                        {
+                            "filename": "ops/new.py",
+                            "previous_filename": "ops/old.py",
+                            "status": "renamed",
+                        },
+                        {"filename": "ops/added.py", "status": "added"},
                     ]
                 ),
                 "",
@@ -605,7 +609,10 @@ def test_github_changed_paths_preserve_rename_source_and_destination() -> None:
     paths = GitHubCliAdapter(runner=runner).changed_paths(12)
 
     assert paths == ("ops/added.py", "ops/new.py", "ops/old.py")
-    assert runner.calls[1][:4] == ("gh", "api", "--paginate", "--slurp")
+    assert runner.calls[1][:3] == ("gh", "api", "--include")
+    assert runner.calls[1][-1].endswith(
+        "repos/owner/repo/pulls/12/files?per_page=100&page=1"
+    )
 
 
 def test_github_changed_paths_reject_rename_without_previous_filename() -> None:
@@ -620,7 +627,7 @@ def test_github_changed_paths_reject_rename_without_previous_filename() -> None:
             CommandResult(
                 ("gh",),
                 0,
-                json.dumps([[{"filename": "ops/new.py", "status": "renamed"}]]),
+                json.dumps([{"filename": "ops/new.py", "status": "renamed"}]),
                 "",
             ),
         ]

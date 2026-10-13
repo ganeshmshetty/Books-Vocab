@@ -9,13 +9,15 @@ import pytest
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS))
 
-from delivery_control.adapters.errors import AdapterPayloadError  # noqa: E402
-from delivery_control.adapters.github_file_paths import (  # noqa: E402
+from delivery_control.adapters.errors import AdapterPayloadError
+from delivery_control.adapters.github_file_paths import (
     PullRequestFilePathBatch,
     parse_open_pull_request_file_pages,
 )
-from delivery_control.adapters.github_queries import GitHubQueries  # noqa: E402
-from delivery_control.adapters.github_parsing import parse_pull_request_inventory  # noqa: E402
+from delivery_control.adapters.github_parsing import (
+    parse_pull_request_inventory,
+)
+from delivery_control.adapters.github_queries import GitHubQueries
 
 
 def _page(
@@ -174,13 +176,11 @@ def test_queries_uses_rest_fallback_for_rename() -> None:
             _pr_inventory_payload(),
             _page([_pr(12, [_file("ops/new.py", "RENAMED")])]),
             [
-                [
-                    {
-                        "filename": "ops/new.py",
-                        "previous_filename": "ops/old.py",
-                        "status": "renamed",
-                    }
-                ]
+                {
+                    "filename": "ops/new.py",
+                    "previous_filename": "ops/old.py",
+                    "status": "renamed",
+                }
             ],
         ]
     )
@@ -194,4 +194,4 @@ def test_queries_uses_rest_fallback_for_rename() -> None:
 
     assert queries.changed_paths(12) == ("ops/new.py", "ops/old.py")
     assert len(client.calls) == 3
-    assert client.calls[2][-1] == "repos/owner/repo/pulls/12/files"
+    assert client.calls[2][-1] == "repos/owner/repo/pulls/12/files?per_page=100&page=1"

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from ..domain.errors import PolicyViolation
 from ..domain.models import HandbackReceipt
@@ -35,7 +37,9 @@ class QueueService:
         git: GitQueryPort,
         github_query: GitHubQueryPort,
         github_command: GitHubCommandPort,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        self.clock = clock
         self.registry = registry
         self.git = git
         self.github_query = github_query
@@ -72,13 +76,16 @@ class QueueService:
         changed_paths = set(self.github_query.changed_paths(pull_request_number))
         if not changed_paths or not changed_paths.issubset(receipt.scope.paths):
             raise PolicyViolation("PR paths differ from typed Scope")
-        required = self.github_query.required_check_snapshot(pull_request_number)
+        required = self.github_query.required_check_snapshot(
+            pull_request_number, fresh=True
+        )
         decision = evaluate_merge_gate(
             pull_request=pull_request,
             receipt=receipt,
             live_main_sha=live_main_sha,
             registry=record,
             required=required,
+            evaluated_at=self.clock(),
             holds=holds | durable_holds,
             merge_queue_validates=validates,
         )

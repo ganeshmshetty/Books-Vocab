@@ -11,6 +11,7 @@ from ..domain.check_states import FAILURE_STATES, SUCCESS_STATES, TERMINAL_STATE
 from ..domain.errors import CompareAndSwapConflict
 from ..domain.models import CheckStatus
 from ..domain.observations import CheckSnapshot, PullRequestSnapshot
+from ..domain.policies import REQUIRED_OBSERVATION_MAX_AGE
 from .errors import AdapterCommandError, AdapterPayloadError
 from .github_client import GitHubCliClient
 from .github_required_batch import batch_required_snapshots
@@ -84,9 +85,11 @@ class GitHubChecks:
         *,
         client: GitHubCliClient,
         get_pull_request: Callable[[int], PullRequestSnapshot],
+        clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
     ) -> None:
         self.client = client
         self.get_pull_request = get_pull_request
+        self._clock = clock
         self._batched_required: dict[int, CheckSnapshot] = {}
 
     def prime_required_snapshots(self, numbers: tuple[int, ...]) -> None:
@@ -178,7 +181,7 @@ class GitHubChecks:
         return CheckSnapshot(
             status=_status_from_states({item[0] for item in observations.values()}),
             head_sha=after.head_sha,
-            observed_at=datetime.now(tz=UTC),
+            observed_at=self._clock(),
             names=tuple(sorted(observations)),
             started_at=(
                 min(item for item in starts if item is not None)
@@ -192,9 +195,16 @@ class GitHubChecks:
             ),
         )
 
-    def required_snapshot(self, number: int) -> CheckSnapshot:
+    def required_snapshot(self, number: int, *, fresh: bool = False) -> CheckSnapshot:
         before = self.get_pull_request(number)
         batched = self._batched_required.pop(number, None)
-        if batched is not None and batched.head_sha == before.head_sha:
+        # A primed batch older than the merge gate's cap would be refused there, so
+        # it is re-read live instead of being admitted or left to fail closed.
+        if (
+            not fresh
+            and batched is not None
+            and batched.head_sha == before.head_sha
+            and self._clock() - batched.observed_at <= REQUIRED_OBSERVATION_MAX_AGE
+        ):
             return batched
         return self._required_snapshot_live(number, before=before)

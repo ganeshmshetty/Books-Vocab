@@ -209,11 +209,17 @@ class GitHubCliAdapter:
             return cached
         return self._queries.get_pull_request(number)
 
-    def required_check_snapshot(self, number: int) -> CheckSnapshot:
+    def required_check_snapshot(
+        self, number: int, *, fresh: bool = False
+    ) -> CheckSnapshot:
         # Required checks gate merges, and the head reads around them bind the
         # observation to a PR head: both are authoritative, so no cached pr view or
         # batch can pin the checks to an old head.
         with self._authoritative():
+            # Decisions that mutate (merge admission, repair dispatch) must not act on
+            # a primed tick-start batch; only observation reads may use it.
+            if fresh:
+                return self._checks.required_snapshot(number, fresh=True)
             if self._required_observation_numbers:
                 numbers = self._required_observation_numbers
                 self._required_observation_numbers = ()

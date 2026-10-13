@@ -9,10 +9,17 @@ from .github_client import is_live_read_command, is_read_only_json_query
 from .github_quota import CallKind, GitHubQuotaGovernor
 
 
+def _is_conditional_read(argv: tuple[str, ...]) -> bool:
+    """``gh api --include``: the header block carries the ETag the caller revalidates with."""
+    return len(argv) >= 3 and argv[:2] == ("gh", "api") and "--include" in argv
+
+
 def _call_kind(argv: tuple[str, ...]) -> CallKind:
     """Classify a gh argv; anything not provably a read counts as a mutation (fail safe)."""
     if is_read_only_json_query(argv):
-        return "cached-read"
+        # A ``--include`` read is a conditional REST read: its If-None-Match 304 is an
+        # answer from the server only if the request reaches it, so it is never replayed.
+        return "live-read" if _is_conditional_read(argv) else "cached-read"
     if is_live_read_command(argv):
         return "live-read"
     return "mutation"

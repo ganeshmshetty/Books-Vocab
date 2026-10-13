@@ -336,6 +336,18 @@ Supervisor 的 watchdog tick 只用來避免 supervisor 睡死，不代表每 30
 3. **fingerprint 連續三次相同＝no-progress**：同一 `fingerprint` 在三次獨立觀測（相隔 ≥20 分鐘）都不變，第三次改輸出 `escalate` 並**終止**該 agent loop，不再排程下一輪；`consecutive_observations` 必須如實遞增，不得因文字微調重置。fingerprint 任何一個 subject 改變（新 claim、新 Issue、不同 PR）才視為有進展並歸零。
 4. blocked report、escalate 與終止都只是觀測輸出：不授權任何 mutation，也不得拿來降低 hard gate；處置仍須由 IM 以 dry-run → `--apply` 明確執行。
 
+## GitHub 讀取配額（ETag 快取與 quota governor）
+
+本機 `gh api` 讀取經 `ops/delivery_control/adapters/github_client.py` 與 `github_rate_governor.py`，產物如下（快取根目錄為 `<git common dir>/kg-delivery-control/github/<token-identity>/`，同一 repo 的所有 worktree 共用；無 git 時退回 `.cache/delivery-control/github/`；token-identity 為 `GH_TOKEN`／`GITHUB_TOKEN` 的雜湊前 16 碼，無環境變數時為 `keyring`）：
+
+- `etag/<sha256>.json`：以 argv 雜湊為 key 的 body 快取，含 `fetched_at`。REST 讀取依 ETag 送 `If-None-Match`，304 回傳快取 body 並把 `fetched_at` 更新為本次時間，200 without ETag 即刪除條目（GraphQL 無 ETag，因此不快取，每次都走網路）。寫入採 tmp + rename；條目上限 2000，超出依 mtime 淘汰最舊者。
+- `rest/<sha256>.json`：舊版 `deliver.py` 的 REST 讀取（PR comments／reviews、check-runs、agent-review workflow run 歸屬、closed PR 清單）由 `ops/delivery_control/adapters/rest_conditional_cache.py` 以同一 ETag 規則讀取，key 為 endpoint 字串雜湊、同樣 tmp + rename 與 2000 條上限。分頁逐頁各自 revalidate（`per_page=100&page=N`，回傳不足 100 筆即末頁），每頁各有 ETag；304 回傳該頁快取、不耗配額，無 ETag 的 200 即刪除條目。已知缺口：此路徑不經 quota governor、不寫 `spend.jsonl`，配額門檻只約束 `github_client` 路徑；與 `GitHubCliClient` 共用 governor 留待後續 lane。
+- `spend.jsonl`：每次 observed 或 served 讀取一行 JSON（超過 1 MiB 時輪替為 `spend.jsonl.1`，種子化只讀末 64 KiB），欄位 `ts`、`resource`（`core`／`graphql`，subcommand 讀取可為 `core+graphql`）、`endpoint`、`served`（`network`／`304`／`stale-cache`／`quota-wait`）；網路回應另含 `status`、`remaining`、`reset`。
+- 配額門檻（依 `X-RateLimit-Remaining`，按 resource 分開，邊界含端點：remaining ≥ 50 放行、49 以下等待）：所有 REST 讀取皆即時重讀（ETag 或網路），快取 body 只在 304 時回傳，因此 observation 與 gate 路徑讀到的答案一致、不會來自推送前的快取。remaining < 50 等待 reset（開始等待時寫 stderr），等待超過 600 秒即 fail closed（DeliverySourceError）。subcommand 與分頁讀取無 header 亦無快取 body，低配額時仍走網路。
+- 種子化：每個新 `GitHubCliClient` 建立時，從 `spend.jsonl` 每個 resource 取最後一筆含 `remaining` 的紀錄，僅當其 `reset` 仍在未來才套用；因此跨 tick 的低配額會被下一個 process 的第一次讀取看見。
+- required-check 的 `observed_at` 取 body 的 `fetched_at`，不取重用時間；merge gate（`domain/policies.py` `evaluate_merge_gate`）拒絕距 `evaluated_at` 超過 300 秒的 required 觀測（`required checks observation is stale`）。
+- 限制：快取不設 TTL，只以 ETag 驗證；`GitHubChecks` 的 primed batch 快照只服務觀測讀取，距今超過 300 秒即丟棄；merge admission 與 required repair 恆走即時讀取（`fresh=True`），不採用 primed batch。低於 50 的等待受 600 秒預算約束；預設 `drain --timeout` 3600 秒大於此預算，由 `test_quota_wait_budget_fits_inside_the_default_drain_timeout` 鎖定。等待期間 stderr 會有 `quota low; waiting` 訊息，tick 卡住時以此判讀。排查配額異常時以 `spend.jsonl` 最後一筆 `remaining`／`reset` 為準。
+
 ## Canary 與容量升級
 
 1. **Canary 1 lane**：只允許一個 Solver，走完整 handback → PR → required → native queue → merge → sync → terminal cleanup。

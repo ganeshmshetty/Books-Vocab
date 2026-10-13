@@ -293,9 +293,9 @@ class FakeWorld:
                 closed.append(  # closed without merging: never a gc candidate
                     {"number": 5, "merged_at": None, "head": {"ref": "feat/open"}}
                 )
-                return ok(json.dumps([closed]))
+                return ok(json.dumps(closed))
             if cmd[1] == "api" and f"/commits/{QUEUE_HEAD}/check-runs" in cmd[-1]:
-                return ok(json.dumps([{"check_runs": self.queue_runs}]))
+                return ok(json.dumps({"check_runs": self.queue_runs}))
             if (
                 cmd[1] == "api"
                 and "/check-runs?" in cmd[-1]
@@ -309,13 +309,11 @@ class FakeWorld:
                         self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
                     )
                     runs = [_as_check_run(c) for c in batch]
-                return ok(json.dumps([{"total_count": len(runs), "check_runs": runs}]))
+                return ok(json.dumps({"total_count": len(runs), "check_runs": runs}))
             if cmd[1] == "api" and "/check-runs?" in cmd[-1]:
                 runs = self.review_runs
                 batch = runs.pop(0) if len(runs) > 1 else runs[0]
-                return ok(
-                    json.dumps([{"total_count": len(batch), "check_runs": batch}])
-                )
+                return ok(json.dumps({"total_count": len(batch), "check_runs": batch}))
             if cmd[1] == "api" and "/actions/runs/" in cmd[-1]:
                 run_id = int(cmd[-1].rsplit("/", 1)[1])
                 found = self.actions_runs.get(
@@ -332,11 +330,11 @@ class FakeWorld:
             if cmd[1] == "api" and cmd[2].endswith(f"/commits/{self.head}"):
                 return ok(HEAD_DATE + "\n")
             if cmd[1] == "api" and "/issues/" in cmd[-1]:
-                return ok(json.dumps([self.issue_comments]))
-            if cmd[1] == "api" and cmd[-1].endswith("/reviews?per_page=100"):
-                return ok(json.dumps([self.pr_reviews]))
-            if cmd[1] == "api" and cmd[-1].endswith("/comments?per_page=100"):
-                return ok(json.dumps([self.review_comments]))
+                return ok(json.dumps(self.issue_comments))
+            if cmd[1] == "api" and cmd[-1].endswith("/reviews?per_page=100&page=1"):
+                return ok(json.dumps(self.pr_reviews))
+            if cmd[1] == "api" and cmd[-1].endswith("/comments?per_page=100&page=1"):
+                return ok(json.dumps(self.review_comments))
             if cmd[1:3] == ["issue", "view"]:
                 reads = self.issue_states.get(int(cmd[3]), ["CLOSED"])
                 return ok(reads.pop(0) if len(reads) > 1 else reads[0])
@@ -2903,3 +2901,84 @@ def test_a_skipped_or_neutral_required_check_passes(state: str) -> None:
     world = FakeWorld(checks=[[{"name": "required", "state": state}]])
     code, _ = ship(world, "--check", "u=good")
     assert code == 0
+
+
+def _include(status: int, body: str = "", etag: str | None = None) -> deliver.Proc:
+    """A `gh api --include` reply: status line and headers, then the body."""
+    lines = [f"HTTP/2.0 {status} X"]
+    if etag is not None:
+        lines.append(f"ETag: {etag}")
+    code = 0 if status < 400 else 1
+    return deliver.Proc(code, "\r\n".join(lines) + "\r\n\r\n" + body, "")
+
+
+class _ReplayGh:
+    """Scripted `gh` runner: replies come back in call order and every argv is kept."""
+
+    def __init__(self, replies: list[deliver.Proc]) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], cwd: Path | None) -> deliver.Proc:
+        self.calls.append(list(cmd))
+        return self.replies.pop(0)
+
+
+def _delivery(tmp_path: Path, runner: _ReplayGh) -> deliver.Delivery:
+    args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
+    return deliver.Delivery(args, runner, lambda _s: None)
+
+
+def test_paginated_comment_reads_revalidate_with_etag(tmp_path: Path) -> None:
+    comments = json.dumps([{"id": 1}])
+    runner = _ReplayGh([_include(200, comments, '"c1"'), _include(304, "", '"c1"')])
+    delivery = _delivery(tmp_path, runner)
+    endpoint = "repos/o/r/issues/5/comments?per_page=100"
+
+    assert delivery.gh_pages(endpoint) == [{"id": 1}]
+    assert delivery.gh_pages(endpoint) == [{"id": 1}]
+
+    assert "--include" in runner.calls[0]
+    assert 'If-None-Match: "c1"' in runner.calls[1]
+
+
+def test_review_run_owner_read_revalidates_with_etag(tmp_path: Path) -> None:
+    run_doc = json.dumps(
+        {
+            "event": "pull_request_target",
+            "head_branch": "feat/x",
+            "pull_requests": [{"number": 9}],
+        }
+    )
+    runner = _ReplayGh([_include(200, run_doc, '"r7"'), _include(304, "", '"r7"')])
+    delivery = _delivery(tmp_path, runner)
+    run = {
+        "name": deliver.REVIEW_CHECK,
+        "details_url": "https://github.com/o/r/actions/runs/7",
+    }
+
+    first = delivery.runs_of_pr("o/r", 9, "feat/x", [run], {})
+    second = delivery.runs_of_pr("o/r", 9, "feat/x", [run], {})
+
+    assert first == second == [run]
+    assert 'If-None-Match: "r7"' in runner.calls[1]
+
+
+def test_closed_pr_list_revalidates_per_page(tmp_path: Path) -> None:
+    pulls = json.dumps(
+        [
+            {
+                "number": 3,
+                "merged_at": "2026-10-09T00:00:00Z",
+                "head": {"ref": "feat/x", "sha": "a" * 40},
+            }
+        ]
+    )
+    runner = _ReplayGh([_include(200, pulls, '"p1"'), _include(304, "", '"p1"')])
+    expected = {"feat/x": [(3, "a" * 40)]}
+
+    assert deliver._merged_pulls(runner, "o/r", tmp_path) == expected
+    assert deliver._merged_pulls(runner, "o/r", tmp_path) == expected
+
+    assert 'If-None-Match: "p1"' in runner.calls[1]
+    assert runner.calls[1][-1].endswith("/pulls?state=closed&per_page=100&page=1")

@@ -390,11 +390,13 @@ class FakeGitHub:
     def merge_queue_enabled(self, branch: str) -> bool:
         return True
 
-    def required_check_snapshot(self, number: int) -> CheckSnapshot:
+    def required_check_snapshot(
+        self, number: int, *, fresh: bool = False
+    ) -> CheckSnapshot:
         return CheckSnapshot(
             status=CheckStatus.SUCCESS,
             head_sha=HEAD,
-            observed_at=datetime(2026, 8, 21, tzinfo=UTC),
+            observed_at=datetime.now(UTC),
             names=("required",),
             started_at=EVENT_START.replace(second=40),
             completed_at=EVENT_START.replace(second=50),
