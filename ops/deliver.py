@@ -771,9 +771,15 @@ class Delivery:
             # #3399: the object is on origin but was never fetched into this clone;
             # fetch exactly that commit, then answer from the real history (as
             # git_queries does).  Still absent after the fetch: not contained (#3356).
-            self.runner(
+            fetched = self.runner(
                 ["git", "fetch", "-q", "--no-tags", "origin", absent], self.home
             )
+            if fetched.returncode != 0:
+                # offline or auth failure: not an answer about ancestry (#3472)
+                raise DeliverError(
+                    f"fetch {absent} from origin failed (rc={fetched.returncode}): "
+                    f"{failure_detail(fetched) or 'no output'}"
+                )
             proc = self._merge_base_is_ancestor(old, new)
             if proc.returncode == 128 and _absent_commit_named(proc.stderr, (old, new)):
                 return False
@@ -1274,12 +1280,24 @@ class Delivery:
             # A rerun may find the PR already in the queue (an earlier run queued
             # it); GitHub rejects a second enqueue, so wait for that entry instead (#3481).
             if self._queue_entry(repo, number) is None:
-                self.mutate(
-                    [*delivery, "queue", "--pr", str(number)],
-                    self.home,
-                    "queue",
-                )
-                self.say(f"queued #{number}")
+                try:
+                    self.mutate(
+                        [*delivery, "queue", "--pr", str(number)],
+                        self.home,
+                        "queue",
+                    )
+                except DeliverError:
+                    # #3520: a concurrent run may have queued the PR between the
+                    # pre-check and this enqueue, which GitHub rejects (rc=1).
+                    # An entry now present is the same outcome as the pre-check
+                    # finding it; any other failure stays a failure.
+                    if self._queue_entry(repo, number) is None:
+                        raise
+                    self.say(
+                        f"#{number} is already in the merge queue; waiting for merge"
+                    )
+                else:
+                    self.say(f"queued #{number}")
             else:
                 self.say(f"#{number} is already in the merge queue; waiting for merge")
             self.queued = True
