@@ -763,3 +763,38 @@ def test_local_removal_failure_on_one_linked_uid_still_removes_the_others(tmp_pa
     assert excinfo.value.status_code == 500
     assert "linked1" in excinfo.value.detail
     assert not (tmp_path / "users" / "linked2").exists()
+
+
+def test_local_removal_failure_is_reported_to_sentry_with_erasure_context(tmp_path, monkeypatch):
+    """#3392: a non-OSError local removal failure is logged only unless it is
+    also reported; sentry_init's LoggingIntegration(event_level=None) emits no
+    event for logger.exception, so capture_handled is the only Sentry path."""
+    import kg.user_handlers as user_handlers
+
+    monkeypatch.setattr(user_handlers, "sweep_account_prefixes", lambda *_a, **_k: 0)
+    reported: list[tuple[BaseException, str]] = []
+    monkeypatch.setattr(
+        user_handlers,
+        "capture_handled",
+        lambda exc, *, context, tags=None: reported.append((exc, context)) or True,
+    )
+    real_remove = user_handlers._remove_user_dir
+
+    def _raise_for_linked(data_dir, uid):
+        if uid == "linked1":
+            raise RuntimeError("boom")
+        return real_remove(data_dir, uid)
+
+    monkeypatch.setattr(user_handlers, "_remove_user_dir", _raise_for_linked)
+    users = {
+        "canonical": {"linked_ids": ["linked1"], "config": {}},
+        "linked1": {"_linked_to": "canonical", "config": {}},
+    }
+    for uid in ("canonical", "linked1"):
+        (tmp_path / "users" / uid).mkdir(parents=True)
+
+    with pytest.raises(HTTPException):
+        _call_delete(tmp_path, users, MagicMock(), user_id="canonical")
+
+    assert [context for _, context in reported] == ["account_erasure.local_removal"]
+    assert isinstance(reported[0][0], RuntimeError)

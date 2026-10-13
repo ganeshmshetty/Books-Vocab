@@ -463,9 +463,12 @@ def delete_user_account_response(
             try:
                 if _remove_user_dir(data_dir, uid):
                     deleted_dirs.append(uid)
-            except Exception:
+            except Exception as exc:
                 # #3366: any failure on one uid (not only OSError) must not strand
-                # the remaining linked-id directories after the tombstone.
+                # the remaining linked-id directories after the tombstone. #3392:
+                # logger.exception alone emits no Sentry event (event_level=None),
+                # so report it explicitly as the operator alert path.
+                capture_handled(exc, context="account_erasure.local_removal")
                 logger.exception("Failed to delete user directory for %s", uid)
                 failed_uids.append(uid)
     finally:
