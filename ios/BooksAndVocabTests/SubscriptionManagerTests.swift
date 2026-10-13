@@ -365,14 +365,18 @@ struct SubscriptionManagerTests {
         let savedRefreshTime = mgr.lastRefreshTime
         let savedError = mgr.lastError
         let savedLoadFailed = mgr.productLoadFailed
+        let savedProduct = mgr.proProduct
         defer {
             mgr.entitlements = savedEntitlements
             mgr.entitlementsOwnerUserId = savedOwner
             mgr.lastRefreshTime = savedRefreshTime
             mgr.lastError = savedError
             mgr.productLoadFailed = savedLoadFailed
+            mgr.proProduct = savedProduct
         }
         mgr.lastRefreshTime = nil
+        // 共享單例可能被先前測試留下已載入的商品；本案例驗證「無商品」狀態，必須明確清空。
+        mgr.proProduct = nil
         // loadProducts 耗盡重試後同時留下：無商品、lastError 與 productLoadFailed。
         mgr.lastError = "尚未取得訂閱方案，請稍後再試。"
         mgr.productLoadFailed = true
