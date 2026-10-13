@@ -573,9 +573,6 @@ struct ReviewCardView: View {
             .contentShape(Rectangle())
     }
 
-    /// 卡片所屬單字本（色點 ＋ 名稱）。純標示、不可點：點擊照常落到正面的翻卡手勢。
-    /// 寬度讓出右上角 chrome；字級上限鎖住，確保在 Accessibility Dynamic Type 下仍
-    /// 收在單字列上方的留白內、不壓到單字。
     /// 已評標示（#3371）：與單字本標示共用頂部留白；同時有單字本標示時往下讓一行，不互相覆蓋。
     func gradedBadgeView(_ badge: ReviewGradedBadge, belowNotebookBadge: Bool) -> some View {
         ReviewGradedBadgeView(badge: badge)
@@ -585,6 +582,9 @@ struct ReviewCardView: View {
             .padding(.trailing, reviewCardPadding + frontChromeReserveWidth)
     }
 
+    /// 卡片所屬單字本（色點 ＋ 名稱）。純標示、不可點：點擊照常落到正面的翻卡手勢。
+    /// 寬度讓出右上角 chrome；字級上限鎖住，確保在 Accessibility Dynamic Type 下仍
+    /// 收在單字列上方的留白內、不壓到單字。
     func notebookBadgeView(_ badge: ReviewCardNotebookBadge) -> some View {
         HStack(spacing: AppSpacing.s1) {
             if badge.colorHex != nil {
