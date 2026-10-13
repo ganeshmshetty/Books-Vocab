@@ -762,8 +762,12 @@ if [[ -n "$cache_fn" ]]; then
     && ok "ios_test.sh --prepare-cache: error payload still emitted on a structural block" || bad "prepare-cache payload: $PC_OUT"
   run_prepare_cache_case 75
   [[ "$PC_RC" -eq 75 ]] && ok "ios_test.sh --prepare-cache: in-lock temporary block exits 75" || bad "prepare-cache temporary exit=$PC_RC"
+  [[ "$(jq -r '.status' <<<"$PC_OUT" 2>/dev/null)" == "error" ]] \
+    && ok "ios_test.sh --prepare-cache: error payload still emitted on a temporary block" || bad "prepare-cache temporary payload: $PC_OUT"
   run_prepare_cache_case 65
   [[ "$PC_RC" -eq 1 ]] && ok "ios_test.sh --prepare-cache: ordinary build failure still exits 1" || bad "prepare-cache build failure exit=$PC_RC"
+  [[ "$(jq -r '.status' <<<"$PC_OUT" 2>/dev/null)" == "error" ]] \
+    && ok "ios_test.sh --prepare-cache: error payload still emitted on an ordinary build failure" || bad "prepare-cache build-failure payload: $PC_OUT"
 fi
 
 release_block="$(awk '/^(preflight_rc=0|if ! kg_ios_disk_budget_preflight "\$ROOT" "release")/ { c=1 } c { print } c && /^fi$/ { exit }' "$ROOT/ops/ios_release.sh")"
