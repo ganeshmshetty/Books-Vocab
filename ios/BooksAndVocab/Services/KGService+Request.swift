@@ -110,6 +110,14 @@ extension KGService {
                 )
 
                 if httpResponse.statusCode == 401 {
+                    // #3416: the 401 answers the token that was sent. If the session has moved on
+                    // while the request was in flight (account switch or logout), the response
+                    // describes a superseded session and must not end the current one.
+                    let currentToken = await authSession.token
+                    guard currentToken == token else {
+                        AppLog.kg.info("stale 401 for \(path) ignored: session changed during request request_id=\(responseRequestID)")
+                        throw CancellationError()
+                    }
                     // No client-side token refresh exists (AuthManager.token is a plain
                     // stored credential; there is no refresh-token flow). The server's 401 is
                     // the only authority that a session is invalid (#2806: the local clock is
