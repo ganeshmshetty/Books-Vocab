@@ -50,9 +50,23 @@ final class SharedDeckCopyController {
     /// Test seam：注入決定性的 key 產生器。
     private let makeKey: () -> String
 
-    init(owner: String? = nil, makeKey: @escaping () -> String = { UUID().uuidString }) {
+    /// 待完成意圖的落盤處（#3423）：inflight 時寫入、成功時清除，行程重啟後由 registry 以 `restored` 接回。
+    private let intents: any SharedDeckCopyIntentStoring
+
+    /// `restored` 為行程重啟後接回的待完成意圖：沿用其 key 與名稱，retry 即同一把 key。
+    init(
+        owner: String? = nil,
+        makeKey: @escaping () -> String = { UUID().uuidString },
+        intents: any SharedDeckCopyIntentStoring = EphemeralSharedDeckCopyIntentStore(),
+        restored: PendingDeckCopyIntent? = nil
+    ) {
         self.owner = owner
         self.makeKey = makeKey
+        self.intents = intents
+        if let restored {
+            idempotencyKey = restored.idempotencyKey
+            lastNotebookName = restored.notebookName
+        }
     }
 
     var isSucceeded: Bool {
@@ -87,6 +101,10 @@ final class SharedDeckCopyController {
         let key = idempotencyKey ?? makeKey()
         idempotencyKey = key
         lastNotebookName = notebookName
+        // 先落盤再送出：回應前行程被殺，重啟後仍以同一把 key 重試（失敗時此筆已持久化，不需另寫）。
+        intents.upsert(PendingDeckCopyIntent(
+            owner: owner, deckId: deckId, idempotencyKey: key, notebookName: notebookName
+        ))
         state = .inflight
         let startedAt = Date()
         AppCrashReporting.addBreadcrumb(
@@ -101,6 +119,7 @@ final class SharedDeckCopyController {
             await afterCopy(resp)
             idempotencyKey = nil   // 意圖已達成 → 下一次複製為新意圖
             lastNotebookName = nil
+            intents.remove(owner: owner, deckId: deckId)
             state = .success(Outcome(
                 notebookId: resp.notebookId,
                 notebookName: resp.notebookName,
@@ -198,14 +217,25 @@ final class SharedDeckCopyController {
 /// 登記互不覆寫；前一帳號的條目保留，該帳號再登入時仍接得回自己的意圖、key 與成功態。
 @MainActor
 final class SharedDeckCopyRegistry {
-    static let shared = SharedDeckCopyRegistry()
+    static let shared = SharedDeckCopyRegistry(intents: SharedDeckCopyIntentStores.makeDefault())
 
     private struct Key: Hashable {
         let owner: String?
         let deckId: String
     }
 
+    private let intents: any SharedDeckCopyIntentStoring
     private var controllers: [Key: SharedDeckCopyController] = [:]
+
+    /// 行程啟動時接回仍待完成的複製意圖（#3423）：inflight／failure 在上次行程被殺前落盤者，
+    /// 以原 key 與名稱登記，reopen 即可 retry 同一把 key，不因重啟重複複製。
+    init(intents: any SharedDeckCopyIntentStoring = EphemeralSharedDeckCopyIntentStore()) {
+        self.intents = intents
+        for pending in intents.load() {
+            controllers[Key(owner: pending.owner, deckId: pending.deckId)] =
+                SharedDeckCopyController(owner: pending.owner, intents: intents, restored: pending)
+        }
+    }
 
     /// 已登記（複製已開始）的 (帳號, deck) 數；供測試斷言不累積。
     var trackedDeckCount: Int { controllers.count }
@@ -215,7 +245,7 @@ final class SharedDeckCopyRegistry {
         if let existing = controllers[Key(owner: owner, deckId: deckId)] {
             return existing
         }
-        return SharedDeckCopyController(owner: owner)
+        return SharedDeckCopyController(owner: owner, intents: intents)
     }
 
     /// reopen／帳號切換時決定接回哪個 controller（見型別註解的生命週期）。
@@ -231,19 +261,19 @@ final class SharedDeckCopyRegistry {
     ) async -> SharedDeckCopyController {
         let key = Key(owner: owner, deckId: deckId)
         guard let existing = controllers[key] else {
-            return SharedDeckCopyController(owner: owner)
+            return SharedDeckCopyController(owner: owner, intents: intents)
         }
         guard case .success(let outcome) = existing.state else { return existing }
         if destinationExists(outcome.notebookId) { return existing }
         let refreshCompleted = await refreshDestination(outcome.notebookId)
         // await 期間登記可能已被並行 adopt 換掉：以當前登記為準，絕不清除別人的條目。
         guard controllers[key] === existing else {
-            return controllers[key] ?? SharedDeckCopyController(owner: owner)
+            return controllers[key] ?? SharedDeckCopyController(owner: owner, intents: intents)
         }
         if !refreshCompleted || destinationExists(outcome.notebookId) { return existing }
         // 意圖已結束（重拉完整成功後使用者的 notebook 確實不在）：清除條目，新複製即新意圖。
         controllers[key] = nil
-        return SharedDeckCopyController(owner: owner)
+        return SharedDeckCopyController(owner: owner, intents: intents)
     }
 
     /// 複製開始時登記（以 controller 自身的 owner 定位），讓 pop/reopen 的 view 接回同一 controller。
