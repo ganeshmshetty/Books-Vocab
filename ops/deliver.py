@@ -1286,13 +1286,18 @@ class Delivery:
                         self.home,
                         "queue",
                     )
-                except DeliverError:
+                except DeliverError as original:
                     # #3520: a concurrent run may have queued the PR between the
                     # pre-check and this enqueue, which GitHub rejects (rc=1).
                     # An entry now present is the same outcome as the pre-check
-                    # finding it; any other failure stays a failure.
-                    if self._queue_entry(repo, number) is None:
-                        raise
+                    # finding it; any other failure stays a failure. A failed
+                    # re-read must not replace the queue rejection (#3563).
+                    try:
+                        entry = self._queue_entry(repo, number)
+                    except DeliverError:
+                        raise original
+                    if entry is None:
+                        raise original
                     self.say(
                         f"#{number} is already in the merge queue; waiting for merge"
                     )

@@ -91,6 +91,11 @@ class FakeWorld:
         self.format_pending = False
         self.fail_commands: set[str] = set(state.get("fail_commands", set()))
         self.stderr_for: dict[str, str] = state.get("stderr_for", {})
+        # the merge-queue re-read fails once a queue attempt has run (#3563)
+        self.graphql_down_after_queue: bool = state.get(
+            "graphql_down_after_queue", False
+        )
+        self.queue_attempted = False
         self.lock_busy: dict[str, int] = dict(state.get("lock_busy", {}))
         self.now = 0.0
         self.sleeps: list[float] = []
@@ -263,6 +268,8 @@ class FakeWorld:
                 batch = self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
                 return ok(json.dumps(batch))
             if cmd[1:3] == ["api", "graphql"]:
+                if self.graphql_down_after_queue and self.queue_attempted:
+                    return deliver.Proc(1, "", "gh: HTTP 502 Bad Gateway")
                 number = int(_value(cmd, "number=", prefix=True))
                 # An untracked PR is open and not in the merge queue.
                 pr = next(
@@ -381,6 +388,8 @@ class FakeWorld:
             if verb == self.merge_old_after:
                 for old in self.prs_by_branch.get(OLD, []):
                     old["state"] = "MERGED"
+            if verb == "queue":
+                self.queue_attempted = True
             failing = verb in self.fail_commands
             if failing:
                 return deliver.Proc(1, "", self.stderr_for.get(verb, "boom"))
@@ -1867,6 +1876,26 @@ def test_a_queue_failure_with_no_entry_on_reread_is_still_a_failure() -> None:
     code, result = ship(world, "--merge")
     assert code == 1, result
     assert "queue failed (rc=1): PR is not mergeable" in result["error"]
+    assert "cleanup-merged" not in world.names()
+
+
+def test_a_queue_failure_keeps_its_error_when_the_entry_reread_also_fails() -> None:
+    # #3563: a failed re-read after a rejected enqueue must not replace the
+    # queue rejection; the original error is the one the operator needs.
+    world = FakeWorld(
+        record={"branch": "feat/thing", "status": "published", "external_ids": ["L"]},
+        prs=[{"number": 9, "state": "OPEN"}],
+        prs_by_branch={"feat/thing": [{"number": 9, "state": "OPEN"}]},
+        pr_state=["OPEN"],
+        pr_guard=[{"mergeQueueEntry": None}],
+        fail_commands={"queue"},
+        stderr_for={"queue": "queue failed (rc=1): PR is not mergeable"},
+        graphql_down_after_queue=True,
+    )
+    code, result = ship(world, "--merge")
+    assert code == 1, result
+    assert "queue failed (rc=1): PR is not mergeable" in result["error"]
+    assert "HTTP 502" not in result["error"]
     assert "cleanup-merged" not in world.names()
 
 
