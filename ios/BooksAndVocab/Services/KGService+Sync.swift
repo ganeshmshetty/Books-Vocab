@@ -125,7 +125,14 @@ extension KGService {
     /// (network, 5xx, 401, 429) leaves the card pending for the next sync. A deterministic 4xx is the
     /// server's final verdict on this card: its flag clears so it cannot block the pull (#3330).
     /// One bad card cannot block the rest of the push. Cancellation still propagates.
-    func pushPendingReviewModes(container: ModelContainer) async throws {
+    /// `markPushed` clears the pending flag for one sent card. It defaults to the real store write; tests
+    /// pass a failing writer to pin that one failed write cannot stop the rest of the push.
+    func pushPendingReviewModes(
+        container: ModelContainer,
+        markPushed: @Sendable (BackgroundSyncActor, ReviewModePushEntry) async throws -> Void = { actor, item in
+            try await actor.markReviewModePushed(item)
+        }
+    ) async throws {
         let actor = BackgroundSyncActor(modelContainer: container)
         for item in try await actor.buildReviewModePushPayload() {
             do {
@@ -136,12 +143,18 @@ extension KGService {
                     mode: item.mode,
                     notebookId: item.notebookId
                 )
-                try await actor.markReviewModePushed(item)
+                try await markPushed(actor, item)
             } catch let error as CancellationError {
                 throw error
             } catch KGError.httpError(let status, _) where (400..<500).contains(status) && status != 401 && status != 429 {
                 AppLog.kg.warning("pushPendingReviewModes rejected '\(item.word)' with HTTP \(status), clearing pending mode")
-                try await actor.markReviewModePushed(item)
+                do {
+                    try await markPushed(actor, item)
+                } catch let error as CancellationError {
+                    throw error
+                } catch {
+                    AppLog.kg.warning("pushPendingReviewModes could not clear pending mode for '\(item.word)': \(error.localizedDescription)")
+                }
             } catch {
                 AppLog.kg.warning("pushPendingReviewModes failed '\(item.word)': \(error.localizedDescription)")
             }

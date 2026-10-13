@@ -195,6 +195,34 @@ struct KGReviewStatePushTests {
         #expect(try await pendingFlagAfterPush(rejectedWith: 422) == false)
     }
 
+    /// The 4xx arm clears a card's flag with a store write. When that write fails for one card, the
+    /// push must log it and continue: the next card is still sent and cleared, and the failed card
+    /// stays pending for the next sync (#3369).
+    @Test func failedClearOfOneRejectedCardDoesNotBlockTheRestOfThePush() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        for word in ["alpha", "beta"] {
+            let entry = VocabularyEntry(word: word, translation: "t", context: "c", bookTitle: "b")
+            entry.markSynced()
+            entry.kgCardId = "card-\(word)"
+            entry.requestReviewMode(.production)
+            context.insert(entry)
+        }
+        try context.save()
+
+        let transport = ReviewPushRecordingTransport(responseBody: Self.cardResponseJSON, everyRequestStatus: 422)
+        try await makeService(transport).pushPendingReviewModes(container: container) { actor, item in
+            if item.word == "alpha" { throw ReviewPushInjectedSaveFailure() }
+            try await actor.markReviewModePushed(item)
+        }
+
+        #expect(transport.requests.count == 2)
+        let stored = try ModelContext(container).fetch(FetchDescriptor<VocabularyEntry>())
+        let pending = Dictionary(uniqueKeysWithValues: stored.map { ($0.word, $0.pendingReviewModePush) })
+        #expect(pending["alpha"] == true)
+        #expect(pending["beta"] == false)
+    }
+
     /// 401 (session) and 429 (rate limit) are not a verdict on the card: the flag stays
     /// pending so the next sync retries.
     @Test func sessionAndRateLimitFailuresKeepThePendingReviewModeFlag() async throws {
@@ -202,6 +230,9 @@ struct KGReviewStatePushTests {
         #expect(try await pendingFlagAfterPush(rejectedWith: 429) == true)
     }
 }
+
+/// Stands in for a store write that fails while clearing one card's pending review mode.
+private struct ReviewPushInjectedSaveFailure: Error {}
 
 /// Recording transport for the review-state PATCH. `onRequest` runs inside the
 /// request, which is how a test lands a review while the batch is in flight.
