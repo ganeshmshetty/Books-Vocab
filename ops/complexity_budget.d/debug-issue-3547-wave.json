@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3547,
+  "raise": {
+    "workflows": 16
+  },
+  "note": "Issue #3547: push-only concurrency stanzas plus rationale comments in four push workflows (ops-suite, design-system, ui-quality-gate, llm-eval); ceiling raised by this lane fragment only"
+}

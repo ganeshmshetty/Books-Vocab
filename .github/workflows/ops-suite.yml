@@ -75,6 +75,12 @@ on:
 permissions:
   contents: read
 
+# 只有 push 共用一個群組：較新的 main push 只取代仍在排隊的舊 run，正在跑的 main 驗證
+# 一律跑完（cancel-in-progress: false）。其他事件各自唯一群組，行為不變（#3547）。
+concurrency:
+  group: ${{ github.event_name == 'push' && 'ops-suite-main-push' || format('ops-suite-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: false
+
 jobs:
   discover:
     name: discover Linux ops groups
