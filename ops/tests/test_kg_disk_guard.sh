@@ -286,8 +286,14 @@ expect_docker_active 1 "docker build CLI is a build" \
   'docker build -t kg .' '/usr/local/bin/docker'
 expect_docker_active 1 "docker compose build CLI is a build" \
   '/usr/local/bin/docker compose build api' '/usr/local/bin/docker'
-expect_docker_active 1 "buildx plugin process is a build" \
-  '' '/usr/local/lib/docker/cli-plugins/docker-buildx'
+expect_docker_active 0 "docker buildx ls is not a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx ls' '/usr/local/lib/docker/cli-plugins/docker-buildx'
+expect_docker_active 0 "docker buildx inspect is not a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx inspect default' '/usr/local/lib/docker/cli-plugins/docker-buildx'
+expect_docker_active 1 "buildx plugin build process is a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx build -t kg .' '/usr/local/lib/docker/cli-plugins/docker-buildx'
+expect_docker_active 1 "buildx plugin bake process is a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx bake api' '/usr/local/lib/docker/cli-plugins/docker-buildx'
 
 echo "── global DerivedData: active consumer defers repair ──"
 root="$TMP/global-dd-active"; global_derived="$root/global-derived-data"; state="$root/state.json"
