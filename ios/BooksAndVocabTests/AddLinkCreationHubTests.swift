@@ -893,3 +893,225 @@ struct PendingLinkProjectionTests {
         #expect(store.load().isEmpty)
     }
 }
+
+// MARK: - Completion notices for unattended jobs (#3116)
+
+@MainActor
+final class RecordingOutcomePoster: AddLinkJobOutcomePosting {
+    private(set) var items: [AppToastItem] = []
+    func postJobOutcome(_ item: AppToastItem) { items.append(item) }
+}
+
+@Suite("Add Link job notice copy (#3116)")
+struct AddLinkJobNoticeCopyTests {
+    @Test("only terminal outcomes produce a notice")
+    @MainActor
+    func onlyTerminalOutcomes() {
+        #expect(AddLinkJobNotice.item(phase: .running, jobKey: "k", word: "w", message: nil) == nil)
+        #expect(AddLinkJobNotice.item(phase: .idle, jobKey: "k", word: "w", message: nil) == nil)
+        #expect(AddLinkJobNotice.item(phase: .cancelled, jobKey: "k", word: "w", message: nil) == nil)
+        #expect(AddLinkJobNotice.item(phase: .blocked, jobKey: "k", word: "w", message: nil) == nil)
+        #expect(AddLinkJobNotice.item(phase: .succeeded, jobKey: "k", word: "w", message: nil)?.style == .success)
+        #expect(AddLinkJobNotice.item(phase: .failed, jobKey: "k", word: "w", message: nil)?.style == .error)
+        #expect(AddLinkJobNotice.item(phase: .succeededWithWarnings, jobKey: "k", word: "w", message: nil)?.style == .warning)
+    }
+
+    @Test("the notice key is stable per job, so one job never stacks two pills")
+    @MainActor
+    func stableKeyPerJob() {
+        let first = AddLinkJobNotice.item(phase: .failed, jobKey: "k", word: "w", message: "a")
+        let second = AddLinkJobNotice.item(phase: .failed, jobKey: "k", word: "w", message: "b")
+        #expect(first?.key == second?.key)
+        #expect(first?.key != AddLinkJobNotice.item(phase: .failed, jobKey: "other", word: "w", message: "a")?.key)
+    }
+}
+
+@Suite("Add Link job completion notices (#3116)", .serialized)
+@MainActor
+struct AddLinkJobCompletionNoticeTests {
+    private struct Rig {
+        let hub: AddLinkCreationHub
+        let poster: RecordingOutcomePoster
+        let service: ScriptedCreationService
+        let container: ModelContainer
+        let source: VocabularyEntry
+    }
+
+    private let jobKey = AddLinkCreationCoordinator.jobKey(sourceCardID: "src", word: "luminous")
+
+    private func makeRig(
+        service: ScriptedCreationService,
+        records: [PendingLinkCreationRecord] = []
+    ) throws -> Rig {
+        let hub = AddLinkCreationHub(
+            store: EphemeralPendingLinkCreationStore(records: records),
+            projection: PendingLinkProjection(),
+            environment: CreationFixtures.environment(),
+            userIDProvider: { nil }
+        )
+        let poster = RecordingOutcomePoster()
+        hub.outcomePoster = poster
+        let container = try CreationFixtures.container()
+        let source = CreationFixtures.entry("source", cardID: "src")
+        container.mainContext.insert(source)
+        try container.mainContext.save()
+        return Rig(hub: hub, poster: poster, service: service, container: container, source: source)
+    }
+
+    /// Starts a creation. `presented` mirrors the sheet that owns the coordinator.
+    @discardableResult
+    private func start(_ rig: Rig, presented: Bool = false) -> AddLinkCreationCoordinator {
+        let coordinator = rig.hub.makeCoordinator()
+        if presented { rig.hub.sheetDidAppear(coordinator) }
+        coordinator.start(
+            word: "luminous",
+            sourceEntry: rig.source,
+            allEntries: [rig.source],
+            operationService: rig.service,
+            syncService: rig.service,
+            container: rig.container
+        )
+        return coordinator
+    }
+
+    private func gatedSuccess(_ gate: Gate) -> ScriptedCreationService {
+        ScriptedCreationService(
+            onStart: { _, _ in CreationFixtures.status("op-1", "running", sequence: 1) },
+            onFetch: { _, _ in
+                await gate.wait()
+                return CreationFixtures.status("op-1", "succeeded", sequence: 3)
+            }
+        )
+    }
+
+    @Test("a job that finishes after its sheet closed posts exactly one success notice")
+    func successAfterCloseNoticesOnce() async throws {
+        let gate = Gate()
+        let rig = try makeRig(service: gatedSuccess(gate))
+        start(rig)
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+        #expect(rig.poster.items.isEmpty)
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        let item = try #require(rig.poster.items.first)
+        #expect(item.style == .success)
+        #expect(item.key == AddLinkJobNotice.key(jobKey: jobKey))
+        #expect(item.message.contains("luminous"))
+    }
+
+    @Test("a job that finishes while its sheet is presented posts nothing: the sheet shows the outcome")
+    func presentedSheetStaysSilent() async throws {
+        let gate = Gate()
+        let rig = try makeRig(service: gatedSuccess(gate))
+        start(rig, presented: true)
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.hub.jobs.isEmpty })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.isEmpty)
+    }
+
+    @Test("a sheet that presented and then disappeared no longer silences its job")
+    func disappearedSheetNoticesOnce() async throws {
+        let gate = Gate()
+        let rig = try makeRig(service: gatedSuccess(gate))
+        let coordinator = start(rig, presented: true)
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+        rig.hub.sheetDidDisappear(coordinator)
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+    }
+
+    @Test("a presented sheet for another coordinator does not silence this job")
+    func otherSheetDoesNotSilence() async throws {
+        let gate = Gate()
+        let rig = try makeRig(service: gatedSuccess(gate))
+        rig.hub.sheetDidAppear(rig.hub.makeCoordinator())
+        start(rig)
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+    }
+
+    @Test("a failure after close posts one error notice and keeps the failed job on its card")
+    func failureAfterCloseNoticesOnce() async throws {
+        let service = ScriptedCreationService(
+            onStart: { _, _ in
+                CreationFixtures.status("op-1", "failed", sequence: 1, errorCode: "translation_failed")
+            },
+            onFetch: { _, _ in
+                CreationFixtures.status("op-1", "failed", sequence: 2, errorCode: "translation_failed")
+            }
+        )
+        let rig = try makeRig(service: service)
+        start(rig)
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        #expect(rig.poster.items.first?.style == .error)
+        #expect(rig.hub.job(forJobKey: jobKey)?.record.state == .failed)
+        #expect(rig.hub.runningJobs.isEmpty)
+    }
+
+    @Test("a partial result after close posts one warning notice and keeps the job for retry")
+    func warningAfterCloseNoticesOnce() async throws {
+        let service = ScriptedCreationService(
+            onStart: { _, _ in
+                CreationFixtures.status("op-1", "succeeded_with_warnings", sequence: 1,
+                                        warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue])
+            },
+            onFetch: { _, _ in
+                CreationFixtures.status("op-1", "succeeded_with_warnings", sequence: 2,
+                                        warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue])
+            }
+        )
+        let rig = try makeRig(service: service)
+        start(rig)
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        #expect(rig.poster.items.first?.style == .warning)
+        #expect(rig.hub.job(forJobKey: jobKey)?.record.state == .warning)
+    }
+
+    @Test("a job resumed after relaunch and finished in the background posts its notice once")
+    func resumedJobNoticesOnce() async throws {
+        let gate = Gate()
+        let service = gatedSuccess(gate)
+        let record = PendingLinkCreationRecord(
+            jobKey: jobKey,
+            word: "luminous",
+            sourceCardID: "src",
+            notebookId: "nb",
+            idempotencyKey: "persisted-key",
+            operationId: "op-1",
+            operationTerminal: false,
+            state: .creating,
+            message: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            userId: nil
+        )
+        let rig = try makeRig(service: service, records: [record])
+        rig.hub.resume(services: AddLinkCreationServices(
+            operationService: service,
+            syncService: service,
+            container: rig.container
+        ))
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+        #expect(rig.poster.items.isEmpty)
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        #expect(rig.poster.items.first?.style == .success)
+    }
+}

@@ -202,6 +202,11 @@ struct BooksAndVocabApp: App {
                     )
                 )
                 .toastOverlay()
+                .appJobCapsuleOverlay()
+                .onAppear {
+                    // Completion notices of jobs no sheet shows go through the same pill (#3116).
+                    AddLinkCreationHub.shared.outcomePoster = toastCoordinator
+                }
         }
         .environmentObject(appearanceStore)
     }
@@ -327,6 +332,9 @@ struct BooksAndVocabApp: App {
                         // before the sync guards below evaluate `isLoggedIn`.
                         authManager.refreshSessionIfNeeded()
                         authManager.activateAccountPreferencesForCurrentSession()
+                        // The server keeps creating a job while the app is suspended; a process
+                        // killed mid-job is re-attached here and announced when it finishes (#3116).
+                        AddLinkCreationHub.shared.resume(kgService: kgService, container: modelContainer)
                         Task {
                             await subscriptionManager.refresh(using: kgService, authManager: authManager)
                             guard authManager.isLoggedIn, !authManager.isDemoMode else { return }

@@ -40,6 +40,8 @@ struct AddLinkSheet: View {
     /// 多單字本入口才傳：候選只限來源同一本，sheet 要明講搜尋範圍（#2040）。
     var notebookScopeName: String? = nil
     var onLinked: () -> Void = {}
+    /// Reports presentation to the hub, so a job finishing under an open sheet stays silent (#3116).
+    private let creationHub: AddLinkCreationHub
 
     @State private var searchText = ""
     /// Folded search keys live as long as the sheet, so a keystroke does not re-fold the store (#2406).
@@ -79,6 +81,7 @@ struct AddLinkSheet: View {
         self.allEntries = allEntries
         self.notebookScopeName = notebookScopeName
         self.onLinked = onLinked
+        self.creationHub = creationHub
         _creationCoordinator = State(initialValue: creationHub.makeCoordinator())
     }
 
@@ -226,6 +229,7 @@ struct AddLinkSheet: View {
                 dismiss()
             }
             .onAppear {
+                creationHub.sheetDidAppear(creationCoordinator)
                 // Offline from the start: say so now, not after a failed round trip (#2039).
                 if let notice = connectivity.noticeMessage { toastCoordinator.warning(notice) }
             }
@@ -244,6 +248,7 @@ struct AddLinkSheet: View {
             .onDisappear {
                 createHighlightTask?.cancel()
                 coordinator.cancel()
+                creationHub.sheetDidDisappear(creationCoordinator)
                 // A running creation is deliberately NOT cancelled: the hub owns it,
                 // finishes the local projection, and the source card shows it as a
                 // pending link meanwhile.
