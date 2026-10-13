@@ -136,6 +136,31 @@ assert_rejects 'iOS selected but the caller skipped is never green' \
   "$ios_plan" \
   "$(jq -c '."ios-quality".result = "skipped"' <<<"$ios_pr_needs")"
 
+# Targeted ops-suite (#3467): a change that selects zero Linux groups leaves the
+# nested suite job skipped by design. That is green only when the reusable
+# workflow exposes linux_group_count=0 and no macOS ops job was requested.
+zero_plan='{"backend":"false","ops":"true","ios":"false","macos_ops":"false"}'
+zero_needs="$(jq -cn '{
+  "changed-paths": {result: "success"},
+  "repo-gate": {result: "success"},
+  "backend-quality": {result: "skipped"},
+  "llm-eval": {result: "success"},
+  "design-system": {result: "success"},
+  "ui-quality-gate": {result: "success"},
+  "ops-suite": {result: "skipped", outputs: {linux_group_count: "0"}},
+  "ios-quality": {result: "skipped"}
+}')"
+assert_accepts 'targeted ops-suite that selected zero Linux groups may be skipped' "$zero_plan" "$zero_needs"
+assert_rejects 'skipped ops-suite with Linux groups selected is never green' \
+  "$zero_plan" \
+  "$(jq -c '."ops-suite".outputs.linux_group_count = "8"' <<<"$zero_needs")"
+assert_rejects 'skipped ops-suite without a Linux group count is never green' \
+  "$zero_plan" \
+  "$(jq -c 'del(."ops-suite".outputs)' <<<"$zero_needs")"
+assert_rejects 'zero-group skip is never green when a macOS ops job was also requested' \
+  '{"backend":"false","ops":"true","ios":"false","macos_ops":"true"}' \
+  "$zero_needs"
+
 if (( failures > 0 )); then
   printf 'ci confidence verdict: %d failure(s)\n' "$failures" >&2
   exit 1

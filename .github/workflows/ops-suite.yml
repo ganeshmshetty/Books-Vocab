@@ -3,6 +3,8 @@ name: ops-suite
 # Linux 可執行的 ops regression suite。GitHub PR 以 pr-gate 作為所有變更的穩定
 # 入口；本 workflow 只在 ops／相關腳本變更時擴大執行完整分類的 Linux groups。
 # 本地等價入口：./ops/test_ops.sh <group...>
+# scope=full（merge group、push）跑全部 Linux groups；scope=targeted（PR gate）只跑
+# ops/ci_ops_suite_plan.py 依 diff 判定的 groups，無法判定即 fail safe 回 full（#3467）。
 
 on:
   workflow_call:
@@ -15,6 +17,27 @@ on:
         required: false
         default: 'true'
         type: string
+      # full: every Linux group (merge group and push, which pass no scope).
+      # targeted: only the groups the diff base..head selects (pr-gate, #3467).
+      scope:
+        description: full runs every Linux ops group; targeted runs the groups the base..head diff selects
+        required: false
+        default: 'full'
+        type: string
+      base:
+        description: Exact base commit of the diff range (scope=targeted)
+        required: false
+        default: ''
+        type: string
+      head:
+        description: Exact head commit of the diff range (scope=targeted)
+        required: false
+        default: ''
+        type: string
+    outputs:
+      linux_group_count:
+        description: Linux groups discovery selected; 0 means no shard ran by design
+        value: ${{ jobs.discover.outputs.group-count }}
   push:
     branches: [main]
     paths:
@@ -51,6 +74,8 @@ jobs:
     outputs:
       linux-groups: ${{ steps.groups.outputs.linux-groups }}
       shards: ${{ steps.groups.outputs.shards }}
+      shard-count: ${{ steps.groups.outputs.shard-count }}
+      group-count: ${{ steps.groups.outputs.group-count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,25 +89,39 @@ jobs:
             sudo apt-get install -y jq
           fi
           jq --version
+      - name: Install uv
+        # ci_ops_suite_plan.py is a uv script (PEP 723); same pin as the shard job.
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Assert every group is classified
         run: ./ops/tests/test_ops_ci_coverage.sh
-      - name: Emit Linux group matrix input
+      - name: Plan Linux ops groups
+        # Full scope never reads the diff. Targeted scope fails safe to the full
+        # plan on any unmapped path or mapping error, so this step only fails when
+        # the classification itself cannot run.
         id: groups
         shell: bash
+        env:
+          SCOPE: ${{ inputs.scope || 'full' }}
+          BASE_SHA: ${{ inputs.base }}
+          HEAD_SHA: ${{ inputs.head }}
         run: |
           set -euo pipefail
-          groups_json="$(./ops/tests/test_ops_ci_coverage.sh --print-linux-groups \
-            | jq -R -s -c 'split("\n") | map(select(length > 0))')"
-          shards_json="$(jq -c -n '[range(0; 8)]')"
-          printf 'linux-groups=%s\n' "$groups_json" >> "$GITHUB_OUTPUT"
-          printf 'shards=%s\n' "$shards_json" >> "$GITHUB_OUTPUT"
-          printf 'Discovered Linux ops groups: %s\n' "$groups_json"
+          plan_json="$(uv run --no-project --python 3.13 ./ops/ci_ops_suite_plan.py \
+            --scope "$SCOPE" --base "$BASE_SHA" --head "$HEAD_SHA")"
+          printf 'linux-groups=%s\n' "$(jq -c '.groups' <<<"$plan_json")" >> "$GITHUB_OUTPUT"
+          printf 'shards=%s\n' "$(jq -c '[range(0; .shard_count)]' <<<"$plan_json")" >> "$GITHUB_OUTPUT"
+          printf 'shard-count=%s\n' "$(jq -r '.shard_count' <<<"$plan_json")" >> "$GITHUB_OUTPUT"
+          printf 'group-count=%s\n' "$(jq -r '.group_count' <<<"$plan_json")" >> "$GITHUB_OUTPUT"
+          printf 'Linux ops plan: %s\n' "$plan_json"
       - name: Verify platform exclusions
         run: ./ops/ci_expected_fail_exclusions.sh
 
   suite:
     name: Linux ops shard ${{ matrix.shard }}
     needs: discover
+    # A targeted PR can select zero Linux groups (docs- or backend-only): the plan
+    # then carries an empty shard list and this job is skipped by design.
+    if: ${{ needs.discover.outputs.shards != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -132,7 +171,7 @@ jobs:
         env:
           LINUX_GROUPS_JSON: ${{ needs.discover.outputs.linux-groups }}
           SHARD: ${{ matrix.shard }}
-          SHARD_COUNT: '8'
+          SHARD_COUNT: ${{ needs.discover.outputs.shard-count }}
         shell: bash
         run: |
           set -euo pipefail
