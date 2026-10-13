@@ -59,6 +59,16 @@ on:
       - '.claude/skills/ios-simulator-verification/scripts/run_ui_evidence.sh'
       - '.claude/skills/ios-simulator-verification/scripts/test_run_ui_evidence.sh'
       - '.github/workflows/ops-suite.yml'
+      # macOS-routed paths outside ops/** (ops/ci_scope_router.sh macos_ops=true); #3439.
+      - 'docs/sop/ios.md'
+      - 'ios/BooksAndVocab.xcodeproj/project.pbxproj'
+      - 'ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved'
+      - 'ios/BooksAndVocab/Services/AppCrashReporting.swift'
+      - 'ios/BooksAndVocab/Services/SentryConfiguration.swift'
+      - 'ios/BooksAndVocab/Services/SentryPrivacyPolicy.swift'
+      - 'ios/BooksAndVocab/Services/SentryReporter.swift'
+      - 'ios/BooksAndVocabUITests/*.swift'
+      - 'ios/Info.plist'
 # 三個 job 都只 checkout（含 fetch-depth: 0）後跑本地 script；token 不進 step env，
 # 不需要 contents 以外的 scope（macos-native-ops 例外：job 層加 actions: read，
 # 只供 ci_macos_queue_probe.sh 讀自己 run 的排隊時間，#2641）。

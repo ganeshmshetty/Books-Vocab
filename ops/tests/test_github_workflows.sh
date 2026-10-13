@@ -49,6 +49,19 @@ for dep in 'backend/ops_cli.py' 'backend/ops_edit.py' 'backend/src/kg/ops_*' 'ba
     || fail "ops-suite push paths omit backend ops-CLI dependency: $dep"
 done
 
+# Issue #3439: every macos_ops=true router path outside ops/** must also trigger a main
+# push run of ops-suite (otherwise e.g. an ios-sentry-wiring input change never runs it).
+macos_patterns="$(awk 'prev ~ /\)$/ && /^      macos_ops=true$/ {print prev} {prev=$0}' ops/ci_scope_router.sh | tr -d ' ')"
+[[ -n "$macos_patterns" ]] || fail "could not extract macos_ops case patterns from ci_scope_router.sh"
+push_paths="$(awk '/^  push:$/{on=1;next} /^[^ #]/{on=0} /^  [a-z_]+:/{on=0} on' .github/workflows/ops-suite.yml)"
+grep -Fqx "      - 'ops/**'" <<<"$push_paths" || fail "ops-suite push paths omit ops/**"
+IFS='|' read -r -a macos_pattern_list <<<"${macos_patterns%)}"
+for pattern in "${macos_pattern_list[@]}"; do
+  [[ "$pattern" != ops/* ]] || continue
+  grep -Fqx "      - '$pattern'" <<<"$push_paths" \
+    || fail "ops-suite push paths omit macos_ops=true router path: $pattern"
+done
+
 PR_GATE=".github/workflows/pr-gate.yml"
 grep -q '^  pull_request:' "$PR_GATE" || fail "pr-gate has no pull_request trigger"
 grep -Fq 'if: ${{ github.event_name == '\''workflow_dispatch'\'' }}' "$PR_GATE" \
