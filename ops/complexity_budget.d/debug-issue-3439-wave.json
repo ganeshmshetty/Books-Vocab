@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3439,
+  "raise": {
+    "workflows": 14
+  },
+  "note": "issue #3439: ops-suite push.paths gains 9 macos_ops=true ios/docs routes (ios sentry wiring, UITests, pbxproj) so main pushes trigger the macOS ops job; delta is config lines, not deletable"
+}
