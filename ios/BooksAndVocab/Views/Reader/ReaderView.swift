@@ -296,11 +296,12 @@ struct ReaderView: View {
     /// 若 book.preferredNotebookId 指向已刪除或不存在的 notebook，清除綁定以避免新單字存入孤兒 notebook。
     /// 空列表代表 @Query 尚未 settle（首次啟動 / 剛登入）— 不清 bound，避免誤清仍合法的遠端 notebook。
     private func sanitizeStaleBoundNotebook() {
-        guard let boundId = book.preferredNotebookId else { return }
-        guard !liveNotebooks.isEmpty else { return }
-        if !liveNotebooks.contains(where: { $0.remoteId == boundId }) {
-            book.preferredNotebookId = nil
-        }
+        let action = Book.sanitizeAction(
+            bound: book.preferredNotebookId,
+            liveNotebookIds: Set(liveNotebooks.map(\.remoteId))
+        )
+        guard action == .clear else { return }
+        book.preferredNotebookId = nil
     }
 
     /// 強制綁定 seed：書未綁定時（新書 / 剛被 sanitize 清掉 stale 綁定）以最近使用的

@@ -59,14 +59,15 @@ struct ReaderNotebookPicker: View {
         .enableInjection()
     }
 
-    /// 已刪除 notebook 防護：若綁定的 notebook 不在可用列表中，自動清除綁定
+    /// 已刪除 notebook 防護：列表已 settle 且不含綁定 id 時才清除綁定（決策與 ReaderView 共用）。
     private func sanitizeStaleBoundNotebook() {
-        guard let boundId = book.preferredNotebookId else { return }
-        let exists = notebooks.contains { $0.remoteId == boundId }
-        if !exists {
-            book.preferredNotebookId = nil
-            persistBookBinding()
-        }
+        let action = Book.sanitizeAction(
+            bound: book.preferredNotebookId,
+            liveNotebookIds: Set(notebooks.map(\.remoteId))
+        )
+        guard action == .clear else { return }
+        book.preferredNotebookId = nil
+        persistBookBinding()
     }
 
     /// 使用者主動選擇時失敗要 toast 並讓 sheet 保持開啟；onAppear 的清理維持靜默。

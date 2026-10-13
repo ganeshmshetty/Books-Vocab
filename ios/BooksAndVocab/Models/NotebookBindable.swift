@@ -34,4 +34,21 @@ extension NotebookBindable {
     static func canSeedBinding(seed: String, liveNotebookIds: Set<String>) -> Bool {
         liveNotebookIds.contains(seed)
     }
+
+    /// onAppear / onChange 的 stale 綁定清理決策（純函式，ReaderView 與 ReaderNotebookPicker 共用）。
+    /// 未綁定、live 清單空（尚未 settle）、或清單包含綁定 id → keep；僅「已 settle 且不含綁定 id」
+    /// 才 clear。呼叫端只在 clear 時才清綁定並寫 manifest，keep 時不寫（避免把未 settle 的 nil 同步出去）。
+    static func sanitizeAction(bound: String?, liveNotebookIds: Set<String>) -> NotebookBindingSanitizeAction {
+        guard let bound else { return .keep }
+        guard !liveNotebookIds.isEmpty else { return .keep }
+        return liveNotebookIds.contains(bound) ? .keep : .clear
+    }
+}
+
+/// `NotebookBindable.sanitizeAction` 的結果。
+enum NotebookBindingSanitizeAction: Equatable {
+    /// 保留綁定，不寫 manifest。
+    case keep
+    /// notebook 列表已 settle 且不含綁定 id，清除綁定。
+    case clear
 }
