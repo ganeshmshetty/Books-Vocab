@@ -207,4 +207,17 @@ struct ReviewGradeProgressTests {
         #expect(state.positionText == "2 / 5")
         #expect(state.progressText == "0 / 5")
     }
+
+    /// The presenter state is what the view reads: the position signal must reach it (autoplay reset
+    /// in `TodayReviewPresenter` observes `state.positionText`), and the header must stay graded.
+    @Test func presenterStateCarriesThePositionSignalAlongsideTheGradedHeader() {
+        let state = makeState(cardCount: 5)
+        state.scoring.record(.remembered, at: 0)
+        #expect(state.presenterState.progressText == "1 / 5")
+        #expect(state.presenterState.positionText == "1 / 5")
+
+        state.goNext()
+        #expect(state.presenterState.positionText == "2 / 5")
+        #expect(state.presenterState.progressText == "1 / 5")
+    }
 }

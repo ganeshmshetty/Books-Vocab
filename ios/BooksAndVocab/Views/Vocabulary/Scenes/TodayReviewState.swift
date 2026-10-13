@@ -251,7 +251,8 @@ final class TodayReviewState {
             autoplaySoundEnabled: autoplaySoundEnabled,
             temporaryDetailCardKey: temporaryDetail.detailedCardKey,
             linkExpansion: linkExpansion,
-            keyboardGrade: keyboardGrade
+            keyboardGrade: keyboardGrade,
+            positionText: positionText
         )
     }
 
