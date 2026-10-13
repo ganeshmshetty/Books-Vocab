@@ -1,0 +1,9 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3331,
+  "raise": {
+    "ops": 272,
+    "workflows": 235
+  },
+  "note": "ios-quality build-once: one build-for-testing job shared by unit and ui-smoke (#3331); r2 adds the --json stdout fence, the SwiftPM clone-root source check and their contract tests (ops +53 over r1)"
+}

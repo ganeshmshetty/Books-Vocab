@@ -277,6 +277,7 @@ run_one() {
       "$UV_BIN" run --no-project --python 3.13 --with pytest pytest -q \
         ops/tests/test_agent_review_contract.py &&
       ./ops/tests/test_github_workflows.sh &&
+      ./ops/tests/test_ios_build_once_contract.sh &&
       ./ops/tests/test_ops_suite_bootstrap.sh &&
       ./ops/tests/test_ci_scope_router.sh &&
       ./ops/tests/test_ci_macos_queue_probe.sh &&
