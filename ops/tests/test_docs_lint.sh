@@ -249,6 +249,13 @@ if [ "$rc" -ne 2 ] || ! grep -q 'workflow unparsed' "$TMP/malformed.err" || grep
   cat "$TMP/malformed.err" >&2
   exit 1
 fi
+# #3344: a nonexistent merge-group workflow path is "workflow unparsed" (rc 2), never a set mismatch.
+rc=0; merge_group_contexts_match "$TMP/does-not-exist.yml" "$ci_row" 2>"$TMP/missing-wf.err" || rc=$?
+if [ "$rc" -ne 2 ] || ! grep -q 'workflow unparsed' "$TMP/missing-wf.err" || grep -q 'differ' "$TMP/missing-wf.err"; then
+  echo "missing merge-group workflow not reported as 'workflow unparsed' with rc 2 (rc=$rc, #3344)" >&2
+  cat "$TMP/missing-wf.err" >&2
+  exit 1
+fi
 # #3310: no ruby on PATH is reported as "ruby unavailable" (rc 3), never as a set mismatch.
 noruby="$TMP/noruby-bin"; mkdir -p "$noruby"
 for t in sed grep tr sort; do ln -s "$(command -v "$t")" "$noruby/$t"; done
