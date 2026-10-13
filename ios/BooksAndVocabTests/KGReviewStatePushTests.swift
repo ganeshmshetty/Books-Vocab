@@ -168,14 +168,49 @@ struct KGReviewStatePushTests {
         let stored = try #require(try ModelContext(container).fetch(FetchDescriptor<VocabularyEntry>()).first)
         #expect(stored.pendingReviewModePush == false)
     }
+
+    /// Runs one pending review-mode push where every PATCH answers `status`, and
+    /// returns whether the card still carries the pending flag afterwards.
+    private func pendingFlagAfterPush(rejectedWith status: Int) async throws -> Bool {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "deft", translation: "t", context: "c", bookTitle: "b")
+        entry.markSynced()
+        entry.kgCardId = "c1"
+        entry.requestReviewMode(.production)
+        context.insert(entry)
+        try context.save()
+
+        let transport = ReviewPushRecordingTransport(responseBody: Self.cardResponseJSON, everyRequestStatus: status)
+        try await makeService(transport).pushPendingReviewModes(container: container)
+
+        let stored = try #require(try ModelContext(container).fetch(FetchDescriptor<VocabularyEntry>()).first)
+        return stored.pendingReviewModePush
+    }
+
+    /// A deterministic 4xx is the server's final answer for this card. Its flag must
+    /// clear, or the pull keeps skipping the card forever (#3330).
+    @Test func deterministic4xxRejectionClearsThePendingReviewModeFlag() async throws {
+        #expect(try await pendingFlagAfterPush(rejectedWith: 400) == false)
+        #expect(try await pendingFlagAfterPush(rejectedWith: 422) == false)
+    }
+
+    /// 401 (session) and 429 (rate limit) are not a verdict on the card: the flag stays
+    /// pending so the next sync retries.
+    @Test func sessionAndRateLimitFailuresKeepThePendingReviewModeFlag() async throws {
+        #expect(try await pendingFlagAfterPush(rejectedWith: 401) == true)
+        #expect(try await pendingFlagAfterPush(rejectedWith: 429) == true)
+    }
 }
 
 /// Recording transport for the review-state PATCH. `onRequest` runs inside the
 /// request, which is how a test lands a review while the batch is in flight.
+/// `everyRequestStatus` rejects every request with that status code.
 private final class ReviewPushRecordingTransport: KGHTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private let responseBody: String
     private let failingRequestNumber: Int?
+    private let everyRequestStatus: Int?
     private var recorded: [URLRequest] = []
     private var hook: (@Sendable (Int) -> Void)?
 
@@ -186,9 +221,10 @@ private final class ReviewPushRecordingTransport: KGHTTPTransport, @unchecked Se
         set { lock.withLock { hook = newValue } }
     }
 
-    init(responseBody: String, failingRequestNumber: Int? = nil) {
+    init(responseBody: String, failingRequestNumber: Int? = nil, everyRequestStatus: Int? = nil) {
         self.responseBody = responseBody
         self.failingRequestNumber = failingRequestNumber
+        self.everyRequestStatus = everyRequestStatus
     }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
@@ -197,10 +233,11 @@ private final class ReviewPushRecordingTransport: KGHTTPTransport, @unchecked Se
             return (recorded.count, hook)
         }
         observer?(number)
-        let failing = number == failingRequestNumber
+        let failing = number == failingRequestNumber || everyRequestStatus != nil
+        let status = everyRequestStatus ?? (failing ? 422 : 200)
         let url = try #require(request.url)
         let response = try #require(
-            HTTPURLResponse(url: url, statusCode: failing ? 422 : 200, httpVersion: nil, headerFields: nil)
+            HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)
         )
         return (Data((failing ? #"{"detail":"bad"}"# : responseBody).utf8), response)
     }

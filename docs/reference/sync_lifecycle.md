@@ -176,7 +176,7 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 - **推送確認（不變式，#2483）**：`pushReviewStates` 以 1000 筆分批 `PATCH`（後端單請求上限 5000，超過整請求 422）。每批成功後只確認「該批送出時」的 `lastReviewedAt ?? dateAdded`，不再以 wall-clock 邊界確認；推送途中才寫入的複習保持 dirty，下次同步重送。某批失敗時，已成功的批次保持確認、其餘保持 dirty。
 - 非 override 仍走 LWW：server 較新只取 counts 的 max；覆寫不取 max，否則 reset 無法落地。
 - **本地待推送意圖（不變式，#2042）**：`VocabularyEntry.pendingReviewModePush`（改複習方向，T13）與 `pendingReviewProgressReset`（重設進度，T14）為持久化旗標，預設 false。
-  - mode：`pushReviewStates` 先以 `PATCH api/vocab/{word}/preferences`（僅 `{"mode": ...}`）送出，只對已有 server 卡（`kgCardId`）的列；確認後才清旗標，且僅在本地 mode 未再被改動時清除。
+  - mode：`pushReviewStates` 先以 `PATCH api/vocab/{word}/preferences`（僅 `{"mode": ...}`）送出，只對已有 server 卡（`kgCardId`）的列；確認後才清旗標，且僅在本地 mode 未再被改動時清除；server 回 deterministic 4xx（401／429 除外）為該卡終態，同樣清旗標，避免永久阻擋 pull（#3330）。
   - progress reset：`buildReviewStatePushPayload` 對此旗標的列一律送（即使 watermark 已超前）並帶 `override: true`；確認（`markReviewStatesPushed`）且 `lastReviewedAt` 未再變動時才清旗標。
   - pull：旗標為真時不覆寫 `reviewMode`、不執行 `mergeReviewState`，本地意圖優先，直到確認為止。
 - 同批次同卡多筆合併時，較新的 override 保留其 counts，不與較舊的一般 entry 取 max。

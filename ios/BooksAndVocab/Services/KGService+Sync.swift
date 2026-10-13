@@ -121,9 +121,10 @@ extension KGService {
         return (totalUpdated, totalSkipped)
     }
 
-    /// Sends locally changed review modes through the preferences PATCH (#2042, T13). A card the server
-    /// rejects stays pending for the next sync, so one bad card cannot block the review-state push.
-    /// Cancellation still propagates.
+    /// Sends locally changed review modes through the preferences PATCH (#2042, T13). A transient failure
+    /// (network, 5xx, 401, 429) leaves the card pending for the next sync. A deterministic 4xx is the
+    /// server's final verdict on this card: its flag clears so it cannot block the pull (#3330).
+    /// One bad card cannot block the rest of the push. Cancellation still propagates.
     func pushPendingReviewModes(container: ModelContainer) async throws {
         let actor = BackgroundSyncActor(modelContainer: container)
         for item in try await actor.buildReviewModePushPayload() {
@@ -138,6 +139,9 @@ extension KGService {
                 try await actor.markReviewModePushed(item)
             } catch let error as CancellationError {
                 throw error
+            } catch KGError.httpError(let status, _) where (400..<500).contains(status) && status != 401 && status != 429 {
+                AppLog.kg.warning("pushPendingReviewModes rejected '\(item.word)' with HTTP \(status), clearing pending mode")
+                try await actor.markReviewModePushed(item)
             } catch {
                 AppLog.kg.warning("pushPendingReviewModes failed '\(item.word)': \(error.localizedDescription)")
             }
