@@ -451,6 +451,51 @@ struct SharedDeckCopyControllerTests {
         #expect(registry.controller(for: "d1", owner: "A") === a, "A's own pending intent survives B's lookup")
     }
 
+    // MARK: - Pending intent survives app relaunch (#3423)
+
+    /// 行程在回應前被殺：新 registry（模擬重啟）必須以同一把 key 與名稱接回，retry 沿用同一把
+    /// key 讓 server 冪等短路。memory-only key 會在重啟後重新生成 UUID，導致重複複製。
+    @Test func relaunch_reuses_persisted_idempotency_key_for_pending_copy() async throws {
+        let suite = "SharedDeckCopyIntentTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = UserDefaultsSharedDeckCopyIntentStore(defaults: defaults)
+
+        let beforeKill = SharedDeckCopyRegistry(intents: store)
+        let c1 = beforeKill.controller(for: "d1", owner: "A")
+        beforeKill.track(c1, for: "d1")
+        let lost = FakeDeckCopier([.failure(URLError(.networkConnectionLost))])
+        await c1.copy(deckId: "d1", notebookName: "GRE 3000", using: lost)
+        let firstKey = try #require(lost.receivedKeys.first)
+
+        let afterRelaunch = SharedDeckCopyRegistry(intents: store)
+        let c2 = afterRelaunch.controller(for: "d1", owner: "A")
+        #expect(c2.currentIdempotencyKey == firstKey, "relaunch restores the pending key")
+        #expect(c2.lastNotebookName == "GRE 3000", "relaunch restores the pending notebook name")
+
+        let retry = FakeDeckCopier([.success(response())])
+        await c2.copy(deckId: "d1", notebookName: c2.lastNotebookName, using: retry)
+        #expect(retry.receivedKeys == [firstKey], "retry after relaunch must reuse the persisted key")
+        #expect(c2.isSucceeded)
+    }
+
+    /// 持久化意圖以帳號 owner 隔離（B 不得接到 A 的 key）；success 後清除（下次複製為新意圖）。
+    @Test func persisted_intent_is_owner_scoped_and_cleared_on_success() async {
+        let store = EphemeralSharedDeckCopyIntentStore()
+        let beforeKill = SharedDeckCopyRegistry(intents: store)
+        let a = beforeKill.controller(for: "d1", owner: "A")
+        beforeKill.track(a, for: "d1")
+        await a.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+
+        let afterRelaunch = SharedDeckCopyRegistry(intents: store)
+        #expect(afterRelaunch.controller(for: "d1", owner: "B").currentIdempotencyKey == nil, "another account never inherits a pending intent")
+        let resumed = afterRelaunch.controller(for: "d1", owner: "A")
+        #expect(resumed.currentIdempotencyKey != nil)
+
+        await resumed.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.success(response())]))
+        #expect(store.load().isEmpty, "success clears the persisted intent")
+    }
+
     /// `@MainActor` (nested types don't inherit the suite's isolation) so
     /// `continuation` is never touched off-main; `hasStarted` flips only once the
     /// continuation exists, so `release` cannot race ahead of it.
