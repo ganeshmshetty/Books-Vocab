@@ -237,3 +237,44 @@ struct LocalDataCleanerAccountPreferenceTests {
         #expect(defaults.bool(forKey: marker))
     }
 }
+
+/// #3415: the auto-link switch is account-namespaced like the review_* family. Account A's OFF
+/// must not surface for account B (no server value applied), and A's value returns on re-login.
+struct AutoLinkAccountIsolationTests {
+    private func makeDefaults() -> UserDefaults {
+        let suite = "test.auto-link-isolation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    @Test func accountAOffDoesNotLeakIntoAccountBAndRestoresOnReturn() {
+        let store = AutoLinkSettingsStore(defaults: makeDefaults())
+        let lifecycle = AutoLinkAccountPreferenceLifecycle(store: store)
+
+        lifecycle.activate(accountID: "account-a")
+        store.setEnabled(false, updatedAt: 100.0)
+        lifecycle.suspend()
+        lifecycle.activate(accountID: "account-b")
+        #expect(store.isEnabled == true)
+        #expect(store.updatedAt == nil)
+
+        lifecycle.suspend()
+        lifecycle.activate(accountID: "account-a")
+        #expect(store.isEnabled == false)
+        #expect(store.updatedAt == 100.0)
+    }
+
+    @Test func legacyGuestValueIsAdoptedOnlyByTheFirstAccount() {
+        let defaults = makeDefaults()
+        defaults.set(false, forKey: "auto_link_enabled")
+        let store = AutoLinkSettingsStore(defaults: defaults)
+        let lifecycle = AutoLinkAccountPreferenceLifecycle(store: store)
+
+        lifecycle.activate(accountID: "account-a")
+        #expect(store.isEnabled == false)
+        lifecycle.suspend()
+        lifecycle.activate(accountID: "account-b")
+        #expect(store.isEnabled == true)
+    }
+}

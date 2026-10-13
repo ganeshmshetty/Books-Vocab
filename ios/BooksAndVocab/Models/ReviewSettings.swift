@@ -826,12 +826,14 @@ protocol AccountPreferenceLifecycle {
 
 struct AccountPreferenceLifecycleCoordinator: AccountPreferenceLifecycle {
     var layoutStore: ReviewCardLayoutStore = .shared
+    var autoLink = AutoLinkAccountPreferenceLifecycle()
 
     func activate(accountID: String?) {
         layoutStore.activateAccount(accountID)
         ReviewSettingsStore.shared.activateAccount(accountID)
         ActiveNotebookStore.shared.activateAccount(accountID)
         TranslationLanguage.activateAccount(accountID)
+        autoLink.activate(accountID: accountID)
     }
 
     func suspend() {
@@ -839,6 +841,7 @@ struct AccountPreferenceLifecycleCoordinator: AccountPreferenceLifecycle {
         ReviewSettingsStore.shared.suspendForAccountBoundary()
         ActiveNotebookStore.shared.suspendForAccountBoundary()
         TranslationLanguage.suspendForAccountBoundary()
+        autoLink.suspend()
     }
 }
 
