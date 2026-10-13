@@ -81,6 +81,61 @@ struct PodcastDownloadCleanupTests {
         #expect(!FileManager.default.fileExists(atPath: finalURL.path))
         #expect(episode.localAudioPath == nil)
     }
+
+    /// #3502: a re-download whose save fails must not leave the persisted row
+    /// pointing at an mp3 the failed attempt already deleted. The previous file
+    /// is kept aside and restored, so disk and the stored record keep agreeing.
+    @MainActor
+    @Test func failedRedownloadSaveRestoresPreviousFileForPersistedPath() async throws {
+        let container = try ModelContainer(
+            for: PodcastEpisode.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        )
+        let remoteId = "cleanup-redownload-fail-\(UUID().uuidString)_ep_01"
+        // Episode without a series is filed under `unknown/` by commit.
+        let finalURL = PodcastDownloadManager.downloadsRoot()
+            .appendingPathComponent("unknown", isDirectory: true)
+            .appendingPathComponent("\(remoteId).mp3")
+        try FileManager.default.createDirectory(
+            at: finalURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let previousBytes = Data([0x49, 0x44, 0x33, 0x01])
+        try previousBytes.write(to: finalURL)
+        defer { try? FileManager.default.removeItem(at: finalURL) }
+
+        let episode = PodcastEpisode(remoteId: remoteId, episodeNumber: 1, title: "Pilot", durationSec: 42)
+        episode.localAudioPath = finalURL.path
+        container.mainContext.insert(episode)
+        try container.mainContext.save()
+
+        let manager = PodcastDownloadManager()
+        manager.configure(modelContainer: container, podcastEnabled: true)
+        manager.saveContext = { _ in throw CocoaError(.fileWriteUnknown) }
+
+        let taskId = 920_302
+        let task = CleanupStubDownloadTask(identifier: taskId)
+        manager.beginTracking(task, remoteId: remoteId)
+
+        let location = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cleanup-location-\(UUID().uuidString).tmp")
+        try Data([0x49, 0x44, 0x33, 0x02]).write(to: location)
+
+        manager.urlSession(URLSession.shared, downloadTask: task, didFinishDownloadingTo: location)
+        var remaining = 200
+        while manager.failed[remoteId] == nil, remaining > 0 {
+            await Task.yield()
+            remaining -= 1
+        }
+
+        #expect(manager.failed[remoteId] != nil)
+        // The persisted row is read through a fresh context, not the mutated instance.
+        let persisted = try ModelContext(container).fetch(FetchDescriptor<PodcastEpisode>(
+            predicate: #Predicate { $0.remoteId == remoteId }
+        )).first
+        #expect(persisted?.localAudioPath == finalURL.path)
+        let bytesOnDisk = try? Data(contentsOf: finalURL)
+        #expect(bytesOnDisk == previousBytes)
+    }
 }
 
 /// Minimal `URLSessionDownloadTask` stub: nil response is treated as usable
