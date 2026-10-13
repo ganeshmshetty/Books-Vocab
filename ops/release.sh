@@ -184,8 +184,9 @@ acquire_release_lock() {
     echo "  release lock acquired: ${dir}" >&2
     return 0
   fi
-  owner=""
-  [[ -f "$dir/owner" ]] && owner="$(<"$dir/owner")"
+  # holder 的 release_lock_cleanup 可能在測試與讀取之間刪掉 owner；讀失敗必須
+  # 落到下面的 refusal，不能在 set -e 下被讀檔錯誤取代。
+  owner="$(cat "$dir/owner" 2>/dev/null || true)"
   err "release lock 已被占用：${dir}${owner:+（${owner//$'\n'/; }）}；拒絕平行 release/resubmit/finalize。確認持有者已退出後再重試。"
 }
 

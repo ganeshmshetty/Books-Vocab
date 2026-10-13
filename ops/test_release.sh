@@ -800,6 +800,35 @@ wait "$lock_first_pid" || lock_first_rc=$?
   && ok "shared release lock prevents a concurrent duplicate candidate" \
   || fail_t "concurrent release was not serialized: first=$lock_first_rc second=$lock_second_out"
 
+# 15c.4. A held lock whose owner file is absent must still refuse as a lock.
+fx_noowner="$TMP4/release-lock-noowner"; remote_noowner="$TMP4/release-lock-noowner.git"
+make_ios_release_fixture "$fx_noowner" "$remote_noowner"
+mkdir "$fx_noowner/.git/kg-release.lock"
+noowner_rc=0
+noowner_out="$(bash "$fx_noowner/ops/release.sh" release ios 2.0.1 --yes 2>&1)" || noowner_rc=$?
+[[ "$noowner_rc" -ne 0 \
+   && "$noowner_out" == *"release lock 已被占用"* \
+   && "$noowner_out" != *"No such file or directory"* ]] \
+  && ok "lock dir without owner file refuses with the lock message" \
+  || fail_t "owner-less lock did not refuse cleanly: rc=$noowner_rc out=$noowner_out"
+
+# 15c.5. An owner file that cannot be read at refusal time (the race where the
+#      holder's cleanup removes it between the test and the read) must still
+#      fall through to the lock refusal, not abort under set -e.
+fx_unreadable="$TMP4/release-lock-unreadable"; remote_unreadable="$TMP4/release-lock-unreadable.git"
+make_ios_release_fixture "$fx_unreadable" "$remote_unreadable"
+mkdir "$fx_unreadable/.git/kg-release.lock"
+printf 'pid=1\nroot=x\n' >"$fx_unreadable/.git/kg-release.lock/owner"
+chmod 000 "$fx_unreadable/.git/kg-release.lock/owner"
+unreadable_rc=0
+unreadable_out="$(bash "$fx_unreadable/ops/release.sh" release ios 2.0.1 --yes 2>&1)" || unreadable_rc=$?
+[[ "$unreadable_rc" -ne 0 \
+   && "$unreadable_out" == *"release lock 已被占用"* \
+   && "$unreadable_out" != *"Permission denied"* \
+   && "$unreadable_out" != *"No such file or directory"* ]] \
+  && ok "unreadable owner file still refuses with the lock message" \
+  || fail_t "owner read error replaced the lock refusal: rc=$unreadable_rc out=$unreadable_out"
+
 # 15d. direct tag 也是外部 release marker，必須吃同一個 guard——否則 bump→tag 兩步
 #      就是一條繞過 release 的旁路。這裡用倒退版號當探針。
 fx_d="$TMP4/direct-tag"; remote_d="$TMP4/direct-tag.git"
