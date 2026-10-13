@@ -15,6 +15,7 @@ on:
       - 'ops/data_inspect.py'
       - 'ops/official_decks/**'
       - 'ops/seeds/marketing_demo.json'
+      - 'ops/podcast_preview_backfill.py'
       - 'docs/registry.yml'
       - 'docs/reference/testing/backend_strategy.md'
       - 'docs/sop/architecture.md'

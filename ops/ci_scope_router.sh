@@ -166,7 +166,7 @@ classify_path() {
   # returns, so the path still gets its normal tree selection below. Keep both
   # lists aligned with backend-quality.yml / ops-suite.yml push.paths.
   case "$path" in
-    ops/data_inspect.py|ops/official_decks/*|ops/seeds/marketing_demo.json|docs/registry.yml|docs/reference/testing/backend_strategy.md|docs/sop/architecture.md|ios/BooksAndVocab/Views/Podcast/PodcastAccess.swift)
+    ops/data_inspect.py|ops/official_decks/*|ops/seeds/marketing_demo.json|ops/podcast_preview_backfill.py|docs/registry.yml|docs/reference/testing/backend_strategy.md|docs/sop/architecture.md|ios/BooksAndVocab/Views/Podcast/PodcastAccess.swift)
       # docs/sop/architecture.md: backend test_library_assets asserts its late-PUT bound (#3440).
       backend=true
       ;;
