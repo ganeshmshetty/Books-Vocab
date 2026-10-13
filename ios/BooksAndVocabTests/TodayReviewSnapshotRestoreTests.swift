@@ -334,4 +334,31 @@ struct TodayReviewSnapshotRestoreTests {
         #expect(restored == nil)
         #expect(TodayReviewSessionSnapshotStore.load(for: userId) == nil)
     }
+
+    // MARK: - Autoplay advance persists the restore snapshot (#3410)
+
+    /// #3410：autoplay 推進卡片後，快照的 currentIndex 必須跟著前進，否則 kill 後還原會回到播放前的卡。
+    /// 走真實 autoplay loop、不 dismiss view：等 loop 的 advance 發生後直接讀快照。
+    /// 紅：main 的 advance closure 只 sync、不 persist，快照仍是 persistSnapshot() 寫入的 0。
+    @Test func autoplayAdvancePersistsSnapshotCurrentIndex() async throws {
+        cleanUp()
+        defer { cleanUp() }
+        let entries = (0..<4).map { makeEntry("autoplay-\($0)", kgCardId: "card-autoplay-\($0)") }
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: userId)
+        defer { state.stopAutoPlay() }
+        state.persistSnapshot()
+        #expect(TodayReviewSessionSnapshotStore.load(for: userId)?.currentIndex == 0)
+
+        state.toggleAutoPlay()
+        // normal 速度下每張約 6 秒（翻面 2s + 停留 4s），deadline 寬鬆以容忍 CI 負載。
+        let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+        while state.currentIndex == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        state.stopAutoPlay()
+
+        // 正控：autoplay 確實推進了 session；否則下一行的快照比對沒有意義。
+        #expect(state.currentIndex == 1)
+        #expect(TodayReviewSessionSnapshotStore.load(for: userId)?.currentIndex == state.currentIndex)
+    }
 }
