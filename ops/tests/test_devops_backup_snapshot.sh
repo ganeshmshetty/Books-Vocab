@@ -22,11 +22,19 @@ RSYNC_LOG="$TMP/rsync.log"
 : >"$RSYNC_LOG"
 
 # ssh 替身：把「遠端」shell 字串在本機執行（stdin 原樣轉給 bash），並記下每次呼叫。
+# 只放行指向本測試 fixture（SNAP_TEST_FIXTURE_ROOT）或 devops.sh 的一致快照暫存路徑
+# （/tmp/kg-db-snapshot__*）的字串；其餘（例如預設 ~/kg-data）一律拒絕、exit 97、留 tripwire 痕跡，
+# 確保 seam 永遠不會在本機對非 fixture 路徑執行任何指令。
 SSH_STUB="$TMP/bin/local-exec-ssh-stub"
 cat >"$SSH_STUB" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${SNAP_TEST_SSH_LOG:?}"
-exec bash -c "$*"
+case "$*" in
+  *"${SNAP_TEST_FIXTURE_ROOT:?}"*|*/tmp/kg-db-snapshot__*) exec bash -c "$*" ;;
+esac
+printf 'FORBIDDEN: snapshot test refuses non-fixture remote command: %s\n' "$*" >&2
+[ -n "${KG_OPS_TEST_TRIPWIRE_LOG:-}" ] && printf 'snapshot-stub deny: %s\n' "$*" >>"$KG_OPS_TEST_TRIPWIRE_LOG"
+exit 97
 STUB
 chmod 755 "$SSH_STUB"
 
@@ -81,7 +89,7 @@ run_backup() { # <data_dir> <backup_dir> <cmd>
   ROOT="$ROOT" TARGET="$2" DATA="$1" CMD="$3" DEVOPS_SOURCE_ONLY=1 \
     KG_OPS_TEST=1 KG_SERVER=test-host KG_REMOTE_DATA_DIR="$1" \
     KG_SSH_CMD="$SSH_STUB" PATH="$RSYNC_BIN:$PATH" \
-    SNAP_TEST_SSH_LOG="$SSH_LOG" SNAP_TEST_RSYNC_LOG="$RSYNC_LOG" \
+    SNAP_TEST_SSH_LOG="$SSH_LOG" SNAP_TEST_RSYNC_LOG="$RSYNC_LOG" SNAP_TEST_FIXTURE_ROOT="$TMP" \
     bash -c 'source "$ROOT/devops.sh"; BACKUP_DIR="$TARGET"; eval "$CMD"'
 }
 
