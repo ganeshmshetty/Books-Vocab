@@ -36,6 +36,7 @@
 #   ./ops/ios_test.sh --device <name|UDID>        # target a specific simulator (parallel agents)
 #   ./ops/ios_test.sh --destination '<xcodebuild destination>'   # full -destination override
 #   ./ops/ios_test.sh --configuration Release  # Release-equivalent build/test provenance
+#   ./ops/ios_test.sh --unit --xctestrun <path>   # test-without-building from products built by --prepare-cache (CI build-once, #3331); never compiles
 #   ./ops/ios_test.sh --unit --lease              # auto-claim a pool simulator for this run (parallel agents)
 #   KG_IOS_TEST_ALLOW_SHARED_SIM=1 ./ops/ios_test.sh ...         # explicit opt-out for single-machine debugging
 #   KG_IOS_TEST_MAX_EXECUTION_TIME_ALLOWANCE=<seconds> ./ops/ios_test.sh --ui ... # bounded per-test timeout
@@ -86,6 +87,7 @@ SPECIFIC_TESTS=()
 LIST_ONLY=0
 TEST_SCHEME="BooksAndVocab"
 TEST_CACHE_ACTION=""
+XCTESTRUN_OVERRIDE=""   # --xctestrun <path>: test-without-building from products another job built (#3331)
 JSON_MODE=0
 UI_LAUNCH_PROFILE="${KG_IOS_TEST_UI_LAUNCH_PROFILE:-}"
 VISUAL_CAPTURE_ENABLED="${KG_IOS_VISUAL_CAPTURE:-0}"
@@ -199,6 +201,7 @@ while [[ $# -gt 0 ]]; do
     --lease) AUTO_LEASE=1; shift ;;                   # claim a pool simulator for this run (parallel agents)
     --list) LIST_ONLY=1; shift ;;   # dry-run: print resolved -only-testing flags, no xcodebuild
     --prepare-cache) TEST_CACHE_ACTION="prepare"; shift ;;
+    --xctestrun) XCTESTRUN_OVERRIDE="${2:?--xctestrun needs a path to a built .xctestrun}"; shift 2 ;;
     --cache-status) TEST_CACHE_ACTION="status"; shift ;;
     --clean-cache) TEST_CACHE_ACTION="clean"; shift ;;
     --json) JSON_MODE=1; shift ;;
@@ -602,6 +605,25 @@ if [[ -n "$TEST_CACHE_ACTION" && ( "$LIST_ONLY" -eq 1 || -n "$GREP_PATTERN" || -
   echo "[ios_test] error: cache actions cannot be combined with --list, --file, --grep, or specific tests" >&2
   exit 1
 fi
+
+# --xctestrun (CI build-once, #3331): test-without-building from products another job
+# built with --prepare-cache. Every refusal happens here, before the simulator, the
+# build lock or xcodebuild, and this path never compiles.
+validate_xctestrun_override() {
+  if [[ "$LIST_ONLY" -eq 1 || -n "$TEST_CACHE_ACTION" || "$LAUNCH_BENCHMARK" -eq 1 ]]; then
+    echo "[ios_test] error: --xctestrun cannot be combined with --list, --launch-benchmark, or cache actions" >&2
+    exit 1
+  fi
+  if [[ ! -f "$XCTESTRUN_OVERRIDE" ]]; then
+    echo "[ios_test] error: --xctestrun file not found: $XCTESTRUN_OVERRIDE" >&2
+    exit 1
+  fi
+  if ! ios_test_cached_products_ready "$XCTESTRUN_OVERRIDE"; then
+    echo "[ios_test] error: --xctestrun products are incomplete for scope=$TEST_SCOPE configuration=$CONFIGURATION sdk=$(ios_test_sdk_suffix): $XCTESTRUN_OVERRIDE" >&2
+    exit 1
+  fi
+}
+[[ -z "$XCTESTRUN_OVERRIDE" ]] || validate_xctestrun_override
 
 if [[ -n "$TEST_FILE" ]]; then
   if [[ "$TEST_FILE" = /* ]]; then
@@ -2002,6 +2024,7 @@ DERIVED_DATA_ROOT="$(ios_test_derived_data_root)"
 # so a concurrent builder's eviction never removes products mid-read.
 [[ -d "$DERIVED_DATA_ROOT" ]] && touch "$DERIVED_DATA_ROOT" 2>/dev/null || true
 XCTESTRUN_PATH="$(ios_test_find_xctestrun "$DERIVED_DATA_ROOT" || true)"
+[[ -z "$XCTESTRUN_OVERRIDE" ]] || XCTESTRUN_PATH="$XCTESTRUN_OVERRIDE"
 while :; do
   # A retry/rebuild is a new attempt; a timeout reason must not leak into its
   # final verdict if the later attempt fails for another reason.
@@ -2015,7 +2038,13 @@ while :; do
   set +e
   BUILD_FOR_TESTING_MS=0
   TEST_INVOCATION_MS=0
-  if ios_test_cache_is_complete "$XCTESTRUN_PATH"; then
+  if [[ -n "$XCTESTRUN_OVERRIDE" ]]; then
+    # Prebuilt CI products (#3331): test-without-building only. This run has no build
+    # inputs to rebuild from, so a failure surfaces as a failure and never compiles.
+    CACHE_STATUS="hit"
+    run_xcodebuild_test_without_building_once "$XCTESTRUN_PATH"
+    EXIT_CODE=$?
+  elif ios_test_cache_is_complete "$XCTESTRUN_PATH"; then
     CACHE_STATUS="hit"
     run_xcodebuild_test_without_building_once "$XCTESTRUN_PATH"
     EXIT_CODE=$?
