@@ -203,6 +203,9 @@ struct WordEditSheet: View {
         // 終態拒收的 edit 不會被 sync 重新排入，必須由這裡重新排入（T12，#3207）。
         if entry.isSynced || entry.isRejectedEdit {
             entry.queueEdit()
+        } else if entry.isRejectedAdd {
+            // 終態拒收的 add 同樣不會被 sync 重送；使用者修改後重新排入 pending add（#3412）。
+            entry.restorePendingEntry()
         }
 
         do {
