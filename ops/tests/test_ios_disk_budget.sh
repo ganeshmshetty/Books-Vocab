@@ -165,6 +165,10 @@ grep -q 'guard --refresh' <<<"$lane_output" \
   && ok "diagnostic points at the refresh command" || bad "diagnostic refresh hint missing: $lane_output"
 
 echo "── inline refresh clears a stale lane block ──"
+# Refresh resolves its workspace from git (or KG_DISK_GUARD_WORKSPACE); pin a
+# scratch root so these cases pass in a non-git copy of ops/ as well as a checkout.
+refresh_root="$TMP/refresh-root"
+mkdir -p "$refresh_root"
 fake_tick="$TMP/fake_tick.sh"
 cat > "$fake_tick" <<'EOF'
 #!/usr/bin/env bash
@@ -176,7 +180,7 @@ fake_tick_ok="$TMP/fake_tick_ok.sh"
 cp "$fake_tick" "$fake_tick_ok"
 cp "$lane_block_state" "$TMP/lane-refresh-guard.json"
 refresh_rc=0
-refresh_output="$(KG_IOS_DISK_GUARD_STATE="$TMP/lane-refresh-guard.json" KG_IOS_DISK_GUARD_TICK="$fake_tick" \
+refresh_output="$(KG_DISK_GUARD_WORKSPACE="$refresh_root" KG_IOS_DISK_GUARD_STATE="$TMP/lane-refresh-guard.json" KG_IOS_DISK_GUARD_TICK="$fake_tick" \
   /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state test 1" 2>&1)" || refresh_rc=$?
 [[ "$refresh_rc" -eq 0 ]] && ok "stale lane block is cleared by inline refresh" || bad "inline refresh exit=$refresh_rc: $refresh_output"
 [[ "$(cat "$TMP/lane-refresh-guard.json.lockheld" 2>/dev/null)" == "1" ]] \
@@ -186,7 +190,7 @@ echo "── lock-free (early) refresh never claims the build lock ──"
 rm -f "$TMP/lane-refresh-guard.json.lockheld"
 cp "$lane_block_state" "$TMP/lane-refresh-guard.json"
 nolock_rc=0
-KG_IOS_DISK_GUARD_STATE="$TMP/lane-refresh-guard.json" KG_IOS_DISK_GUARD_TICK="$fake_tick_ok" \
+KG_DISK_GUARD_WORKSPACE="$refresh_root" KG_IOS_DISK_GUARD_STATE="$TMP/lane-refresh-guard.json" KG_IOS_DISK_GUARD_TICK="$fake_tick_ok" \
   /bin/bash -c "source '$LIB'; kg_ios_disk_guard_early_verdict test" >/dev/null 2>&1 || nolock_rc=$?
 [[ "$nolock_rc" -eq 0 ]] && ok "early verdict still clears a stale lane block" || bad "early verdict exit=$nolock_rc"
 [[ "$(cat "$TMP/lane-refresh-guard.json.lockheld" 2>/dev/null)" == "0" ]] \
@@ -199,7 +203,7 @@ exit 0
 EOF
 cp "$lane_block_state" "$TMP/lane-still-guard.json"
 still_rc=0
-still_output="$(KG_IOS_DISK_GUARD_STATE="$TMP/lane-still-guard.json" KG_IOS_DISK_GUARD_TICK="$fake_tick" \
+still_output="$(KG_DISK_GUARD_WORKSPACE="$refresh_root" KG_IOS_DISK_GUARD_STATE="$TMP/lane-still-guard.json" KG_IOS_DISK_GUARD_TICK="$fake_tick" \
   KG_IOS_DISK_LANE_USAGE_STATE="$lane_state" \
   /bin/bash -c "source '$LIB'; kg_ios_disk_budget_guard_state test" 2>&1)" || still_rc=$?
 [[ "$still_rc" -eq 77 ]] && ok "unresolved block still exits 77 after one refresh" || bad "still-block exit=$still_rc"
@@ -385,7 +389,7 @@ for early_cmd in "test --lease" "build"; do
   cp "$lane_block_state" "$TMP/early-refresh-guard.json"
   tick_rc=0
   # shellcheck disable=SC2086
-  KG_IOS_DISK_GUARD_STATE="$TMP/early-refresh-guard.json" KG_IOS_DISK_LANE_USAGE_STATE="$lane_state" \
+  KG_DISK_GUARD_WORKSPACE="$refresh_root" KG_IOS_DISK_GUARD_STATE="$TMP/early-refresh-guard.json" KG_IOS_DISK_LANE_USAGE_STATE="$lane_state" \
     KG_IOS_DISK_GUARD_TICK="$record_tick" KG_TEST_TICK_RECORD="$tick_record" \
     KG_IOS_BUILD_LOCK_FILE="$early_lock" KG_IOS_SIM_LEASE_ROOT="$early_leases" \
     KG_IOS_VERDICT_FILE="$early_verdict" "$ROOT/ops/ios_ops.sh" $early_cmd >/dev/null 2>&1 || tick_rc=$?
