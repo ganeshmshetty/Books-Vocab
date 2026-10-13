@@ -673,3 +673,28 @@ class TestUserDeletePrefixSweepBestEffort:
         assert rc == 0
         assert reported == []
         assert payload["result"]["sweep_incomplete"] is False
+
+
+# ── _sweep_quarantine: failed leftover removal is reported, not silent (#3574) ──
+
+
+class TestSweepQuarantineReportsFailure:
+    def test_rmtree_failure_is_reported_and_does_not_abort(self, tmp_path, monkeypatch):
+        batch = tmp_path / ".deleting" / "stale"
+        batch.mkdir(parents=True)
+        reported: list[tuple[BaseException, str]] = []
+
+        def recorder(exc, *, context, tags=None):
+            reported.append((exc, context))
+            return True
+
+        def failing_rmtree(*_args, **_kwargs):
+            raise OSError("device busy")
+
+        monkeypatch.setattr(user_cmd.shutil, "rmtree", failing_rmtree)
+        monkeypatch.setattr(user_cmd, "capture_handled", recorder, raising=False)
+
+        user_cmd._sweep_quarantine(tmp_path)
+
+        assert [context for _exc, context in reported] == ["account_erasure.quarantine_sweep"]
+        assert isinstance(reported[0][0], OSError)
