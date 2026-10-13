@@ -94,10 +94,14 @@ iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performC
 ### 撤銷尚未送出的刪除（SyncView「還原」）
 
 1. `pending + delete` 列以 `VocabularyEntry.undoQueuedDelete()` 撤銷
-2. `kgCardId` 非空（server 已確認持有卡）：排入刪除前為未送出的編輯（`actionBeforeDeleteRaw == edit`）→ `pending + edit`，保留編輯內容待上傳（#3059 (5)，不得 `markSynced` 丟掉編輯）；否則 → `synced + add`。`queueDelete` 只在列尚非 delete 且排入前為未送出的 edit（pending 或可重試的 failed）時記錄 `actionBeforeDeleteRaw = edit`；被 server 拒收的 edit（T12 終態）不記錄，撤銷後不重送被拒內容；重複排入不覆寫
+2. `kgCardId` 非空（server 已確認持有卡）：
+   - 排入刪除前為被 server 拒收的 edit（`rejectedReason != nil`，T12 終態）→ `failed + edit`，保留 `rejectedReason`，不重送被拒內容（#3279，不得 `markSynced`）。
+   - 排入刪除前為未送出的編輯（`actionBeforeDeleteRaw == edit`）→ `pending + edit`，保留編輯內容待上傳（#3059 (5)，不得 `markSynced` 丟掉編輯）。
+   - 否則 → `synced + add`。
+   `queueDelete` 只在列尚非 delete 且排入前為未送出的 edit（pending 或可重試的 failed）時記錄 `actionBeforeDeleteRaw = edit`；被拒收的 edit 保留 `rejectedReason` 而不記錄為可重送；重複排入不覆寫。送出中（in-flight）的 edit 被刪除後才收到 4xx，`markEditRejected` 把拒收寫到刪除列的 `rejectedReason`、清除 `actionBeforeDeleteRaw`，刪除意圖保留（#3279）
 3. `kgCardId` 為空（server 從未確認，例如上傳中的新增被刪）→ `pending + add`，下一輪 sync 上傳；**不得**變成 `synced`（synced 無 server 卡會在 full pull 的 orphan cleanup 被刪，#2484）
 4. 進行中（in-flight）的列不可撤銷（I3）：撤銷為 no-op、列保持 `pending + delete`，由回應決定去留（deleted／not_found 硬刪、failed 保留）；sync 返回後仍存在的 delete 列才可撤銷。`applyBatchDeleteResponse` 與逐卡 fallback 的 `syncAction == .delete` 守門保留作防禦
-5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T11）
+5. 完整轉移表見 `VocabularyEntry` 的 Outbox 狀態機註解（T1–T14）
 
 ### 雲端資料拉回本地
 
@@ -171,6 +175,10 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 - `ReviewStateEntry.override = true`（`PATCH /api/vocab/review`）是進度重設指令：`review_count` / `lapse_count` 原樣寫入、`next_review_at` 取 client 值（now），**不受** `last_reviewed_at` 新舊影響，server 較新時仍套用（#2042）。兩分支（server 較新／client 較新）寫入的 override 欄位一致：`review_count`、`lapse_count`、`review_interval_hours`、`review_streak`、`last_review_feedback`、`next_review_at`，排程結果與時鐘先後無關。`last_reviewed_at` 不在此一致集合內，見本節末條。
 - **推送確認（不變式，#2483）**：`pushReviewStates` 以 1000 筆分批 `PATCH`（後端單請求上限 5000，超過整請求 422）。每批成功後只確認「該批送出時」的 `lastReviewedAt ?? dateAdded`，不再以 wall-clock 邊界確認；推送途中才寫入的複習保持 dirty，下次同步重送。某批失敗時，已成功的批次保持確認、其餘保持 dirty。
 - 非 override 仍走 LWW：server 較新只取 counts 的 max；覆寫不取 max，否則 reset 無法落地。
+- **本地待推送意圖（不變式，#2042）**：`VocabularyEntry.pendingReviewModePush`（改複習方向，T13）與 `pendingReviewProgressReset`（重設進度，T14）為持久化旗標，預設 false。
+  - mode：`pushReviewStates` 先以 `PATCH api/vocab/{word}/preferences`（僅 `{"mode": ...}`）送出，只對已有 server 卡（`kgCardId`）的列；確認後才清旗標，且僅在本地 mode 未再被改動時清除。
+  - progress reset：`buildReviewStatePushPayload` 對此旗標的列一律送（即使 watermark 已超前）並帶 `override: true`；確認（`markReviewStatesPushed`）且 `lastReviewedAt` 未再變動時才清旗標。
+  - pull：旗標為真時不覆寫 `reviewMode`、不執行 `mergeReviewState`，本地意圖優先，直到確認為止。
 - 同批次同卡多筆合併時，較新的 override 保留其 counts，不與較舊的一般 entry 取 max。
 - server 較新分支不改 `last_reviewed_at`（歷史不改寫）；client 較新分支依 LWW 接受 client 的 `last_reviewed_at`。`override` 不會被持久化或由 pull 回傳。
 

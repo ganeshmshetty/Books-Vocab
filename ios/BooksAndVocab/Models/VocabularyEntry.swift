@@ -45,6 +45,7 @@ final class VocabularyEntry {
     /// 後端對 add 的確定性拒收原因（`rejected[].reason`，#2793）。非 nil 代表終態：
     /// `failed + add` 不再自動重送（否則每次 sync 都被同一原因拒收並重報錯誤）。
     /// 任何重新排入 add 的路徑（`restorePendingEntry`）或同步成功（`markSynced`）都清除。
+    /// 例外：被拒收的 edit 排入刪除時保留此值（或刪除期間才被拒收時寫入刪除列），撤銷刪除時還原為終態拒收（#3279）。
     /// Optional，SwiftData lightweight migration 時既有 row 為 nil。
     var rejectedReason: String?
     /// 使用者把伺服器已持有的 note 清空、尚未同步（#2550）。`explanation` 此時為 nil，PATCH 須送明確的 ""
@@ -103,6 +104,15 @@ final class VocabularyEntry {
         guard let syncedAt = reviewStateSyncedAt else { return true }
         return (lastReviewedAt ?? dateAdded) > syncedAt
     }
+
+    /// 使用者在 app 內改了複習方向（#2042），尚未被 server 確認（preferences PATCH 的 `mode`）。
+    /// 為真時 pull 不覆寫 `reviewMode` 與 SRS 狀態（本地意圖優先）；確認後由 `markReviewModePushed` 清除。
+    /// Lightweight migration：既有 row 預設 false。
+    var pendingReviewModePush: Bool = false
+    /// 使用者重設進度（#2042）尚未被 server 確認。推送時帶 `override: true`，server 原樣寫入 counts（不取 max）。
+    /// 為真時 pull 不 merge review state；確認（`markReviewStatesPushed` 且 `lastReviewedAt` 未再變動）後清除。
+    /// Lightweight migration：既有 row 預設 false。
+    var pendingReviewProgressReset: Bool = false
 
     var notebookId: String = "default"
     var bookId: UUID?
@@ -248,7 +258,8 @@ extension VocabularyEntry {
     // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete；uploadSubmittedAt 保留，server 是否已建卡未知）。
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
-    // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → 排入前為未送出 edit 則 restoreUnsentEdit（edit+pending，保留編輯，#3059 (5)），否則 markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
+    // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → 排入前已被拒收（rejectedReason 非 nil）則 restoreRejectedEdit（edit+failed，不重送，#3279），
+    //     排入前為未送出 edit 則 restoreUnsentEdit（edit+pending，保留編輯，#3059 (5)），否則 markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
     // T8 edit 成功：action 仍為 edit 且送出的 translation／note 與目前列相符才 markSynced（清除 explanationClearPending）；
     //     成功前被刪者維持 delete；送出後被改寫者維持 pending edit，交下一輪上傳較新內容（#3248）。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
@@ -258,16 +269,22 @@ extension VocabularyEntry {
     // T12 edit 回 4xx（401／429 除外）：markEditRejected → edit+failed（rejectedReason 終態，不再納入 shouldUploadOnNextSync）；
     //     action 為 delete 則維持 pending delete（同 T3，#2733）。使用者再次編輯 → queueEdit 清除 rejectedReason 並重新 pending。
     //     5xx／網路錯誤維持 T4 的可重試 markSyncFailed。
+    // T13 本地改複習方向（requestReviewMode）：只排 pendingReviewModePush；mode 確認後清除（#2042）。
+    // T14 本地重設進度（resetReviewProgress）：counts 歸零、排 pendingReviewProgressReset，推送帶 override；確認後清除（#2042）。
+    //     兩者 pending 期間 pull 不覆寫 reviewMode、不 mergeReviewState（本地意圖優先，#2042）。
 
     func queueDelete() {
-        // 只記錄排入前仍未送出的 edit（pending 或可重試的 failed）。被 T12 拒收的 edit 是終態，不記錄，
-        // 否則撤銷刪除會把已被 server 4xx 拒收的內容重新排入上傳。第二次 queueDelete 不覆寫（syncAction 已是 delete）。
+        // 只記錄排入前仍未送出的 edit（pending 或可重試的 failed）為可重送。被 T12 拒收的 edit 是終態，不記為可重送，
+        // 否則撤銷刪除會把已被 server 4xx 拒收的內容重新排入上傳；它保留 rejectedReason，撤銷時還原為終態拒收（#3279）。
+        // 第二次 queueDelete 不覆寫（syncAction 已是 delete，rejectedReason 也不動）。
         if syncAction != .delete {
             actionBeforeDeleteRaw = (syncAction == .edit && shouldUploadOnNextSync) ? VocabularySyncAction.edit.rawValue : nil
+            if !isRejectedEdit {
+                rejectedReason = nil
+            }
         }
         syncAction = .delete
         syncState = .pending
-        rejectedReason = nil
     }
 
     /// A row whose server copy exists or is being created must not be hard-deleted locally:
@@ -300,8 +317,11 @@ extension VocabularyEntry {
     func undoQueuedDelete() {
         guard syncAction == .delete, !isUploadInFlight else { return }
         if hasServerCard {
-            // 排入刪除前的未送出編輯：server 卡仍是編輯前的內容，回到 pending edit 待上傳（T7，#3059 (5)）。
-            if actionBeforeDeleteRaw == VocabularySyncAction.edit.rawValue {
+            if rejectedReason != nil {
+                // 排入刪除前的 edit 已被 server 拒收（終態）：還原拒收狀態，不重送被拒內容（T7，#3279）。
+                restoreRejectedEdit()
+            } else if actionBeforeDeleteRaw == VocabularySyncAction.edit.rawValue {
+                // 排入刪除前的未送出編輯：server 卡仍是編輯前的內容，回到 pending edit 待上傳（T7，#3059 (5)）。
                 restoreUnsentEdit()
             } else {
                 markSynced()
@@ -322,6 +342,13 @@ extension VocabularyEntry {
         syncAction = .edit
         syncState = .pending
         rejectedReason = nil
+        actionBeforeDeleteRaw = nil
+    }
+
+    /// 撤銷刪除時還原終態拒收的 edit（#3279）：保留 rejectedReason，不納入 `shouldUploadOnNextSync`，不重送。
+    func restoreRejectedEdit() {
+        syncAction = .edit
+        syncState = .failed
         actionBeforeDeleteRaw = nil
     }
 
@@ -356,6 +383,12 @@ extension VocabularyEntry {
     /// 後端確定性拒收的 edit（T12）：進終態，delete 在 in-flight 期間覆寫時保留 pending delete。
     func markEditRejected(reason: String) {
         guard syncAction != .delete else {
+            // 送出中的 edit 在 in-flight 期間被刪除：拒收要記在刪除列上（rejectedReason），撤銷時才能還原為終態，
+            // 而不是退回可重送的 edit（#3279）。刪除意圖保留，syncState 維持 pending。
+            if actionBeforeDeleteRaw == VocabularySyncAction.edit.rawValue {
+                actionBeforeDeleteRaw = nil
+                rejectedReason = reason
+            }
             syncState = .pending
             return
         }
@@ -379,6 +412,27 @@ extension VocabularyEntry {
     var reviewMode: VocabularyCardMode {
         get { VocabularyCardMode(rawValue: reviewModeRaw) ?? .recognition }
         set { reviewModeRaw = newValue.rawValue }
+    }
+
+    /// 本地改複習方向（#2042）：SRS 狀態不動，只排入 mode 推送（T13）。
+    func requestReviewMode(_ mode: VocabularyCardMode) {
+        guard reviewMode != mode else { return }
+        reviewMode = mode
+        pendingReviewModePush = true
+    }
+
+    /// 本地重設進度（#2042）：counts 歸零、排程從 `now` 立即到期，排入 override 推送（T14）。
+    /// `lastReviewedAt = now` 是本次重設的 sent-instant 基準，確認時以它對齊（見 `markReviewStatesPushed`）。
+    /// server watermark 可能超前於裝置時鐘，故推送不靠 `needsReviewStatePush`，改由 `pendingReviewProgressReset` 保證送出。
+    func resetReviewProgress(now: Date) {
+        reviewIntervalHours = VocabularyReviewPolicy.initialIntervalHours
+        nextReviewAt = now
+        lastReviewedAt = now
+        reviewCount = 0
+        lapseCount = 0
+        reviewStreak = 0
+        lastReviewFeedbackRaw = -1
+        pendingReviewProgressReset = true
     }
 
     var primaryReviewExample: String? {

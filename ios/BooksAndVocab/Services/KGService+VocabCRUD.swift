@@ -75,6 +75,8 @@ protocol VocabularyContentUpdating: AnyObject {
 private struct KGCardPreferencesUpdate: Encodable {
     let reader_hidden: Bool?
     let review_excluded: Bool?
+    /// Wire value `recognition` | `production` (`CardPreferencesUpdateRequest.mode`).
+    let mode: String?
 }
 
 struct KGVocabContentUpdate: Encodable, Equatable {
@@ -141,7 +143,28 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
         reviewExcluded: Bool?,
         notebookId: String
     ) async throws -> KGCard {
-        precondition(readerHidden != nil || reviewExcluded != nil, "At least one card preference is required")
+        try await updateCardPreferences(
+            word: word,
+            readerHidden: readerHidden,
+            reviewExcluded: reviewExcluded,
+            mode: nil,
+            notebookId: notebookId
+        )
+    }
+
+    /// Partial update: a `nil` field is omitted from the wire, so the backend leaves it unchanged
+    /// and a mode-only call sends just `{"mode": ...}`. The mode change keeps SRS state (#2042).
+    func updateCardPreferences(
+        word: String,
+        readerHidden: Bool?,
+        reviewExcluded: Bool?,
+        mode: VocabularyCardMode?,
+        notebookId: String
+    ) async throws -> KGCard {
+        precondition(
+            readerHidden != nil || reviewExcluded != nil || mode != nil,
+            "At least one card preference is required"
+        )
         return try await authenticatedDecode(
             KGCard.self,
             path: "api/vocab/\(word)/preferences",
@@ -150,7 +173,8 @@ extension KGService: CardPreferenceUpdating, VocabularyContentUpdating {
             body: try JSONEncoder().encode(
                 KGCardPreferencesUpdate(
                     reader_hidden: readerHidden,
-                    review_excluded: reviewExcluded
+                    review_excluded: reviewExcluded,
+                    mode: mode?.rawValue
                 )
             )
         )

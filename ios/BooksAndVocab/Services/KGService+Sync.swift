@@ -93,6 +93,7 @@ extension KGService {
     /// Pushes dirty review states in batches and acknowledges each batch as it
     /// lands, so a later failing batch neither un-acks earlier ones nor acks itself.
     func pushReviewStates(container: ModelContainer, batchSize: Int) async throws -> (updated: Int, skipped: Int) {
+        try await pushPendingReviewModes(container: container)
         let actor = BackgroundSyncActor(modelContainer: container)
         let payload = try await actor.buildReviewStatePushPayload()
         guard !payload.isEmpty else { return (0, 0) }
@@ -118,6 +119,29 @@ extension KGService {
         }
         AppLog.kg.info("pushReviewStates: sent=\(payload.count), updated=\(totalUpdated), skipped=\(totalSkipped)")
         return (totalUpdated, totalSkipped)
+    }
+
+    /// Sends locally changed review modes through the preferences PATCH (#2042, T13). A card the server
+    /// rejects stays pending for the next sync, so one bad card cannot block the review-state push.
+    /// Cancellation still propagates.
+    func pushPendingReviewModes(container: ModelContainer) async throws {
+        let actor = BackgroundSyncActor(modelContainer: container)
+        for item in try await actor.buildReviewModePushPayload() {
+            do {
+                _ = try await updateCardPreferences(
+                    word: item.word,
+                    readerHidden: nil,
+                    reviewExcluded: nil,
+                    mode: item.mode,
+                    notebookId: item.notebookId
+                )
+                try await actor.markReviewModePushed(item)
+            } catch let error as CancellationError {
+                throw error
+            } catch {
+                AppLog.kg.warning("pushPendingReviewModes failed '\(item.word)': \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Offline KG Sync logic

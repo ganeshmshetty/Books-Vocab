@@ -1128,6 +1128,99 @@ struct BackgroundSyncActorTests {
 
     // MARK: - Push watermark
 
+    /// #2042: a local mode change not yet acknowledged is the user's intent. A pull carrying the server's
+    /// old mode and newer SRS state must neither overwrite the mode nor run the review merge.
+    @Test func pullCardsToLocal_pendingReviewModeSurvivesServerPull() async throws {
+        let container = try makeContainer()
+        let localReviewedAt = try #require(ISO8601DateFormatter().date(from: "2027-01-10T10:00:00Z"))
+        let seedContext = ModelContext(container)
+        let existing = VocabularyEntry(word: "pending", translation: "meaning-pending", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "c-pending"
+        existing.markSynced()
+        existing.lastReviewedAt = localReviewedAt
+        existing.reviewCount = 2
+        existing.requestReviewMode(.production)
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(
+            id: "c-pending", content: "pending", sourceJSON: nil,
+            lastReviewedAt: "2027-01-15T10:00:00Z", reviewCount: 9
+        )
+
+        _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
+
+        let entry = try #require(try fetchEntry(container, word: "pending"))
+        #expect(entry.reviewMode == .production)
+        #expect(entry.pendingReviewModePush)
+        #expect(entry.reviewCount == 2)
+        #expect(entry.lastReviewedAt == localReviewedAt)
+    }
+
+    /// #2042: a progress reset not yet acknowledged must survive a newer server copy with the old counts.
+    @Test func pullCardsToLocal_pendingProgressResetSurvivesServerPull() async throws {
+        let container = try makeContainer()
+        let resetAt = try #require(ISO8601DateFormatter().date(from: "2027-01-12T10:00:00Z"))
+        let seedContext = ModelContext(container)
+        let existing = VocabularyEntry(word: "reset", translation: "meaning-reset", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "c-reset"
+        existing.markSynced()
+        existing.reviewCount = 7
+        existing.resetReviewProgress(now: resetAt)
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(
+            id: "c-reset", content: "reset", sourceJSON: nil,
+            lastReviewedAt: "2027-01-15T10:00:00Z", reviewCount: 7
+        )
+
+        _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
+
+        let entry = try #require(try fetchEntry(container, word: "reset"))
+        #expect(entry.reviewCount == 0)
+        #expect(entry.pendingReviewProgressReset)
+        #expect(entry.lastReviewedAt == resetAt)
+    }
+
+    /// #2042: a progress reset is pushed with `override: true` even when the server watermark is ahead of
+    /// the device clock (the card would otherwise look acknowledged). The flag clears once that reset is acked.
+    @Test func buildReviewStatePushPayload_progressResetIsOverridePushedUntilAcknowledged() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let reset = VocabularyEntry(word: "reset", translation: "m", context: "c", bookTitle: "B")
+        reset.markSynced()
+        reset.reviewCount = 7
+        reset.reviewStateSyncedAt = now.addingTimeInterval(3600)   // server watermark ahead of device clock
+        reset.resetReviewProgress(now: now)
+        context.insert(reset)
+
+        let plain = VocabularyEntry(word: "plain", translation: "m", context: "c", bookTitle: "B")
+        plain.markSynced()
+        plain.lastReviewedAt = now
+        plain.reviewStateSyncedAt = now.addingTimeInterval(3600)
+        context.insert(plain)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let sent = try await actor.buildReviewStatePushPayload()
+
+        #expect(sent.map { $0.body["word"] as? String } == ["reset"])
+        #expect(sent.first?.body["override"] as? Bool == true)
+        #expect(sent.first?.body["review_count"] as? Int == 0)
+
+        try await actor.markReviewStatesPushed(sent)
+        let stored = try #require(try fetchEntry(container, word: "reset"))
+        #expect(stored.pendingReviewProgressReset == false)
+        #expect(try await actor.buildReviewStatePushPayload().isEmpty)
+    }
+
     /// The payload must carry only events the server has not acknowledged.
     ///
     /// Without a watermark the client re-uploaded its entire review history on

@@ -654,7 +654,8 @@ struct VocabularySyncEngineTests {
         )
 
         #expect(entry.syncAction == .delete)
-        #expect(entry.rejectedReason == nil)
+        // #3279: the 422 rejection is recorded on the delete row, so undo restores the rejected state instead of re-sending it.
+        #expect(entry.rejectedReason == "HTTP 422")
         #expect(entry.shouldUploadOnNextSync)
         #expect(entry.kgCardId == "card-1")
     }
