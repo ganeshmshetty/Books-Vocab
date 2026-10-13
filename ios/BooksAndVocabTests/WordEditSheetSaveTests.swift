@@ -106,6 +106,23 @@ struct WordEditSheetSaveTests {
         #expect(entry.shouldUploadOnNextSync)
     }
 
+    /// #3412：後端拒收（終態）的 add，使用者再次編輯必須重新排入 pending add 並清除拒收原因，否則永遠不會再送。
+    @Test func editingRejectedAddRequeuesIt() throws {
+        let entry = makeSyncedEntry()
+        entry.syncAction = .add
+        entry.syncState = .failed
+        entry.rejectedReason = "HTTP 422"
+        #expect(entry.isRejectedAdd)
+
+        try WordEditSheet.commitEdit(entry: entry, translation: "短版翻譯", explanation: "", save: {})
+
+        #expect(entry.translation == "短版翻譯")
+        #expect(entry.syncAction == .add)
+        #expect(entry.syncState == .pending)
+        #expect(entry.rejectedReason == nil)
+        #expect(entry.shouldUploadOnNextSync)
+    }
+
     /// #3248：上傳進行中的列不得被改寫；否則過期回應會把較新的內容標成 synced，新內容永遠不上傳。
     @Test func commitEditWhileUploadInFlightIsRefusedBeforeMutation() {
         let entry = makeSyncedEntry()
