@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import http.client
+import ipaddress
 import json
 import os
 import sys
 import urllib.request
+from urllib.parse import urlsplit
 
 from kg.admin_cost_summary import fold_user_summary, query_cost_rows, since_iso
 from kg.log_retention import _effective_days
@@ -15,6 +18,24 @@ from kg.quota_service import token_cost_usd
 
 _BACKEND_URL_ENV = "KG_OPS_BACKEND_URL"
 _DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
+
+
+def _backend_base_is_trusted(base: str) -> bool:
+    """ADMIN_TOKEN may only travel over https, or plaintext to a loopback host (#3570)."""
+    parts = urlsplit(base)
+    host = parts.hostname
+    if not host:
+        return False
+    if parts.scheme == "https":
+        return True
+    if parts.scheme != "http":
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _backend_token_retention_days() -> int | None:
@@ -28,11 +49,13 @@ def _backend_token_retention_days() -> int | None:
     if not token:
         return None
     base = os.getenv(_BACKEND_URL_ENV, _DEFAULT_BACKEND_URL).rstrip("/")
+    if not _backend_base_is_trusted(base):
+        return None
     req = urllib.request.Request(f"{base}/api/admin/observability", headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             days = json.loads(resp.read())["log_db_health"]["token_usage"]["retention_days"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
         return None
     return days if isinstance(days, int) and not isinstance(days, bool) else None
 

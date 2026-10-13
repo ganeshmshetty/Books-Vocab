@@ -227,7 +227,7 @@ class TestCmdCostBackendRetentionAuthority:
 
         monkeypatch.undo()  # drop the autouse stub; exercise the real helper with urlopen stubbed
         monkeypatch.setenv("ADMIN_TOKEN", "tok")
-        monkeypatch.setenv("KG_OPS_BACKEND_URL", "http://backend.test")
+        monkeypatch.setenv("KG_OPS_BACKEND_URL", "https://backend.test")
         seen = {}
 
         def fake_urlopen(req, timeout):
@@ -238,7 +238,48 @@ class TestCmdCostBackendRetentionAuthority:
 
         monkeypatch.setattr(costs.urllib.request, "urlopen", fake_urlopen)
         assert costs._backend_token_retention_days() == 30
-        assert seen == {"url": "http://backend.test/api/admin/observability", "auth": "Bearer tok"}
+        assert seen == {"url": "https://backend.test/api/admin/observability", "auth": "Bearer tok"}
+
+    def test_truncated_body_incomplete_read_falls_back_to_none(self, monkeypatch):
+        import http.client
+
+        monkeypatch.undo()
+        monkeypatch.setenv("ADMIN_TOKEN", "tok")
+        monkeypatch.setenv("KG_OPS_BACKEND_URL", "https://backend.test")
+
+        class _TruncatedResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                raise http.client.IncompleteRead(b"{")
+
+        monkeypatch.setattr(costs.urllib.request, "urlopen", lambda req, timeout: _TruncatedResp())
+        assert costs._backend_token_retention_days() is None
+
+    def test_remote_plaintext_backend_never_receives_admin_token(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.setenv("ADMIN_TOKEN", "tok")
+        monkeypatch.setenv("KG_OPS_BACKEND_URL", "http://backend.example.com")
+
+        def boom(*a, **k):
+            raise AssertionError("bearer token must not be sent to a remote plaintext base")
+
+        monkeypatch.setattr(costs.urllib.request, "urlopen", boom)
+        assert costs._backend_token_retention_days() is None
+
+    def test_loopback_plaintext_backend_is_allowed(self, monkeypatch):
+        import io
+
+        monkeypatch.undo()
+        monkeypatch.setenv("ADMIN_TOKEN", "tok")
+        monkeypatch.setenv("KG_OPS_BACKEND_URL", "http://127.0.0.1:8000")
+        body = {"log_db_health": {"token_usage": {"retention_days": 7}}}
+        monkeypatch.setattr(costs.urllib.request, "urlopen", lambda req, timeout: io.BytesIO(json.dumps(body).encode()))
+        assert costs._backend_token_retention_days() == 7
 
     def test_backend_fetch_without_admin_token_never_calls_network(self, monkeypatch):
         monkeypatch.undo()
