@@ -234,8 +234,8 @@ merge_group_contexts_match() {
   command -v ruby >/dev/null 2>&1 || { echo "ruby unavailable: cannot read $wf needs (#3310)" >&2; return 3; }
   got="$(merge_group_contexts "$2")"
   [ -n "$got" ] || { echo "merge-group row not parsed from tech_index.md CI row (#3310)" >&2; return 2; }
-  want="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["needs"].sort' "$wf" 2>/dev/null)" \
-    || { echo "workflow unparsed: cannot load $wf needs (#3329)" >&2; return 2; }
+  want="$(ruby -ryaml -e 'puts YAML.load_file(ARGV[0])["jobs"]["required"]["needs"].sort' "$wf" 2>"$TMP/merge-group-want.err")" \
+    || { echo "workflow unparsed: cannot load $wf needs (#3329)" >&2; cat "$TMP/merge-group-want.err" >&2; return 2; }
   [ "$got" = "$want" ] || { echo "tech_index.md CI row merge-group contexts differ from merge-group-required.yml needs (#3300)" >&2; return 1; }
 }
 merge_group_contexts_match .github/workflows/merge-group-required.yml "$ci_row" || exit 1
@@ -267,6 +267,9 @@ if [ "$rc" -ne 2 ] || ! grep -q 'workflow unparsed' "$TMP/malformed.err" || grep
   cat "$TMP/malformed.err" >&2
   exit 1
 fi
+# #3358: the ruby/Psych detail (line/column) must reach stderr, not only the generic "workflow unparsed" message.
+grep -Eq 'line [0-9]+' "$TMP/malformed.err" && grep -Eq 'column [0-9]+' "$TMP/malformed.err" \
+  || { echo "malformed merge-group workflow dropped the Psych line/column detail (#3358)" >&2; cat "$TMP/malformed.err" >&2; exit 1; }
 # #3344: a nonexistent merge-group workflow path is "workflow unparsed" (rc 2), never a set mismatch.
 rc=0; merge_group_contexts_match "$TMP/does-not-exist.yml" "$ci_row" 2>"$TMP/missing-wf.err" || rc=$?
 if [ "$rc" -ne 2 ] || ! grep -q 'workflow unparsed' "$TMP/missing-wf.err" || grep -q 'differ' "$TMP/missing-wf.err"; then
