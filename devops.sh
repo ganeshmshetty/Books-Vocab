@@ -656,6 +656,7 @@ rsync_progress_flags() {
 # DB）+ 快照非空且 quick_check=ok 才算成功。任一 DB 失敗即 exit 1，stage 由 trap 清掉。
 # stage 由遠端 mktemp -d 建立（0700、不可預測；同 ops/kg_backup.sh snapshot 的做法），
 # 路徑印到 stdout 第一行供本機 tar 拉回；INT/TERM/HUP 經 exit 轉成 EXIT trap 清理（#3464）。
+# symlink 形式的 *.db 也納入（#3479）：sqlite 解析到真實檔；壞掉的 symlink 開檔失敗即 exit 1，不靜默略過。
 remote_db_snapshot_script() {
   cat <<'REMOTE'
 set -euo pipefail
@@ -683,7 +684,7 @@ while IFS= read -r -d '' rel; do
   [[ "$(sqlite3 "$dir/.snap.db" 'PRAGMA quick_check' </dev/null)" == ok ]] \
     || { echo "snapshot quick_check failed: $rel" >&2; exit 1; }
   mv "$dir/.snap.db" "$dir/$(basename "$rel")"
-done < <(find . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' -type f -print0)
+done < <(find . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' \( -type f -o -type l \) -print0)
 REMOTE
 }
 

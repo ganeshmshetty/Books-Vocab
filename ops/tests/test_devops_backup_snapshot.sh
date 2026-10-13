@@ -139,6 +139,25 @@ fi
 [[ ! -s "$RSYNC_LOG" ]] || fail "migrate-run pulled data after a failed snapshot"
 pass "migrate-run aborts before pull and migration when the snapshot fails"
 
+# ── 3. #3479：symlink 的 *.db 不可被靜默漏掉 ───────────────────────────────
+# users/u1/cards.db 是指向 data 目錄外真實 DB 的 symlink；真實 DB 的 WAL-only row 必須進備份。
+LINK_REAL="$TMP/link-target"
+make_wal_fixture "$LINK_REAL"
+DATA_LINK="$TMP/remote-link"
+mkdir -p "$DATA_LINK/users/u1"
+ln -s "$LINK_REAL/users/u1/cards.db" "$DATA_LINK/users/u1/cards.db"
+OUT_LINK="$TMP/backups-link"; mkdir -p "$OUT_LINK"
+set +e
+run_backup "$DATA_LINK" "$OUT_LINK" cmd_backup >"$TMP/link.out" 2>&1
+link_rc=$?
+set -e
+(( link_rc == 0 )) || { cat "$TMP/link.out" >&2; fail "cmd_backup failed on a symlinked *.db fixture (rc=$link_rc)"; }
+link_db="$(find "$OUT_LINK" -path '*/users/u1/cards.db' -type f | head -n 1)"
+[[ -n "$link_db" ]] || fail "symlinked *.db was silently dropped from the backup"
+link_count="$(sqlite3 "$link_db" 'SELECT COUNT(*) FROM card;')"
+[[ "$link_count" == 2 ]] \
+  || fail "symlinked *.db not snapshotted (rows=$link_count, want 2): find -type f skips symlinks"
+pass "symlinked *.db is snapshotted into the backup"
 
 # ── 4. #3464：快照失敗（損毀 DB）時遠端暫存目錄必須被清掉 ────────────────────
 DATA_CORRUPT="$TMP/remote-corrupt"
