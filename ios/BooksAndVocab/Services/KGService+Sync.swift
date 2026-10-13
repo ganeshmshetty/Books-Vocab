@@ -148,7 +148,13 @@ extension KGService {
                 throw error
             } catch KGError.httpError(let status, _) where (400..<500).contains(status) && status != 401 && status != 429 {
                 AppLog.kg.warning("pushPendingReviewModes rejected '\(item.word)' with HTTP \(status), clearing pending mode")
-                try await markPushed(actor, item)
+                do {
+                    try await markPushed(actor, item)
+                } catch let error as CancellationError {
+                    throw error
+                } catch {
+                    AppLog.kg.warning("pushPendingReviewModes could not clear pending mode for '\(item.word)': \(error.localizedDescription)")
+                }
             } catch {
                 AppLog.kg.warning("pushPendingReviewModes failed '\(item.word)': \(error.localizedDescription)")
             }
