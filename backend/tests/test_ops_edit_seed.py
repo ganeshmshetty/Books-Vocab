@@ -47,6 +47,34 @@ class TestSeedReplaceWorkerLock:
         assert isinstance(exc.value.__cause__, WorkerLockHeldError)
         assert vocab_state() == before
 
+    def test_replace_commit_lock_os_error_becomes_edit_error_and_keeps_vocab(self, tmp_path, monkeypatch):
+        from kg import ops_edit_seed_commands as seed_commands
+
+        uid = _mk_user(tmp_path)
+        seed_path = tmp_path / "seed.json"
+        seed_path.write_text(json.dumps({"cards": [{"content": "saved", "meaning": "m"}]}))
+        seeded = _edit(str(tmp_path), "seed", uid, str(seed_path), "--commit", "--json")
+        assert seeded.returncode == 0, seeded.stderr
+
+        def vocab_state() -> dict[str, tuple[int, bytes]]:
+            return {
+                p.name: (p.stat().st_ino, p.read_bytes())
+                for p in sorted(_user_dir(tmp_path, uid).iterdir())
+                if p.is_file() and not p.name.endswith(("-wal", "-shm"))
+            }
+
+        before = vocab_state()
+        replace_path = tmp_path / "replace.json"
+        replace_path.write_text(json.dumps({"cards": [{"content": "fresh", "meaning": "m"}]}))
+        monkeypatch.setattr(seed_commands, "data_dir", lambda: tmp_path)
+
+        # .worker.lock 是目錄：鎖路徑開檔失敗(IsADirectoryError)，必須翻成 EditError 而非裸 traceback。
+        (tmp_path / ".worker.lock").mkdir()
+        with pytest.raises(seed_commands.EditError) as exc:
+            seed_commands.cmd_seed(Namespace(uid=uid, commit=True, json=True, replace=True, spec=str(replace_path)))
+        assert isinstance(exc.value.__cause__, OSError)
+        assert vocab_state() == before
+
 
 class TestSeedReplace:
     def _seed(self, tmp_path, uid, spec, *extra):

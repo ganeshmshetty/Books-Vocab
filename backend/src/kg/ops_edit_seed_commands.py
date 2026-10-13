@@ -710,13 +710,21 @@ def verify_seed(
     return out
 
 
+def _hold_worker_lock_or_refuse(dd: Path, *, action: str) -> int:
+    """取得 worker flock；API 持鎖或鎖路徑不可開啟時一律翻成 EditError（不漏裸 OSError）。"""
+    lock_path = dd / WORKER_LOCK_FILENAME
+    try:
+        return hold_worker_lock(lock_path)
+    except WorkerLockHeldError as e:
+        raise EditError(f"{e}；{action} 須在 API 停止後執行") from e
+    except OSError as e:
+        raise EditError(f"無法開啟 worker 鎖 {lock_path}：{e}") from e
+
+
 @contextmanager
 def _destructive_worker_lock(dd: Path) -> Iterator[None]:
     """破壞性 commit 期間持有 worker flock：執行中的 API 持鎖時拒絕（同 world-restore），鎖持續到寫入結束。"""
-    try:
-        lock_fd = hold_worker_lock(dd / WORKER_LOCK_FILENAME)
-    except WorkerLockHeldError as e:
-        raise EditError(f"{e}；破壞性 commit 須在 API 停止後執行") from e
+    lock_fd = _hold_worker_lock_or_refuse(dd, action="破壞性 commit")
     try:
         yield
     finally:
@@ -921,10 +929,7 @@ def cmd_world_restore(args: argparse.Namespace) -> int:
         return 0
 
     # 整個 data_dir 會被覆蓋：先取得 worker flock，執行中的 API 持鎖時拒絕，且鎖在還原期間持續持有。
-    try:
-        lock_fd = hold_worker_lock(dd / WORKER_LOCK_FILENAME)
-    except WorkerLockHeldError as e:
-        raise EditError(f"{e}；world-restore --commit 須在 API 停止後執行") from e
+    lock_fd = _hold_worker_lock_or_refuse(dd, action="world-restore --commit")
     try:
         pre_restore = backup_world(dd, label="pre-world-restore")
         with tempfile.TemporaryDirectory(prefix="kg-world-restore-") as tmp:
