@@ -801,6 +801,51 @@ final class TodayReviewState {
         )
     }
 
+    // MARK: - #2042 Stage 3：切換辨識⇄產出與忘記程度
+
+    /// 面板是否開啟（由 `TodayReviewView` 的 toastSheet 綁定）。狀態放在這裡，讓 Environment 動作只捕捉 state、不捕捉 view。
+    var isReviewModeSheetPresented = false
+
+    /// 目前卡的 session 基準（切換後重拍是否生效的觀測點）。
+    var currentReviewBaseline: TodayReviewSessionSnapshotStore.ReviewBaseline? {
+        guard session.currentIndex < persistence.queueBaselines.count else { return nil }
+        return persistence.queueBaselines[session.currentIndex]
+    }
+
+    /// 切換後的方向（目前卡的反向）；沒有目前卡時退回 `.production`，面板不會顯示。
+    var reviewModeSwitchTarget: VocabularyCardMode {
+        (currentEntry?.reviewMode ?? .recognition).toggledReviewMode
+    }
+
+    /// 未評分的目前卡才能切換：已評分的卡其 session 基準在 flush 時以舊值重算，調整會被覆寫。
+    var canSwitchReviewMode: Bool {
+        currentEntry != nil && !answeredSlots.contains(session.currentIndex)
+    }
+
+    /// 開面板：暫停自動播放，關閉後不自動恢復（與 layout editor 同一契約）。
+    func beginReviewModeSwitch() {
+        pauseAutoPlayForModalInterruption()
+        isReviewModeSheetPresented = true
+    }
+
+    /// 面板確認：目前卡改方向（pending mode）並依拉桿套用進度覆寫（pending override），
+    /// 再重拍未評分卡的 session 基準，之後評分與持久化快照都以新值為準。
+    @discardableResult
+    func applyReviewModeSwitch(level: Double, initialIntervalHours: Double, now: Date) -> Bool {
+        guard canSwitchReviewMode, let entry = currentEntry else { return false }
+        entry.requestReviewMode(reviewModeSwitchTarget)
+        let adjustment = ReviewProgressAdjustment.forgetting(
+            level: level,
+            currentIntervalHours: entry.reviewIntervalHours,
+            initialIntervalHours: initialIntervalHours
+        )
+        entry.applyReviewProgressAdjustment(adjustment, now: now, initialIntervalHours: initialIntervalHours)
+        syncQueueMetadata(keepingBaselinesAt: answeredSlots)
+        rebuildCacheForEntry(entry)
+        persistSnapshot()
+        return true
+    }
+
     func persistSnapshot() {
         persistence.persistSnapshot(
             sessionStartTime: sessionStartTime,

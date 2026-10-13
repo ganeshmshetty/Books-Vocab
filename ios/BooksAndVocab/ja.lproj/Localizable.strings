@@ -1359,6 +1359,13 @@
 "todayReview.card.temporaryDetail.show" = "このカードの詳細を一時的に表示";
 "todayReview.card.temporaryDetail.restore" = "コンパクト表示に戻す";
 "todayReview.card.more" = "その他の操作";
+"todayReview.card.reviewMode.toProduction" = "産出に切り替え";
+"todayReview.card.reviewMode.toRecognition" = "認識に切り替え";
+"todayReview.reviewMode.sheet.confirm" = "確認";
+"todayReview.reviewMode.level.label" = "忘却度";
+"todayReview.reviewMode.level.keep" = "進捗を保持";
+"todayReview.reviewMode.level.reset" = "進捗をリセット";
+"todayReview.reviewMode.level.partial" = "一部忘却";
 
 "addLink.error.quotaExhausted" = "本日のAIクォータを使い切りました。明日もう一度お試しください。";
 "addLink.error.sourceUnavailable" = "元のカードは利用できなくなりました（削除・アーカイブ・移動済み）。";
