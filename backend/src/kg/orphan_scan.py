@@ -120,6 +120,18 @@ def _all_cards_with_state(cards_db: Path) -> list[tuple[str, str, int]]:
         return conn.execute("SELECT id, notebook_id, is_deleted FROM card").fetchall()
 
 
+def _judge_rows_for_user(data_dir: Path, uid: str) -> bool:
+    """True if judge_log.db has at least one row for ``uid``."""
+    judge_db = data_dir / "judge_log.db"
+    if not judge_db.exists():
+        return False
+    with sqlite3.connect(str(judge_db)) as conn:
+        try:
+            return conn.execute("SELECT 1 FROM judge_log WHERE user_id = ? LIMIT 1", (uid,)).fetchone() is not None
+        except sqlite3.OperationalError:
+            return False
+
+
 def _live_notebook_ids(nb_db: Path) -> set[str]:
     """Return the set of notebook ids that exist (incl. soft-deleted).
 
@@ -484,6 +496,11 @@ def fix(
         if not nb_db.exists() and any(not is_del for _cid, _nb, is_del in _all_cards_with_state(udir / "cards.db")):
             raise UserRegistryUnavailable(
                 f"notebooks.db missing for user {uid} while cards.db has live cards; refusing to treat all as orphans"
+            )
+        # A missing cards.db would make every graph link / judge_log row look orphaned (#3434).
+        if not (udir / "cards.db").exists() and (any(udir.glob("graph_*.json")) or _judge_rows_for_user(data_dir, uid)):
+            raise UserRegistryUnavailable(
+                f"cards.db missing for user {uid} while graph or judge_log data exists; refusing to treat all as orphans"
             )
 
     report = scan(data_dir=data_dir)
