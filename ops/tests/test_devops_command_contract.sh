@@ -129,4 +129,31 @@ if grep -Eq 'python3|python -c|<<' <(awk 'NR > 1' "$ENV_DRIFT"); then
 fi
 pass "env_drift.py keeps interpreter ownership explicit"
 
+# #3441：base delete-user 只 rm -rf users/<uid>，不 tombstone 身分紀錄、不清外部 API key、
+# 不掃 S3 library 資產，卻宣稱「第三方整合映射」已刪。必須在任何遠端指令之前拒絕，
+# 且輸出不得再包含該不實宣稱（完整 erasure 只走 DELETE /api/user/account）。
+del_log="$tmp/delete-user-remote.log"
+del_stub="$tmp/bin/delete-user-record-stub"
+cat > "$del_stub" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${DEL_REMOTE_LOG:?}"
+exit 0
+EOF
+chmod +x "$del_stub"
+set +e
+del_out="$(DEVOPS_YES=1 DEL_REMOTE_LOG="$del_log" KG_SSH_CMD="$del_stub" KG_SCP_CMD="$del_stub" \
+  "$BASE" delete-user test_uid_3441 --yes 2>&1)"
+del_rc=$?
+set -e
+(( del_rc != 0 )) || fail "base delete-user must refuse (it only rm -rf's users/<uid>)"
+[[ ! -s "$del_log" ]] || fail "base delete-user issued remote commands before refusing: $(cat "$del_log")"
+grep -Fq '第三方整合映射' <<<"$del_out" && fail "base delete-user output still claims third-party mappings are deleted"
+pass "base delete-user refuses before any remote rm and does not overclaim erasure"
+
+# #3442：備份一致快照與 migrate-run 中止契約由獨立測試守住；經由本 contract 測試執行，
+# 讓 devops 套件無需另行登記即會跑到它。
+"$ROOT/ops/tests/test_devops_backup_snapshot.sh" >/dev/null \
+  || fail "backup snapshot contract (#3442) failed: run ops/tests/test_devops_backup_snapshot.sh"
+pass "backup snapshot contract (#3442): WAL-only row kept, migrate-run aborts on snapshot failure"
+
 printf 'contract: all checks passed\n'

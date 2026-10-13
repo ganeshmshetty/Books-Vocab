@@ -4,7 +4,7 @@
 # 供 Claude Code 代理呼叫。不需理解底層 SSH/Docker 細節，直接執行子指令。
 #
 # Agent 用法：
-#   DEVOPS_YES=1 ./devops.sh delete-user <id>   # 跳過互動確認
+#   ./devops.sh delete-user <id>                 # 已停用（#3441）：一律拒絕，改走 DELETE /api/user/account
 #   ./devops.sh run "docker ps"                  # 執行任意遠端指令
 # =============================================================================
 
@@ -649,6 +649,38 @@ rsync_progress_flags() {
   fi
 }
 
+# 遠端 *.db 一致快照（#3442）。stdin 餵給 `bash -s -- <stage> <data_dir>` 在遠端執行。
+# live DB 由 backend 以 WAL 持續開著，已 commit 的 row 可能只在 -wal；raw rsync 讀到的
+# 主檔與 checkpoint 之後的新 -wal 不成一組，會靜默漏 frame。這裡沿用 ops/kg_backup.sh
+# snapshot_db 的模式：SQLite online backup API + no_ckpt_on_close（絕不 checkpoint／寫 live
+# DB）+ 快照非空且 quick_check=ok 才算成功。任一 DB 失敗即 exit 1，stage 由 trap 清掉。
+remote_db_snapshot_script() {
+  cat <<'REMOTE'
+set -euo pipefail
+stage="$1"
+data="$2"
+made=0
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$made" = 1 ]; then rm -rf "$stage"; fi' EXIT
+mkdir "$stage"
+made=1
+cd "$data"
+data_abs="$(pwd -P)"
+while IFS= read -r -d '' rel; do
+  dir="$stage/$(dirname "$rel")"
+  mkdir -p "$dir"
+  rm -f "$dir/.snap.db"
+  out="$(cd "$dir" && sqlite3 -cmd '.timeout 30000' -cmd '.dbconfig no_ckpt_on_close on' \
+    "file:$data_abs/$rel?mode=rw" '.backup .snap.db' </dev/null)" \
+    || { echo "snapshot failed: $rel" >&2; exit 1; }
+  [[ "$out" == *"no_ckpt_on_close on"* && -s "$dir/.snap.db" ]] \
+    || { echo "snapshot failed (no output / empty): $rel" >&2; exit 1; }
+  [[ "$(sqlite3 "$dir/.snap.db" 'PRAGMA quick_check' </dev/null)" == ok ]] \
+    || { echo "snapshot quick_check failed: $rel" >&2; exit 1; }
+  mv "$dir/.snap.db" "$dir/$(basename "$rel")"
+done < <(find . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' -type f -print0)
+REMOTE
+}
+
 cmd_backup() {
   # 注意：standby 的**權威排程/異地**備份 = standby launchd `com.kg.backup` → S3
   #（見 ~/butler/docs/kg-backend-deployment.md §4.5 / §7 G5）。本指令是 oscar 端
@@ -694,9 +726,19 @@ cmd_backup() {
   # 守住 rsync 的非零退出。沒有這道守衛時，rsync 失敗只會留下它自己印的 usage／錯誤，
   # 而上方剛印過 preflight 與「▶ 本地冷快照」，整段輸出讀起來像「跑完了」（IMP-
   # 20260806-02bf8d 就是這樣被誤讀的）。備份指令不該用「印出 usage」當失敗訊號。
+  # *.db 不走 rsync（#3442）：先在遠端產生一致快照（失敗即中止，不 pull、不進 migrate），
+  # 非 DB 檔照常 rsync，最後把快照 tar 串流拉回覆蓋 dest 內的 *.db。
+  local snap_stage snap_rc=0
+  snap_stage="$(make_remote_tmp_path kg-db-snapshot "")"
+  info "遠端 *.db 一致快照（SQLite online backup）→ $snap_stage"
+  if ! run_remote "bash -s -- $snap_stage $REMOTE_DATA_DIR" < <(remote_db_snapshot_script); then
+    touch "$dest/.INCOMPLETE" 2>/dev/null || true
+    err "本地冷快照失敗：遠端 *.db 一致快照未完成（見上方）。此指令沒有產出可用備份；不得進行 migrate-run。"
+  fi
   if ! rsync -az --delete "${progress_flags[@]}" \
     --exclude='_ops_backups/' \
     --exclude='_ops_world_backups/' \
+    --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
     ${prev:+--link-dest="$prev"} \
     -e "ssh -T -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
     "$SERVER:$REMOTE_DATA_DIR/" "$dest/"; then
@@ -704,12 +746,19 @@ cmd_backup() {
     # 正常備份長得一模一樣（且會佔用 cleanup_old_backups 的 keep=10 額度）。不刪它
     # ——鐵律 7 不在 data 路徑附近用 rm -rf；標記它，讓後續判讀有依據。
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
+    run_remote "rm -rf $snap_stage" >/dev/null 2>&1 || true
     echo "" >&2
     echo "  本機 rsync：$(rsync --version 2>&1 | head -1)" >&2
     echo "  已建立但**不完整**、不可當備份用的目錄：${dest}（已標記 .INCOMPLETE）" >&2
     echo "  災難復原請改用 standby 的每日 S3 備份（launchd com.kg.backup →" >&2
     echo "  ops/kg_backup.sh，見 docs/sop/deploy.md）；那條路徑與本指令各自獨立。" >&2
     err "本地冷快照失敗：rsync 非零退出（上方為 rsync 自身輸出）。此指令沒有產出可用備份。"
+  fi
+  run_remote "tar -C $snap_stage -cf - ." | tar -C "$dest" -xf - || snap_rc=$?
+  run_remote "rm -rf $snap_stage" >/dev/null 2>&1 || true
+  if (( snap_rc != 0 )); then
+    touch "$dest/.INCOMPLETE" 2>/dev/null || true
+    err "本地冷快照失敗：一致快照拉回本機時 tar 失敗（exit ${snap_rc}）。此指令沒有產出可用備份。"
   fi
   [[ -n "$prev" ]] && info "增量基準: $(basename "$prev")（未變檔走硬連結）" \
                    || info "首次全量備份（無基準）"
@@ -821,20 +870,18 @@ except Exception as e:
 \" $db_path"
 }
 
-# ── 指令：delete-user <user_id> [--yes] ───────────────────────────────────────
+# ── 指令：delete-user <user_id> ───────────────────────────────────────────────
+# 已停用（#3441）：本指令原本只 rm -rf users/<uid>，不 tombstone users.json 的身分紀錄
+#（email→uid 索引仍指向舊 uid，重新登入會重建空目錄）、不清外部 API key digest、不掃
+# library.db 的 S3 資產（物件留在 bucket 無索引），卻宣稱第三方整合映射已刪。
+# 完整 erasure 只有應用內路徑（DELETE /api/user/account → delete_user_account_response，
+# 持 users lock、tombstone、purge 外部 key、S3 sweep 後才 rmtree）。拒絕發生在任何遠端
+# 指令之前，不留半刪狀態。
 cmd_delete_user() {
   local uid="${1:-}"
-  local yes_flag="${2:-}"
-  [[ -z "$uid" ]] && err "用法: $0 delete-user <user_id> [--yes]"
+  [[ -z "$uid" ]] && err "用法: $0 delete-user <user_id>（已停用，見下方說明）"
   validate_uid "$uid"
-
-  info "即將刪除的資料:"
-  run_remote "ls -lah $REMOTE_DATA_DIR/users/$uid/ 2>/dev/null || (echo '用戶不存在'; exit 1)"
-
-  [[ "$yes_flag" == "--yes" ]] && DEVOPS_YES=1
-  confirm "永久刪除用戶 '$uid' 的所有資料（SQLite、向量、圖譜、第三方整合映射）。此操作不可逆。"
-  run_remote "rm -rf $REMOTE_DATA_DIR/users/$uid"
-  ok "用戶 $uid 的資料已刪除。"
+  err "delete-user 已停用，未對 '$uid' 做任何變更。本指令只會刪 users/<uid> 目錄，不會 tombstone 身分紀錄、清除外部 API key、或刪除 S3 library 資產。請改走完整刪除路徑：用戶本人以已登入身分呼叫 DELETE /api/user/account（backend/src/kg/user_handlers.py:delete_user_account_response）。"
 }
 
 # ── 指令：push-env [file] ─────────────────────────────────────────────────────
