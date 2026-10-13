@@ -2,7 +2,7 @@
   "schema": "kg.complexity-budget-raise.v1",
   "issue": 2872,
   "raise": {
-    "ops": 1703
+    "ops": 1846
   },
   "note": "#2872 conditional REST reads (CM go 2026-10-13)"
 }
