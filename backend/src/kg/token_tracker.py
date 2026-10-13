@@ -158,9 +158,15 @@ def delete_for_users(user_ids: Iterable[str]) -> int:
         return 0
     with _lock:
         conn = _get_conn()
-        deleted = conn.executemany(
-            "DELETE FROM token_usage WHERE user_id = ?",
-            ((user_id,) for user_id in ids),
-        ).rowcount
-        conn.commit()
+        try:
+            deleted = conn.executemany(
+                "DELETE FROM token_usage WHERE user_id = ?",
+                ((user_id,) for user_id in ids),
+            ).rowcount
+            conn.commit()
+        except Exception:
+            # Same contract as record(): close the implicit transaction so the
+            # shared connection does not keep the write lock on token_usage.db.
+            conn.rollback()
+            raise
     return deleted
