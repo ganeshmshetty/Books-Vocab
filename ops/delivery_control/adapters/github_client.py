@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -14,15 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..domain.errors import DeliverySourceError
 from ..ports.process import CommandResult, CommandRunnerPort
 from .errors import AdapterCommandError, AdapterPayloadError
 from .github_cache_root import github_cache_dir
-from .github_rate_governor import (
-    QuotaDecision,
-    QuotaGovernor,
-    QuotaSnapshot,
-)
 
 _GRAPHQL_NON_QUERY_OPERATION = re.compile(r"\b(?:mutation|subscription)\b")
 _READ_ONLY_JSON_COMMANDS = frozenset(
@@ -213,10 +206,6 @@ def _is_transient_failure(result: CommandResult) -> bool:
 
 
 _HTTP_STATUS = re.compile(r"^HTTP/\S+\s+(\d{3})")
-_MAX_QUOTA_WAIT_SECONDS = 600.0
-# Seeding reads only the newest bytes of spend.jsonl; the log rotates once it grows past the cap.
-_SPEND_TAIL_BYTES = 64 * 1024
-_SPEND_ROTATE_BYTES = 1024 * 1024
 _MAX_CACHE_ENTRIES = 2000
 
 
@@ -251,17 +240,6 @@ def parse_include(stdout: str) -> _Response | None:
     return _Response(int(match.group(1)), headers, body)
 
 
-def _uncached_read_resources(argv: tuple[str, ...]) -> tuple[str, ...]:
-    """Quota buckets an uncached read consumes; subcommands may draw on either."""
-
-    endpoint = _gh_api_endpoint(argv)
-    if endpoint == "graphql":
-        return ("graphql",)
-    if endpoint is not None:
-        return ("core",)
-    return ("core", "graphql")
-
-
 def _is_api_read(argv: tuple[str, ...]) -> bool:
     """True for single-request, read-only ``gh api`` calls that can be conditional."""
 
@@ -272,27 +250,13 @@ def _is_api_read(argv: tuple[str, ...]) -> bool:
     return is_read_only_json_query(argv)
 
 
-def _file_size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return 0
-
-
-def _spend_tail_lines(path: Path) -> list[str]:
-    """Complete lines from the last ``_SPEND_TAIL_BYTES`` of the spend log."""
-
-    with path.open("rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        size = handle.tell()
-        handle.seek(max(0, size - _SPEND_TAIL_BYTES))
-        text = handle.read().decode("utf-8", errors="replace")
-    lines = text.splitlines()
-    # Past the first byte of the window the leading line is a fragment, not a record.
-    return lines[1:] if size > _SPEND_TAIL_BYTES else lines
-
-
 class GitHubCliClient:
+    """Argv-only ``gh`` client; quota admission and spend logging belong to the runner.
+
+    The runner handed in is the single governed chokepoint (``govern_runner``), so
+    this client only revalidates REST reads by ETag and never keeps a second ledger.
+    """
+
     def __init__(
         self,
         *,
@@ -300,7 +264,6 @@ class GitHubCliClient:
         runner: CommandRunnerPort,
         cache_dir: Path | None = None,
         now: Callable[[], float] = time.time,
-        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.repo = repo
         self.runner = runner
@@ -308,40 +271,7 @@ class GitHubCliClient:
         # Fetch time of the body the last load_json returned; None for non-API reads.
         self.last_fetched_at: float | None = None
         self.cache_dir = cache_dir or github_cache_dir(repo)
-        self.governor = QuotaGovernor(now=now)
         self._now = now
-        self._sleep = sleep
-        self._seed_governor()
-
-    def _seed_governor(self) -> None:
-        """Carry the newest quota reading per resource from spend.jsonl into this process.
-
-        A reading whose reset epoch has passed says nothing about the current quota,
-        so it is dropped rather than applied.
-        """
-
-        try:
-            lines = _spend_tail_lines(self.cache_dir / "spend.jsonl")
-        except OSError:
-            return
-        latest: dict[str, dict[str, object]] = {}
-        for line in lines:
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(record, dict) and record.get("remaining") is not None:
-                latest[str(record.get("resource"))] = record
-        for resource, record in latest.items():
-            try:
-                snapshot = QuotaSnapshot(
-                    remaining=int(str(record["remaining"])),
-                    reset_epoch=float(str(record["reset"])),
-                )
-            except (KeyError, TypeError, ValueError):
-                continue
-            if snapshot.reset_epoch > self._now():
-                self.governor.observe(resource, snapshot)
 
     def _run_result(
         self,
@@ -384,15 +314,10 @@ class GitHubCliClient:
             output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
         elif is_read_only_json_query(argv):
             # Subcommand and paginated reads carry no response headers, so they
-            # cannot be revalidated; they are still admitted by the quota gate
-            # and recorded in the spend log.
-            resources = _uncached_read_resources(argv)
-            for resource in resources:
-                self._admit_quota(argv, resource)
+            # cannot be revalidated; the governed runner admits and records them.
             output = self._run_result(
                 argv, allow_nonzero=allow_nonzero, retry_read_only=True
             ).stdout.strip()
-            self._spend(argv, "+".join(resources), "network")
         else:
             output = self._run_result(
                 argv, allow_nonzero=allow_nonzero, retry_read_only=True
@@ -402,31 +327,11 @@ class GitHubCliClient:
         except json.JSONDecodeError as error:
             raise AdapterPayloadError(f"invalid JSON from {' '.join(argv)}") from error
 
-    def _admit_quota(self, argv: tuple[str, ...], resource: str) -> None:
-        """Block until the resource is out of its wait window, or fail closed."""
-
-        decision, wait = self.governor.decide(resource)
-        if decision is not QuotaDecision.WAIT_FOR_RESET:
-            return
-        if wait > _MAX_QUOTA_WAIT_SECONDS:
-            raise DeliverySourceError(
-                f"GitHub {resource} quota exhausted; reset in {wait:.0f}s "
-                f"exceeds the {_MAX_QUOTA_WAIT_SECONDS:.0f}s wait budget"
-            )
-        self._spend(argv, resource, "quota-wait")
-        # A silent multi-minute sleep looks like a hung tick; say why it is waiting.
-        sys.stderr.write(
-            f"GitHub {resource} quota low; waiting {wait:.0f}s for reset\n"
-        )
-        self._sleep(wait)
-
     def _load_api_read(self, argv: tuple[str, ...], *, allow_nonzero: bool) -> str:
-        """Serve a ``gh api`` read through quota governance and ETag revalidation."""
+        """Serve a ``gh api`` read through ETag revalidation; the runner governs quota."""
 
-        resource = "graphql" if _gh_api_endpoint(argv) == "graphql" else "core"
         key = hashlib.sha256(json.dumps(list(argv)).encode("utf-8")).hexdigest()
         cached = self._cache_get(key)
-        self._admit_quota(argv, resource)
 
         extra: tuple[str, ...] = ()
         if cached is not None and cached.etag is not None:
@@ -441,7 +346,6 @@ class GitHubCliClient:
                 raise AdapterCommandError(result)
             return result.stdout.strip()
 
-        self._observe(resource, response)
         if response.status == 304:
             # 304 only answers a validator we sent; without a cached body it is
             # unusable and must not be stored as an empty entry.
@@ -451,7 +355,6 @@ class GitHubCliClient:
                 )
             # GitHub just confirmed the body is current, so its age restarts here.
             self._cache_put(key, cached.etag, cached.body, fetched_at=fetched_at)
-            self._spend(argv, resource, "304", response)
             return cached.body
         if response.status >= 400 or result.exit_code != 0:
             if not allow_nonzero:
@@ -462,51 +365,7 @@ class GitHubCliClient:
         etag = response.headers.get("etag")
         # Without an ETag there is nothing to revalidate against, so nothing is kept.
         self._cache_put(key, etag, body, fetched_at=fetched_at)
-        self._spend(argv, resource, "network", response)
         return body
-
-    def _observe(self, resource: str, response: _Response) -> None:
-        try:
-            snapshot = QuotaSnapshot(
-                remaining=int(response.headers["x-ratelimit-remaining"]),
-                reset_epoch=float(response.headers["x-ratelimit-reset"]),
-            )
-        except (KeyError, ValueError):
-            return
-        self.governor.observe(
-            response.headers.get("x-ratelimit-resource", resource), snapshot
-        )
-
-    def _spend(
-        self,
-        argv: tuple[str, ...],
-        resource: str,
-        served: str,
-        response: _Response | None = None,
-    ) -> None:
-        """Append one best-effort JSONL record; observability must not fail delivery."""
-
-        record: dict[str, object] = {
-            "ts": round(self._now(), 3),
-            "resource": resource,
-            "endpoint": _gh_api_endpoint(argv) or " ".join(argv[1:3]),
-            "served": served,
-        }
-        if response is not None:
-            record.update(
-                status=response.status,
-                remaining=response.headers.get("x-ratelimit-remaining"),
-                reset=response.headers.get("x-ratelimit-reset"),
-            )
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            spend_path = self.cache_dir / "spend.jsonl"
-            if _file_size(spend_path) >= _SPEND_ROTATE_BYTES:
-                os.replace(spend_path, spend_path.with_name("spend.jsonl.1"))
-            with spend_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
-        except OSError:
-            return
 
     def _cache_path(self, key: str) -> Path:
         return self.cache_dir / "etag" / f"{key}.json"
