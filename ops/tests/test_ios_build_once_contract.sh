@@ -69,7 +69,10 @@ else
   else
     with = upload["with"] || {}
     out << "ios-build-for-testing upload is not pinned to upload-artifact v7" unless upload["uses"] == ENV["PIN_UPLOAD"]
-    out << "ios-build-for-testing artifact name is not unique per run and attempt" unless with["name"].to_s.include?("${{ github.run_id }}-${{ github.run_attempt }}")
+    # Keyed by run_id only: a "Re-run failed jobs" attempt 2 must find attempt 1's
+    # products, because the build job is not re-run (see PRODUCTS_NAME below).
+    out << "ios-build-for-testing artifact must be named ios-test-products-${{ github.run_id }} (no run_attempt)" unless with["name"] == "ios-test-products-${{ github.run_id }}"
+    out << "ios-build-for-testing upload must set overwrite: true so a full re-run replaces the products" unless with["overwrite"] == true
     out << "ios-build-for-testing artifact retention must be 1 day" unless with["retention-days"] == 1
     out << "ios-build-for-testing must fail when no products were produced" unless with["if-no-files-found"] == "error"
   end
@@ -111,6 +114,59 @@ ib = jobs["ios-build"] || {}
 out << "PR compile job must keep ios_ops.sh build" unless run_text(ib).include?("ios_ops.sh build")
 out << "PR compile job must not prepare test products" if run_text(ib).include?("--prepare-cache")
 
+# Build-once downloads (#3591): a hung download must not hold a leg until the
+# 25-minute job timeout. Every download is step-bounded, followed by one retry
+# that runs only when the first attempt did not succeed, and the unpack after
+# them stays fail-closed (no rebuild, no always()).
+DOWNLOAD_NAME = "Download build-once test products"
+UNPACK_NAME = "Unpack build-once test products"
+MAX_STEP_MINUTES = 5
+dl_jobs = jobs.select { |_, job| steps(job).any? { |s| s["name"] == DOWNLOAD_NAME } }
+%w[ios-tests ios-targeted].each do |name|
+  out << "#{name} has no '#{DOWNLOAD_NAME}' step" unless dl_jobs.key?(name)
+end
+dl_jobs.each do |name, job|
+  list = steps(job)
+  list.each_with_index do |first, i|
+    next unless first["name"] == DOWNLOAD_NAME
+    id = first["id"].to_s
+    out << "#{name}: download step has no id for the retry guard" if id.empty?
+    t = first["timeout-minutes"]
+    out << "#{name}: download step must have timeout-minutes <= #{MAX_STEP_MINUTES}" unless t.is_a?(Integer) && t.between?(1, MAX_STEP_MINUTES)
+    out << "#{name}: download step must be continue-on-error: true so the retry can run" unless first["continue-on-error"] == true
+    retry_step = list[i + 1]
+    if retry_step.nil? || retry_step["uses"].to_s != ENV["PIN_DOWNLOAD"]
+      out << "#{name}: no retry download step directly after the download"
+      next
+    end
+    out << "#{name}: retry downloads a different artifact or path" unless (retry_step["with"] || {}).slice("name", "path") == (first["with"] || {}).slice("name", "path")
+    out << "#{name}: retry must run only when the first download is not success" unless retry_step["if"].to_s.include?("steps.#{id}.outcome != 'success'")
+    rt = retry_step["timeout-minutes"]
+    out << "#{name}: retry download must have timeout-minutes <= #{MAX_STEP_MINUTES}" unless rt.is_a?(Integer) && rt.between?(1, MAX_STEP_MINUTES)
+    out << "#{name}: retry download must not be continue-on-error (a second failure must go red)" if retry_step["continue-on-error"] == true
+    unpack = list[i + 2]
+    if unpack.nil? || unpack["name"] != UNPACK_NAME
+      out << "#{name}: no '#{UNPACK_NAME}' step directly after the retry"
+      next
+    end
+    out << "#{name}: unpack must not rebuild (xcodebuild, build-for-testing or --prepare-cache)" if unpack["run"].to_s.match?(/xcodebuild|build-for-testing|--prepare-cache/)
+    out << "#{name}: unpack must run under set -euo pipefail" unless unpack["run"].to_s.include?("set -euo pipefail")
+    out << "#{name}: unpack must not be always() or continue-on-error" if unpack["continue-on-error"] || unpack["if"].to_s.include?("always()")
+  end
+end
+
+# Products artifact name (#3591): every upload and download of the build-once
+# products uses the run_id-only name, so no attempt-scoped artifact can be looked up.
+PRODUCTS_NAME = "ios-test-products-${{ github.run_id }}"
+jobs.each do |jname, job|
+  steps(job).each do |s|
+    next unless s["uses"].to_s.start_with?("actions/download-artifact@", "actions/upload-artifact@")
+    artifact = (s["with"] || {})["name"].to_s
+    next unless artifact.start_with?("ios-test-products")
+    out << "#{jname}: '#{s["name"]}' must use the artifact name #{PRODUCTS_NAME} (no run_attempt)" unless artifact == PRODUCTS_NAME
+  end
+end
+
 puts out.join("\n")
 RUBY
 ruby_rc=0
@@ -150,6 +206,24 @@ grep -q 'so the run fails here' "$tmp/targeted-job.yml" \
   && fail "ios-targeted guard comment claims a skipped build fails here; needs skips the job so the guard never runs"
 grep -q 'ios-verdict' "$tmp/targeted-job.yml" \
   || fail "ios-targeted guard comment does not name ios-verdict as the fail-closed path"
+
+# --- 2c. Unpack stays red when no download attempt produced the tar (#3591) --
+# Executed, not grepped: with the downloads having left no tarball, the unpack step
+# must exit non-zero, so a failed download can never reach the test run.
+for job in ios-tests ios-targeted; do
+  unpack_script="$tmp/unpack-$job.sh"
+  if ! ruby -ryaml -e 'job = YAML.load_file(ARGV[0])["jobs"][ARGV[1]] || {}; step = Array(job["steps"]).find { |s| s["name"] == ARGV[2] }; abort("no unpack step") unless step; print step["run"].to_s' "$IOS" "$job" 'Unpack build-once test products' >"$unpack_script" 2>/dev/null; then
+    fail "$job: cannot extract the unpack step"
+    continue
+  fi
+  runner_temp="$tmp/runner-$job"
+  mkdir -p "$runner_temp/ios-test-products/Build/Products"
+  set +e
+  RUNNER_TEMP="$runner_temp" GITHUB_ENV="$runner_temp/github-env" bash "$unpack_script" >/dev/null 2>&1
+  unpack_rc=$?
+  set -e
+  [[ "$unpack_rc" -ne 0 ]] || fail "$job: unpack exits 0 with no test products tar (a failed download would reach the tests)"
+done
 
 # --- 3. ios_test.sh --xctestrun: validation refuses before any build or lock --
 products="$tmp/products"
