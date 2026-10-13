@@ -472,3 +472,63 @@ class TestDestructiveFailureReporting:
             tar.add(wrong, arcname="other")
         with pytest.raises(EditError):
             user_cmd.cmd_restore(_make_args(uid="u1", commit=True))
+
+
+# ── cmd_user_delete: remote library assets (#3428) ───────────────────────
+
+
+class _FakeObjectStorage:
+    """In-memory stand-in for the S3 calls the erasure path makes."""
+
+    def __init__(self, keys=()):
+        self.objects = set(keys)
+        self.deleted: list[str] = []
+
+    def delete_object(self, *, Bucket, Key):  # noqa: N803
+        self.deleted.append(Key)
+        self.objects.discard(Key)
+        return {}
+
+    def list_objects_v2(self, *, Bucket, Prefix, **_):  # noqa: N803
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))
+        return {"Contents": [{"Key": k} for k in keys], "IsTruncated": False}
+
+    def delete_objects(self, *, Bucket, Delete):  # noqa: N803
+        for item in Delete["Objects"]:
+            self.deleted.append(item["Key"])
+            self.objects.discard(item["Key"])
+        return {}
+
+
+def _seed_library_books(data_dir: Path, uid: str, keys: list[str]) -> None:
+    from sqlmodel import Session
+
+    from kg.library.store import LibraryBook, LibraryStore
+
+    store = LibraryStore(data_dir / "users" / uid / "library.db")
+    try:
+        with Session(store.engine) as session:
+            for index, key in enumerate(keys):
+                session.add(
+                    LibraryBook(id=f"book-{index}", title=f"b{index}", asset_storage="object", asset_object_key=key)
+                )
+            session.commit()
+    finally:
+        store.close()
+
+
+class TestUserDeleteRemoteAssets:
+    def test_commit_erases_remote_library_assets_before_removing_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        fake = _FakeObjectStorage(["library/doomed/a.epub", "library/doomed/b.epub", "library/keeper/c.epub"])
+        monkeypatch.setattr(user_cmd, "_library_object_storage", lambda: ("kg-library", fake), raising=False)
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        _seed_library_books(tmp_path, "doomed", ["library/doomed/a.epub", "library/doomed/b.epub"])
+
+        rc = user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True))
+
+        assert rc == 0
+        assert {"library/doomed/a.epub", "library/doomed/b.epub"} <= set(fake.deleted)
+        assert not any(k.startswith("library/doomed/") for k in fake.objects)
+        assert "library/keeper/c.epub" in fake.objects
+        assert not (tmp_path / "users" / "doomed").exists()

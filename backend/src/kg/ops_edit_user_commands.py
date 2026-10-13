@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from kg.account_erasure import delete_account_assets, sweep_account_prefixes
 from kg.api_models.graph import AutoLinkConfig
 from kg.api_models.notebook import VocabUIConfig
 from kg.api_models.review import ReviewClockConfig, ReviewModeConfig
 from kg.api_models.translate import TranslationLanguageConfig
 from kg.ops_shared import data_dir
+from kg.settings import load_settings
 from kg.user_store import load_users_from, parse_datetime
 
 from .ops_edit_shared import EditContext, EditError, assert_safe_uid, emit, user_dir_for, users_file
@@ -135,6 +137,16 @@ def cmd_user_create(args: argparse.Namespace) -> int:
     return ctx.run(action="user-create", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
 
 
+def _library_object_storage() -> tuple[str | None, Any]:
+    """Library bucket and S3 client as the app wires them; ``(None, None)`` when local-only."""
+    settings = load_settings()
+    if not settings.library_bucket:
+        return None, None
+    from .routers.library import _library_s3_client
+
+    return settings.library_bucket, _library_s3_client(settings)
+
+
 def cmd_user_delete(args: argparse.Namespace) -> int:
     """刪除用戶:移除 user dir + users.json record + email/subscription index。
 
@@ -194,8 +206,15 @@ def cmd_user_delete(args: argparse.Namespace) -> int:
                 "dropped_index_keys": dropped,
             }
 
+        # Remote assets go first, as in the in-app erasure: a failure here leaves
+        # users.json and the directory untouched, so the command stays retryable.
+        # Marked destructive before the first S3 delete, since that is irreversible.
         ctx.mark_destructive()
+        library_bucket, library_s3_client = _library_object_storage()
+        delete_account_assets(dd, [uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
         result = _mutate_users(dd, mutate)
+        # Runs after the tombstone: a presigned PUT minted earlier can land after the ledger delete.
+        sweep_account_prefixes([uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
         target = user_dir_for(dd, uid)
         if target.exists():
             shutil.rmtree(target)
