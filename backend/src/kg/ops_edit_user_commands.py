@@ -16,6 +16,7 @@ from kg.api_models.review import ReviewClockConfig, ReviewModeConfig
 from kg.api_models.translate import TranslationLanguageConfig
 from kg.external_api_keys import purge_external_api_keys
 from kg.ops_shared import data_dir
+from kg.sentry_init import capture_handled
 from kg.settings import load_settings
 from kg.user_store import load_users_from, parse_datetime
 
@@ -254,11 +255,17 @@ def cmd_user_delete(args: argparse.Namespace) -> int:
         # Runs after the tombstone: a presigned PUT minted earlier can land after the ledger delete.
         # Best-effort as in the in-app erasure (user_handlers): the tombstone is already
         # written and the token revoked, so a failed sweep must not leave users/<uid> on disk.
+        # The failure is reported to Sentry and surfaced in the result (audit + emit), so an
+        # operator can rerun the sweep for this uid.
+        sweep_incomplete = False
         try:
             sweep_account_prefixes([uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
-        except Exception:
+        except Exception as exc:
+            sweep_incomplete = True
             _logger.exception("Library prefix sweep failed after account tombstone for %s", uid)
+            capture_handled(exc, context="account_erasure.prefix_sweep")
         _remove_user_dir_quarantined(dd, uid)
+        result["sweep_incomplete"] = sweep_incomplete
         return result
 
     def verify_fn() -> dict[str, Any]:
