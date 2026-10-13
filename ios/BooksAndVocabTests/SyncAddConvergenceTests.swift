@@ -179,7 +179,8 @@ struct SyncAddConvergenceTests {
         let unresolved = SyncCoordinator.convergeAddedEntries(response: response, entries: [entry])
 
         #expect(!entry.isRejectedAdd)
-        #expect(entry.rejectedReason == nil)
+        // #3350: the rejection is recorded on the delete row so a later undo can restore the terminal state.
+        #expect(entry.rejectedReason == "word: bad")
         #expect(entry.isPendingDelete)
         #expect(entry.shouldUploadOnNextSync)
         #expect(unresolved.map(\.word) == ["ghost"])
@@ -352,6 +353,47 @@ struct SyncAddConvergenceTests {
         #expect(entry.syncAction == .edit)
         #expect(entry.syncState == .pending)
         #expect(entry.shouldUploadOnNextSync)
+    }
+
+    @Test("add 送出中被刪除，server 拒收後撤銷 → 還原為終態拒收的 add，不重送（#3350）")
+    func undo_of_delete_queued_while_add_in_flight_restores_rejected_add_without_resend() {
+        let entry = makePendingAdd("ghost-undo")
+        entry.isUploadInFlight = true
+        entry.queueDelete()
+        let response = KGAddResponse(
+            created: 0,
+            skipped: 0,
+            duplicates: [],
+            cardIds: [:],
+            rejected: [KGRejectedItem(index: 0, word: "ghost-undo", reason: "word: bad")]
+        )
+        _ = SyncCoordinator.convergeAddedEntries(response: response, entries: [entry])
+        entry.isUploadInFlight = false
+
+        entry.undoQueuedDelete()
+
+        #expect(!entry.shouldUploadOnNextSync)
+        #expect(entry.isRejectedAdd)
+        #expect(entry.syncAction == .add)
+        #expect(entry.syncState == .failed)
+        #expect(entry.rejectedReason == "word: bad")
+        #expect(entry.kgCardId == nil)
+    }
+
+    @Test("已被 server 拒收的 add（曾送出）被刪除再撤銷 → 不復活為 pending add（#3350）")
+    func undo_of_delete_on_rejected_add_does_not_resend() {
+        let entry = makePendingAdd("rejected-idle")
+        entry.uploadSubmittedAt = Date()
+        entry.markRejected(reason: "word: bad")
+        #expect(entry.isRejectedAdd)
+
+        entry.queueDelete()
+        entry.undoQueuedDelete()
+
+        #expect(!entry.shouldUploadOnNextSync)
+        #expect(entry.isRejectedAdd)
+        #expect(entry.syncAction == .add)
+        #expect(entry.syncState == .failed)
     }
 
     @Test("撤銷只作用於 delete 列；其他 action 為 no-op")

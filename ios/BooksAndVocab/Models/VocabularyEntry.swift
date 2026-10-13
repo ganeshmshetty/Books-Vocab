@@ -45,7 +45,7 @@ final class VocabularyEntry {
     /// 後端對 add 的確定性拒收原因（`rejected[].reason`，#2793）。非 nil 代表終態：
     /// `failed + add` 不再自動重送（否則每次 sync 都被同一原因拒收並重報錯誤）。
     /// 任何重新排入 add 的路徑（`restorePendingEntry`）或同步成功（`markSynced`）都清除。
-    /// 例外：被拒收的 edit 排入刪除時保留此值（或刪除期間才被拒收時寫入刪除列），撤銷刪除時還原為終態拒收（#3279）。
+    /// 例外：被拒收的 edit／add 排入刪除時保留此值（或刪除期間才被拒收時寫入刪除列），撤銷刪除時還原為終態拒收（#3279、#3350）。
     /// Optional，SwiftData lightweight migration 時既有 row 為 nil。
     var rejectedReason: String?
     /// 使用者把伺服器已持有的 note 清空、尚未同步（#2550）。`explanation` 此時為 nil，PATCH 須送明確的 ""
@@ -254,12 +254,13 @@ extension VocabularyEntry {
     //
     // T1 deleteLocally：synced ∨ in-flight ∨ kgCardId 非空 ∨ uploadSubmittedAt 非 nil → queueDelete（列保留）；其餘 → 硬刪。
     // T2 batchAdd cardIds 命中：寫 kgCardId、清 uploadSubmittedAt；action 為 add 才 markSynced，為 delete 則維持 pending delete。
-    // T3 batchAdd rejected：markRejected → add+failed（rejectedReason 終態）；action 為 delete 則維持 pending delete。
+    // T3 batchAdd rejected：markRejected → add+failed（rejectedReason 終態）；action 為 delete 則維持 pending delete 並把 rejectedReason 記在刪除列（#3350）。
     // T4 batchAdd 失敗：markSyncFailed（只改 syncState，被刪的 in-flight add 維持 delete；uploadSubmittedAt 保留，server 是否已建卡未知）。
     // T5 batchDelete resolvable（deleted／not_found）且 action 仍為 delete → 硬刪（I3 下恆成立，守門保留作防禦）。
     // T6 batchDelete 其餘 → markSyncFailed（delete+failed，重試）。
     // T7 undoQueuedDelete：in-flight → no-op（I3）；kgCardId 非空 → 排入前已被拒收（rejectedReason 非 nil）則 restoreRejectedEdit（edit+failed，不重送，#3279），
-    //     排入前為未送出 edit 則 restoreUnsentEdit（edit+pending，保留編輯，#3059 (5)），否則 markSynced；為空 → restorePendingEntry（add+pending，下一輪上傳）。
+    //     排入前為未送出 edit 則 restoreUnsentEdit（edit+pending，保留編輯，#3059 (5)），否則 markSynced；
+    //     為空：拒收（rejectedReason 非 nil）則 restoreRejectedAdd（add+failed，不重送，#3350），否則 restorePendingEntry（add+pending，下一輪上傳）。
     // T8 edit 成功：action 仍為 edit 且送出的 translation／note 與目前列相符才 markSynced（清除 explanationClearPending）；
     //     成功前被刪者維持 delete；送出後被改寫者維持 pending edit，交下一輪上傳較新內容（#3248）。
     // T9 pull 命中：delete 列與未同步的 edit 列保留本地意圖（不覆寫）；其餘 markSynced。
@@ -276,10 +277,11 @@ extension VocabularyEntry {
     func queueDelete() {
         // 只記錄排入前仍未送出的 edit（pending 或可重試的 failed）為可重送。被 T12 拒收的 edit 是終態，不記為可重送，
         // 否則撤銷刪除會把已被 server 4xx 拒收的內容重新排入上傳；它保留 rejectedReason，撤銷時還原為終態拒收（#3279）。
+        // 被拒收的 add 同理（#3350）：刪除列保留拒收原因，否則撤銷會把已被拒收的 add 重新排入上傳。
         // 第二次 queueDelete 不覆寫（syncAction 已是 delete，rejectedReason 也不動）。
         if syncAction != .delete {
             actionBeforeDeleteRaw = (syncAction == .edit && shouldUploadOnNextSync) ? VocabularySyncAction.edit.rawValue : nil
-            if !isRejectedEdit {
+            if !isRejectedEdit && !isRejectedAdd {
                 rejectedReason = nil
             }
         }
@@ -326,6 +328,9 @@ extension VocabularyEntry {
             } else {
                 markSynced()
             }
+        } else if rejectedReason != nil {
+            // 排入刪除前的 add 已被 server 拒收（終態）：還原拒收狀態，不重送（#3350）。
+            restoreRejectedAdd()
         } else {
             restorePendingEntry()
         }
@@ -352,6 +357,13 @@ extension VocabularyEntry {
         actionBeforeDeleteRaw = nil
     }
 
+    /// 撤銷刪除時還原終態拒收的 add（#3350）：保留 rejectedReason，不納入 `shouldUploadOnNextSync`，不重送。
+    func restoreRejectedAdd() {
+        syncAction = .add
+        syncState = .failed
+        actionBeforeDeleteRaw = nil
+    }
+
     func markSynced() {
         syncAction = .add
         syncState = .synced
@@ -372,6 +384,9 @@ extension VocabularyEntry {
     /// 若這裡改寫成 terminal rejected add，SyncView 會永久顯示一筆使用者已刪除的字。
     func markRejected(reason: String) {
         guard syncAction != .delete else {
+            // 送出中的 add 在 in-flight 期間被刪除：拒收記在刪除列上（rejectedReason），撤銷時還原為終態拒收，
+            // 不重送（#3350；同 markEditRejected，#3279）。刪除意圖保留，syncState 維持 pending。
+            rejectedReason = reason
             syncState = .pending
             return
         }
