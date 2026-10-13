@@ -272,3 +272,45 @@ def test_failed_insert_rolls_back_and_does_not_block_other_writers(tmp_path, mon
         other.close()
 
     _teardown(tt)
+
+
+def test_failed_delete_rolls_back_and_does_not_block_other_writers(tmp_path, monkeypatch):
+    """A failing DELETE must not leave the shared connection in an open transaction.
+
+    Mirrors the record() rollback contract for delete_for_users: the DELETE
+    opens an implicit write transaction, then the executemany raises. Without
+    rollback the transaction keeps the write lock and a second writer fails
+    with ``database is locked``.
+    """
+    tt = _reset_token_tracker(tmp_path, monkeypatch)
+    real_conn = tt._get_conn()
+
+    class _FailingExecutemany:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def executemany(self, sql, params):
+            self._conn.execute("DELETE FROM token_usage WHERE user_id = 'u1'")
+            raise sqlite3.OperationalError("simulated executemany failure")
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(tt, "_get_conn", lambda: _FailingExecutemany(real_conn))
+
+    with pytest.raises(sqlite3.OperationalError):
+        tt.delete_for_users(["u1"])
+
+    assert not real_conn.in_transaction, "failed delete left an open transaction on shared _conn"
+
+    other = sqlite3.connect(tmp_path / "token_usage.db", timeout=0.5)
+    try:
+        other.execute(
+            "INSERT INTO token_usage (user_id, call_type, input_tokens, output_tokens, created_at) "
+            "VALUES ('u_other', 'translate', 1, 1, '2026-01-01T00:00:00+00:00')"
+        )
+        other.commit()
+    finally:
+        other.close()
+
+    _teardown(tt)
