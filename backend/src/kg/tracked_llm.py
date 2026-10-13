@@ -220,26 +220,46 @@ class TrackedLLM:
         if model is None and self._provider is not None:
             model = self._provider.chat_model
         prompt = getattr(usage, "prompt_tokens", 0) or 0
-        record(
-            self.user_id,
-            call_type,
-            prompt,
-            getattr(usage, "completion_tokens", 0) or 0,
-            cached_input_tokens=min(self._cached_tokens(usage), prompt),
-            provider=self._provider_name(),
-            model=model,
-        )
+        try:
+            record(
+                self.user_id,
+                call_type,
+                prompt,
+                getattr(usage, "completion_tokens", 0) or 0,
+                cached_input_tokens=min(self._cached_tokens(usage), prompt),
+                provider=self._provider_name(),
+                model=model,
+            )
+        except Exception:  # noqa: BLE001 — the provider call already succeeded and was billed; never discard its response over a ledger write.
+            logger.warning(
+                "Failed to record LLM usage (provider=%s model=%s user_id=%s call_type=%s)",
+                self._provider_name(),
+                model,
+                self.user_id,
+                call_type,
+                exc_info=True,
+            )
 
     def _record_embed(self, call_type: str, resp, model: str | None = None) -> None:
         usage = self._usage_or_warn(call_type, resp, model)
         if usage is None:
             return
         prompt = getattr(usage, "prompt_tokens", 0) or 0
-        record(
-            self.user_id,
-            call_type,
-            prompt or getattr(usage, "total_tokens", 0) or 0,
-            0,
-            provider=self._provider_name(),
-            model=model,
-        )
+        try:
+            record(
+                self.user_id,
+                call_type,
+                prompt or getattr(usage, "total_tokens", 0) or 0,
+                0,
+                provider=self._provider_name(),
+                model=model,
+            )
+        except Exception:  # noqa: BLE001 — the provider call already succeeded and was billed; never discard its response over a ledger write.
+            logger.warning(
+                "Failed to record LLM usage (provider=%s model=%s user_id=%s call_type=%s)",
+                self._provider_name(),
+                model,
+                self.user_id,
+                call_type,
+                exc_info=True,
+            )

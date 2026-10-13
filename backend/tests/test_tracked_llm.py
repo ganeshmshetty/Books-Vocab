@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -127,6 +128,49 @@ class TestTrackedLLMChatAsync:
         mock_record.assert_called_once_with(
             "u1", "translate_quick", 10, 20, cached_input_tokens=0, provider=None, model="m"
         )
+
+
+class TestTrackedLLMRecordFailureIsolation:
+    """A billed provider call that succeeded must still return its response
+    even when usage recording fails (#3433): the response is never discarded
+    because the token ledger write raised."""
+
+    @patch("kg.tracked_llm.logger")
+    @patch("kg.tracked_llm.record")
+    def test_chat_returns_response_when_record_raises(self, mock_record, mock_logger):
+        mock_record.side_effect = sqlite3.OperationalError("disk full")
+        client, resp = _mock_client()
+        llm = TrackedLLM(client, user_id="u1")
+        out = llm.chat("judge", model="m", messages=[])
+        assert out is resp
+        mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("kg.tracked_llm.logger")
+    @patch("kg.tracked_llm.record")
+    async def test_chat_async_returns_response_when_record_raises(self, mock_record, mock_logger):
+        mock_record.side_effect = sqlite3.OperationalError("disk full")
+        resp = SimpleNamespace(choices=[], usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
+
+        async def mock_create(**kwargs):
+            return resp
+
+        client = MagicMock()
+        client.chat.completions.create = mock_create
+        llm = TrackedLLM(client, user_id="u1")
+        out = await llm.chat_async("translate_quick", model="m", messages=[])
+        assert out is resp
+        mock_logger.warning.assert_called_once()
+
+    @patch("kg.tracked_llm.logger")
+    @patch("kg.tracked_llm.record")
+    def test_embed_returns_response_when_record_raises(self, mock_record, mock_logger):
+        mock_record.side_effect = sqlite3.OperationalError("disk full")
+        client, resp = _mock_embed_client()
+        llm = TrackedLLM(client, user_id="u1")
+        out = llm.embed("embed", input=["hello"], model="m")
+        assert out is resp
+        mock_logger.warning.assert_called_once()
 
 
 class TestTrackedLLMProviderBinding:
