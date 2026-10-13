@@ -19,6 +19,12 @@ _PAIR_THREAD_LOCKS: weakref.WeakValueDictionary[tuple[str, tuple[str, str]], thr
 _PAIR_THREAD_LOCKS_GUARD = threading.Lock()
 
 
+def _require_both_live(require_live: Callable[[str], Any] | None, from_id: str, to_id: str) -> None:
+    if require_live is not None:
+        require_live(from_id)
+        require_live(to_id)
+
+
 class _LinksMixin:
     """Link create / query / mutate / block operations for :class:`GraphStore`."""
 
@@ -254,6 +260,16 @@ class _LinksMixin:
             winner = self._reconcile_persisted_pairs(snapshot, {pair}, preferred_link=link)
         return winner if winner is not None and winner.id != link.id else None
 
+    def _rollback_provisional_link(self, link: GraphLink) -> None:
+        """Drop a link inserted by add_link that was not durably persisted."""
+        # Do not leave an un-persisted link visible as active in memory;
+        # callers would otherwise treat a failed create as a success.
+        with self._lock:
+            if self._links.get(link.id) is link:
+                self._unindex_link(link)
+                del self._links[link.id]
+            self._pending_link_ids.pop(link.id, None)
+
     def add_link(
         self,
         from_id: str,
@@ -275,11 +291,13 @@ class _LinksMixin:
         file lock so an already-persisted (active/hidden) pair returns the
         existing link instead of inserting a duplicate.
 
-        ``require_live`` is called for both endpoints under ``_lock`` before the
-        insert and may raise to refuse the link. The delete/archive path marks the
-        card dead before ``cleanup_for_card`` takes ``_lock`` to deprecate its
-        links, so a check and insert inside one critical section either sees the
-        card dead or is deprecated by that cleanup; no live edge can survive it.
+        ``require_live`` reads the cards DB, so it runs outside ``_lock``: once
+        before the insert (fast refusal, nothing inserted) and once after it. The
+        delete/archive path marks the card dead before ``cleanup_for_card`` takes
+        ``_lock`` to deprecate its links. A delete that lands after the pre-check
+        is either deprecated by that cleanup (it ran after our insert) or seen by
+        the post-insert check, which rolls our link back and raises. Either way no
+        live edge survives for a dead endpoint.
         """
         if from_id == to_id:
             raise ValueError("cannot link a card to itself")
@@ -292,27 +310,26 @@ class _LinksMixin:
             confidence=confidence,
             reason=reason,
         )
+        _require_both_live(require_live, from_id, to_id)
         with self._lock:
-            if require_live is not None:
-                require_live(from_id)
-                require_live(to_id)
             existing = self._find_link_between_unlocked(from_id, to_id)
-            if existing is not None:
-                return existing
-            self._links[link.id] = link
-            self._index_link(link)
-            self._touch_links((link.id,))
-            snapshot = self._links_to_serializable()
+            if existing is None:
+                self._links[link.id] = link
+                self._index_link(link)
+                self._touch_links((link.id,))
+                snapshot = self._links_to_serializable()
+        if existing is not None:
+            _require_both_live(require_live, from_id, to_id)
+            return existing
+        try:
+            _require_both_live(require_live, from_id, to_id)
+        except BaseException:
+            self._rollback_provisional_link(link)
+            raise
         try:
             existing = self._persist_new_link(link, snapshot)
         except BaseException:
-            # Do not leave an un-persisted link visible as active in memory;
-            # callers would otherwise treat a failed create as a success.
-            with self._lock:
-                if self._links.get(link.id) is link:
-                    self._unindex_link(link)
-                    del self._links[link.id]
-                self._pending_link_ids.pop(link.id, None)
+            self._rollback_provisional_link(link)
             raise
         if existing is not None:
             return existing
