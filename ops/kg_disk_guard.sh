@@ -141,14 +141,40 @@ process_snapshot() {
   ps ax 2>/dev/null
 }
 
+# One executable path per line.  macOS prints the full path, spaces included, so
+# callers match the basename of the whole line and never split it.
+process_command_snapshot() {
+  [[ "${KG_DISK_GUARD_PROCESS_PROBE_FAIL:-0}" == "1" ]] && return 1
+  ps -axo comm= 2>/dev/null
+}
+
+# Live owner of the machine-global iOS build lock (shlock writes the owner PID).
+# The guard's own PID never counts: it takes this lock only after the
+# active-build verdict, so a lock it holds is not a competing build.
+build_lock_has_live_owner() {
+  local holder
+  holder="$(cat "$BUILD_LOCK_FILE" 2>/dev/null || true)"
+  case "$holder" in ''|*[!0-9]*) return 1 ;; esac
+  [[ "$holder" != "$$" ]] || return 1
+  kill -0 "$holder" 2>/dev/null
+}
+
+# A build is an xcodebuild executable or a live build-lock owner.  Argv text is
+# never a signal: `deliver.py` runs, shell wrappers and `ios_ops.sh guard
+# --refresh` name build scripts without building, and counting them deferred
+# floor eviction indefinitely (#3400).
 active_build() {
   if [[ -n "${KG_DISK_GUARD_ACTIVE_BUILD:-}" ]]; then
     [[ "$KG_DISK_GUARD_ACTIVE_BUILD" == "1" ]] && printf '1' || printf '0'
     return
   fi
-  local snapshot
-  snapshot="$(process_snapshot)" || { printf '2'; return; }
-  grep -E '[x]codebuild|[i]os_(test|build|ops)\.sh|[u]i_quality_gate\.sh' <<<"$snapshot" >/dev/null 2>&1 && printf '1' || printf '0'
+  local commands
+  commands="$(process_command_snapshot)" || { printf '2'; return; }
+  if grep -Eq '(^|/)xcodebuild$' <<<"$commands" || build_lock_has_live_owner; then
+    printf '1'
+  else
+    printf '0'
+  fi
 }
 
 shared_cache_roots() {
@@ -987,4 +1013,9 @@ USAGE
   esac
 done
 
-main
+# Sourcing loads the functions without running a tick; tests stub the process
+# seams in-process through this boundary (ops/tests/test_kg_disk_guard.sh).
+# A sourced load must take no arguments: the argument loop above reads $@.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main
+fi

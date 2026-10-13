@@ -20,6 +20,10 @@ export KG_DISK_GUARD_BUILD_LOCK_HELD=1
 # process on the host is running (it turns repairs into deferred-active-build),
 # must never decide the verdict.  Docker cases pin their own values inline.
 export KG_DISK_GUARD_DOCKER_CACHE_BYTES=0 KG_DISK_GUARD_DOCKER_ACTIVE=0
+# Hermetic: the machine-global iOS build lock on a developer host can be held by
+# a live build; it must never decide the active-build verdict of a fixture that
+# does not name its own lock file.
+export KG_DISK_GUARD_BUILD_LOCK_FILE="$TMP/ios-build.lock"
 export KG_DISK_GUARD_LANE_USAGE_STATE="$TMP/lane-disk-usage.json"
 export KG_DISK_GUARD_DERIVED_DATA_GLOBAL="$TMP/derived-data"
 export KG_DISK_GUARD_XCTEST_DEVICES_ROOT="$TMP/xctest-devices"
@@ -178,6 +182,58 @@ grep -q '"derived_data_budget_kb":0' "$state" \
   && ok "global DerivedData budget recorded" || bad "global DerivedData budget missing"
 [[ -d "$global_derived/OtherProject-unmanaged" ]] \
   && ok "unmanaged global DerivedData is preserved" || bad "unmanaged global DerivedData was removed"
+
+echo "── active build: only an xcodebuild executable or a live build lock counts ──"
+# Sourcing the guard skips its main, so both process seams are stubbed
+# in-process: $1 is the argv snapshot (text the old detection grepped), $2 the
+# executable snapshot (ps -axo comm=, one path per line), $3 the build lock.
+active_build_probe() {
+  local argv_snapshot="$1" command_snapshot="$2" lock_file="$3"
+  (
+    unset KG_DISK_GUARD_ACTIVE_BUILD
+    export KG_DISK_GUARD_BUILD_LOCK_FILE="$lock_file"
+    # source inherits this function's positional parameters, and the guard's
+    # argument loop would reject them; a sourced load takes no arguments.
+    set --
+    source "$SCRIPT"
+    process_snapshot() { printf '%s\n' "$argv_snapshot"; }
+    process_command_snapshot() { printf '%s\n' "$command_snapshot"; }
+    active_build
+  )
+}
+expect_active_build() {
+  local want="$1" label="$2" got
+  got="$(active_build_probe "$3" "$4" "$5")"
+  [[ "$got" == "$want" ]] && ok "$label" || bad "$label (want active_build=$want, got $got)"
+}
+active_lock_dir="$TMP/active-build"; mkdir -p "$active_lock_dir"
+absent_lock="$active_lock_dir/absent.lock"
+sleep 300 & live_pid=$!
+sleep 0 & dead_pid=$!
+wait "$dead_pid"
+printf '%s\n' "$live_pid" > "$active_lock_dir/live.lock"
+printf '%s\n' "$dead_pid" > "$active_lock_dir/dead.lock"
+printf '%s\n' "$$" > "$active_lock_dir/self.lock"
+expect_active_build 0 "deliver.py ... ios_ops.sh test alone is not a build" \
+  '/opt/homebrew/bin/python3.13 ops/deliver.py --check "ios=ops/ios_ops.sh test"' \
+  $'/opt/homebrew/bin/python3.13\n/bin/bash\n/bin/zsh' "$absent_lock"
+expect_active_build 0 "ios_ops.sh guard --refresh alone is not a build" \
+  '/bin/bash ops/ios_ops.sh guard --refresh' \
+  $'/bin/bash\n/bin/zsh' "$absent_lock"
+expect_active_build 0 "guard tick alone is not a build" \
+  '/bin/bash ops/kg_disk_guard.sh' \
+  '/bin/bash' "$absent_lock"
+expect_active_build 1 "real xcodebuild executable is a build" \
+  '' '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild' "$absent_lock"
+expect_active_build 1 "xcodebuild under a spaced install path is a build" \
+  '' $'/bin/zsh\n/Applications/Xcode 16.app/Contents/Developer/usr/bin/xcodebuild' "$absent_lock"
+expect_active_build 1 "live foreign iOS build lock is a build" \
+  '' '/bin/bash' "$active_lock_dir/live.lock"
+expect_active_build 0 "stale iOS build lock with a dead owner is not a build" \
+  '' '/bin/bash' "$active_lock_dir/dead.lock"
+expect_active_build 0 "guard never counts a lock it holds itself" \
+  '' '/bin/bash' "$active_lock_dir/self.lock"
+kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
 
 echo "── global DerivedData: active consumer defers repair ──"
 root="$TMP/global-dd-active"; global_derived="$root/global-derived-data"; state="$root/state.json"
