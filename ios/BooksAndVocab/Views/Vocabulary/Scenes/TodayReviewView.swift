@@ -148,16 +148,52 @@ struct TodayReviewView: View {
         self.onClose = onClose
     }
 
-    var body: some View {
-        let _ = PerfLog.review.mark("treview.held", "inst=#\(state.instanceSeq) viewBody")
-        let notebookSettingsResolver = NotebookSettingsResolver(
+    /// 複習頁的設定解析器（body 與切換面板確認共用，確保有效初始間隔來源一致）。
+    private var reviewNotebookSettingsResolver: NotebookSettingsResolver {
+        NotebookSettingsResolver(
             globalReviewStore: reviewSettingsStore,
             globalCardLayoutStore: reviewCardLayoutStore,
             projections: notebookSettings
         )
+    }
+
+    private var reviewModeSheetBinding: Binding<Bool> {
+        Binding(
+            get: { state.isReviewModeSheetPresented },
+            set: { state.isReviewModeSheetPresented = $0 }
+        )
+    }
+
+    /// 面板確認（#2042 Stage 3）：寫入方向與進度覆寫，失敗才回報。
+    private func confirmReviewModeSwitch(level: Double) {
+        state.isReviewModeSheetPresented = false
+        let notebookId = state.currentEntry?.notebookId ?? "default"
+        let initialIntervalHours = reviewNotebookSettingsResolver
+            .snapshot(for: allEntries.map(\.notebookId))
+            .reviewSettings(for: notebookId)
+            .effectiveInitialIntervalHours
+        guard state.applyReviewModeSwitch(
+            level: level,
+            initialIntervalHours: initialIntervalHours,
+            now: Date()
+        ) else { return }
+        do {
+            try modelContext.save()
+        } catch {
+            toastCoordinator.error(L10n.string("todayReview.saveFailure"))
+        }
+    }
+
+    var body: some View {
+        let _ = PerfLog.review.mark("treview.held", "inst=#\(state.instanceSeq) viewBody")
+        let notebookSettingsResolver = reviewNotebookSettingsResolver
         let notebookSettingsSnapshot = notebookSettingsResolver.snapshot(
             for: allEntries.map(\.notebookId)
         )
+        let reviewState = state
+        let reviewModeSwitch = ReviewModeSwitchAction(isAvailable: state.canSwitchReviewMode) {
+            reviewState.beginReviewModeSwitch()
+        }
         return TodayReviewPresenter(
             state: state.presenterState,
             notebookSettingsResolver: notebookSettingsResolver,
@@ -237,6 +273,7 @@ struct TodayReviewView: View {
             onToggleLinkGroup: { state.toggleLinkGroup($0) },
             gradeHints: state.gradeIntervalHints(settings: notebookSettingsSnapshot)
         )
+        .environment(\.reviewModeSwitchAction, reviewModeSwitch)
         .toastOverlay()
         .task {
             refreshNotebookBadges()
@@ -333,6 +370,13 @@ struct TodayReviewView: View {
         .toastSheet(item: $pendingLinkDetail) { request in
             PendingLinkDetailSheet(link: request.link)
                 .appSheet(.medium)
+        }
+        .toastSheet(isPresented: reviewModeSheetBinding) {
+            ReviewModeSheet(
+                targetMode: state.reviewModeSwitchTarget,
+                onConfirm: { level in confirmReviewModeSwitch(level: level) }
+            )
+            .appSheet(.medium)
         }
         .toastSheet(isPresented: $showLayoutEditor) {
             // Writes straight through to the layout the card actually draws (the

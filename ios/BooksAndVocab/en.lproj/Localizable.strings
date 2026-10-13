@@ -1378,6 +1378,13 @@
 "todayReview.card.temporaryDetail.show" = "Show details for this card";
 "todayReview.card.temporaryDetail.restore" = "Back to compact";
 "todayReview.card.more" = "More actions";
+"todayReview.card.reviewMode.toProduction" = "Switch to production";
+"todayReview.card.reviewMode.toRecognition" = "Switch to recognition";
+"todayReview.reviewMode.sheet.confirm" = "Confirm";
+"todayReview.reviewMode.level.label" = "Forgetting level";
+"todayReview.reviewMode.level.keep" = "Keep progress";
+"todayReview.reviewMode.level.reset" = "Reset progress";
+"todayReview.reviewMode.level.partial" = "Partly forgotten";
 
 "addLink.error.quotaExhausted" = "Today's AI quota is used up. Try again tomorrow.";
 "addLink.error.sourceUnavailable" = "The source card is no longer available (deleted, archived, or moved).";

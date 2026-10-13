@@ -1359,6 +1359,13 @@
 "todayReview.card.temporaryDetail.show" = "暂时显示详细内容";
 "todayReview.card.temporaryDetail.restore" = "恢复精简";
 "todayReview.card.more" = "更多操作";
+"todayReview.card.reviewMode.toProduction" = "切换为产出";
+"todayReview.card.reviewMode.toRecognition" = "切换为识别";
+"todayReview.reviewMode.sheet.confirm" = "确认";
+"todayReview.reviewMode.level.label" = "遗忘程度";
+"todayReview.reviewMode.level.keep" = "保留进度";
+"todayReview.reviewMode.level.reset" = "归零";
+"todayReview.reviewMode.level.partial" = "部分遗忘";
 
 "addLink.error.quotaExhausted" = "今天的 AI 额度已用完，请明天再试。";
 "addLink.error.sourceUnavailable" = "来源卡片已不可用（已删除、封存或移动）。";
