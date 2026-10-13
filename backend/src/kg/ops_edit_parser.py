@@ -31,6 +31,7 @@ from .ops_edit_commands import (
     cmd_world_snapshot,
 )
 from .ops_edit_shared import EditError, emit
+from .sentry_init import init_sentry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -221,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    init_sentry(job="ops_edit")
     args = build_parser().parse_args()
     try:
         code = args.func(args)
