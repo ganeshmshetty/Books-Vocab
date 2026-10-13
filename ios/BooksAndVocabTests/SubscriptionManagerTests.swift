@@ -862,6 +862,76 @@ struct SubscriptionManagerTests {
         #expect(!applied)
         #expect(!mgr.hasProAccess)
     }
+
+    // MARK: - transaction settlement (#3421)
+
+    private struct TransactionSyncStubError: Error {}
+
+    /// 未登入時交易不得 finish（finish 後 StoreKit 不再重送，會永久丟失）；登入後重試須同步成功才 finish。
+    @MainActor
+    @Test func settle_loggedOutTransaction_staysUnfinishedUntilRetriedWhileLoggedIn() async {
+        var events: [String] = []
+        let loggedOut = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-1",
+            isLoggedIn: false,
+            sync: { _ in events.append("sync") },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events.isEmpty)
+        guard case .skippedNotLoggedIn = loggedOut else {
+            Issue.record("expected skippedNotLoggedIn, got \(loggedOut)")
+            return
+        }
+
+        let retried = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-1",
+            isLoggedIn: true,
+            sync: { _ in events.append("sync") },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync", "finish"])
+        guard case .finished = retried else {
+            Issue.record("expected finished, got \(retried)")
+            return
+        }
+    }
+
+    /// 登入使用者的同步失敗時交易必須保持未完成，讓 StoreKit 於之後重送，而不是先 finish 再同步。
+    @MainActor
+    @Test func settle_failedSyncForLoggedInUser_leavesTransactionUnfinished() async {
+        var events: [String] = []
+        let outcome = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-2",
+            isLoggedIn: true,
+            sync: { _ in
+                events.append("sync")
+                throw TransactionSyncStubError()
+            },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync"])
+        guard case .syncFailed = outcome else {
+            Issue.record("expected syncFailed, got \(outcome)")
+            return
+        }
+    }
+
+    /// 成功路徑的順序必須是「同步成功後才 finish」。
+    @MainActor
+    @Test func settle_successfulSync_finishesOnlyAfterSync() async {
+        var events: [String] = []
+        let outcome = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-3",
+            isLoggedIn: true,
+            sync: { _ in events.append("sync") },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync", "finish"])
+        guard case .finished = outcome else {
+            Issue.record("expected finished, got \(outcome)")
+            return
+        }
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
