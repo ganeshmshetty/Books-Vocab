@@ -7,6 +7,7 @@ final class UITestSubscriptionManager: SubscriptionManaging {
     var entitlements: KGEntitlements
     var isLoading = false
     var lastError: String?
+    var productLoadFailed = false
     var activePaywallSource: PaywallSource?
     var proProduct: Product?
     var proProductIdentifier: String = BrandIdentity.proProductID

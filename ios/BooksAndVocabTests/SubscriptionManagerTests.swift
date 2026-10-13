@@ -355,6 +355,42 @@ struct SubscriptionManagerTests {
         )
     }
 
+    /// A product-load failure must keep the paywall on its retry affordance even when a later
+    /// successful refresh clears the shared `lastError` (#3420).
+    @MainActor
+    @Test func productLoadFailure_survivesSuccessfulRefresh() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedOwner = mgr.entitlementsOwnerUserId
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        let savedLoadFailed = mgr.productLoadFailed
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.entitlementsOwnerUserId = savedOwner
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+            mgr.productLoadFailed = savedLoadFailed
+        }
+        mgr.lastRefreshTime = nil
+        // loadProducts 耗盡重試後同時留下：無商品、lastError 與 productLoadFailed。
+        mgr.lastError = "尚未取得訂閱方案，請稍後再試。"
+        mgr.productLoadFailed = true
+
+        // 之後的 refresh 成功並清除 lastError，但不得清除商品載入失敗狀態。
+        let service = GatedSubscriptionService(responses: [1: KGEntitlements(pro: status())], suspended: [])
+        let succeeded = await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: true)
+        #expect(succeeded)
+        #expect(mgr.lastError == nil)
+        #expect(
+            SubscriptionManager.productLoadState(
+                isLoading: false,
+                hasProduct: mgr.proProduct != nil,
+                hasError: mgr.productLoadFailed
+            ) == .retry
+        )
+    }
+
     @MainActor
     @Test func proProductID_is_stable_and_exposed_via_instance() {
         // The product identifier is a release-critical constant; pin it and confirm
