@@ -222,9 +222,11 @@ final class SyncCoordinator: SyncCoordinating {
     /// 同 notebook 同字的「待刪 + 待新增」收斂成還原待刪那筆（#2105 defense-in-depth）。
     ///
     /// 若照原樣上傳，delete 先跑會刪掉 server card（SRS 歷史、AI 內容、graph links），
-    /// add 再建一張沒有歷史的新卡。收斂規則：待刪那筆 `restorePendingEntry()` 並承接
-    /// 新擷取的 translation／rootForm，新增那筆本機刪除（它從未上過 server），其 id
-    /// 回傳給呼叫端排除在上傳批次外。只碰「從未同步的 add」，不碰 edit。
+    /// add 再建一張沒有歷史的新卡。收斂規則：待刪那筆承接新擷取的 translation／rootForm，
+    /// 新增那筆本機刪除（它從未上過 server），其 id 回傳給呼叫端排除在上傳批次外。
+    /// 待刪那筆若 server 已持有卡（`hasServerCard`）必須走 `queueEdit()`：`restorePendingEntry()`
+    /// 會把它改成 pending add 經 batchAdd 重送，server 不會套用新 translation（#3408）。
+    /// 只碰「從未同步的 add」，不碰 edit。
     private static func collapseRecapturedDeletes(
         pendingEntries: [VocabularyEntry],
         modelContext: ModelContext
@@ -240,7 +242,11 @@ final class SyncCoordinator: SyncCoordinating {
         for add in uploadable where add.syncAction == .add && add.kgCardId == nil {
             guard let queuedDelete = deletesByKey[outboxKey(add)] else { continue }
             AppLog.kg.warning("collapse delete+add into restore: \(add.word) in \(add.notebookId)")
-            queuedDelete.restorePendingEntry()
+            if queuedDelete.hasServerCard {
+                queuedDelete.queueEdit()
+            } else {
+                queuedDelete.restorePendingEntry()
+            }
             queuedDelete.translation = add.translation
             if let rootForm = add.rootForm { queuedDelete.rootForm = rootForm }
             removed.insert(add.id)
