@@ -1,7 +1,7 @@
 # ruff: noqa: F401, F403, F405, I001
 """test ops edit notebook.py test ownership shard."""
 
-
+import fcntl
 
 from _ops_edit_support import *  # noqa: F403
 
@@ -130,6 +130,34 @@ class TestWorldSnapshots:
         assert _card_by_content(tmp_path, uid, "baseline") is not None
         assert _card_by_content(tmp_path, uid, "after") is None
         assert not (tmp_path / "users" / "other").exists()
+
+    def test_world_restore_refused_while_worker_lock_held(self, tmp_path):
+        uid = _mk_user(tmp_path)
+        assert _edit(str(tmp_path), "card-add", uid, "baseline", "--meaning", "m", "--commit").returncode == 0
+        snap = _edit(str(tmp_path), "world-snapshot", "--label", "baseline", "--commit", "--json")
+        assert snap.returncode == 0, snap.stderr
+        snapshot_path = json.loads(snap.stdout)["result"]["snapshot"]
+        assert _edit(str(tmp_path), "card-add", uid, "after", "--meaning", "m", "--commit").returncode == 0
+
+        def data_bytes() -> dict[str, bytes]:
+            return {
+                str(p.relative_to(tmp_path)): p.read_bytes()
+                for p in tmp_path.rglob("*")
+                if p.is_file() and not any(part.startswith("_ops_") for part in p.relative_to(tmp_path).parts)
+            }
+
+        # 模擬執行中的 API：啟動時已建立 .worker.lock 並持有其 flock（同一 inode）。
+        (tmp_path / ".worker.lock").touch()
+        before = data_bytes()
+        with open(tmp_path / ".worker.lock", "a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                restore = _edit(str(tmp_path), "world-restore", "--snapshot", snapshot_path, "--commit", "--json")
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        assert restore.returncode != 0
+        assert data_bytes() == before
+        assert _card_by_content(tmp_path, uid, "after") is not None
 
 class TestImportAtomicity:
     def test_invalid_interval_no_partial_write(self, tmp_path):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import tarfile
 import tempfile
@@ -16,6 +17,7 @@ from kg.graph.models import LinkKind
 from kg.ops_shared import data_dir
 from kg.review_events import ReviewEventStore
 from kg.user_store import load_users_from
+from kg.worker_guard import WORKER_LOCK_FILENAME, WorkerLockHeldError, hold_worker_lock
 
 from .ops_edit_shared import (
     EditContext,
@@ -897,12 +899,20 @@ def cmd_world_restore(args: argparse.Namespace) -> int:
         )
         return 0
 
-    pre_restore = backup_world(dd, label="pre-world-restore")
-    with tempfile.TemporaryDirectory(prefix="kg-world-restore-") as tmp:
-        tmp_root = Path(tmp)
-        with tarfile.open(snapshot_path) as tar:
-            tar.extractall(tmp_root, filter="data")
-        restored = _replace_world_from_snapshot(dd, tmp_root / _WORLD_BACKUP_ROOT)
+    # 整個 data_dir 會被覆蓋：先取得 worker flock，執行中的 API 持鎖時拒絕，且鎖在還原期間持續持有。
+    try:
+        lock_fd = hold_worker_lock(dd / WORKER_LOCK_FILENAME)
+    except WorkerLockHeldError as e:
+        raise EditError(f"{e}；world-restore --commit 須在 API 停止後執行") from e
+    try:
+        pre_restore = backup_world(dd, label="pre-world-restore")
+        with tempfile.TemporaryDirectory(prefix="kg-world-restore-") as tmp:
+            tmp_root = Path(tmp)
+            with tarfile.open(snapshot_path) as tar:
+                tar.extractall(tmp_root, filter="data")
+            restored = _replace_world_from_snapshot(dd, tmp_root / _WORLD_BACKUP_ROOT)
+    finally:
+        os.close(lock_fd)
     emit(
         {
             "mode": "commit",
