@@ -674,3 +674,28 @@ def test_local_only_asset_declaration_after_tombstone_is_rejected(isolated_api, 
             assert book is not None and book.asset_storage is None
     finally:
         store.close()
+
+
+def test_local_directory_removal_runs_before_prefix_sweep(tmp_path, monkeypatch):
+    """#2929 (4b): a stalled S3 sweep must not delay local removal, so the
+    user directory is removed before the best-effort prefix sweep starts."""
+    import kg.user_handlers as user_handlers
+
+    order: list[str] = []
+    real_remove = user_handlers._remove_user_dir
+
+    def _record_sweep(*_args, **_kwargs):
+        order.append("sweep")
+        return 0
+
+    def _record_remove(data_dir, uid):
+        order.append(f"remove:{uid}")
+        return real_remove(data_dir, uid)
+
+    monkeypatch.setattr(user_handlers, "sweep_account_prefixes", _record_sweep)
+    monkeypatch.setattr(user_handlers, "_remove_user_dir", _record_remove)
+    _seed_library_asset(tmp_path, "canonical", "library/canonical/book/asset.epub")
+
+    _call_delete(tmp_path, {"canonical": {"linked_ids": [], "config": {}}}, MagicMock(), user_id="canonical")
+
+    assert order == ["remove:canonical", "sweep"]
