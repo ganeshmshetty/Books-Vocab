@@ -223,6 +223,10 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     @ObservationIgnored
     private(set) var localWipeRequiresRestart = false
 
+    /// True while `recoverFromStuckLocalWipe` awaits its store rebuild (#3328).
+    @ObservationIgnored
+    private var isRecoveringStuckLocalWipe = false
+
     /// Sync 開跑前的前置 gate — 等 logout 排程的本地清理收尾。
     /// 無 pending cleanup 時立即返回（正常冷啟登入不被拖慢）；
     /// 懸掛期間若又發生 logout，re-check 直到鏈上最後一個 cleanup 完成。
@@ -282,6 +286,11 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     /// refuses every sign-in; the next launch builds a fresh store and admits sign-in normally.
     @discardableResult
     func recoverFromStuckLocalWipe() async -> Bool {
+        // canRecoverStuckLocalWipe stays true until the rebuild returns, so a second confirm during the await
+        // needs the in-flight flag. Otherwise it reruns the rebuild and its failure overwrites the restart message (#3328).
+        guard canRecoverStuckLocalWipe, !isRecoveringStuckLocalWipe else { return false }
+        isRecoveringStuckLocalWipe = true
+        defer { isRecoveringStuckLocalWipe = false }
         guard await localDataCleaner.rebuildStoreAndDiscardPendingWipe() else {
             // #3309: the sheet discards the Bool, so the failure must reach the user through authError.
             AppLog.auth.error("store rebuild failed: stuck local wipe not recovered")
