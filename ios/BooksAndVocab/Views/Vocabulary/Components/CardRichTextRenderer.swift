@@ -237,6 +237,26 @@ enum CardRichTextRenderer {
         return part
     }
 
+    /// 去掉 inline 標記（`**`、反引號），只留文字。朗讀與複製用；切分規則與
+    /// `attributedStringUncounted` 共用同一個 pattern，兩邊不會各自斷句。
+    static func plainText(_ raw: String) -> String {
+        guard let inlinePattern else { return raw }
+        let nsString = raw as NSString
+        var result = ""
+        var lastEnd = 0
+        for match in inlinePattern.matches(in: raw, range: NSRange(location: 0, length: nsString.length)) {
+            result += nsString.substring(with: NSRange(location: lastEnd, length: match.range.location - lastEnd))
+            let boldRange = match.range(at: 1)
+            let captureRange = boldRange.location != NSNotFound ? boldRange : match.range(at: 2)
+            if captureRange.location != NSNotFound {
+                result += nsString.substring(with: captureRange)
+            }
+            lastEnd = match.range.location + match.range.length
+        }
+        result += nsString.substring(from: lastEnd)
+        return result
+    }
+
     static func clozeMarkedWord(in raw: String) -> String {
         guard let markedWordPattern else { return raw }
         let nsString = raw as NSString

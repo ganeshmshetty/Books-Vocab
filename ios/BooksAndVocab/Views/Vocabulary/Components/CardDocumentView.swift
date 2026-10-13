@@ -41,6 +41,8 @@ struct CardDocumentView: View {
     let document: CardDocument
     var truncateRadius: Int? = nil
     var targetWord: String? = nil
+    /// 書摘卡的來源行（書名 · 章節）；nil 不顯示。獨立來源區塊存在時由呼叫端傳 nil。
+    var exampleSource: CardExampleSource? = nil
     var compact: Bool = false
     var collocationExplanations: [String: String] = [:]
     var onExplainCollocation: ((String) -> Void)? = nil
@@ -72,15 +74,17 @@ struct CardDocumentView: View {
                         .padding(blockPadding)
 
                 case .example(let paragraph):
-                    CardDocumentExampleBlock(paragraph: paragraph, truncateRadius: truncateRadius, targetWord: targetWord)
-                        .padding(blockPadding)
+                    CardExampleView(
+                        markdown: paragraph.rawMarkdown,
+                        targetWord: targetWord,
+                        truncateRadius: truncateRadius,
+                        source: exampleSource
+                    )
+                    .padding(blockPadding)
 
                 case .divider:
-                    if compact {
-                        CardSectionDivider(horizontalPadding: 0)
-                    } else {
-                        CardSectionDivider()
-                    }
+                    // 區塊之間不畫 hairline：分隔只靠 block padding 與 spacing（#3113 layering）。
+                    EmptyView()
 
                 case .meaning(let meaning):
                     CardDocumentMeaningBlock(meaning: meaning, compact: compact)
@@ -173,46 +177,6 @@ struct CardDocumentHeroBlock: View {
         }
         .appFeedback(.selection, trigger: speakTrigger)
         .appFeedback(.success, trigger: copyTrigger)
-        .enableInjection()
-    }
-}
-
-struct CardDocumentExampleBlock: View {
-    @ObserveInjection private var inject
-    @Environment(\.appSkin) private var appSkin
-    let paragraph: CardDocumentParagraph
-    var truncateRadius: Int? = nil
-    var targetWord: String? = nil
-
-    var body: some View {
-        Group {
-            if let radius = truncateRadius {
-                CardRichTextRenderer.text(
-                    paragraph.rawMarkdown,
-                    style: CardRichTextStyle(
-                        font: appSkin.typography.detailExampleSerif,
-                        textColor: appSkin.palette.primaryText,
-                        highlightColor: appSkin.palette.highlightMark,
-                        italic: false,
-                        underlineHighlights: appSkin.highlight.showUnderline,
-                        useBackgroundMark: appSkin.highlight.showBackground,
-                        highlightWeight: appSkin.highlight.fontWeight,
-                        backgroundOpacity: appSkin.highlight.backgroundOpacity,
-                        underlineOpacity: appSkin.highlight.underlineOpacity
-                    ),
-                    truncateAroundMarkedWordRadius: radius,
-                    targetWord: targetWord
-                )
-                .lineSpacing(appSkin.metrics.paragraphLineSpacing)
-            } else {
-                CardInlineText(
-                    paragraph: paragraph,
-                    style: .example
-                )
-                .lineSpacing(appSkin.metrics.paragraphLineSpacing)
-            }
-        }
-        .cardCopyContextMenu(paragraph.plainText)
         .enableInjection()
     }
 }

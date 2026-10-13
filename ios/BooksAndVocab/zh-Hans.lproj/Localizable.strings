@@ -967,6 +967,7 @@
 "banner.action.dismiss" = "关闭";
 "translation.vocab.speak" = "朗读 %@";
 "vocab.card.speak" = "朗读 %@";
+"vocab.card.example.speak" = "朗读句子";
 "vocab.card.addLink" = "新增知识链接";
 "sync.pending.undoDelete" = "撤销删除";
 "sync.pending.cancelAdd" = "取消待新增项目";

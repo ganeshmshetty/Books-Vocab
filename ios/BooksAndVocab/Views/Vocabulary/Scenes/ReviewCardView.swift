@@ -816,9 +816,8 @@ struct ReviewCardView: View {
                 layout: layout
             )
 
-            // Answer word + its section rule form ONE core section: the rule is the
-            // core's own chrome (as on the shipped card), so it is measured with the
-            // core rather than competing with the profile's fields for a slot.
+            // The answer word is the core section. No rule under it: separation from the
+            // fields below comes from the solver's section spacing (#3113, layering).
             VStack(alignment: .leading, spacing: layout.sectionSpacing) {
                 // 背面與正面對稱：inline 欄位貼著答案字，不自成一列。排除是
                 // face-agnostic 的，只修正面會讓「背面開了詞性」這個組合直接掉字。
@@ -844,12 +843,6 @@ struct ReviewCardView: View {
                             policy: layout.policy(for: .field(field))
                         )
                     }
-                }
-
-                // 這條線的規則是「答案底下還有東西才畫」。難度搬到上面之後，若使用者
-                // 只開難度，底下已無內容 —— 再畫就是憑空多一條懸空分隔線。
-                if ReviewCardLayoutSolver.drawsAnswerDivider(fields: plan.back.belowCore) {
-                    CardSectionDivider(horizontalPadding: 0)
                 }
             }
             .onGeometryChange(for: ReviewCardSectionMeasurement.self) {
@@ -891,15 +884,8 @@ struct ReviewCardView: View {
         currentCard: ReviewCardContent,
         layout: ReviewCardLayoutSolver.Result
     ) -> some View {
-        // id: \.element 維持原本 id: \.self 的 view identity（不要換成 \.offset）。
-        ForEach(Array(blockFields.enumerated()), id: \.element) { index, field in
-            // rule 畫在欄位**前面**、當 VStack 的同層 sibling —— 不包進被量測的子樹，
-            // 否則 natural 含線、隱藏 probe 量的另外兩階不含，階梯一壓縮就再度出現
-            // 「solver 相信的高度 != 畫面畫的高度」。
-            if ReviewCardLayoutSolver.drawsFieldDivider(face: .back, atIndex: index) {
-                CardSectionDivider(horizontalPadding: 0)
-            }
-
+        // id: \.self 維持欄位值本身的 view identity（不要換成 \.offset）。
+        ForEach(blockFields, id: \.self) { field in
             reviewOptionalField(
                 field,
                 currentCard: currentCard,
@@ -1148,11 +1134,6 @@ struct ReviewCardView: View {
         // 只有 block 欄位向 solver 要一格預算。inline 欄位（詞性）畫在核心列裡，
         // 高度已經被 `.core` 的 onGeometryChange 量進去了。
         let fields = face == .front ? plan.front.blockFields : plan.back.blockFields
-        // 同一組 blockFields 的兩欄分割（core 之上／之下）。hairline 逐欄記帳：
-        // 一欄的第一格貼的是 core 不是另一格，接起來算 n-1 會多收一條。
-        let columns = face == .front
-            ? [plan.front.aboveCore, plan.front.belowCore]
-            : [plan.back.aboveCore, plan.back.belowCore]
         let defaults: [ReviewCardLayoutSolver.Section: ReviewCardLayoutSolver.Measurement] = [
             .core: .init(naturalHeight: face == .front ? 112 : 132),
             .field(.partOfSpeech): .init(naturalHeight: 22),
@@ -1178,8 +1159,7 @@ struct ReviewCardView: View {
             measurements: measurements,
             viewportHeight: availableHeight,
             minimumHeight: face == .front ? 0 : answerCardHeight,
-            preset: renderProfile.preset(for: currentCard.card.reviewMode),
-            columns: columns
+            preset: renderProfile.preset(for: currentCard.card.reviewMode)
         ))
     }
 
@@ -1281,28 +1261,20 @@ struct ReviewCardView: View {
             }
         case .example:
             if let example = card.examples.first {
-                CardRichTextRenderer.text(
-                    example,
-                    style: CardRichTextStyle(
-                        font: appSkin.typography.example,
-                        textColor: appSkin.palette.secondaryText,
-                        highlightColor: appSkin.palette.highlightMark,
-                        italic: true,
-                        underlineHighlights: appSkin.highlight.showUnderline,
-                        useBackgroundMark: appSkin.highlight.showBackground,
-                        highlightWeight: appSkin.highlight.fontWeight,
-                        backgroundOpacity: appSkin.highlight.backgroundOpacity,
-                        underlineOpacity: appSkin.highlight.underlineOpacity
-                    ),
+                // 與 Linked Card 同一個 CardExampleView（#3113）。正面是 cloze，不畫 footer：
+                // 朗讀句子會把被挖空的答案唸出來；背面才有來源與朗讀／複製。
+                CardExampleView(
+                    markdown: example,
+                    targetWord: card.word,
                     mode: ReviewCardExampleRendering.mode(face: face, cardMode: card.reviewMode),
-                    truncateAroundMarkedWordRadius: policy.exampleRadius
+                    truncateRadius: policy.exampleRadius
                         ?? ReviewCardLayoutSolver.naturalExampleRadius(
                             for: face,
                             staticRadius: appSkin.metrics.exampleTruncateRadius
                         ),
-                    targetWord: card.word
+                    source: face == .back ? card.exampleSource : nil,
+                    showsFooter: face == .back
                 )
-                .lineSpacing(appSkin.metrics.paragraphLineSpacing)
             }
         case .explanation:
             // One globally-limited rich text rather than per-paragraph clamps: the

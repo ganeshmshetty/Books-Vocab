@@ -103,7 +103,7 @@ struct CardPresentation {
             return CardLinkGroupPresentation(id: group.id, label: group.label, items: activeItems)
         }
 
-        let computedShowsSourceContext = Self.computeShowsSourceContext(
+        let computedSeparateSourceBlock = Self.separateSourceBlockShown(
             sourceContext: sourceContext, examples: examples, bookTitle: bookTitle
         )
 
@@ -119,7 +119,7 @@ struct CardPresentation {
             chapterTitle: chapterTitle,
             explanation: explanation,
             collocations: collocations,
-            showsSourceContext: computedShowsSourceContext
+            showsSourceContext: computedSeparateSourceBlock
         )
     }
 
@@ -131,16 +131,40 @@ struct CardPresentation {
         activeLinkGroups.reduce(0) { $0 + $1.items.count }
     }
 
+    /// 來源資訊是否可見（獨立來源區塊或書摘 footer 擇一承載）。
     var showsSourceContext: Bool {
         Self.computeShowsSourceContext(sourceContext: sourceContext, examples: examples, bookTitle: bookTitle)
     }
 
+    /// 書摘 footer 的來源行。獨立來源區塊已承載時回 nil，避免同一組書名／章節印兩次。
+    var exampleSource: CardExampleSource? {
+        Self.separateSourceBlockShown(sourceContext: sourceContext, examples: examples, bookTitle: bookTitle)
+            ? nil
+            : CardExampleSource.make(bookTitle: bookTitle, chapterTitle: chapterTitle)
+    }
+
+    /// 獨立來源區塊：來源可見、且 context 與第一個例句不同（#3113 item 6）。
+    /// 同一句已在例句區出現時，來源改由 footer 承載，不在 Linked Card 重印整句。
+    static func separateSourceBlockShown(sourceContext: String, examples: [String], bookTitle: String) -> Bool {
+        computeShowsSourceContext(sourceContext: sourceContext, examples: examples, bookTitle: bookTitle)
+            && !sourceRepeatsExample(sourceContext: sourceContext, examples: examples)
+    }
+
     /// sourceContext 是否需顯示 — 空白則否；否則僅當它與第一個例句不同、或書名非預設圖譜標題時才顯示。
-    /// init 與 showsSourceContext 共用，避免兩處邏輯 drift。
-    private static func computeShowsSourceContext(sourceContext: String, examples: [String], bookTitle: String) -> Bool {
+    private static func computeShowsSourceContext(
+        sourceContext: String,
+        examples: [String],
+        bookTitle: String
+    ) -> Bool {
         let trimmed = sourceContext.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return examples.first?.trimmingCharacters(in: .whitespacesAndNewlines) != trimmed || bookTitle != "Knowledge Graph"
+        return examples.first?.trimmingCharacters(in: .whitespacesAndNewlines) != trimmed
+            || bookTitle != CardExampleSource.knowledgeGraphFallback
+    }
+
+    private static func sourceRepeatsExample(sourceContext: String, examples: [String]) -> Bool {
+        let trimmed = sourceContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        return examples.first?.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
     }
 
     static let defaultLinkOrdering = ["contrasts_with", "shares_usage"]

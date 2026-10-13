@@ -117,7 +117,8 @@ struct AppSkin {
         let rowWord: Font
         let translationTitle: Font
         let body: Font
-        let example: Font
+        /// 書摘卡（#3113）：Linked Card、Word Detail、複習卡背面共用的例句字級。
+        let cardExample: Font
         let detailExampleSerif: Font
         let detailExampleSerifStrong: Font
         let caption: Font

@@ -19,15 +19,9 @@ struct ReviewCardLayoutGoldenTests {
             let naturalExampleRadius: Int?
         }
 
-        struct Divider: Codable, Equatable {
-            let empty: Bool
-            let withFields: Bool
-        }
-
         struct NaturalTier: Codable, Equatable {
             let front: NaturalFace
             let back: NaturalFace
-            let drawsAnswerDivider: Divider
         }
 
         struct BackOverflow: Codable, Equatable {
@@ -102,10 +96,6 @@ struct ReviewCardLayoutGoldenTests {
                 explanationLineLimit: ReviewCardLayoutSolver.explanationLineLimit(policyLineLimit: nil),
                 collocationRowLimit: ReviewCardLayoutSolver.collocationRowLimit(lineLimit: nil),
                 naturalExampleRadius: ReviewCardLayoutSolver.naturalExampleRadius(for: .back, staticRadius: 5)
-            ),
-            drawsAnswerDivider: .init(
-                empty: ReviewCardLayoutSolver.drawsAnswerDivider(fields: []),
-                withFields: ReviewCardLayoutSolver.drawsAnswerDivider(fields: [.difficultyTier])
             )
         )
         let viewport = ReviewCardViewport(containerHeight: 600)
@@ -179,8 +169,6 @@ struct ReviewCardLayoutGoldenTests {
         switch row {
         case .prompt: "prompt"
         case .answer: "answer"
-        case .answerDivider: "answerDivider"
-        case .fieldDivider: "fieldDivider"
         case .field(let field): "field.\(field.rawValue)"
         }
     }

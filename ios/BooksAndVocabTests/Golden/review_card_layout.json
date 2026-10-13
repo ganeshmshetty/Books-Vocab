@@ -8,13 +8,9 @@
         "rows": [
           "field.difficultyTier",
           "answer",
-          "answerDivider",
           "field.graphLinks",
-          "fieldDivider",
           "field.example",
-          "fieldDivider",
           "field.explanation",
-          "fieldDivider",
           "field.collocations"
         ]
       }
@@ -27,13 +23,9 @@
         "rows": [
           "field.difficultyTier",
           "answer",
-          "answerDivider",
           "field.graphLinks",
-          "fieldDivider",
           "field.example",
-          "fieldDivider",
           "field.explanation",
-          "fieldDivider",
           "field.collocations"
         ]
       }
@@ -49,10 +41,6 @@
       "explanationLineLimit": 3,
       "collocationRowLimit": 2,
       "naturalExampleRadius": null
-    },
-    "drawsAnswerDivider": {
-      "empty": false,
-      "withFields": true
     }
   },
   "backOverflow": {
