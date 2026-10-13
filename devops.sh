@@ -758,7 +758,7 @@ cmd_backup() {
   run_remote "rm -rf $snap_stage" >/dev/null 2>&1 || true
   if (( snap_rc != 0 )); then
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
-    err "本地冷快照失敗：一致快照拉回本機時 tar 失敗（exit $snap_rc）。此指令沒有產出可用備份。"
+    err "本地冷快照失敗：一致快照拉回本機時 tar 失敗（exit ${snap_rc}）。此指令沒有產出可用備份。"
   fi
   [[ -n "$prev" ]] && info "增量基準: $(basename "$prev")（未變檔走硬連結）" \
                    || info "首次全量備份（無基準）"
