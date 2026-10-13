@@ -2152,8 +2152,12 @@ p_ci "failure in a different suite is not hidden by green rerun elsewhere" "$P_N
 p_ci "newest attempt in_progress refused even if older one was green" "$P_NOTGREEN" "$(pr_page 2 "$(pr_run completed success '' 1 100)" "$(pr_run in_progress null '' 1 101)")"
 p_ci "run without id/check_suite refused (cannot tell newest attempt)" "$P_NOTGREEN" '{"total_count":1,"check_runs":[{"name":"backend-quality / backend-quality","status":"completed","conclusion":"success"}]}'
 p_ci "missing backend-quality refused" "沒有任何 backend-quality check-run" "$(pr_page 1 "$(pr_run completed success agent-review)")"
-p_ci "bare 'backend-quality' name is not the real check-run (refused)" "沒有任何 backend-quality check-run" "$(pr_page 1 "$(pr_run completed success backend-quality)")"
+p_ci "push-run check-run 'backend-quality' (main, 2026-10-13) accepted" "" "$(pr_page 1 "$(pr_run completed success backend-quality)")"
+p_ci "push-run 'backend-quality' skipped refused" "$P_NOTGREEN" "$(pr_page 1 "$(pr_run completed skipped backend-quality)")"
+p_ci "push-run 'backend-quality' failed in one suite refused though pr-gate name is green elsewhere" "$P_NOTGREEN" "$(pr_page 2 "$(pr_run completed success)" "$(pr_run completed failure backend-quality 2 200)")"
+p_ci "both accepted names green across suites pass" "" "$(pr_page 2 "$(pr_run completed success)" "$(pr_run completed success backend-quality 2 200)")"
 p_ci "sibling 'backend-quality / image-lock' does not count (refused)" "沒有任何 backend-quality check-run" "$(pr_page 1 "$(pr_run completed success 'backend-quality / image-lock')")"
+p_ci "sibling 'backend-quality / image-lock' green does not stand in for push-run failure" "$P_NOTGREEN" "$(pr_page 2 "$(pr_run completed success 'backend-quality / image-lock' 1 100)" "$(pr_run completed failure backend-quality 2 200)")"
 p_ci "empty check_runs refused"        "沒有任何 backend-quality check-run" "$(pr_page 0)"
 p_ci "garbage refused"                 "check-runs 回應無法解析" "not json"
 p_ci "empty output refused"            "check-runs 回應無法解析" ""
@@ -2166,14 +2170,15 @@ p_run "$P_TGT" --yes
 [[ $P_RC -ne 0 && "$P_OUT" == *"check-runs 失敗（exit 3）"* && "$(p_prod)" == "$P_BASE" ]] \
   && ok "CI: gh failure refused (no evidence)" || fail_t "gh failure accepted (rc=$P_RC): $P_OUT"
 
-# 真實 gh 路徑：必須帶 server-side 過濾 + --paginate（用 PATH gh shim 驗 argv）。
+# 真實 gh 路徑：必須 --paginate + filter=all + per_page=100，且不得做 server-side name 過濾（名稱改由 jq client-side 選取，
+# 同時接受 "backend-quality / backend-quality" 與 push-run 的 "backend-quality"；2026-10-13）。用 PATH gh shim 驗 argv。
 mk_promote_fx ghargs
 printf '%s' "$P_OK" > "$P_FX/gh_out.json"; : > "$P_FX/gh.log"
 P_RC=0; P_OUT="$(PATH="$TMP7/shim:$PATH" KG_TEST_GITLOG="$P_FX/git.log" KG_TEST_GHLOG="$P_FX/gh.log" KG_TEST_GH_OUT="$P_FX/gh_out.json" \
   bash "$P_FX/ops/release.sh" promote backend "$P_TGT" 2>&1)" || P_RC=$?
-[[ $P_RC -eq 0 ]] && grep -q -- "--paginate" "$P_FX/gh.log" && grep -qF "check_name=backend-quality%20%2F%20backend-quality" "$P_FX/gh.log" \
-  && grep -q "filter=all" "$P_FX/gh.log" && grep -q "commits/$P_TGT/check-runs" "$P_FX/gh.log" \
-  && ok "gh query is paginated and server-side filtered to 'backend-quality / backend-quality' (filter=all)" \
+[[ $P_RC -eq 0 ]] && grep -q -- "--paginate" "$P_FX/gh.log" && ! grep -q "check_name=" "$P_FX/gh.log" \
+  && grep -q "filter=all" "$P_FX/gh.log" && grep -q "per_page=100" "$P_FX/gh.log" && grep -q "commits/$P_TGT/check-runs" "$P_FX/gh.log" \
+  && ok "gh query is paginated, filter=all, unfiltered by name (names selected client-side)" \
   || fail_t "gh argv wrong (rc=$P_RC): $(cat "$P_FX/gh.log") :: $P_OUT"
 
 # --wait：收斂成功 / 逾時 / 線上版本是別的 SHA。

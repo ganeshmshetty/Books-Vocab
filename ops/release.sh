@@ -1435,34 +1435,40 @@ promote_version_at() {  # $1=ref → pyproject 與 api.py 的 backend 版號（�
   printf '%s\n' "$py"
 }
 
-# CI 證據（嚴格版）：server-side 只取名為 "backend-quality / backend-quality"（caller / reusable job）的 check-run（filter=all 含被 rerun 取代的舊 run），
-# --paginate 取全頁，jq -s 合併。依 check_suite.id 分組：**每個 suite 內 id 最大（最新 attempt）的 run 必須
+# CI 證據（嚴格版）：server-side 不做 name 過濾（filter=all 含被 rerun 取代的舊 run），--paginate 取全頁，jq -s 合併；
+# client-side 只選下方 check_pr／check_push 兩個精確名稱的 check-run。依 check_suite.id 分組：**每個 suite 內 id 最大（最新 attempt）的 run 必須
 # completed/success**；同 suite 內被 rerun 取代的舊失敗 attempt 不擋（#2660），不同 suite 的失敗（另一次獨立
 # CI 執行）仍拒絕。skipped／neutral／in_progress／缺席都不算綠；run 缺 id／check_suite.id 無法判定最新 attempt
 # → 不算綠。total_count 與實收 run 數不符 → 視為不完整。
 # 實證（#2660 P2，2026-10-10 唯讀 gh api）：run 37920482067（pr-gate）attempt 1 = failure、attempt 2 = success，
 # 兩者 run_id 與 check_suite_id 皆為 102741169602；attempt 2 的 job（如 backend-quality / backend-quality，
 # id 113886985309，started 2026-10-09T15:14:57Z）落在同一 suite。故「同 suite 內取 id 最大」即最新 attempt；跨 suite 不合併。
+# 實證（2026-10-13 唯讀 gh api／gh run view）：main commit 0ca410d5c（backend 2.2.0）只有 push 觸發的 run 38349139156
+# （workflow "backend-quality"，event push，branch main）產生的 check-run，名為 "backend-quality"；**不存在**
+# "backend-quality / backend-quality"。舊版只查後者，對 push-run 得到 0 筆，已批准的 2.2.0 promote 被誤擋。
+# 修法維持 fail-closed：只接受上述兩個精確名稱（其他如 "backend-quality / image-lock" 不得替代）；suite／attempt／
+# total_count 的所有規則不變。pr-gate run 與 push-run 同時存在時，兩者各自所屬 suite 的最新 attempt 都必須全綠。
 # seam：KG_CHECK_RUNS_JSON_CMD <sha> 回傳 raw gh JSON（可為多頁串接），讓測試走真的 jq 過濾器。
 promote_assert_backend_quality() {  # $1=sha
   local sha="$1" out rc=0
-  # 真實 check-run 名稱 = caller job / reusable job（pr-gate.yml 的 backend-quality 呼叫 backend-quality.yml 的 backend-quality），
-  # GitHub 顯示為 "backend-quality / backend-quality"（2026-10-10 唯讀 gh api 於 30b12177f／a215ac4e 實測）；
-  # check_name 查詢為精確比對，必須與之完全一致，否則 server-side 過濾得到 0 筆而 fail-closed。
-  local check="backend-quality / backend-quality"
+  # 兩個精確名稱（不做 prefix／substring 比對）：
+  #   check_pr   = "backend-quality / backend-quality"：pr-gate.yml caller → backend-quality.yml reusable job（PR／merge-queue run）
+  #   check_push = "backend-quality"：backend-quality.yml 直接由 push 觸發（main commit 上實際存在的名稱）
+  local check_pr="backend-quality / backend-quality" check_push="backend-quality"
+  local -a names=(--arg a "$check_pr" --arg b "$check_push")
   if [[ -n "${KG_CHECK_RUNS_JSON_CMD:-}" ]]; then out="$($KG_CHECK_RUNS_JSON_CMD "$sha" 2>&1)" || rc=$?
   else
     command -v gh >/dev/null 2>&1 || err "找不到 gh；無法讀 ${sha} 的 CI 證據，拒絕 promote。"
-    out="$(gh api --paginate "repos/${KG_GH_REPO}/commits/${sha}/check-runs?check_name=backend-quality%20%2F%20backend-quality&filter=all&per_page=100" 2>&1)" || rc=$?
+    out="$(gh api --paginate "repos/${KG_GH_REPO}/commits/${sha}/check-runs?filter=all&per_page=100" 2>&1)" || rc=$?
   fi
   (( rc == 0 )) || err "讀取 ${sha} 的 check-runs 失敗（exit ${rc}）：${out:-<empty>}；無證據即拒絕。"
   jq -s -e 'length > 0 and all(.[]; type == "object" and (.check_runs | type) == "array")' <<<"$out" >/dev/null 2>&1 \
     || err "${sha} 的 check-runs 回應無法解析（非 JSON 或缺 check_runs）：${out:0:200}；拒絕 promote。"
   jq -s -e '([.[].check_runs[]] | length) == (.[0].total_count // -1)' <<<"$out" >/dev/null 2>&1 \
     || err "${sha} 的 check-runs 回應不完整（total_count 與實收 run 數不符，疑似分頁截斷）；拒絕 promote。"
-  jq -s -e --arg n "$check" '[.[].check_runs[] | select(.name == $n)] | length > 0' <<<"$out" >/dev/null 2>&1 \
+  jq -s -e "${names[@]}" '[.[].check_runs[] | select(.name == $a or .name == $b)] | length > 0' <<<"$out" >/dev/null 2>&1 \
     || err "${sha} 沒有任何 backend-quality check-run（CI 沒跑）；拒絕 promote。選有 backend 變更且 CI 綠的 main commit。"
-  jq -s -e --arg n "$check" '[.[].check_runs[] | select(.name == $n)]
+  jq -s -e "${names[@]}" '[.[].check_runs[] | select(.name == $a or .name == $b)]
       | all(.[]; (.id | type) == "number" and (.check_suite.id | type) == "number")
         and (group_by(.check_suite.id) | all(.[]; (map(.id) | max) as $m | [.[] | select(.id == $m)] | all(.status == "completed" and .conclusion == "success")))' <<<"$out" >/dev/null 2>&1 \
     || err "${sha} 沒有全綠的 backend-quality check-run（每個 check suite 最新 attempt 都必須 completed/success；失敗、skipped、neutral、進行中、缺 id 皆不算；同 suite 內被 rerun 取代的舊 attempt 不計）；拒絕 promote。"
