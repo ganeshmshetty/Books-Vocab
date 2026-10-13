@@ -599,3 +599,27 @@ class TestUserDeleteQuarantine:
         assert not (tmp_path / "users" / "doomed").exists()
         user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
         assert not (tmp_path / "users" / "doomed" / "cards.db").exists()
+
+
+# ── cmd_user_delete: post-tombstone prefix sweep is best-effort (#3466) ──
+
+
+class TestUserDeletePrefixSweepBestEffort:
+    def test_sweep_failure_after_tombstone_does_not_abort_dir_removal(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        fake = _FakeObjectStorage()
+        monkeypatch.setattr(user_cmd, "_library_object_storage", lambda: ("kg-library", fake), raising=False)
+
+        def failing_sweep(*_args, **_kwargs):
+            raise RuntimeError("s3 list failed")
+
+        monkeypatch.setattr(user_cmd, "sweep_account_prefixes", failing_sweep)
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+
+        rc = user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True))
+
+        assert rc == 0
+        assert not (tmp_path / "users" / "doomed").exists()
+        users = json.loads((tmp_path / "users.json").read_text(encoding="utf-8"))
+        assert "doomed" in users["_revoked_before"]
+        assert "doomed" in users["_terminated"]

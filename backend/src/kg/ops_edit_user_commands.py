@@ -252,7 +252,12 @@ def cmd_user_delete(args: argparse.Namespace) -> int:
         delete_account_assets(dd, [uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
         result = _mutate_users(dd, mutate)
         # Runs after the tombstone: a presigned PUT minted earlier can land after the ledger delete.
-        sweep_account_prefixes([uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
+        # Best-effort as in the in-app erasure (user_handlers): the tombstone is already
+        # written and the token revoked, so a failed sweep must not leave users/<uid> on disk.
+        try:
+            sweep_account_prefixes([uid], library_bucket=library_bucket, library_s3_client=library_s3_client)
+        except Exception:
+            _logger.exception("Library prefix sweep failed after account tombstone for %s", uid)
         _remove_user_dir_quarantined(dd, uid)
         return result
 
