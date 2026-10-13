@@ -100,8 +100,10 @@ Scope: `ios/BooksAndVocab`
 - `ios/BooksAndVocab/Models/AppSkin.swift`（前身 `Skin/VocabSkin.swift`，已升格為全 app 共用）
 - `ios/BooksAndVocab/Views/Vocabulary/Components/VocabComponents.swift`（前身 `VocabSkinComponents.swift`）
 - `ios/BooksAndVocab/Views/Vocabulary/Components/VocabShellComponents.swift`
+- `ios/BooksAndVocab/Views/Vocabulary/Components/CardExampleView.swift`（書摘卡，#3113）
 
 核心元件：
+- `CardExampleView`（`Components/CardExampleView.swift`）— **書摘卡**：例句的唯一呈現，Linked Card／Word Detail、複習卡背面與 Add Link 展開列共用同一條渲染路徑（`CardRichTextRenderer`）。inset 填色 `mutedFill`、開頭引號字 `highlightMark`、襯線 `typography.cardExample`。footer（`CardExampleSource` 書名 · 章節；朗讀句子／複製為 44pt borderless）只在 `showsFooter` 為 true 時畫：複習卡正面（cloze）與 Add Link 皆關閉，避免朗讀出答案、展開列保持密度。`markdown` 只接受 `**` 與反引號 markup；Add Link 先經 `AddLinkCoordinator.exampleMarkup` 正規化。`CardExampleSource.make` 對 `Knowledge Graph` fallback 與空書名回 nil。
 - `VocabCard`
 - `HangingIndentFlowLayout`（`Components/HangingIndentFlowLayout.swift`，複習卡連結列）：首格為標籤、其後項目接在標籤右側並換行到同一值欄；超過值欄寬的項目在值欄內換行、不溢出卡片（#3227）。連結列「+N」命中帶見 `TodayReviewMetrics.linkOverflowHitBand`（渲染後膠囊上下各外擴 s1，不蓋到上一列；放棄 44pt 下限，#3226/#3253/#3295）
 - `VocabToneChip`

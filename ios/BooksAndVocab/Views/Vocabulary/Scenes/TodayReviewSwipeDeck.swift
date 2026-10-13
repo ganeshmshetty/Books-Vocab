@@ -315,7 +315,7 @@ extension TodayReviewPresenter {
     }
 
     /// 幽靈背面樹（device trace 證據：settle burst 內
-    /// CardDocumentExampleBlock/CardRichTextRenderer 樣本）：
+    /// CardExampleView/CardRichTextRenderer 樣本）：
     /// 從背面送出時 backContentMounted 仍 true，callback() 推進
     /// currentIndex 後 settle 幀會替「新卡」完整建出背面樹，下一幀
     /// 又被 onChange(currentCardKey) 放閘拆毀——同幀建、次幀拆的

@@ -270,13 +270,11 @@ final class AddLinkCoordinator {
         return summary.joined(separator: " | ")
     }
 
-    /// One example line of the expanded row: the localized label, then the card's inline-markdown
-    /// runs, so `**word**` draws as a highlight and never as literal asterisks (#3111).
-    nonisolated static func exampleParagraph(for example: String) -> CardDocumentParagraph {
-        CardDocumentParagraph(
-            inlines: [CardDocumentInline.text(L10n.string("reviewCardLayout.field.example") + ": ")]
-                + CardMarkdownInlineParser.parseParagraph(example).inlines
-        )
+    /// 例句 markup for the shared `CardExampleView` (#3113). Normalized through the same parser the
+    /// Linked Card uses, so `==`／`_` marks become `**` and a `**word**` draws as a highlight, never as
+    /// literal asterisks (#3111).
+    nonisolated static func exampleMarkup(for example: String) -> String {
+        CardMarkdownInlineParser.parseParagraph(example).rawMarkdown
     }
 
     nonisolated static func openCardIdentifier(for entry: VocabularyEntry) -> String {

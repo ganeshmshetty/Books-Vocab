@@ -414,10 +414,10 @@ struct CollocationFlowLayout: Layout {
     }
 }
 
+/// 內文與來源的 inline 文字。例句已全部改由 `CardExampleView`（書摘卡）渲染，這裡不再有 example 樣式。
 struct CardInlineText: View {
     @ObserveInjection private var inject
     enum Style {
-        case example
         case body
         case source
     }
@@ -466,7 +466,7 @@ struct CardInlineText: View {
         part.font = markedFont
         part.foregroundColor = appSkin.palette.primaryText
         switch style {
-        case .example, .source:
+        case .source:
             if hl.showBackground {
                 part.backgroundColor = appSkin.palette.highlightMark.opacity(hl.backgroundOpacity)
             }
@@ -498,8 +498,6 @@ struct CardInlineText: View {
 
     private var baseFont: Font {
         switch style {
-        case .example:
-            return appSkin.typography.detailExampleSerif
         case .body:
             return appSkin.typography.body
         case .source:
@@ -509,8 +507,6 @@ struct CardInlineText: View {
 
     private var markedFont: Font {
         switch style {
-        case .example:
-            return appSkin.typography.detailExampleSerifStrong
         case .body:
             return appSkin.typography.body.weight(.medium)
         case .source:
@@ -520,8 +516,6 @@ struct CardInlineText: View {
 
     private var baseColor: Color {
         switch style {
-        case .example:
-            return appSkin.palette.primaryText
         case .body:
             return appSkin.palette.secondaryText
         case .source:

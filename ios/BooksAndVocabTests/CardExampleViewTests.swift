@@ -41,6 +41,24 @@ struct CardExampleViewTests {
         #expect(CardRichTextRenderer.plainText("no marks") == "no marks")
     }
 
+    @Test func addLinkExampleUsesSharedRendererWithNormalizedMarkup() {
+        // Add Link 例句與 Linked Card 同一條路徑：先經 CardMarkdownInlineParser 正規化（`==` → `**`），
+        // 再由 CardRichTextRenderer 畫；兩個面對同一句話得到同一組高亮。
+        let markup = AddLinkCoordinator.exampleMarkup(for: "A ==concoction== and `code` here.")
+        let rendered = CardRichTextRenderer.attributedString(markup, style: style)
+
+        #expect(highlightedRuns(rendered) == ["concoction", "code"])
+        #expect(CardRichTextRenderer.plainText(markup) == "A concoction and code here.")
+    }
+
+    @Test func addLinkExampleBoldIsNotLiteralAsterisks() {
+        let markup = AddLinkCoordinator.exampleMarkup(for: "A **concoction** of herbs.")
+        let rendered = CardRichTextRenderer.attributedString(markup, style: style)
+
+        #expect(highlightedRuns(rendered) == ["concoction"])
+        #expect(String(rendered.characters) == "A concoction of herbs.")
+    }
+
     @Test func sourceLineHidesKnowledgeGraphFallbackAndEmptyBook() {
         #expect(CardExampleSource.make(bookTitle: "Knowledge Graph", chapterTitle: "Chapter 1") == nil)
         #expect(CardExampleSource.make(bookTitle: "   ", chapterTitle: nil) == nil)

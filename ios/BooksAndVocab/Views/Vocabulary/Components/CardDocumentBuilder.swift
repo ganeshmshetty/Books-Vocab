@@ -36,7 +36,6 @@ enum CardDocumentBuilder {
         )
         let hasTranslation = !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if hasTranslation || !meaningParagraphs.isEmpty {
-            blocks.append(.divider)
             blocks.append(
                 .meaning(
                     CardDocumentMeaning(
@@ -48,14 +47,12 @@ enum CardDocumentBuilder {
         }
 
         if !collocations.isEmpty {
-            blocks.append(.divider)
             blocks.append(.collocations(collocations))
         }
 
         if showsSourceContext {
             let trimmedContext = sourceContext.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedContext.isEmpty {
-                blocks.append(.divider)
                 blocks.append(
                     .source(
                         CardDocumentSource(
