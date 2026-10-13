@@ -28,8 +28,34 @@ _lock_fd: int | None = None
 _lock_pid: int | None = None
 
 
+WORKER_LOCK_FILENAME = ".worker.lock"
+
+
 class MultipleWorkersError(RuntimeError):
     """Raised when a second worker process tries to start."""
+
+
+class WorkerLockHeldError(RuntimeError):
+    """Raised when a live worker process holds the lock on a data dir."""
+
+
+def hold_worker_lock(lock_path: str | os.PathLike) -> int:
+    """Take the worker flock for a one-shot offline operation; return its fd.
+
+    Unlike :func:`assert_single_worker` this does not claim the process-wide
+    state: the caller owns the returned fd and must ``os.close`` it. While it is
+    held, a starting API refuses to boot (its own flock fails), and a live API
+    that already holds the lock makes this raise :class:`WorkerLockHeldError`.
+    The flock is released by the kernel when the process exits, so a crashed
+    operator never leaves a stale hold behind.
+    """
+    fd = os.open(os.fspath(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(fd)
+        raise WorkerLockHeldError(f"{lock_path} 被執行中的 API worker 持有") from e
+    return fd
 
 
 def assert_single_worker(lock_path: str | os.PathLike) -> None:

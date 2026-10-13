@@ -62,6 +62,7 @@ from kg.ops_world_projection import project_user_world  # noqa: F401 - re-export
 from kg.review_events import ReviewEventStore
 from kg.user_store import load_users_from, parse_datetime, save_users_to
 from kg.users_lock import bounded_users_filelock
+from kg.worker_guard import WORKER_LOCK_FILENAME
 
 _VALID_REVIEW_STATES = ("new", "due", "reviewed")
 _USER_BACKUP_META_DIR = ".ops_meta"
@@ -419,7 +420,14 @@ def _extract_user_backup_members(
 
 
 def _world_members(data_dir_path: Path) -> list[Path]:
-    excluded = {world_backup_root(data_dir_path).name, "_ops_backups", "_ops_edit_audit.jsonl", "users.json.lock"}
+    # .worker.lock 是執行中 API 持有的 flock 所在 inode；刪除或換新會讓第二個 worker 拿到鎖。
+    excluded = {
+        world_backup_root(data_dir_path).name,
+        "_ops_backups",
+        "_ops_edit_audit.jsonl",
+        "users.json.lock",
+        WORKER_LOCK_FILENAME,
+    }
     return [p for p in sorted(Path(data_dir_path).iterdir()) if p.name not in excluded]
 
 
@@ -433,6 +441,8 @@ def _replace_world_from_snapshot(data_dir_path: Path, snapshot_root: Path) -> li
             existing.unlink()
     restored: list[str] = []
     for item in sorted(snapshot_root.iterdir()):
+        if item.name == WORKER_LOCK_FILENAME:
+            continue
         dest = Path(data_dir_path) / item.name
         if item.is_dir():
             shutil.copytree(item, dest)

@@ -1,18 +1,27 @@
 # ruff: noqa: F401, F403, F405, I001
 """test ops edit notebook.py test ownership shard."""
 
-
+import fcntl
 
 from _ops_edit_support import *  # noqa: F403
-
 
 
 class TestNotebookResolver:
     def test_card_add_resolves_notebook_name(self, tmp_path):
         uid = _mk_user(tmp_path)
         nb_id = _mk_notebook(tmp_path, uid, "Classic Literature")
-        r = _edit(str(tmp_path), "card-add", uid, "wince", "--meaning", "畏縮",
-                  "--notebook", "Classic Literature", "--commit", "--json")
+        r = _edit(
+            str(tmp_path),
+            "card-add",
+            uid,
+            "wince",
+            "--meaning",
+            "畏縮",
+            "--notebook",
+            "Classic Literature",
+            "--commit",
+            "--json",
+        )
         assert r.returncode == 0, r.stderr
         card = _card_by_content(tmp_path, uid, "wince")
         # 關鍵：notebook_id 必須是 hex id，而非把 name 字串直存（孤兒卡）。
@@ -21,24 +30,32 @@ class TestNotebookResolver:
 
     def test_card_add_rejects_unknown_notebook(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _edit(str(tmp_path), "card-add", uid, "ghost", "--meaning", "鬼",
-                  "--notebook", "Nonexistent", "--commit", "--json")
+        r = _edit(
+            str(tmp_path),
+            "card-add",
+            uid,
+            "ghost",
+            "--meaning",
+            "鬼",
+            "--notebook",
+            "Nonexistent",
+            "--commit",
+            "--json",
+        )
         assert r.returncode != 0
         assert "notebook" in (r.stdout + r.stderr).lower()
         assert _card_by_content(tmp_path, uid, "ghost") is None
 
     def test_card_add_default_still_works(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _edit(str(tmp_path), "card-add", uid, "plain", "--meaning", "平",
-                  "--commit", "--json")
+        r = _edit(str(tmp_path), "card-add", uid, "plain", "--meaning", "平", "--commit", "--json")
         assert r.returncode == 0, r.stderr
         assert _card_by_content(tmp_path, uid, "plain")["notebook_id"] == "default"
 
     def test_card_add_accepts_raw_id(self, tmp_path):
         uid = _mk_user(tmp_path)
         nb_id = _mk_notebook(tmp_path, uid, "ById")
-        r = _edit(str(tmp_path), "card-add", uid, "byid", "--meaning", "m",
-                  "--notebook", nb_id, "--commit", "--json")
+        r = _edit(str(tmp_path), "card-add", uid, "byid", "--meaning", "m", "--notebook", nb_id, "--commit", "--json")
         assert r.returncode == 0, r.stderr
         assert _card_by_content(tmp_path, uid, "byid")["notebook_id"] == nb_id
 
@@ -46,11 +63,27 @@ class TestNotebookResolver:
         uid = _mk_user(tmp_path)
         _mk_notebook(tmp_path, uid, "Lit")
         for w, m in [("quill", "羽毛筆"), ("plush", "豪華的")]:
-            assert _edit(str(tmp_path), "card-add", uid, w, "--meaning", m,
-                         "--notebook", "Lit", "--commit").returncode == 0
-        r = _edit(str(tmp_path), "link-add", uid, "quill", "plush",
-                  "--kind", "shares_usage", "--confidence", "0.8",
-                  "--reason", "both literary", "--notebook", "Lit", "--commit", "--json")
+            assert (
+                _edit(str(tmp_path), "card-add", uid, w, "--meaning", m, "--notebook", "Lit", "--commit").returncode
+                == 0
+            )
+        r = _edit(
+            str(tmp_path),
+            "link-add",
+            uid,
+            "quill",
+            "plush",
+            "--kind",
+            "shares_usage",
+            "--confidence",
+            "0.8",
+            "--reason",
+            "both literary",
+            "--notebook",
+            "Lit",
+            "--commit",
+            "--json",
+        )
         assert r.returncode == 0, r.stderr
 
     def test_card_import_resolves_notebook_name(self, tmp_path):
@@ -58,23 +91,20 @@ class TestNotebookResolver:
         nb_id = _mk_notebook(tmp_path, uid, "Imported")
         csv = tmp_path / "cards.csv"
         csv.write_text("content,meaning\ndecorum,禮節\ndeft,靈巧的\n")
-        r = _edit(str(tmp_path), "card-import", uid, str(csv),
-                  "--notebook", "Imported", "--commit", "--json")
+        r = _edit(str(tmp_path), "card-import", uid, str(csv), "--notebook", "Imported", "--commit", "--json")
         assert r.returncode == 0, r.stderr
         assert _card_by_content(tmp_path, uid, "decorum")["notebook_id"] == nb_id
+
 
 class TestRestoreSafety:
     def test_restore_rejects_foreign_backup(self, tmp_path):
         """指向他人 uid 的備份應在 rmtree 前被擋，victim 目錄完好。"""
         _mk_user(tmp_path, "victim")
-        assert _edit(str(tmp_path), "card-add", "victim", "precious",
-                     "--meaning", "珍貴", "--commit").returncode == 0
+        assert _edit(str(tmp_path), "card-add", "victim", "precious", "--meaning", "珍貴", "--commit").returncode == 0
         _mk_user(tmp_path, "attacker")
-        assert _edit(str(tmp_path), "card-add", "attacker", "evil",
-                     "--meaning", "惡", "--commit").returncode == 0
+        assert _edit(str(tmp_path), "card-add", "attacker", "evil", "--meaning", "惡", "--commit").returncode == 0
         foreign = sorted((tmp_path / "_ops_backups").glob("attacker__*.tar.gz"))[-1]
-        r = _edit(str(tmp_path), "restore", "victim", "--backup", str(foreign),
-                  "--commit", "--json")
+        r = _edit(str(tmp_path), "restore", "victim", "--backup", str(foreign), "--commit", "--json")
         assert r.returncode != 0
         # victim 的資料未被消滅。
         assert _card_by_content(tmp_path, "victim", "precious") is not None
@@ -83,11 +113,9 @@ class TestRestoreSafety:
         """還原到只含 notebooks.db 的早期快照應視為成功（非 cards.db 缺失=失敗）。"""
         uid = _mk_user(tmp_path)
         # 第一次 card-add 寫前會備份「當前 user_dir」= 只有 notebooks.db。
-        assert _edit(str(tmp_path), "card-add", uid, "w1", "--meaning", "m",
-                     "--commit").returncode == 0
+        assert _edit(str(tmp_path), "card-add", uid, "w1", "--meaning", "m", "--commit").returncode == 0
         early = sorted((tmp_path / "_ops_backups").glob(f"{uid}__*.tar.gz"))[0]
-        r = _edit(str(tmp_path), "restore", uid, "--backup", str(early),
-                  "--commit", "--json")
+        r = _edit(str(tmp_path), "restore", uid, "--backup", str(early), "--commit", "--json")
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)["verified"]["ok"] is True
 
@@ -95,16 +123,25 @@ class TestRestoreSafety:
         uid = _mk_user(tmp_path)
         nb_id = _mk_notebook(tmp_path, uid, "Pinned")
         first = _edit(
-            str(tmp_path), "user-config-set", uid,
-            "--review-clock", "paused",
-            "--active-notebook", "Pinned",
-            "--commit", "--json",
+            str(tmp_path),
+            "user-config-set",
+            uid,
+            "--review-clock",
+            "paused",
+            "--active-notebook",
+            "Pinned",
+            "--commit",
+            "--json",
         )
         assert first.returncode == 0, first.stderr
         second = _edit(
-            str(tmp_path), "user-config-set", uid,
-            "--review-clock", "running",
-            "--commit", "--json",
+            str(tmp_path),
+            "user-config-set",
+            uid,
+            "--review-clock",
+            "running",
+            "--commit",
+            "--json",
         )
         assert second.returncode == 0, second.stderr
         latest = json.loads(_edit(str(tmp_path), "list-backups", uid, "--json").stdout)["backups"][0]["path"]
@@ -114,6 +151,7 @@ class TestRestoreSafety:
         cfg = users[uid]["config"]
         assert cfg["review_clock"]["is_paused"] is True
         assert cfg["vocab_ui"]["active_notebook_id"] == nb_id
+
 
 class TestWorldSnapshots:
     def test_world_snapshot_and_restore_roundtrip(self, tmp_path):
@@ -131,20 +169,47 @@ class TestWorldSnapshots:
         assert _card_by_content(tmp_path, uid, "after") is None
         assert not (tmp_path / "users" / "other").exists()
 
+    def test_world_restore_refused_while_worker_lock_held(self, tmp_path):
+        uid = _mk_user(tmp_path)
+        assert _edit(str(tmp_path), "card-add", uid, "baseline", "--meaning", "m", "--commit").returncode == 0
+        snap = _edit(str(tmp_path), "world-snapshot", "--label", "baseline", "--commit", "--json")
+        assert snap.returncode == 0, snap.stderr
+        snapshot_path = json.loads(snap.stdout)["result"]["snapshot"]
+        assert _edit(str(tmp_path), "card-add", uid, "after", "--meaning", "m", "--commit").returncode == 0
+
+        def data_bytes() -> dict[str, bytes]:
+            return {
+                str(p.relative_to(tmp_path)): p.read_bytes()
+                for p in tmp_path.rglob("*")
+                if p.is_file() and not any(part.startswith("_ops_") for part in p.relative_to(tmp_path).parts)
+            }
+
+        # 模擬執行中的 API：啟動時已建立 .worker.lock 並持有其 flock（同一 inode）。
+        (tmp_path / ".worker.lock").touch()
+        before = data_bytes()
+        with open(tmp_path / ".worker.lock", "a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                restore = _edit(str(tmp_path), "world-restore", "--snapshot", snapshot_path, "--commit", "--json")
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        assert restore.returncode != 0
+        assert data_bytes() == before
+        assert _card_by_content(tmp_path, uid, "after") is not None
+
+
 class TestImportAtomicity:
     def test_invalid_interval_no_partial_write(self, tmp_path):
         uid = _mk_user(tmp_path)
         csv = tmp_path / "bad.csv"
         csv.write_text(
-            "content,meaning,review_state,review_interval\n"
-            "good1,m1,due,12\n"
-            "bad,m2,due,NOTANUMBER\n"
-            "good2,m3,new,\n"
+            "content,meaning,review_state,review_interval\ngood1,m1,due,12\nbad,m2,due,NOTANUMBER\ngood2,m3,new,\n"
         )
         r = _edit(str(tmp_path), "card-import", uid, str(csv), "--commit", "--json")
         assert r.returncode != 0
         # 預驗應在任何寫入前攔截 → 0 卡落地。
         assert _card_rows(tmp_path, uid) == []
+
 
 class TestSeedValidation:
     def _seed(self, tmp_path, uid, spec, *extra):
@@ -163,24 +228,25 @@ class TestSeedValidation:
 
     def test_rejects_blank_meaning(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = self._seed(tmp_path, uid,
-                       {"cards": [{"content": "orphan"}]}, "--commit", "--json")
+        r = self._seed(tmp_path, uid, {"cards": [{"content": "orphan"}]}, "--commit", "--json")
         assert r.returncode != 0
         assert _card_rows(tmp_path, uid) == []
 
     def test_rejects_invalid_review_state(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = self._seed(tmp_path, uid,
-                       {"cards": [{"content": "w", "meaning": "m",
-                                   "review": {"state": "bogus"}}]},
-                       "--commit", "--json")
+        r = self._seed(
+            tmp_path,
+            uid,
+            {"cards": [{"content": "w", "meaning": "m", "review": {"state": "bogus"}}]},
+            "--commit",
+            "--json",
+        )
         assert r.returncode != 0
         assert _card_rows(tmp_path, uid) == []
 
     def test_replace_rejects_malformed_typed_fields_before_wipe(self, tmp_path):
         uid = _mk_user(tmp_path)
-        assert _edit(str(tmp_path), "card-add", uid, "survivor", "--meaning", "m",
-                     "--commit").returncode == 0
+        assert _edit(str(tmp_path), "card-add", uid, "survivor", "--meaning", "m", "--commit").returncode == 0
 
         malformed_specs = [
             {"notebooks": [{"name": "N", "color": 123}]},
@@ -197,9 +263,7 @@ class TestSeedValidation:
 
     def test_rejects_duplicate_notebook_name(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = self._seed(tmp_path, uid,
-                       {"notebooks": [{"name": "Dup"}, {"name": "Dup"}]},
-                       "--commit", "--json")
+        r = self._seed(tmp_path, uid, {"notebooks": [{"name": "Dup"}, {"name": "Dup"}]}, "--commit", "--json")
         assert r.returncode != 0
 
     def test_idempotent_notebooks_and_counts(self, tmp_path):
@@ -227,11 +291,8 @@ class TestSeedValidation:
 
     def test_dup_card_upserts_meaning(self, tmp_path):
         uid = _mk_user(tmp_path)
-        assert _edit(str(tmp_path), "card-add", uid, "ephemeral",
-                     "--meaning", "舊義", "--commit").returncode == 0
-        r = self._seed(tmp_path, uid,
-                       {"cards": [{"content": "ephemeral", "meaning": "新義"}]},
-                       "--commit", "--json")
+        assert _edit(str(tmp_path), "card-add", uid, "ephemeral", "--meaning", "舊義", "--commit").returncode == 0
+        r = self._seed(tmp_path, uid, {"cards": [{"content": "ephemeral", "meaning": "新義"}]}, "--commit", "--json")
         assert r.returncode == 0, r.stderr
         # dup 卡的核心欄位應被 upsert，而非靜默保留舊值。
         assert _card_by_content(tmp_path, uid, "ephemeral")["meaning"] == "新義"
@@ -245,8 +306,16 @@ class TestSeedValidation:
                 {"content": "alpha", "meaning": "a", "notebook": "NB"},
                 {"content": "beta", "meaning": "b", "notebook": "NB"},
             ],
-            "links": [{"from": "alpha", "to": "beta", "kind": "shares_usage",
-                       "confidence": 0.7, "reason": "r", "notebook": "NB"}],
+            "links": [
+                {
+                    "from": "alpha",
+                    "to": "beta",
+                    "kind": "shares_usage",
+                    "confidence": 0.7,
+                    "reason": "r",
+                    "notebook": "NB",
+                }
+            ],
         }
         r = self._seed(tmp_path, uid, spec, "--commit", "--json")
         assert r.returncode == 0, r.stderr
@@ -254,11 +323,11 @@ class TestSeedValidation:
         assert d["links_added"] == 1
         assert d["link_errors"] == []
 
+
 class TestInputHygiene:
     def test_notebook_create_rejects_path_chars(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _edit(str(tmp_path), "notebook-create", uid, "../../escape",
-                  "--commit", "--json")
+        r = _edit(str(tmp_path), "notebook-create", uid, "../../escape", "--commit", "--json")
         assert r.returncode != 0
 
     def test_user_create_rejects_dot_prefix(self, tmp_path):
@@ -272,14 +341,31 @@ class TestNotebookDeleteVerify:
         uid = _mk_user(tmp_path)
         nb_id = _mk_notebook(tmp_path, uid, "ActiveToDelete")
         if cascade:
-            assert _edit(
-                str(tmp_path), "card-add", uid, "c1", "--meaning", "m",
-                "--notebook", nb_id, "--commit",
-            ).returncode == 0
-        assert _edit(
-            str(tmp_path), "user-config-set", uid, "--active-notebook", nb_id,
-            "--commit",
-        ).returncode == 0
+            assert (
+                _edit(
+                    str(tmp_path),
+                    "card-add",
+                    uid,
+                    "c1",
+                    "--meaning",
+                    "m",
+                    "--notebook",
+                    nb_id,
+                    "--commit",
+                ).returncode
+                == 0
+            )
+        assert (
+            _edit(
+                str(tmp_path),
+                "user-config-set",
+                uid,
+                "--active-notebook",
+                nb_id,
+                "--commit",
+            ).returncode
+            == 0
+        )
 
         command = ["notebook-delete", uid, nb_id]
         if cascade:
@@ -290,10 +376,7 @@ class TestNotebookDeleteVerify:
         payload = json.loads(result.stdout)
         verified = payload["verified"]
         assert verified["ok"] is False
-        assert any(
-            f"vocab_ui.active_notebook_id={nb_id}" in message
-            for message in verified["dangling_config"]
-        )
+        assert any(f"vocab_ui.active_notebook_id={nb_id}" in message for message in verified["dangling_config"])
         assert "user-config-set" in verified["dangling_config"][0]
         assert nb_id not in {row["id"] for row in _notebook_rows(tmp_path, uid)}
         # verify only reports the dangling identity config; it must not reset users.json.
@@ -306,13 +389,25 @@ class TestNotebookDeleteVerify:
         uid = _mk_user(tmp_path)
         active_id = _mk_notebook(tmp_path, uid, "KeepActive")
         delete_id = _mk_notebook(tmp_path, uid, "DeleteMe")
-        assert _edit(
-            str(tmp_path), "user-config-set", uid, "--active-notebook", active_id,
-            "--commit",
-        ).returncode == 0
+        assert (
+            _edit(
+                str(tmp_path),
+                "user-config-set",
+                uid,
+                "--active-notebook",
+                active_id,
+                "--commit",
+            ).returncode
+            == 0
+        )
 
         result = _edit(
-            str(tmp_path), "notebook-delete", uid, delete_id, "--commit", "--json",
+            str(tmp_path),
+            "notebook-delete",
+            uid,
+            delete_id,
+            "--commit",
+            "--json",
         )
 
         assert result.returncode == 0, result.stderr
@@ -323,26 +418,24 @@ class TestNotebookDeleteVerify:
         assert users[uid]["config"]["vocab_ui"]["active_notebook_id"] == active_id
         assert delete_id not in {row["id"] for row in _notebook_rows(tmp_path, uid)}
 
+
 class TestCardUpdateContentConflict:
     def test_rejects_content_collision_same_notebook(self, tmp_path):
         uid = _mk_user(tmp_path)
         for w in ("alpha", "beta"):
-            assert _edit(str(tmp_path), "card-add", uid, w, "--meaning", "m",
-                         "--commit").returncode == 0
+            assert _edit(str(tmp_path), "card-add", uid, w, "--meaning", "m", "--commit").returncode == 0
         # 把 alpha 的 content 改成 beta（同 default notebook 已存在）→ 應擋。
-        r = _edit(str(tmp_path), "card-update", uid, "alpha",
-                  "--set", "content=beta", "--commit", "--json")
+        r = _edit(str(tmp_path), "card-update", uid, "alpha", "--set", "content=beta", "--commit", "--json")
         assert r.returncode != 0
         # alpha 內容未被改動。
         assert _card_by_content(tmp_path, uid, "alpha") is not None
 
+
 class TestReviewState:
     def test_due_time_invariant_on_disk(self, tmp_path):
         uid = _mk_user(tmp_path)
-        assert _edit(str(tmp_path), "card-add", uid, "due_word", "--meaning", "m",
-                     "--commit").returncode == 0
-        r = _edit(str(tmp_path), "card-set-review", uid, "due_word",
-                  "--state", "due", "--commit", "--json")
+        assert _edit(str(tmp_path), "card-add", uid, "due_word", "--meaning", "m", "--commit").returncode == 0
+        r = _edit(str(tmp_path), "card-set-review", uid, "due_word", "--state", "due", "--commit", "--json")
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)["verified"]["ok"] is True
         card = _card_by_content(tmp_path, uid, "due_word")
@@ -355,10 +448,10 @@ class TestReviewState:
 
     def test_new_state_clears_next_review(self, tmp_path):
         uid = _mk_user(tmp_path)
-        assert _edit(str(tmp_path), "card-add", uid, "nw", "--meaning", "m",
-                     "--review", "due", "--commit").returncode == 0
+        assert (
+            _edit(str(tmp_path), "card-add", uid, "nw", "--meaning", "m", "--review", "due", "--commit").returncode == 0
+        )
         # 從 due 改回 new → next_review_at 應清空。
-        r = _edit(str(tmp_path), "card-set-review", uid, "nw",
-                  "--state", "new", "--commit", "--json")
+        r = _edit(str(tmp_path), "card-set-review", uid, "nw", "--state", "new", "--commit", "--json")
         assert r.returncode == 0, r.stderr
         assert _card_by_content(tmp_path, uid, "nw")["next_review_at"] is None
