@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3395,
+  "raise": {
+    "ops": 101
+  },
+  "note": "echo|grep -q pipefail EPIPE fix across ops tests (#3395)"
+}
