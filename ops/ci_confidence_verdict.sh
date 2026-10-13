@@ -10,7 +10,11 @@ Usage: ops/ci_confidence_verdict.sh --plan <json> --needs <json>
 The plan contains string booleans for backend, ops, ios, and macos_ops. The
 needs object is GitHub Actions' toJSON(needs) value. ops-suite is selected by
 ops or macos_ops (its macos-native-ops job consumes macos_ops). Selected suites
-must succeed; explicitly unselected suites must be skipped. A selected iOS suite
+must succeed; explicitly unselected suites must be skipped. The one exception is
+a targeted ops-suite that selected zero Linux groups (outputs.linux_group_count
+is "0"; docs- or backend-only PR): its nested suite job is skipped by design, so
+the caller may read skipped, but only when no macOS ops job was requested. A
+selected iOS suite
 on a PR is compile-only: ios-build must succeed and the iOS test jobs must be
 skipped (pr-gate passes run_tests=false). Every other confidence dependency,
 including unknown dependencies, must succeed.
@@ -85,6 +89,13 @@ if ! jq -e --argjson plan "$plan" '
   and (
     if $plan.ops == "true" or $plan.macos_ops == "true"
     then result("ops-suite") == "success"
+      or (
+        # Targeted PR with zero Linux groups (docs- or backend-only): the nested
+        # suite job is skipped by design. Accept only that shape, never a macOS run.
+        result("ops-suite") == "skipped"
+        and $plan.macos_ops == "false"
+        and ((.["ops-suite"].outputs // {}).linux_group_count == "0")
+      )
     else result("ops-suite") == "skipped"
     end
   )

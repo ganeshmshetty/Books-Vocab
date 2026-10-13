@@ -207,6 +207,12 @@ jobs:
       actions: read
     with:
       macos_ops: ${{ needs.changed-paths.outputs.macos_ops }}
+      # PR level runs only the Linux groups this diff touches (#3467). The merge
+      # group keeps the full suite. The range is the same exact pair as BASE_SHA and
+      # HEAD_SHA above; `with:` cannot read the workflow env context, so it repeats them.
+      scope: targeted
+      base: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.pull_request.base.sha }}
+      head: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha || github.event.pull_request.head.sha }}
 
   ios-quality:
     name: ios-quality
