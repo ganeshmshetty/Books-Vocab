@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3441,
+  "raise": {
+    "ops": 145
+  },
+  "note": "raised after rebase: lane growth exceeded the base headroom"
+}
