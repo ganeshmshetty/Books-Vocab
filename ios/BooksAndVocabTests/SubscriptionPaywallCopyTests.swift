@@ -219,6 +219,29 @@ struct SubscriptionPaywallCopyTests {
         }
     }
 
+    // MARK: - Expiry display uses the formatted accessor, never the raw ISO-8601 (#3422)
+
+    @Test func billedAmount_adminExpiryShowsFormattedDateNotRawISO() {
+        let s = status(isActive: true, source: "admin", expiresAt: "2026-11-13T08:00:00Z")
+        let line = SubscriptionPaywallCopy.billedAmount(s, productDisplayPrice: nil)
+        #expect(!line.contains("2026-11-13T08:00:00Z"))
+        #expect(line == L10n.format("管理員授權 · 有效至 %@", s.formattedExpiryDate))
+    }
+
+    @Test func presentation_adminDetailShowsFormattedDateNotRawISO() {
+        let s = status(isActive: true, source: "admin", expiresAt: "2026-11-13T08:00:00Z")
+        let detail = SubscriptionPresentation.detail(for: s, proProduct: nil)
+        #expect(!detail.contains("2026-11-13T08:00:00Z"))
+        #expect(detail == L10n.format("來源：管理員授權 · 有效至 %@", s.formattedExpiryDate))
+    }
+
+    @Test func presentation_priceDetailShowsFormattedExpiryNotRawISO() {
+        let s = status(priceDisplay: "NT$170", expiresAt: "2026-11-13T08:00:00Z")
+        let detail = SubscriptionPresentation.detail(for: s, proProduct: nil)
+        #expect(!detail.contains("2026-11-13T08:00:00Z"))
+        #expect(detail == L10n.format("%@ · 到期 %@", "NT$170", s.formattedExpiryDate))
+    }
+
     // MARK: - SubscriptionPresentation has no backend-derived trial claim
 
     @Test func presentation_detailAndCtaMakeNoTrialClaim() {
