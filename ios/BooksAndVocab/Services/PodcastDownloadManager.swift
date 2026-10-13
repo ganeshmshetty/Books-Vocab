@@ -36,6 +36,10 @@ final class PodcastDownloadManager: NSObject {
 
     @ObservationIgnored
     private var modelContainer: ModelContainer?
+    /// Persists the episode write made by `commit`. Production uses the
+    /// context's own save; tests swap it to force the save-failure branch (#3427).
+    @ObservationIgnored
+    var saveContext: (ModelContext) throws -> Void = { try $0.save() }
     @ObservationIgnored
     private var taskToRemoteId: [Int: String] = [:]
     @ObservationIgnored
@@ -331,13 +335,25 @@ extension PodcastDownloadManager: URLSessionDownloadDelegate {
         try? FileManager.default.removeItem(at: finalURL)
         do {
             try FileManager.default.moveItem(at: stash, to: finalURL)
-            episode.localAudioPath = finalURL.path
-            try context.save()
-            cleanup(taskId: taskId, remoteId: remoteId)
         } catch {
             // moveItem failed → stash still on disk; clear it so it doesn't
             // accumulate across retries.
             try? FileManager.default.removeItem(at: stash)
+            failed[remoteId] = error.localizedDescription
+            cleanup(taskId: taskId, remoteId: remoteId)
+            return
+        }
+        let previousPath = episode.localAudioPath
+        episode.localAudioPath = finalURL.path
+        do {
+            try saveContext(context)
+            cleanup(taskId: taskId, remoteId: remoteId)
+        } catch {
+            // Save failed after the move: undo both the file and the in-memory
+            // field so disk and record agree and no orphaned mp3 remains (#3427).
+            // A previous path pointing at finalURL was already deleted above.
+            try? FileManager.default.removeItem(at: finalURL)
+            episode.localAudioPath = previousPath == finalURL.path ? nil : previousPath
             failed[remoteId] = error.localizedDescription
             cleanup(taskId: taskId, remoteId: remoteId)
         }
