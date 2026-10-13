@@ -9,8 +9,9 @@
 //       normalizeLeadingMarker) — the inline markdown tokenizer that turns raw
 //       card strings into `[CardDocumentInline]`.
 //    2. `CardDocumentBuilder` (build / buildMeaningParagraphs) — assembles the
-//       ordered `[CardDocumentBlock]` (hero / example / divider / meaning /
-//       collocations / source) for a card.
+//       ordered `[CardDocumentBlock]` (hero / example / meaning /
+//       collocations / source) for a card. The builder emits no `.divider`
+//       blocks: sections are separated by padding, not hairlines (#3113).
 //
 //  All expected values were derived by reading the implementations line-by-line
 //  (NOT from any spec) — these pin the ordered card-document contract,
@@ -174,17 +175,17 @@ import Testing
         #expect(blockTags(makeDoc()) == ["hero"])
     }
 
-    // Non-empty explanation → meaning block gets a preceding divider (lines 37-47).
-    @Test func build_withExplanation_addsDividerThenMeaning() async throws {
+    // Non-empty explanation → meaning block follows hero directly, no divider block.
+    @Test func build_withExplanation_yieldsMeaningWithoutDivider() async throws {
         let doc = makeDoc(explanation: "a meaning")
-        #expect(blockTags(doc) == ["hero", "divider", "meaning"])
+        #expect(blockTags(doc) == ["hero", "meaning"])
     }
 
     // Empty explanation still preserves a non-empty translation in the meaning
     // title, so Word Detail and share text do not lose the card's translation.
     @Test func build_emptyExplanation_preservesTranslation() async throws {
         let doc = makeDoc(translation: "非空翻譯", explanation: "")
-        #expect(blockTags(doc) == ["hero", "divider", "meaning"])
+        #expect(blockTags(doc) == ["hero", "meaning"])
         #expect(meaningTitle(doc) == "非空翻譯")
     }
 
@@ -218,7 +219,7 @@ import Testing
     }
 
     // First trimmed example non-empty → example block added right after hero,
-    // BEFORE any divider/meaning (lines 29-31). Order: hero, example.
+    // BEFORE meaning (lines 29-31). Order: hero, example.
     @Test func build_withExample_addsExampleAfterHero() async throws {
         let doc = makeDoc(examples: ["She ran."])
         #expect(blockTags(doc) == ["hero", "example"])
@@ -230,16 +231,16 @@ import Testing
         #expect(blockTags(doc) == ["hero"])
     }
 
-    // collocations non-empty → divider + collocations block appended (lines 49-52).
-    @Test func build_withCollocations_addsDividerThenCollocations() async throws {
+    // collocations non-empty → collocations block appended, no divider (lines 49-52).
+    @Test func build_withCollocations_yieldsCollocationsWithoutDivider() async throws {
         let doc = makeDoc(collocations: ["take off", "take over"])
-        #expect(blockTags(doc) == ["hero", "divider", "collocations"])
+        #expect(blockTags(doc) == ["hero", "collocations"])
     }
 
-    // showsSourceContext true + non-empty context → divider + source (lines 54-68).
+    // showsSourceContext true + non-empty context → source block, no divider (lines 54-68).
     @Test func build_withSourceContext_addsDividerThenSource() async throws {
         let doc = makeDoc(sourceContext: "in the book", showsSourceContext: true)
-        #expect(blockTags(doc) == ["hero", "divider", "source"])
+        #expect(blockTags(doc) == ["hero", "source"])
     }
 
     // showsSourceContext true but context trims to empty → NO source block
@@ -292,8 +293,8 @@ import Testing
 
 
     // Full assembly ordering: example precedes meaning precedes collocations
-    // precedes source, each non-hero/example section preceded by its own divider
-    // (build lines 18-70). Pins the canonical block sequence.
+    // precedes source; no divider blocks between sections (build lines 18-70).
+    // Pins the canonical block sequence.
     @Test func build_fullCard_blockOrderingIsStable() async throws {
         let doc = makeDoc(
             translation: "翻譯",
@@ -305,7 +306,7 @@ import Testing
         )
         #expect(
             blockTags(doc)
-                == ["hero", "example", "divider", "meaning", "divider", "collocations", "divider", "source"]
+                == ["hero", "example", "meaning", "collocations", "source"]
         )
     }
 }

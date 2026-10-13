@@ -36,8 +36,6 @@ extension AppSkin {
             // Sans tokens — 內文 (ElmsSans + PingFang TC)
             body: AppFonts.sans(size: 15),
             cardExample: AppFonts.serifItalic(size: 20),
-            detailExampleSerif: AppFonts.serifItalic(size: 22),
-            detailExampleSerifStrong: AppFonts.serifItalic(size: 22, bold: true),
             caption: AppFonts.sans(size: 12, bold: true),
             // Mono tokens (ElmsSans + system monospaced)
             monoLabel: AppFonts.mono(size: 10, bold: true),

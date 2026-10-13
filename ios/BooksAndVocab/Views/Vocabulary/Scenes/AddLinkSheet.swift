@@ -547,10 +547,17 @@ struct AddLinkSheet: View {
                     .accessibilityValue("missing")
             } else {
                 ForEach(Array(sense.examples.enumerated()), id: \.offset) { exampleIndex, example in
-                    CardInlineText(
-                        paragraph: AddLinkCoordinator.exampleParagraph(for: example),
-                        style: .example
-                    )
+                    VStack(alignment: .leading, spacing: appSkin.metrics.cardBlockInnerGap) {
+                        Text(L10n.string("reviewCardLayout.field.example"))
+                            .font(appSkin.typography.caption)
+                            .foregroundStyle(appSkin.palette.tertiaryText)
+                        // 無來源、無朗讀／複製：展開列維持密度，書摘卡只畫例句本體（#3113）。
+                        CardExampleView(
+                            markdown: AddLinkCoordinator.exampleMarkup(for: example),
+                            showsFooter: false
+                        )
+                    }
+                    .accessibilityElement(children: .combine)
                     .accessibilityIdentifier(
                         AddLinkCoordinator.detailExampleIdentifier(
                             for: entry,

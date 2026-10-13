@@ -57,24 +57,4 @@ struct AddLinkRowDisclosureTests {
         #expect(state.send(.queryChanged) == .nothing)
         #expect(state.expandedID == nil)
     }
-
-    @Test("the expanded row's example renders bold as a mark run, never as literal asterisks")
-    func exampleBoldIsNotLiteralAsterisks() {
-        // Exercises the same helper the expanded row renders, so the wiring is covered, not just the parser.
-        let paragraph = AddLinkCoordinator.exampleParagraph(for: "A **concoction** of herbs.")
-        let marks = paragraph.inlines.compactMap { inline -> String? in
-            if case .mark(let value) = inline { return value }
-            return nil
-        }
-        let text = paragraph.inlines.map { inline -> String in
-            switch inline {
-            case .text(let value), .mark(let value), .code(let value), .emphasis(let value):
-                return value
-            }
-        }.joined()
-
-        #expect(marks == ["concoction"])
-        #expect(!text.contains("*"))
-        #expect(text.hasSuffix("A concoction of herbs."))
-    }
 }

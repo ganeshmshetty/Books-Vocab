@@ -120,7 +120,7 @@ KG UI 對齊 [mochi.cards](https://mochi.cards/docs/api/) editorial 質感。以
 > `makeNavBarAppearances()` 造的 `opaque` 變體在 `AppFonts.swift:301` 被 `_` 丟棄）、
 > 以及 `buttonAppearance` / `shadowColor` / `backIndicatorImage` 等其餘 `UIBarAppearance` 屬性。
 > 要據此做更大的決定，先把缺的格子補測。
-2. **border 退場、divider 進場**　list cards 預設無 border。分區走 `hr-style divider`（hairline + `AppMetrics.dividerAirMargin = 16` 上下 margin）+ 留白。例外：modal / popover / sticky group 必須有邊界，可保留 border。**玻璃自帶邊緣高光，不要再對玻璃元件描邊**——這是本條的延伸，不是例外。
+2. **border 退場、divider 進場**　list cards 預設無 border。列表與設定頁的分區走 `hr-style divider`（hairline + `AppMetrics.dividerAirMargin = 16` 上下 margin）+ 留白。例外：modal / popover / sticky group 必須有邊界，可保留 border。**玻璃自帶邊緣高光，不要再對玻璃元件描邊**——這是本條的延伸，不是例外。**卡片內部不用 hairline**（#3113）：複習卡背面、Linked Card、Word Detail 的各區塊靠 padding、間距與層次分隔；例句一律走書摘卡 `CardExampleView`（inset `mutedFill` 填色、無 stroke、無 elevation、襯線 `typography.cardExample`、單一高亮色 `highlightMark`）。複習卡的摺頁接縫（fold seam）是結構，保留。
 3. **shadow 收到 z0 / z1 兩階**　list / resting cards 用 z0（無 shadow，純背景區分）或 z1（極輕）。z2 以上保留給 sheet / drawer / modal / overlay。禁止 raw `.shadow(...)`，一律走 `.appElevation(.zN)`。**玻璃元件不加 elevation**——系統的玻璃已含分層陰影，疊上去會髒。
 > **玻璃內容卡先例（#2859）**：Overview 的「今日」hero 是唯一玻璃內容卡（單一 `glassEffect(.regular)`，無 stroke、無 elevation、不疊第二層背景）；其餘格子為 flat（fill、無 border、無 elevation）。不把整頁格子都玻璃化：平底 cream 上多層玻璃近乎透明，變體取捨須以 Catalog 的 light／dark／sepia 截圖判讀。
 4. **單一強調色策略**　全 app 強調色只有以下軸線，禁止為了好看引入新色：
