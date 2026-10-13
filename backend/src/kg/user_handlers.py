@@ -463,7 +463,9 @@ def delete_user_account_response(
             try:
                 if _remove_user_dir(data_dir, uid):
                     deleted_dirs.append(uid)
-            except OSError:
+            except Exception:
+                # #3366: any failure on one uid (not only OSError) must not strand
+                # the remaining linked-id directories after the tombstone.
                 logger.exception("Failed to delete user directory for %s", uid)
                 failed_uids.append(uid)
     finally:

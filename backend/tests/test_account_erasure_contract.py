@@ -702,8 +702,9 @@ def test_local_directory_removal_runs_before_prefix_sweep(tmp_path, monkeypatch)
 
 
 def test_prefix_sweep_still_runs_when_local_removal_raises_unexpectedly(tmp_path, monkeypatch):
-    """#3360: a non-OSError escaping the removal loop must not skip the account
-    prefix sweep. The request still fails, unhandled, after the sweep ran."""
+    """#3360 + #3366: a non-OSError on one linked uid must not skip the account
+    prefix sweep, nor strand the other linked directories on disk. The other
+    uids are removed and the request fails with a 500 naming the failed uid."""
     import kg.user_handlers as user_handlers
 
     sweeps: list[list[str]] = []
@@ -712,14 +713,53 @@ def test_prefix_sweep_still_runs_when_local_removal_raises_unexpectedly(tmp_path
         sweeps.append(list(ids))
         return 0
 
-    def _unexpected(_data_dir, _uid):
-        raise RuntimeError("unexpected removal failure")
+    real_remove = user_handlers._remove_user_dir
+
+    def _unexpected_for_canonical(data_dir, uid):
+        if uid == "canonical":
+            raise RuntimeError("unexpected removal failure")
+        return real_remove(data_dir, uid)
 
     monkeypatch.setattr(user_handlers, "sweep_account_prefixes", _record_sweep)
-    monkeypatch.setattr(user_handlers, "_remove_user_dir", _unexpected)
+    monkeypatch.setattr(user_handlers, "_remove_user_dir", _unexpected_for_canonical)
+    (tmp_path / "users" / "linked1").mkdir(parents=True)
+    (tmp_path / "users" / "linked1" / "marker.txt").write_text("x")
 
-    with pytest.raises(RuntimeError, match="unexpected removal failure"):
+    with pytest.raises(HTTPException) as excinfo:
         _call_delete(tmp_path, _linked_users(), MagicMock(), user_id="canonical")
 
+    assert excinfo.value.status_code == 500
+    assert "canonical" in excinfo.value.detail
+    assert not (tmp_path / "users" / "linked1").exists()
     assert len(sweeps) == 1
     assert set(sweeps[0]) == {"canonical", "linked1"}
+
+
+def test_local_removal_failure_on_one_linked_uid_still_removes_the_others(tmp_path, monkeypatch):
+    """#3366: a RuntimeError while removing the first linked uid must not abort
+    the loop before the remaining linked-id directories are removed."""
+    import kg.user_handlers as user_handlers
+
+    monkeypatch.setattr(user_handlers, "sweep_account_prefixes", lambda *_a, **_k: 0)
+    real_remove = user_handlers._remove_user_dir
+
+    def _raise_for_first(data_dir, uid):
+        if uid == "linked1":
+            raise RuntimeError("boom")
+        return real_remove(data_dir, uid)
+
+    monkeypatch.setattr(user_handlers, "_remove_user_dir", _raise_for_first)
+    users = {
+        "canonical": {"linked_ids": ["linked1", "linked2"], "config": {}},
+        "linked1": {"_linked_to": "canonical", "config": {}},
+        "linked2": {"_linked_to": "canonical", "config": {}},
+    }
+    for uid in ("canonical", "linked1", "linked2"):
+        (tmp_path / "users" / uid).mkdir(parents=True)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _call_delete(tmp_path, users, MagicMock(), user_id="canonical")
+
+    assert excinfo.value.status_code == 500
+    assert "linked1" in excinfo.value.detail
+    assert not (tmp_path / "users" / "linked2").exists()
