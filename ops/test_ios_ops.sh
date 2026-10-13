@@ -344,9 +344,12 @@ rm -rf "$sim_shot_tmp"
 
 section "Catalog agent tool surface"
 catalog_help="$(bash "$IOS_OPS" catalog --help)"
-echo "$catalog_help" | grep -q 'catalog list' && echo "$catalog_help" | grep -q 'catalog open' \
-  && echo "$catalog_help" | grep -q 'catalog capture' && echo "$catalog_help" | grep -q 'catalog close' \
-  && ! echo "$catalog_help" | grep -q '^  ./ops/ios_ops.sh catalog snapshots' \
+# Match in-shell, not `echo | grep -q`: under pipefail an early-exit grep -q EPIPEs the
+# producer on a multi-chunk help body and fails a passing contract (main-red #3381).
+catalog_help_lines=$'\n'"$catalog_help"$'\n'
+[[ "$catalog_help" == *'catalog list'* && "$catalog_help" == *'catalog open'* \
+  && "$catalog_help" == *'catalog capture'* && "$catalog_help" == *'catalog close'* \
+  && "$catalog_help_lines" != *$'\n  ./ops/ios_ops.sh catalog snapshots'* ]] \
   && ok "catalog help exposes only agent list/open/capture/close actions" || fail_t "catalog help contract invalid: $catalog_help"
 if bash "$IOS_OPS" catalog snapshots >"/tmp/kg-catalog-legacy.out.$$" 2>"/tmp/kg-catalog-legacy.err.$$"; then
   fail_t "removed catalog snapshots action still succeeds"
