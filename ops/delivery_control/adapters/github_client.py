@@ -269,7 +269,7 @@ def _is_api_read(argv: tuple[str, ...]) -> bool:
         return False
     if "--paginate" in argv or "--slurp" in argv:
         return False
-    return _is_read_only_json_query(argv)
+    return is_read_only_json_query(argv)
 
 
 def _file_size(path: Path) -> int:
@@ -382,7 +382,7 @@ class GitHubCliClient:
         self.last_fetched_at = None
         if _is_api_read(argv):
             output = self._load_api_read(argv, allow_nonzero=allow_nonzero)
-        elif _is_read_only_json_query(argv):
+        elif is_read_only_json_query(argv):
             # Subcommand and paginated reads carry no response headers, so they
             # cannot be revalidated; they are still admitted by the quota gate
             # and recorded in the spend log.

@@ -309,7 +309,7 @@ class FakeWorld:
                         self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
                     )
                     runs = [_as_check_run(c) for c in batch]
-                return ok(json.dumps([{"total_count": len(runs), "check_runs": runs}]))
+                return ok(json.dumps({"total_count": len(runs), "check_runs": runs}))
             if cmd[1] == "api" and "/check-runs?" in cmd[-1]:
                 runs = self.review_runs
                 batch = runs.pop(0) if len(runs) > 1 else runs[0]
