@@ -157,8 +157,9 @@ def _sweep_quarantine(data_dir_path: Path) -> None:
     for batch in root.iterdir():
         try:
             shutil.rmtree(batch)
-        except OSError:
+        except OSError as exc:
             _logger.exception("Failed to sweep quarantined user data %s", batch)
+            capture_handled(exc, context="account_erasure.quarantine_sweep")
 
 
 def _remove_user_dir_quarantined(data_dir_path: Path, uid: str) -> None:
