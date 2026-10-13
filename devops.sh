@@ -654,22 +654,23 @@ rsync_progress_flags() {
 # 主檔與 checkpoint 之後的新 -wal 不成一組，會靜默漏 frame。這裡沿用 ops/kg_backup.sh
 # snapshot_db 的模式：SQLite online backup API + no_ckpt_on_close（絕不 checkpoint／寫 live
 # DB）+ 快照非空且 quick_check=ok 才算成功。任一 DB 失敗即 exit 1，stage 由 trap 清掉。
-# stage 由遠端 mktemp -d 建立（0700、不可預測；同 ops/kg_backup.sh snapshot 的做法），
-# 路徑印到 stdout 第一行供本機 tar 拉回；INT/TERM/HUP 經 exit 轉成 EXIT trap 清理（#3464）。
+# stage 由本機在快照前經遠端 mktemp -d 建立（0700、不可預測；同 ops/kg_backup.sh snapshot 的做法），
+# 以 `bash -s -- <stage> <data_dir>` 傳入；本機持有 stage 路徑後即接管清理（snap_stage_cleanup），
+# 遠端 trap 只是 remote 端失敗時的第二道保險（#3464）。
 # symlink 形式的 *.db 也納入（#3479）：sqlite 解析到真實檔；壞掉的 symlink 開檔失敗即 exit 1，不靜默略過。
 remote_db_snapshot_script() {
   cat <<'REMOTE'
 set -euo pipefail
-data="$1"
+stage="$1"
+data="$2"
 made=0
-stage=""
 trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$made" = 1 ]; then rm -rf "$stage"; fi' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
-stage="$(mktemp -d "${TMPDIR:-/tmp}/kg-db-snapshot.XXXXXX")"
+# 守衛必須在 made=1 之前：stage 為空時 rm -rf 會落到資料目錄，絕不可讓它走到清理分支。
+[ -n "$stage" ] && [ -d "$stage" ] || { echo "snapshot stage missing: '$stage'" >&2; exit 1; }
 made=1
-printf '%s\n' "$stage"
 cd "$data"
 data_abs="$(pwd -P)"
 while IFS= read -r -d '' rel; do
@@ -686,6 +687,16 @@ while IFS= read -r -d '' rel; do
   mv "$dir/.snap.db" "$dir/$(basename "$rel")"
 done < <(find . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' \( -type f -o -type l \) -print0)
 REMOTE
+}
+
+# 遠端快照暫存目錄的本機清理（#3464）：由 kg_install_signal_traps 掛在 EXIT／INT／TERM／HUP，
+# 因此快照中、rsync 途中、tar 途中的 Ctrl-C 都會經此清掉遠端 stage。冪等：清完即清空
+# SNAP_STAGE_REMOTE，之後的 EXIT 不再打 ssh。
+snap_stage_cleanup() {
+  local stage="${SNAP_STAGE_REMOTE:-}"
+  [[ -n "$stage" ]] || return 0
+  SNAP_STAGE_REMOTE=""
+  run_remote "rm -rf $stage" >/dev/null 2>&1 || true
 }
 
 cmd_backup() {
@@ -736,8 +747,22 @@ cmd_backup() {
   # *.db 不走 rsync（#3442）：先在遠端產生一致快照（失敗即中止，不 pull、不進 migrate），
   # 非 DB 檔照常 rsync，最後把快照 tar 串流拉回覆蓋 dest 內的 *.db。
   local snap_stage snap_rc=0
+  # 本機在快照開始前就持有 stage 路徑（#3464）：快照是長時間同步呼叫，中途 Ctrl-C 時本機拿不到
+  # 命令替換的輸出，因此 stage 先由遠端 mktemp -d 建好，立即交給 kg_install_signal_traps 清理。
+  # kg_install_signal_traps 只有單一 cleanup 槽位：migrate-run 先 cmd_backup 再 acquire_deploy_lock，
+  # 此處若已有別的 cleanup 在位，覆蓋會讓它失效，直接拒絕。
+  [[ -z "${KG_SIGNAL_CLEANUP_FN:-}" || "$KG_SIGNAL_CLEANUP_FN" == snap_stage_cleanup ]] \
+    || err "內部錯誤：cmd_backup 執行時已安裝 signal cleanup（${KG_SIGNAL_CLEANUP_FN}），單一槽位會被覆蓋。"
   info "遠端 *.db 一致快照（SQLite online backup）"
-  if ! snap_stage="$(run_remote "bash -s -- $REMOTE_DATA_DIR" < <(remote_db_snapshot_script))" || [[ -z "$snap_stage" ]]; then
+  # 空輸出不在此重複判斷：真遠端的 mktemp 成功必印路徑，空字串只會來自不執行命令的 transport 替身，
+  # 由遠端 bash -s 的 stage 守衛擋下（且 snap_stage_cleanup 對空 stage 為 no-op，不會打 ssh）。
+  if ! snap_stage="$(run_remote 'mktemp -d "${TMPDIR:-/tmp}/kg-db-snapshot.XXXXXX"')"; then
+    touch "$dest/.INCOMPLETE" 2>/dev/null || true
+    err "本地冷快照失敗：無法在遠端建立暫存目錄（mktemp -d）。此指令沒有產出可用備份；不得進行 migrate-run。"
+  fi
+  SNAP_STAGE_REMOTE="$snap_stage"
+  kg_install_signal_traps snap_stage_cleanup devops
+  if ! run_remote "bash -s -- $(printf '%q' "$snap_stage") $REMOTE_DATA_DIR" < <(remote_db_snapshot_script); then
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
     err "本地冷快照失敗：遠端 *.db 一致快照未完成（見上方）。此指令沒有產出可用備份；不得進行 migrate-run。"
   fi
@@ -752,7 +777,7 @@ cmd_backup() {
     # 正常備份長得一模一樣（且會佔用 cleanup_old_backups 的 keep=10 額度）。不刪它
     # ——鐵律 7 不在 data 路徑附近用 rm -rf；標記它，讓後續判讀有依據。
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
-    run_remote "rm -rf $snap_stage" >/dev/null 2>&1 || true
+    snap_stage_cleanup
     echo "" >&2
     echo "  本機 rsync：$(rsync --version 2>&1 | head -1)" >&2
     echo "  已建立但**不完整**、不可當備份用的目錄：${dest}（已標記 .INCOMPLETE）" >&2
@@ -761,7 +786,7 @@ cmd_backup() {
     err "本地冷快照失敗：rsync 非零退出（上方為 rsync 自身輸出）。此指令沒有產出可用備份。"
   fi
   run_remote "tar -C $snap_stage -cf - ." | tar -C "$dest" -xf - || snap_rc=$?
-  run_remote "rm -rf $snap_stage" >/dev/null 2>&1 || true
+  snap_stage_cleanup
   if (( snap_rc != 0 )); then
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
     err "本地冷快照失敗：一致快照拉回本機時 tar 失敗（exit ${snap_rc}）。此指令沒有產出可用備份。"
