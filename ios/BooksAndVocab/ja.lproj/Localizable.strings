@@ -984,6 +984,7 @@
 "todayReview.card.notebook.a11y" = "単語帳：%@";
 "todayReview.card.notebook.default" = "デフォルトの単語帳";
 "todayReview.card.notebook.unnamed" = "名前のない単語帳";
+"todayReview.card.graded" = "採点済み：%@";
 "todayReview.saveFailure" = "復習結果はまだ保存されていません。次に復習を開いたときに自動で再試行されます。";
 "todayReview.linkHideFailed" = "リンクを非表示にできなかったため、元に戻しました。";
 "todayReview.interval.hours" = "%@時間";

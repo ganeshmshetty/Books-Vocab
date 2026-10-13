@@ -68,6 +68,15 @@ final class ReviewScoringState {
         submittedAnswers[index] != nil
     }
 
+    /// 本 session 已評的卡數（#3371 header 進度的分子）。每張卡至多一筆答案，replace 不改變此數；
+    /// 瀏覽（‹ ›、autoplay）不寫入評分 state，因此也不會改變此數。
+    var gradedCount: Int { submittedAnswers.count }
+
+    /// 此卡已評的結果；nil ＝ 尚未評分。revisit 已評的卡時，卡片標示由此取值（#3371）。
+    func gradedFeedback(at index: Int) -> ReviewFeedback? {
+        submittedAnswers[index]?.feedback
+    }
+
     /// Mark an answer as DB-flush-confirmed. Called from the flush success
     /// callback so the snapshot can record `flushed=true` and restore won't
     /// re-flush it. No-op if the index has no recorded answer.
