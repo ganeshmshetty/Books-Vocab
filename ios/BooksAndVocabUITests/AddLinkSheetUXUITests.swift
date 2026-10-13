@@ -94,8 +94,11 @@ final class AddLinkSheetUXUITests: UITestCase {
     }
 
     /// An exactly-typed linkable word shows the ↵ hint on its row and Return
-    /// links it. The unreachable server fails the link, so the existing-word
-    /// failure banner is the evidence that THIS path (not creation) ran.
+    /// links it. Linking an existing word still runs through the creation
+    /// progress pipeline (#3115), so `addLink.creation.progress` appears here
+    /// too. The unreachable server fails the link, so the existing-word failure
+    /// banner (`addLink.error.reason`) is the evidence that the link attempt ran.
+    /// It is not evidence that a new word was created.
     @MainActor
     func testReturnOnExactWordLinksThatWord() throws {
         guard let app = openAddLinkSheet(perfLog: "add-link-return-exact") else { return }

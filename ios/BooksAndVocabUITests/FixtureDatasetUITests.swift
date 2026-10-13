@@ -471,10 +471,13 @@ final class FixtureDatasetUITests: UITestCase {
                 expectedTitle
             ))
             .firstMatch
-        XCTAssertTrue(
-            titledCard.waitUntilExists(timeout: 30),
-            "dataset-overridden book title '\(expectedTitle)' should render in a bookshelf card"
-        )
+        // Same stage contract as the shell and projection waits above: diagnostics
+        // attach only on failure, so a passing run carries no extra screenshots.
+        guard titledCard.waitUntilExists(timeout: 30) else {
+            attachDiagnostics(for: app, namePrefix: "Bookshelf Title")
+            XCTFail("dataset-overridden book title '\(expectedTitle)' should render in a bookshelf card")
+            return
+        }
     }
 
     @MainActor
