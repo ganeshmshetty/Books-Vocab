@@ -22,15 +22,22 @@ RSYNC_LOG="$TMP/rsync.log"
 : >"$RSYNC_LOG"
 
 # ssh 替身：把「遠端」shell 字串在本機執行（stdin 原樣轉給 bash），並記下每次呼叫。
-# 只放行指向本測試 fixture（SNAP_TEST_FIXTURE_ROOT）或 devops.sh 的一致快照暫存路徑
-# （/tmp/kg-db-snapshot__*）的字串；其餘（例如預設 ~/kg-data）一律拒絕、exit 97、留 tripwire 痕跡，
-# 確保 seam 永遠不會在本機對非 fixture 路徑執行任何指令。
+# 只放行指向本測試 fixture（SNAP_TEST_FIXTURE_ROOT）或 devops.sh 遠端 mktemp -d 產生的
+# 一致快照暫存目錄（kg-db-snapshot.XXXXXX）的字串；其餘（例如預設 ~/kg-data）一律拒絕、exit 97、
+# 留 tripwire 痕跡，確保 seam 永遠不會在本機對非 fixture 路徑執行任何指令。
+# 對 tar 串流前的暫存目錄記下權限（#3464：必須 0700，不可 world-readable）。
+# 可攜：GNU stat（ubuntu-latest CI）用 -c %a；BSD stat（macOS）用 -f %Lp。GNU 的 -f 是
+# 檔案系統資訊、不是權限，不可當作第一順位，否則 CI 上會讀成非 700 而誤紅。
 SSH_STUB="$TMP/bin/local-exec-ssh-stub"
 cat >"$SSH_STUB" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${SNAP_TEST_SSH_LOG:?}"
 case "$*" in
-  *"${SNAP_TEST_FIXTURE_ROOT:?}"*|*/tmp/kg-db-snapshot__*) exec bash -c "$*" ;;
+  *"${SNAP_TEST_FIXTURE_ROOT:?}"*|*/kg-db-snapshot.*)
+    case "$*" in
+      "tar -C "*) read -r _t _c stage _r <<<"$*"; { stat -c '%a' "$stage" 2>/dev/null || stat -f '%Lp' "$stage"; } >>"${SNAP_TEST_MODE_LOG:?}" ;;
+    esac
+    exec bash -c "$*" ;;
 esac
 printf 'FORBIDDEN: snapshot test refuses non-fixture remote command: %s\n' "$*" >&2
 [ -n "${KG_OPS_TEST_TRIPWIRE_LOG:-}" ] && printf 'snapshot-stub deny: %s\n' "$*" >>"$KG_OPS_TEST_TRIPWIRE_LOG"
@@ -85,11 +92,17 @@ raw_count="$(sqlite3 "$TMP/raw-main-only.db" 'SELECT COUNT(*) FROM card;')"
 [[ "$raw_count" == 1 ]] || fail "fixture: main file alone must lack the WAL-only row (got $raw_count)"
 
 # ── 1. 一致快照：WAL-only 已 commit 的 row 必須出現在備份輸出 ───────────────
+# 遠端暫存根目錄（TMPDIR 指到這裡，便於斷言失敗後無殘留 kg-db-snapshot.*）。
+REMOTE_TMP="$TMP/remote-tmp"
+mkdir -p "$REMOTE_TMP"
+MODE_LOG="$TMP/stage-mode.log"
+: >"$MODE_LOG"
 run_backup() { # <data_dir> <backup_dir> <cmd>
   ROOT="$ROOT" TARGET="$2" DATA="$1" CMD="$3" DEVOPS_SOURCE_ONLY=1 \
     KG_OPS_TEST=1 KG_SERVER=test-host KG_REMOTE_DATA_DIR="$1" \
-    KG_SSH_CMD="$SSH_STUB" PATH="$RSYNC_BIN:$PATH" \
+    KG_SSH_CMD="${SSH_STUB_OVERRIDE:-$SSH_STUB}" PATH="${RSYNC_STUB_DIR:-$RSYNC_BIN}:$PATH" TMPDIR="$REMOTE_TMP" \
     SNAP_TEST_SSH_LOG="$SSH_LOG" SNAP_TEST_RSYNC_LOG="$RSYNC_LOG" SNAP_TEST_FIXTURE_ROOT="$TMP" \
+    SNAP_TEST_MODE_LOG="$MODE_LOG" \
     bash -c 'source "$ROOT/devops.sh"; BACKUP_DIR="$TARGET"; eval "$CMD"'
 }
 
@@ -105,6 +118,11 @@ snap_count="$(sqlite3 "$snap_db" 'SELECT COUNT(*) FROM card;')"
 [[ "$snap_count" == 2 ]] \
   || fail "backup lost a committed WAL-only row (rows=$snap_count, want 2): raw rsync of live WAL-mode DB"
 pass "cmd_backup snapshot keeps the committed WAL-only row"
+
+# 遠端暫存目錄必須是 mktemp -d 建立的 0700（不可為可預測、world-readable 的 /tmp 路徑）
+[[ "$(cat "$MODE_LOG")" == 700 ]] \
+  || fail "remote snapshot stage must be mktemp -d 0700 (got mode $(cat "$MODE_LOG"))"
+pass "remote snapshot stage is mode 0700"
 
 # ── 2. 快照失敗 → migrate-run 中止，不 pull、不進容器 ─────────────────────────
 DATA_BAD="$TMP/remote-bad"
@@ -122,5 +140,94 @@ if grep -Fq 'migration-ran' "$TMP/migrate.out" || grep -Fq 'docker' "$SSH_LOG"; 
 fi
 [[ ! -s "$RSYNC_LOG" ]] || fail "migrate-run pulled data after a failed snapshot"
 pass "migrate-run aborts before pull and migration when the snapshot fails"
+
+# ── 3. #3479：symlink 的 *.db 不可被靜默漏掉 ───────────────────────────────
+# users/u1/cards.db 是指向 data 目錄外真實 DB 的 symlink；真實 DB 的 WAL-only row 必須進備份。
+LINK_REAL="$TMP/link-target"
+make_wal_fixture "$LINK_REAL"
+DATA_LINK="$TMP/remote-link"
+mkdir -p "$DATA_LINK/users/u1"
+ln -s "$LINK_REAL/users/u1/cards.db" "$DATA_LINK/users/u1/cards.db"
+OUT_LINK="$TMP/backups-link"; mkdir -p "$OUT_LINK"
+set +e
+run_backup "$DATA_LINK" "$OUT_LINK" cmd_backup >"$TMP/link.out" 2>&1
+link_rc=$?
+set -e
+(( link_rc == 0 )) || { cat "$TMP/link.out" >&2; fail "cmd_backup failed on a symlinked *.db fixture (rc=$link_rc)"; }
+link_db="$(find "$OUT_LINK" -path '*/users/u1/cards.db' -type f | head -n 1)"
+[[ -n "$link_db" ]] || fail "symlinked *.db was silently dropped from the backup"
+link_count="$(sqlite3 "$link_db" 'SELECT COUNT(*) FROM card;')"
+[[ "$link_count" == 2 ]] \
+  || fail "symlinked *.db not snapshotted (rows=$link_count, want 2): find -type f skips symlinks"
+pass "symlinked *.db is snapshotted into the backup"
+
+# ── 4. #3464：快照失敗（損毀 DB）時遠端暫存目錄必須被清掉 ────────────────────
+DATA_CORRUPT="$TMP/remote-corrupt"
+mkdir -p "$DATA_CORRUPT/users/u1"
+printf 'not a sqlite database\n' >"$DATA_CORRUPT/users/u1/cards.db"
+OUT_CORRUPT="$TMP/backups-corrupt"; mkdir -p "$OUT_CORRUPT"
+set +e
+run_backup "$DATA_CORRUPT" "$OUT_CORRUPT" cmd_backup >"$TMP/corrupt.out" 2>&1
+corrupt_rc=$?
+set -e
+(( corrupt_rc != 0 )) || fail "cmd_backup must fail on a corrupt DB"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
+[[ -z "$leftover" ]] || fail "failed snapshot left a remote stage behind: $leftover"
+pass "failed snapshot removes its remote stage"
+
+# ── 5. #3464：快照成功後、拉回前被 INT 中斷，遠端暫存目錄仍須清掉 ───────────────
+# rsync 替身：--version 照常回應；真正執行時模擬 Ctrl-C 落在 rsync 途中——父 shell（cmd_backup
+# 所在程序）與替身自己都收到 INT，替身因 SIGINT 死亡（非 exit N；bash 只會因子程序被信號殺死才跟著中斷）。
+# 修前沒有本地 INT cleanup，父程序直接死掉，stage 殘留在 REMOTE_TMP。
+RSYNC_INT_BIN="$TMP/rsync-int-bin"
+mkdir -p "$RSYNC_INT_BIN"
+RSYNC_INT_STUB="$RSYNC_INT_BIN/rsync"
+cat >"$RSYNC_INT_STUB" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$#" -eq 1 && "$1" == --version ]]; then
+  echo "openrsync: protocol version 29"
+  exit 0
+fi
+kill -INT "$PPID"
+kill -INT "$$"
+STUB
+chmod 755 "$RSYNC_INT_STUB"
+
+DATA_INT="$TMP/remote-int"
+make_wal_fixture "$DATA_INT"
+OUT_INT="$TMP/backups-int"; mkdir -p "$OUT_INT"
+set +e
+RSYNC_STUB_DIR="$RSYNC_INT_BIN" run_backup "$DATA_INT" "$OUT_INT" cmd_backup >"$TMP/int.out" 2>&1
+int_rc=$?
+set -e
+(( int_rc != 0 )) || fail "cmd_backup interrupted by SIGINT must not report success"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
+[[ -z "$leftover" ]] || fail "interrupted cmd_backup left a remote stage behind: $leftover"
+pass "SIGINT during rsync removes the remote stage"
+
+# ── 6. #3464：快照階段中被 INT（bash -s 尚未完成），已建立的遠端 stage 仍須清掉 ──────
+# 本機在快照前就持有 stage（遠端 mktemp -d 之後立即接管）。這支 ssh 替身讓 mktemp 正常執行，
+# 然後在 `bash -s` 那一步模擬 Ctrl-C：父 shell 與替身都收到 INT，快照本身不跑。
+SSH_SNAP_INT_STUB="$TMP/bin/snapshot-int-ssh-stub"
+cat >"$SSH_SNAP_INT_STUB" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "bash -s -- "*) kill -INT "$PPID"; kill -INT "$$" ;;
+  *) exec "$(dirname "$0")/local-exec-ssh-stub" "$@" ;;
+esac
+STUB
+chmod 755 "$SSH_SNAP_INT_STUB"
+
+DATA_SNAP_INT="$TMP/remote-snap-int"
+make_wal_fixture "$DATA_SNAP_INT"
+OUT_SNAP_INT="$TMP/backups-snap-int"; mkdir -p "$OUT_SNAP_INT"
+set +e
+SSH_STUB_OVERRIDE="$SSH_SNAP_INT_STUB" run_backup "$DATA_SNAP_INT" "$OUT_SNAP_INT" cmd_backup >"$TMP/snap-int.out" 2>&1
+snap_int_rc=$?
+set -e
+(( snap_int_rc != 0 )) || fail "cmd_backup interrupted during the snapshot must not report success"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
+[[ -z "$leftover" ]] || fail "snapshot-phase interrupt left a remote stage behind: $leftover"
+pass "SIGINT during the snapshot removes the pre-created remote stage"
 
 printf 'backup snapshot: all checks passed\n'
