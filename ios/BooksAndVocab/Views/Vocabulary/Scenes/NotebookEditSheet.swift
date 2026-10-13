@@ -32,6 +32,14 @@ enum NotebookEditPickerMetrics {
     }
 }
 
+/// Save 按鈕的可用條件。處理照片中禁止 Save：否則 staged 封面會在 processPhoto 仍在寫檔時
+/// 交給 onSave，之後 processPhoto 會刪掉已交出的檔並留下孤兒新檔（#3498）。
+enum NotebookEditSaveGate {
+    static func isSaveEnabled(name: String, isProcessingPhoto: Bool) -> Bool {
+        !isProcessingPhoto && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 struct NotebookEditSheet: View {
     @ObserveInjection private var inject
     enum Mode {
@@ -200,7 +208,7 @@ struct NotebookEditSheet: View {
                         ))
                         dismiss()
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!NotebookEditSaveGate.isSaveEnabled(name: name, isProcessingPhoto: isProcessingPhoto))
                 }
             }
             .onChange(of: selectedPhoto) { _, item in
@@ -305,8 +313,9 @@ struct NotebookEditSheet: View {
             photoError = NotebookEditCopy.photoErrorMessage(.saveFailed)
             return
         }
-        // sheet 已關閉（取消 / 存檔後才完成）：沒有 owner 會接手這個新檔，立即清掉（#3414）
-        if isDismissed {
+        // sheet 已 commit 或關閉（取消 / 存檔後才完成）：沒有 owner 會接手這個新檔，立即清掉（#3414、#3498）。
+        // 必須在刪除前一個 staged / 指派 coverImagePath 之前判斷，已交給 onSave 的檔不可再被動到。
+        if NotebookCoverCommit.shouldDiscardLateWrite(committed: isCommitted, dismissed: isDismissed) {
             try? FileManager.default.removeItem(at: fileURL)
             return
         }
