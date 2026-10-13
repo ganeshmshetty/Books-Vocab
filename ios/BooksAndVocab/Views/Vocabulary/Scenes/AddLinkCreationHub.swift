@@ -36,7 +36,9 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// root owns the toast coordinator for its whole life.
     @ObservationIgnored weak var outcomePoster: (any AddLinkJobOutcomePosting)?
     /// Coordinators whose sheet is on screen; their own pill or panel carries the outcome.
-    @ObservationIgnored private var presentingCoordinators: Set<ObjectIdentifier> = []
+    /// Weak, never raw `ObjectIdentifier`: a freed coordinator's address can be reused by a
+    /// later job, which would then have its completion notice silenced (#3116).
+    @ObservationIgnored private var presentingCoordinators: [WeakCoordinator] = []
 
     init(
         store: any PendingLinkCreationStoring = PendingLinkCreationStores.makeDefault(),
@@ -70,11 +72,13 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// The sheet that owns `coordinator` is on screen. Its own pill or panel carries
     /// the outcome, so the hub posts nothing for that job (#3116).
     func sheetDidAppear(_ coordinator: AddLinkCreationCoordinator) {
-        presentingCoordinators.insert(ObjectIdentifier(coordinator))
+        prunePresentingCoordinators()
+        guard !isPresenting(coordinator) else { return }
+        presentingCoordinators.append(WeakCoordinator(value: coordinator))
     }
 
     func sheetDidDisappear(_ coordinator: AddLinkCreationCoordinator) {
-        presentingCoordinators.remove(ObjectIdentifier(coordinator))
+        presentingCoordinators.removeAll { $0.value == nil || $0.value === coordinator }
     }
 
     /// Source card ids whose cached card must be rebuilt because their pending
@@ -236,6 +240,14 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         return live === coordinator
     }
 
+    private func isPresenting(_ coordinator: AddLinkCreationCoordinator) -> Bool {
+        presentingCoordinators.contains { $0.value === coordinator }
+    }
+
+    private func prunePresentingCoordinators() {
+        presentingCoordinators.removeAll { $0.value == nil }
+    }
+
     /// The completion notice for a job that was running, is still owned by
     /// `coordinator`, and has no sheet on screen. Read before the upsert/remove so
     /// the previous record state still says "running" (#3116).
@@ -245,7 +257,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     ) -> AppToastItem? {
         guard jobs[state.jobKey]?.record.state == .creating,
               owns(coordinator, jobKey: state.jobKey),
-              !presentingCoordinators.contains(ObjectIdentifier(coordinator)) else { return nil }
+              !isPresenting(coordinator) else { return nil }
         return AddLinkJobNotice.item(
             phase: state.phase,
             jobKey: state.jobKey,
@@ -327,6 +339,11 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         descriptor.fetchLimit = 1
         return try? context.fetch(descriptor).first
     }
+}
+
+/// Holds a sheet's coordinator without keeping it alive (#3116).
+private struct WeakCoordinator {
+    weak var value: AddLinkCreationCoordinator?
 }
 
 /// Where a completion notice goes. `AppToastCoordinator` is the production sink.

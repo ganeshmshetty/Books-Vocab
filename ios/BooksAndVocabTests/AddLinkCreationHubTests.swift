@@ -1033,6 +1033,23 @@ struct AddLinkJobCompletionNoticeTests {
     func otherSheetDoesNotSilence() async throws {
         let gate = Gate()
         let rig = try makeRig(service: gatedSuccess(gate))
+        // Held for the whole test, so the other sheet is genuinely on screen while the job runs.
+        let otherSheet = rig.hub.makeCoordinator()
+        rig.hub.sheetDidAppear(otherSheet)
+        start(rig)
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        withExtendedLifetime(otherSheet) {}
+    }
+
+    @Test("a sheet freed without disappearing cannot silence a later job")
+    func freedSheetDoesNotSilence() async throws {
+        let gate = Gate()
+        let rig = try makeRig(service: gatedSuccess(gate))
+        // Freed at the end of this statement and never disappears: its stale entry must not
+        // match the coordinator of the job started below, even if the address is reused.
         rig.hub.sheetDidAppear(rig.hub.makeCoordinator())
         start(rig)
         #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
