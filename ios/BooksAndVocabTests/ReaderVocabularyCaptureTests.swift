@@ -320,7 +320,7 @@ struct ReaderVocabularyCaptureTests {
         )
 
         #expect(excluded.contains(freshAddId), "the collapsed add must be excluded from the upload batches")
-        #expect(queuedDelete.syncAction == .add, "the delete row is restored instead of deleting the server card")
+        #expect(queuedDelete.syncAction == .edit, "a server-held card becomes a pending edit, never a re-sent add (#3408)")
         #expect(queuedDelete.isPending)
         #expect(queuedDelete.kgCardId == "card_harbor")
         #expect(queuedDelete.translation == "港口", "the latest capture's translation wins")
