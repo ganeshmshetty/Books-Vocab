@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tarfile
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,42 @@ class TestBackupWorld:
         (tmp_path / "users.json").write_text("{}")
         path = shared.backup_world(tmp_path, label="hello world!!")
         assert "hello-world" in path.name
+
+    def test_manifest_members_exclude_root_sqlite_sidecars(self, tmp_path):
+        root_db = tmp_path / "users.db"
+        writer = sqlite3.connect(root_db)
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+            writer.execute("CREATE TABLE t (x TEXT)")
+            writer.commit()
+            assert (tmp_path / "users.db-wal").exists()
+            archive = shared.backup_world(tmp_path)
+        finally:
+            writer.close()
+
+        with tarfile.open(archive) as tar:
+            names = tar.getnames()
+            manifest_member = next(n for n in names if n.endswith("/.ops_meta/backup_manifest.json"))
+            manifest = json.loads(tar.extractfile(manifest_member).read())
+        assert not any(name.endswith(("-wal", "-shm")) for name in names)
+        assert "users.db" in manifest["members"]
+        assert not any(member.endswith(("-wal", "-shm")) for member in manifest["members"])
+
+    def test_staging_is_created_under_world_backup_root(self, tmp_path, monkeypatch):
+        (tmp_path / "users.json").write_text("{}")
+        staging_dirs: list[str] = []
+        original_tmpdir = tempfile.TemporaryDirectory
+
+        def recording_tmpdir(*args, **kwargs):
+            staging_dirs.append(str(kwargs.get("dir")))
+            return original_tmpdir(*args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", recording_tmpdir)
+        shared.backup_world(tmp_path)
+
+        assert len(staging_dirs) == 1
+        assert staging_dirs[0] != "None"
+        assert Path(staging_dirs[0]).resolve().is_relative_to(shared.world_backup_root(tmp_path).resolve())
 
     def test_wal_db_snapshot_survives_checkpoint_during_archive(self, tmp_path, monkeypatch):
         user_dir = tmp_path / "users" / "u1"
