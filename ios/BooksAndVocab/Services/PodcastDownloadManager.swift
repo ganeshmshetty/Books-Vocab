@@ -36,6 +36,10 @@ final class PodcastDownloadManager: NSObject {
 
     @ObservationIgnored
     private var modelContainer: ModelContainer?
+    /// Persists the episode write made by `commit`. Production uses the
+    /// context's own save; tests swap it to force the save-failure branch (#3427).
+    @ObservationIgnored
+    var saveContext: (ModelContext) throws -> Void = { try $0.save() }
     @ObservationIgnored
     private var taskToRemoteId: [Int: String] = [:]
     @ObservationIgnored
