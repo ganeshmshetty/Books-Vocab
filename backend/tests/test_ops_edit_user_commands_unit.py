@@ -623,3 +623,53 @@ class TestUserDeletePrefixSweepBestEffort:
         users = json.loads((tmp_path / "users.json").read_text(encoding="utf-8"))
         assert "doomed" in users["_revoked_before"]
         assert "doomed" in users["_terminated"]
+
+    def test_sweep_failure_is_reported_and_marked_incomplete(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        fake = _FakeObjectStorage()
+        monkeypatch.setattr(user_cmd, "_library_object_storage", lambda: ("kg-library", fake), raising=False)
+
+        def failing_sweep(*_args, **_kwargs):
+            raise RuntimeError("s3 list failed")
+
+        reported: list[tuple[BaseException, str]] = []
+
+        def recorder(exc, *, context, tags=None):
+            reported.append((exc, context))
+            return True
+
+        monkeypatch.setattr(user_cmd, "sweep_account_prefixes", failing_sweep)
+        monkeypatch.setattr(user_cmd, "capture_handled", recorder, raising=False)
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        capsys.readouterr()
+
+        rc = user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True))
+
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert [context for _exc, context in reported] == ["account_erasure.prefix_sweep"]
+        assert isinstance(reported[0][0], RuntimeError)
+        assert payload["result"]["sweep_incomplete"] is True
+        audit_last = json.loads((tmp_path / "_ops_edit_audit.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        assert audit_last["result"]["sweep_incomplete"] is True
+
+    def test_successful_sweep_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        fake = _FakeObjectStorage()
+        monkeypatch.setattr(user_cmd, "_library_object_storage", lambda: ("kg-library", fake), raising=False)
+        reported: list[str] = []
+        monkeypatch.setattr(
+            user_cmd,
+            "capture_handled",
+            lambda exc, *, context, tags=None: reported.append(context) or True,
+            raising=False,
+        )
+        user_cmd.cmd_user_create(_make_args(uid="clean", email="clean@test.com", commit=True))
+        capsys.readouterr()
+
+        rc = user_cmd.cmd_user_delete(_make_args(uid="clean", commit=True))
+
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert reported == []
+        assert payload["result"]["sweep_incomplete"] is False
