@@ -502,12 +502,15 @@ ios_test_cache_is_complete() {
   if ! declare -F ios_xctestrun_cache_is_complete >/dev/null 2>&1; then
     source "${KG_IOS_XCTESTRUN_CACHE_LIB:?ios xctestrun cache library is not loaded}"
   fi
+  # The SwiftPM clone dir is the only package-source root outside the worktree
+  # and the keyed DerivedData root (see ios_xctestrun_cache_source_path_valid).
   ios_xctestrun_cache_is_complete \
     "$DERIVED_DATA_ROOT/$IOS_TEST_CACHE_SENTINEL" \
     "$1" \
     "$CONFIGURATION" \
     "$(ios_test_sdk_suffix)" \
-    "$TEST_SCOPE"
+    "$TEST_SCOPE" \
+    "${KG_IOS_SWIFTPM_CACHE_DIR:-}"
 }
 
 # --- Build -only-testing flags ---
@@ -1227,7 +1230,7 @@ handle_cache_action() {
   esac
 
   if (( JSON_MODE )); then
-    printf '%s\n' "$payload"
+    printf '%s\n' "$payload" >&9
   else
     jq -r '
       "[ios][test-cache] action=\(.action) status=\(.status) scope=\(.scope) scheme=\(.scheme)",
@@ -2009,6 +2012,12 @@ PY
 }
 
 if [[ -n "$TEST_CACHE_ACTION" ]]; then
+  # Under --json, stdout carries exactly one payload document (#3331). Every progress
+  # line the cache build emits (build-for-testing, disk budget, locks) goes to stderr,
+  # so no helper can corrupt the payload, and the payload is written to fd 9.
+  if (( JSON_MODE )); then
+    exec 9>&1 1>&2
+  fi
   handle_cache_action "$TEST_CACHE_ACTION"
 fi
 

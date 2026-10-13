@@ -194,14 +194,18 @@ ios_xctestrun_cache_derived_data_root() {
 }
 
 ios_xctestrun_cache_source_path_valid() {
-  local candidate="$1" expected_root="$2" derived_data_root="$3"
+  local candidate="$1" expected_root="$2" derived_data_root="$3" package_root="${4:-}"
   [[ "$candidate" == /* ]] || return 0
   ios_xctestrun_cache_path_within_root "$candidate" "$expected_root" && return 0
-  ios_xctestrun_cache_path_within_root "$candidate" "$derived_data_root"
+  ios_xctestrun_cache_path_within_root "$candidate" "$derived_data_root" && return 0
+  # SwiftPM checkouts live in -clonedSourcePackagesDirPath (CI: KG_IOS_SWIFTPM_CACHE_DIR),
+  # outside both the worktree and the keyed DerivedData root. They are pinned by
+  # Package.resolved, which is part of the cache key, so sharing them is safe.
+  [[ -n "$package_root" ]] && ios_xctestrun_cache_path_within_root "$candidate" "$package_root"
 }
 
 ios_xctestrun_cache_code_coverage_paths_valid() {
-  local xctestrun_path="$1" expected_root="$2"
+  local xctestrun_path="$1" expected_root="$2" package_root="${3:-}"
   local derived_data_root info_index=0 source_index source_path
   derived_data_root="$(ios_xctestrun_cache_derived_data_root "$xctestrun_path")" || return 1
 
@@ -213,7 +217,7 @@ ios_xctestrun_cache_code_coverage_paths_valid() {
         "$xctestrun_path" 2>/dev/null)"; then
       [[ -n "$source_path" ]] || return 1
       ios_xctestrun_cache_source_path_valid \
-        "$source_path" "$expected_root" "$derived_data_root" || return 1
+        "$source_path" "$expected_root" "$derived_data_root" "$package_root" || return 1
     fi
 
     source_index=0
@@ -222,7 +226,7 @@ ios_xctestrun_cache_code_coverage_paths_valid() {
         "$xctestrun_path" 2>/dev/null)"; do
       if [[ "$source_path" == /* ]]; then
         ios_xctestrun_cache_source_path_valid \
-          "$source_path" "$expected_root" "$derived_data_root" || return 1
+          "$source_path" "$expected_root" "$derived_data_root" "$package_root" || return 1
       fi
       source_index=$((source_index + 1))
     done
@@ -231,7 +235,7 @@ ios_xctestrun_cache_code_coverage_paths_valid() {
 }
 
 ios_xctestrun_cache_worktree_path_valid() {
-  local xctestrun_path="$1" expected_root="${2:-}" env_roots env_root asset_root
+  local xctestrun_path="$1" expected_root="${2:-}" package_root="${3:-}" env_roots env_root asset_root
   [[ -f "$xctestrun_path" ]] || return 1
   if [[ -z "$expected_root" ]]; then
     expected_root="$(ios_xctestrun_cache_current_worktree_root)" || return 1
@@ -242,7 +246,7 @@ ios_xctestrun_cache_worktree_path_valid() {
   # cache is shared between linked worktrees, so package sources under this
   # xctestrun's DerivedData root remain valid; project sources must resolve to
   # the current worktree instead of an older checkout.
-  ios_xctestrun_cache_code_coverage_paths_valid "$xctestrun_path" "$expected_root" || return 1
+  ios_xctestrun_cache_code_coverage_paths_valid "$xctestrun_path" "$expected_root" "$package_root" || return 1
 
   # KG_FIXTURE_ASSET_ROOT is copied into the xctestrun by Xcode and then
   # forwarded to the app.  A shared cache can therefore carry an absolute
@@ -266,9 +270,9 @@ ios_xctestrun_cache_invalidate() {
 }
 
 ios_xctestrun_cache_is_complete() {
-  local sentinel_path="$1" xctestrun_path="$2" configuration="$3" sdk_suffix="$4" scope="$5"
+  local sentinel_path="$1" xctestrun_path="$2" configuration="$3" sdk_suffix="$4" scope="$5" package_root="${6:-}"
   [[ -f "$sentinel_path" ]] || return 1
-  if ! ios_xctestrun_cache_worktree_path_valid "$xctestrun_path"; then
+  if ! ios_xctestrun_cache_worktree_path_valid "$xctestrun_path" "" "$package_root"; then
     ios_xctestrun_cache_invalidate "$sentinel_path" || true
     return 1
   fi

@@ -250,6 +250,42 @@ fi
   && ok "shared DerivedData completion marker remains intact" \
   || bad "shared DerivedData completion marker was removed"
 
+section "cache completion accepts SwiftPM sources in the shared clone dir (#3331 CI)"
+# CI passes -clonedSourcePackagesDirPath=$KG_IOS_SWIFTPM_CACHE_DIR, outside both the
+# worktree and the keyed DerivedData root. Xcode records those package sources in
+# CodeCoverageBuildableInfos, so a fresh --coverage build was rejected after it
+# succeeded and the prepare path reported cache-products-missing (exit 1).
+pkg_clone="$TMPROOT/kg-ios-swiftpm"
+pkg_derived="$TMPROOT/pkg-derived"
+pkg_products="$pkg_derived/Build/Products"
+pkg_source="$pkg_clone/checkouts/SwiftSoup/Sources/SwiftSoup"
+mkdir -p \
+  "$pkg_source" \
+  "$pkg_products/Debug-iphonesimulator/BooksAndVocab.app/PlugIns/BooksAndVocabTests.xctest"
+pkg_sentinel="$pkg_derived/.kg-test-cache-complete-pkg"
+pkg_xctestrun="$pkg_products/pkg.xctestrun"
+write_cache_xctestrun_with_code_coverage_path \
+  "$pkg_xctestrun" "$current_root" "$pkg_source/"
+: >"$pkg_sentinel"
+if ios_xctestrun_cache_is_complete \
+    "$pkg_sentinel" "$pkg_xctestrun" Debug iphonesimulator unit "$pkg_clone"; then
+  ok "SwiftPM sources under the shared clone dir remain reusable"
+else
+  bad "SwiftPM sources under the shared clone dir were rejected"
+fi
+[[ -f "$pkg_sentinel" ]] \
+  && ok "SwiftPM clone dir completion marker remains intact" \
+  || bad "SwiftPM clone dir completion marker was removed"
+
+pkg_unlisted_sentinel="$pkg_derived/.kg-test-cache-complete-pkg-unlisted"
+: >"$pkg_unlisted_sentinel"
+if ios_xctestrun_cache_is_complete \
+    "$pkg_unlisted_sentinel" "$pkg_xctestrun" Debug iphonesimulator unit; then
+  bad "out-of-tree package source was accepted without a clone root"
+else
+  ok "out-of-tree package source is rejected when no clone root is given"
+fi
+
 echo ""
 echo "passed=$pass failed=$fail"
 [[ "$fail" -eq 0 ]]

@@ -174,6 +174,27 @@ grep -q 'rebuild_test_cache' "$tmp/override-branch.txt" \
   && fail "--xctestrun branch can rebuild; a CI test leg must fail instead of compiling"
 grep -q -- '--xctestrun' "$IOS_TEST" || fail "ios_test.sh has no --xctestrun flag"
 
+# --- 3b. --json stdout is one payload document (#3331 merge-group failure) --
+# The prepare path's progress lines (build-for-testing, disk budget, locks) used to
+# reach stdout, so the redirected JSON file began with "[ios_test]" and the artifact
+# step's jq failed. Under --json the dispatcher must fence fd 1 to stderr and write the
+# payload only to fd 9. ios_ops.sh must pass --prepare-cache through natively.
+grep -Fq 'exec 9>&1 1>&2' "$IOS_TEST" || fail "ios_test.sh does not fence stdout to stderr under --json for cache actions"
+grep -Fq '"$payload" >&9' "$IOS_TEST" || fail "ios_test.sh cache payload is not written to the reserved fd 9"
+if grep -F "printf '%s\\n' \"\$payload\"" "$IOS_TEST" | grep -qvF '>&9'; then
+  fail "ios_test.sh writes a cache payload to plain stdout (would corrupt --json)"
+fi
+grep -Fq -- '--cache-status|--prepare-cache|--clean-cache)' ops/ios_ops.sh \
+  || fail "ios_ops.sh does not pass --prepare-cache --json through natively"
+cache_status_json="$tmp/cache-status.json"
+set +e
+bash "$IOS_TEST" --cache-status --unit --json --device 'iPhone 17 Pro Max' >"$cache_status_json" 2>/dev/null
+cache_status_rc=$?
+set -e
+[[ "$cache_status_rc" -eq 0 ]] || fail "--cache-status --json exits $cache_status_rc"
+jq -e '.schema == "kg.ios.test-cache.v1"' "$cache_status_json" >/dev/null 2>&1 \
+  || fail "--cache-status --json stdout is not one JSON payload"
+
 # --- 4. Docs describe the build-once topology -------------------------------
 grep -q 'ios-build-for-testing' docs/sop/ios.md || fail "docs/sop/ios.md does not describe ios-build-for-testing"
 grep -q 'ios-build-for-testing' docs/reference/delivery_model.md || fail "docs/reference/delivery_model.md does not describe ios-build-for-testing"
