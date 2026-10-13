@@ -354,7 +354,6 @@ final class VocabularyLibraryFlowUITests: UITestCase {
             "missing-example-senses-1|senses=1",
             "fortunate must expose its missing-example state"
         )
-        XCTAssertEqual(missingExample.value as? String, "missing")
         XCTAssertEqual(
             app.descendants(matching: .any)
                 .matching(identifier: "\(fortunateDetailID).sense.1.example.1").count,

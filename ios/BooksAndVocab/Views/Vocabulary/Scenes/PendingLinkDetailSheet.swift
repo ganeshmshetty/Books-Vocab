@@ -105,8 +105,7 @@ struct PendingLinkDetailSheet: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("todayReview.card.link.pending.status")
-            .accessibilityValue("warning")
+            .accessibilityIdentifier(PendingLinkStatusKind.warning.accessibilityIdentifier)
         } else if isFailed {
             VStack(alignment: .leading, spacing: AppSpacing.microGap) {
                 Text(L10n.string("todayReview.link.pending.failed"))
@@ -121,8 +120,7 @@ struct PendingLinkDetailSheet: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("todayReview.card.link.pending.status")
-            .accessibilityValue("failed")
+            .accessibilityIdentifier(PendingLinkStatusKind.failed.accessibilityIdentifier)
         } else {
             VStack(alignment: .leading, spacing: AppSpacing.microGap) {
                 Text(L10n.string("todayReview.link.pending.creating"))
@@ -134,8 +132,20 @@ struct PendingLinkDetailSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("todayReview.card.link.pending.status")
-            .accessibilityValue("creating")
+            .accessibilityIdentifier(PendingLinkStatusKind.creating.accessibilityIdentifier)
         }
+    }
+}
+
+/// Creation state shown by `PendingLinkDetailSheet`'s status block. The state
+/// is carried by the accessibility identifier, not by an accessibility value,
+/// so no raw English token reaches VoiceOver or UI tests (#3425).
+enum PendingLinkStatusKind: String, CaseIterable {
+    case warning
+    case failed
+    case creating
+
+    var accessibilityIdentifier: String {
+        "todayReview.card.link.pending.status.\(rawValue)"
     }
 }
