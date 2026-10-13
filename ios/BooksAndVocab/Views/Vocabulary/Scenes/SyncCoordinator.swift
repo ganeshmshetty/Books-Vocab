@@ -119,6 +119,7 @@ final class SyncCoordinator: SyncCoordinating {
         // cancelSync() 會立即把 phase 設為 failed，但上一輪可能仍在 executor 內 unwind 並持有 outbox。
         // 新一輪必須等它返回才 execute，兩輪不得併發改寫同一批列（#3407）。
         let previousRun = pipelineTask
+        let snapshotIDs = Set(pendingEntries.map(\.id))
         let adapter = KGServingVocabularySyncAdapter(base: kgService)
         pipelineTask = Task { [weak self] in
             await previousRun?.value
@@ -126,9 +127,13 @@ final class SyncCoordinator: SyncCoordinating {
             defer {
                 if self.runGeneration == generation { self.pipelineTask = nil }
             }
+            // 等待期間使用者可能已硬刪快照內未送出的 add（無 in-flight 保護），已刪列不得再被存取（#3407）。
+            let live = previousRun == nil
+                ? pendingEntries
+                : SyncCoordinator.liveSnapshot(ids: snapshotIDs, modelContext: modelContext)
 
             let result = await self.executor.execute(
-                pendingEntries: pendingEntries,
+                pendingEntries: live,
                 modelContext: modelContext,
                 service: adapter,
                 emit: { [weak self] event in
@@ -253,6 +258,13 @@ final class SyncCoordinator: SyncCoordinating {
             modelContext.delete(add)
         }
         return removed
+    }
+
+    /// 等待上一輪期間才用的快照重驗：以 `id`（穩定 UUID）從 context 重新撈回仍存在且仍待上傳的快照列。
+    /// 撈取失敗時本輪不上傳（fail closed），不回退到可能含已刪列的舊快照。
+    static func liveSnapshot(ids: Set<UUID>, modelContext: ModelContext) -> [VocabularyEntry] {
+        guard let fetched = try? modelContext.fetch(FetchDescriptor<VocabularyEntry>()) else { return [] }
+        return fetched.filter { ids.contains($0.id) && $0.shouldUploadOnNextSync }
     }
 
     private static func outboxKey(_ entry: VocabularyEntry) -> String {
