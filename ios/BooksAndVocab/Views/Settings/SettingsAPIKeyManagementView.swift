@@ -304,6 +304,9 @@ struct SettingsAPIKeyRevokeButton: View {
     @ObserveInjection private var inject
     @Environment(\.appSkin) private var appSkin
 
+    /// HIG minimum tappable side; matches AppFloatingChromeMetrics.hitTarget.
+    static let hitTarget: CGFloat = 44
+
     let isDisabled: Bool
     let accessibilityIdentifier: String
     let action: () -> Void
@@ -313,7 +316,7 @@ struct SettingsAPIKeyRevokeButton: View {
             Image(systemName: "xmark.circle")
                 .font(appSkin.typography.iconMedium)
                 .foregroundStyle(appSkin.palette.destructive)
-                .frame(width: 32, height: 32)
+                .frame(minWidth: Self.hitTarget, minHeight: Self.hitTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
