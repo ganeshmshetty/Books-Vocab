@@ -89,22 +89,28 @@ def record(
     now = datetime.now(UTC).isoformat()
     with _lock:
         conn = _get_conn()
-        conn.execute(
-            "INSERT INTO token_usage "
-            "(user_id, call_type, input_tokens, output_tokens, cached_input_tokens, created_at, provider, model) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                user_id,
-                call_type,
-                int(input_tokens or 0),
-                int(output_tokens or 0),
-                int(cached_input_tokens or 0),
-                now,
-                provider,
-                model,
-            ),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO token_usage "
+                "(user_id, call_type, input_tokens, output_tokens, cached_input_tokens, created_at, provider, model) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    call_type,
+                    int(input_tokens or 0),
+                    int(output_tokens or 0),
+                    int(cached_input_tokens or 0),
+                    now,
+                    provider,
+                    model,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            # Close the implicit transaction so the shared connection does not
+            # keep the write lock and block every other writer on this DB.
+            conn.rollback()
+            raise
 
 
 def get_all_stats() -> dict[str, dict]:

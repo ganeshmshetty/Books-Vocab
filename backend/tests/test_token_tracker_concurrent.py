@@ -24,6 +24,8 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pytest
+
 
 def _reset_token_tracker(tmp_path, monkeypatch):
     """Point token_tracker at a fresh DB under tmp_path and clear singleton."""
@@ -85,16 +87,12 @@ def test_concurrent_token_writes_no_lost_updates(tmp_path, monkeypatch):
 
     assert user_id in stats, f"user row missing entirely: {stats!r}"
     bucket = stats[user_id]["translate"]
-    assert bucket["calls"] == n_threads, (
-        f"lost rows: expected {n_threads} INSERTs, found {bucket['calls']}"
-    )
+    assert bucket["calls"] == n_threads, f"lost rows: expected {n_threads} INSERTs, found {bucket['calls']}"
     assert bucket["input_tokens"] == n_threads * input_each, (
-        f"input_tokens drift: expected {n_threads * input_each}, "
-        f"got {bucket['input_tokens']}"
+        f"input_tokens drift: expected {n_threads * input_each}, got {bucket['input_tokens']}"
     )
     assert bucket["output_tokens"] == n_threads * output_each, (
-        f"output_tokens drift: expected {n_threads * output_each}, "
-        f"got {bucket['output_tokens']}"
+        f"output_tokens drift: expected {n_threads * output_each}, got {bucket['output_tokens']}"
     )
 
 
@@ -138,23 +136,17 @@ def test_concurrent_writes_different_users_isolated(tmp_path, monkeypatch):
     stats = tt.get_all_stats()
     _teardown(tt)
 
-    assert len(stats) == n_users, (
-        f"user count drift: expected {n_users}, got {len(stats)} — keys={list(stats)!r}"
-    )
+    assert len(stats) == n_users, f"user count drift: expected {n_users}, got {len(stats)} — keys={list(stats)!r}"
     for u in range(n_users):
         user_id = f"u_{u}"
         assert user_id in stats, f"missing user {user_id}: {stats!r}"
         bucket = stats[user_id]["explain"]
-        assert bucket["calls"] == writes_per_user, (
-            f"{user_id}: expected {writes_per_user} rows, got {bucket['calls']}"
-        )
+        assert bucket["calls"] == writes_per_user, f"{user_id}: expected {writes_per_user} rows, got {bucket['calls']}"
         assert bucket["input_tokens"] == writes_per_user * input_each
         assert bucket["output_tokens"] == writes_per_user * output_each
 
 
-def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(
-    tmp_path, monkeypatch
-):
+def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(tmp_path, monkeypatch):
     """Reader calls `get_all_stats()` while 8 writers pound the same table.
 
     Validates two properties simultaneously:
@@ -198,25 +190,19 @@ def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(
             while not stop.is_set():
                 snap = tt.get_all_stats()
                 # No bleed from other users.
-                assert set(snap.keys()) <= {user_id}, (
-                    f"unexpected user in snapshot: {set(snap.keys())!r}"
-                )
+                assert set(snap.keys()) <= {user_id}, f"unexpected user in snapshot: {set(snap.keys())!r}"
                 if user_id in snap and "judge" in snap[user_id]:
                     b = snap[user_id]["judge"]
                     calls = b["calls"]
                     # Self-consistency of the aggregate row.
                     assert b["input_tokens"] == calls * input_each, (
-                        f"torn read: input_tokens={b['input_tokens']} not "
-                        f"= {calls}*{input_each}"
+                        f"torn read: input_tokens={b['input_tokens']} not = {calls}*{input_each}"
                     )
                     assert b["output_tokens"] == calls * output_each, (
-                        f"torn read: output_tokens={b['output_tokens']} not "
-                        f"= {calls}*{output_each}"
+                        f"torn read: output_tokens={b['output_tokens']} not = {calls}*{output_each}"
                     )
                     # SUMs may only grow monotonically while writers run.
-                    assert 0 <= calls <= total_writes, (
-                        f"calls out of bounds: {calls}"
-                    )
+                    assert 0 <= calls <= total_writes, f"calls out of bounds: {calls}"
                 with snapshots_lock:
                     snapshots_seen += 1
                     if user_id in snap and "judge" in snap[user_id]:
@@ -246,20 +232,43 @@ def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(
 
     assert not writer_errors, f"writers raised: {writer_errors!r}"
     assert not reader_errors, f"reader raised (likely torn read): {reader_errors!r}"
-    assert not any(
-        isinstance(e, sqlite3.OperationalError) for e in writer_errors + reader_errors
-    )
+    assert not any(isinstance(e, sqlite3.OperationalError) for e in writer_errors + reader_errors)
     assert snapshots_seen > 0, "reader thread never produced a snapshot"
     # Reader must have actually observed at least one in-progress state — i.e.
     # a `calls` value strictly less than the final total. If the reader only
     # ever saw 0 or `total_writes`, the test is degenerate (no real overlap).
     in_progress = {c for c in observed_partial_calls if 0 < c < total_writes}
-    assert in_progress, (
-        f"reader never observed mid-flight state; "
-        f"observed_calls={sorted(observed_partial_calls)}"
-    )
+    assert in_progress, f"reader never observed mid-flight state; observed_calls={sorted(observed_partial_calls)}"
 
     bucket = final[user_id]["judge"]
     assert bucket["calls"] == total_writes
     assert bucket["input_tokens"] == total_writes * input_each
     assert bucket["output_tokens"] == total_writes * output_each
+
+
+def test_failed_insert_rolls_back_and_does_not_block_other_writers(tmp_path, monkeypatch):
+    """A failing INSERT must not leave the shared connection in an open transaction.
+
+    ``call_type=None`` trips the NOT NULL constraint. Without rollback the
+    implicit transaction stays open, holds the write lock, and a second
+    writer on the same DB fails with ``database is locked``.
+    """
+    tt = _reset_token_tracker(tmp_path, monkeypatch)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        tt.record("u_fail", None, 1, 1)  # type: ignore[arg-type]
+
+    assert tt._conn is not None
+    assert not tt._conn.in_transaction, "failed INSERT left an open transaction on shared _conn"
+
+    other = sqlite3.connect(tmp_path / "token_usage.db", timeout=0.5)
+    try:
+        other.execute(
+            "INSERT INTO token_usage (user_id, call_type, input_tokens, output_tokens, created_at) "
+            "VALUES ('u_other', 'translate', 1, 1, '2026-01-01T00:00:00+00:00')"
+        )
+        other.commit()
+    finally:
+        other.close()
+
+    _teardown(tt)
