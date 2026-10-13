@@ -9,6 +9,7 @@
 #   ./ops/ios_ops.sh test --launch-benchmark [--ui-launch-profile <standard|ui-smoke>]
 #   ./ops/ios_ops.sh test --cache-status [--unit|--ui|--all-targets] [--json]
 #   ./ops/ios_ops.sh test --prepare-cache [--unit|--ui|--all-targets] [--json]
+#   ./ops/ios_ops.sh test --unit|--ui --xctestrun <path> [--device <udid>] [--json]   # test-without-building from prebuilt products (#3331)
 #   ./ops/ios_ops.sh test --clean-cache [--unit|--ui|--all-targets] [--json]
 #   ./ops/ios_ops.sh archive [--upload] [ios_release.sh args...] [--json]
 #   ./ops/ios_ops.sh archives [list|latest|inspect ...]

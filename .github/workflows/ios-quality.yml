@@ -130,13 +130,12 @@ jobs:
   ios-build:
     name: ios-build
     needs: [plan, ios-targeted]
-    # The PR compile check (run_tests=false) is the only build. With tests on,
-    # the test path compiles the same scheme: ios-tests (`ios_test.sh`
-    # build-for-testing; UITests compiled only on the ui-smoke scope, so a
-    # ui_smoke=false unit-only plan does not compile them) or ios-targeted for
-    # an accepted targeted run. Skipping it there saves one of
-    # three macOS jobs per merge-group entry (#3238). ios-verdict checks that a
-    # skipped build is only reached on that path.
+    # The PR compile check (run_tests=false) is the only build here. With tests
+    # on, ios-build-for-testing compiles the scheme once and the test legs run
+    # from its products (#3331). UITests compiled only on the ui-smoke scope, so a
+    # ui_smoke=false unit-only plan does not compile them. Skipping this job on
+    # that path keeps one compile per merge-group entry (#3238). ios-verdict
+    # checks that a skipped build is only reached on that path.
     if: ${{ always() && inputs.run_tests == 'false' }}
     # PRs use macos-26. A maintainer may manually benchmark the documented
     # Intel alternative before changing the default; the dispatch choice
@@ -238,9 +237,144 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # Build once, test from the products (#3331). With tests on, this job compiles
+  # the scheme a single time with build-for-testing and uploads only what
+  # test-without-building reads: the .xctestrun and Build/Products. ios-tests and
+  # ios-targeted download that archive and never compile, so a merge-group entry
+  # pays for one compile instead of one per test leg. The scheme is the union
+  # (BooksAndVocab: unit and UI test targets) whenever a UI leg or a targeted run
+  # reads it; a unit-only plan compiles BooksAndVocabUnitTests alone.
+  ios-build-for-testing:
+    name: ios-build-for-testing
+    needs: plan
+    if: ${{ always() && inputs.run_tests != 'false' }}
+    runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Record macOS queue wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./ops/ci_macos_queue_probe.sh
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Select Xcode and verify simulator
+        id: xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=''
+          for candidate in \
+            /Applications/Xcode_26.5.app \
+            /Applications/Xcode_26.4.1.app \
+            /Applications/Xcode_26.4.app \
+            /Applications/Xcode.app; do
+            if [[ -d "$candidate" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo 'No supported Xcode installation found' >&2; exit 1; }
+          sudo xcode-select --switch "$selected"
+          printf 'DEVELOPER_DIR=%s/Contents/Developer\n' "$selected" >> "$GITHUB_ENV"
+          xcodebuild -version
+          printf 'cache_key=%s\n' "$(xcodebuild -version | shasum -a 256 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          xcrun simctl list runtimes
+          xcrun simctl list devices available | grep -F "${IOS_SIMULATOR_NAME} (" >/dev/null
+
+      - name: Restore SwiftPM source cache
+        id: swiftpm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kg-ios-swiftpm
+          key: ios-swiftpm-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.xcode.outputs.cache_key }}-${{ hashFiles('ios/BooksAndVocab.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Prepare SwiftPM cache root
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kg-ios-swiftpm"
+          printf 'KG_IOS_SWIFTPM_CACHE_DIR=%s/kg-ios-swiftpm\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Select build scope
+        id: scope
+        env:
+          PLAN_MODE: ${{ needs.plan.outputs.mode }}
+          PLAN_SCOPES: ${{ needs.plan.outputs.scopes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scheme_flag='--unit'
+          if [[ "$PLAN_MODE" == 'targeted' || "$PLAN_SCOPES" == *'"ui-smoke"'* ]]; then
+            scheme_flag='--all-targets'
+          fi
+          printf 'scheme_flag=%s\n' "$scheme_flag" >> "$GITHUB_OUTPUT"
+          echo "build-for-testing scope: $scheme_flag"
+
+      - name: Build test products once
+        env:
+          CI: '1'
+          KG_IOS_BUILD_LOCK_TIMEOUT: '1800'
+          SCHEME_FLAG: ${{ steps.scope.outputs.scheme_flag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --prepare-cache is the build-for-testing writer. Its JSON payload on
+          # stdout names the products; xcodebuild's own log stays in the payload.
+          ./ops/ios_ops.sh test --prepare-cache "$SCHEME_FLAG" --coverage \
+            --destination "platform=iOS Simulator,name=${IOS_SIMULATOR_NAME}" --json \
+            >"$RUNNER_TEMP/ios-build-for-testing.json"
+          jq -e '(.status == "prepared" or .status == "hit") and .cache.productsReady == true' \
+            "$RUNNER_TEMP/ios-build-for-testing.json" >/dev/null
+          derived_root="$(jq -r '.cache.derivedDataRoot' "$RUNNER_TEMP/ios-build-for-testing.json")"
+          [[ -d "$derived_root/Build/Products" ]] || { echo '::error::build-for-testing left no Build/Products' >&2; exit 1; }
+          tar -cf "$RUNNER_TEMP/ios-test-products.tar" -C "$derived_root" Build/Products
+
+      - name: Collect build evidence on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/ios-build-for-testing-artifacts"
+          mkdir -p "$artifact_dir"
+          if [[ -s "$RUNNER_TEMP/ios-build-for-testing.json" ]]; then
+            jq -r '.artifacts | [.buildLog, .resultBundle] | .[] | select(type == "string" and length > 0)' "$RUNNER_TEMP/ios-build-for-testing.json" \
+              | while IFS= read -r source; do
+                  [[ -e "$source" ]] || continue
+                  cp -R "$source" "$artifact_dir/$(basename "$source")"
+                done
+          fi
+
+      - name: Upload build evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios-build-for-testing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ios-build-for-testing.json
+            ${{ runner.temp }}/ios-build-for-testing-artifacts/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload test products
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios-test-products-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-test-products.tar
+          if-no-files-found: error
+          retention-days: 1
+
   ios-tests:
     name: ios-tests (${{ matrix.scope }})
-    needs: [plan, ios-targeted]
+    needs: [plan, ios-targeted, ios-build-for-testing]
     if: ${{ always() && inputs.run_tests != 'false' && (needs.plan.outputs.mode != 'targeted' || needs.ios-targeted.outputs.fallback_full == 'true') }}
     runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
     timeout-minutes: 25
@@ -253,6 +387,44 @@ jobs:
         scope: ${{ fromJSON(needs.plan.outputs.scopes) }}
 
     steps:
+      - name: Require build-once test products
+        env:
+          BUILD_FOR_TESTING_RESULT: ${{ needs.ios-build-for-testing.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail closed (#3331): a test leg never compiles. A failed, cancelled or
+          # skipped build leaves no products, so this leg fails here and ios-verdict
+          # reads the red leg.
+          if [[ "$BUILD_FOR_TESTING_RESULT" != 'success' ]]; then
+            echo "::error::ios-build-for-testing is $BUILD_FOR_TESTING_RESULT; no prebuilt test products to run" >&2
+            exit 1
+          fi
+
+      - name: Download build-once test products
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ios-test-products-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-test-products
+
+      - name: Unpack build-once test products
+        shell: bash
+        run: |
+          set -euo pipefail
+          products_root="$RUNNER_TEMP/ios-test-products"
+          tar -xf "$products_root/ios-test-products.tar" -C "$products_root"
+          rm -f "$products_root/ios-test-products.tar"
+          found=()
+          while IFS= read -r candidate; do
+            found+=("$candidate")
+          done < <(find "$products_root/Build/Products" -maxdepth 1 -type f -name '*.xctestrun' | sort)
+          if [[ "${#found[@]}" -ne 1 ]]; then
+            echo "::error::expected exactly one .xctestrun in the test products, found ${#found[@]}" >&2
+            exit 1
+          fi
+          printf 'IOS_XCTESTRUN=%s\n' "${found[0]}" >> "$GITHUB_ENV"
+          echo "prebuilt xctestrun: ${found[0]}"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -335,6 +507,7 @@ jobs:
               --device "$IOS_SIMULATOR_UDID" \
               --coverage \
               --json \
+              --xctestrun "$IOS_XCTESTRUN" \
               2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
           else
             ./ops/ios_ops.sh test \
@@ -342,6 +515,7 @@ jobs:
               --dataset marketing_demo \
               --device "$IOS_SIMULATOR_UDID" \
               --json \
+              --xctestrun "$IOS_XCTESTRUN" \
               BooksAndVocabUITests/testLaunchShowsAllTabs \
               FixtureDatasetUITests/testBookshelfRendersDatasetOverriddenTitle \
               2>&1 | tee "$RUNNER_TEMP/ios-ui-smoke.log"
@@ -350,8 +524,21 @@ jobs:
       # Only the scheduled run on main writes this cache: PRs restore caches from
       # main, and merge-queue refs are not visible to PRs. A Package.resolved change
       # is therefore seeded by the next daily run, not by the merge that changed it.
-      # Written by the unit leg only: ios-build skips with tests on (#3238), and
-      # both legs would otherwise race on the same key.
+      # Written by the unit leg only: the compile happens once in
+      # ios-build-for-testing, which does not write, and the leg resolves the same
+      # packages into the cache root below so the save never stores an empty tree.
+      - name: Resolve SwiftPM packages for the cache save
+        if: ${{ !cancelled() && matrix.scope == 'unit' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ops/lib/ios_swiftpm_cache.sh
+          kg_ios_swiftpm_configure "$PWD"
+          xcodebuild -resolvePackageDependencies \
+            -project ios/BooksAndVocab.xcodeproj \
+            -scheme BooksAndVocabUnitTests \
+            ${KG_IOS_SWIFTPM_XCODEBUILD_ARGS[@]+"${KG_IOS_SWIFTPM_XCODEBUILD_ARGS[@]}"}
+
       - name: Save SwiftPM source cache from trusted main
         if: ${{ !cancelled() && matrix.scope == 'unit' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.swiftpm-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -393,7 +580,7 @@ jobs:
   # reported as success; it hands the PR to the full path above instead.
   ios-targeted:
     name: ios-targeted
-    needs: plan
+    needs: [plan, ios-build-for-testing]
     if: ${{ needs.plan.outputs.mode == 'targeted' && inputs.run_tests != 'false' }}
     runs-on: ${{ github.event.inputs.runner || 'macos-26' }}
     timeout-minutes: 25
@@ -403,6 +590,44 @@ jobs:
     outputs:
       fallback_full: ${{ steps.verdict.outputs.fallback_full }}
     steps:
+      - name: Require build-once test products
+        env:
+          BUILD_FOR_TESTING_RESULT: ${{ needs.ios-build-for-testing.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail closed (#3331): a targeted run never compiles. A failed, cancelled or
+          # skipped build leaves no products, so the run fails here and ios-verdict
+          # reads the missing targeted result.
+          if [[ "$BUILD_FOR_TESTING_RESULT" != 'success' ]]; then
+            echo "::error::ios-build-for-testing is $BUILD_FOR_TESTING_RESULT; no prebuilt test products to run" >&2
+            exit 1
+          fi
+
+      - name: Download build-once test products
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ios-test-products-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-test-products
+
+      - name: Unpack build-once test products
+        shell: bash
+        run: |
+          set -euo pipefail
+          products_root="$RUNNER_TEMP/ios-test-products"
+          tar -xf "$products_root/ios-test-products.tar" -C "$products_root"
+          rm -f "$products_root/ios-test-products.tar"
+          found=()
+          while IFS= read -r candidate; do
+            found+=("$candidate")
+          done < <(find "$products_root/Build/Products" -maxdepth 1 -type f -name '*.xctestrun' | sort)
+          if [[ "${#found[@]}" -ne 1 ]]; then
+            echo "::error::expected exactly one .xctestrun in the test products, found ${#found[@]}" >&2
+            exit 1
+          fi
+          printf 'IOS_XCTESTRUN=%s\n' "${found[0]}" >> "$GITHUB_ENV"
+          echo "prebuilt xctestrun: ${found[0]}"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -488,6 +713,7 @@ jobs:
             --dataset marketing_demo \
             --device "$IOS_SIMULATOR_UDID" \
             --json \
+            --xctestrun "$IOS_XCTESTRUN" \
             "${selectors[@]}" \
             2>&1 | tee "$RUNNER_TEMP/ios-targeted.log"
 
@@ -582,8 +808,11 @@ jobs:
             "$BUILD_RESULT" "$TESTS_RESULT" "$TARGETED_RESULT"
 
       # Fail closed: every result must match the path the gates selected. A
-      # skipped build is correct only with tests on (the test path compiles the
-      # scheme); a failed or unexpectedly skipped test path fails the workflow.
+      # skipped build is correct only with tests on (ios-build-for-testing compiles
+      # the scheme there); a failed or unexpectedly skipped test path fails the
+      # workflow. ios-build-for-testing reaches this verdict through the test legs:
+      # a red or skipped build leaves ios-tests and ios-targeted without products,
+      # so their guard step fails them and the required result turns red.
       - name: Enforce the expected iOS job outcomes
         env:
           RUN_TESTS: ${{ inputs.run_tests }}
