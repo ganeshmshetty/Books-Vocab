@@ -8,6 +8,8 @@ LIB="$ROOT/ops/lib/ios_disk_budget.sh"
 TMP="$(mktemp -d -t kg_ios_disk_budget_test_XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 export KG_IOS_DISK_GUARD_STATE="$TMP/guard-state.json"
+# Pin the guard's build lock to $TMP so real tick runs never touch the host lock.
+export KG_DISK_GUARD_BUILD_LOCK_FILE="$TMP/disk-guard-build.lock"
 
 PASS=0
 FAIL=0
@@ -374,6 +376,7 @@ cat > "$record_tick" <<'EOF'
 #!/usr/bin/env bash
 # Records the lock flag it was given; leaves the guard state untouched (still blocked).
 echo "LOCKHELD=${KG_DISK_GUARD_BUILD_LOCK_HELD:-unset}" >> "$KG_TEST_TICK_RECORD"
+echo "BUILDLOCK=${KG_DISK_GUARD_BUILD_LOCK_FILE:-unset}" >> "$KG_TEST_TICK_RECORD"
 EOF
 chmod +x "$record_tick"
 for early_cmd in "test --lease" "build"; do
@@ -387,8 +390,10 @@ for early_cmd in "test --lease" "build"; do
     KG_IOS_BUILD_LOCK_FILE="$early_lock" KG_IOS_SIM_LEASE_ROOT="$early_leases" \
     KG_IOS_VERDICT_FILE="$early_verdict" "$ROOT/ops/ios_ops.sh" $early_cmd >/dev/null 2>&1 || tick_rc=$?
   [[ "$tick_rc" -eq 77 ]] && ok "ios_ops.sh $early_cmd still exits 77 after the lock-free refresh" || bad "$early_cmd exit=$tick_rc"
-  [[ "$(cat "$tick_record" 2>/dev/null)" == "LOCKHELD=0" ]] \
+  [[ "$(sed -n 1p "$tick_record" 2>/dev/null)" == "LOCKHELD=0" ]] \
     && ok "ios_ops.sh $early_cmd refreshes with BUILD_LOCK_HELD=0" || bad "$early_cmd tick saw: $(cat "$tick_record" 2>/dev/null || echo no-tick)"
+  [[ "$(sed -n 2p "$tick_record" 2>/dev/null)" == "BUILDLOCK=$TMP/"* ]] \
+    && ok "ios_ops.sh $early_cmd tick never sees the host build lock" || bad "$early_cmd tick build lock: $(sed -n 2p "$tick_record" 2>/dev/null || echo none)"
 done
 
 echo "── lane-usage-report-blocked: only structural blocking reasons exit 77 ──"
