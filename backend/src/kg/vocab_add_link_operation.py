@@ -856,9 +856,13 @@ def delete_for_users(user_ids: Iterable[str]) -> int:
     deleted = 0
     with _lock:
         conn = _get_conn()
-        deleted += conn.executemany(
-            "DELETE FROM vocab_add_link_operations WHERE user_id = ?",
-            ((user_id,) for user_id in ids),
-        ).rowcount
-        conn.commit()
+        try:
+            deleted += conn.executemany(
+                "DELETE FROM vocab_add_link_operations WHERE user_id = ?",
+                ((user_id,) for user_id in ids),
+            ).rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return deleted

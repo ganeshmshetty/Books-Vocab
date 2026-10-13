@@ -191,3 +191,38 @@ def test_delete_for_users_is_scoped_idempotent_and_handles_empty():
     assert llm_error_log.delete_for_users(["gone"]) == 0
     rows = llm_error_log._get_conn().execute("SELECT user_id FROM llm_errors").fetchall()
     assert [r[0] for r in rows] == ["keep"]
+
+
+class _CommitFailsOnce:
+    """Proxy whose first commit raises; every other call delegates to the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+        self._armed = True
+
+    def commit(self):
+        if self._armed:
+            self._armed = False
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_delete_for_users_rolls_back_when_commit_fails(monkeypatch):
+    """A failed erasure must leave no open transaction on the shared connection."""
+    import sqlite3
+
+    llm_error_log.record(user_id="gone", call_type="judge", error_class="RateLimitError")
+    real = llm_error_log._get_conn()
+    proxy = _CommitFailsOnce(real)
+    monkeypatch.setattr(llm_error_log, "_get_conn", lambda *a, **k: proxy)
+
+    with pytest.raises(sqlite3.OperationalError):
+        llm_error_log.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert llm_error_log.delete_for_users(["gone"]) == 1

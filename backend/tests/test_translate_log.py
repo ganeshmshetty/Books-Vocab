@@ -457,3 +457,98 @@ def test_delete_for_users_covers_both_tables_and_keeps_unrelated():
         for table in ("translate_log", "translate_cache_hits"):
             rows = conn.execute(f"SELECT user_id FROM {table}").fetchall()
             assert [r[0] for r in rows] == ["keep"], table
+
+
+class _CommitFailsOnce:
+    """Proxy whose first commit raises; every other call delegates to the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+        self._armed = True
+
+    def commit(self):
+        if self._armed:
+            self._armed = False
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _CacheHitDeleteFails:
+    """Proxy whose translate_cache_hits DELETE raises after translate_log's DELETE already ran."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def executemany(self, sql, *args, **kwargs):
+        if "translate_cache_hits" in sql:
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated mid-erasure failure")
+        return self._real.executemany(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _seed_gone_user():
+    from kg.translate_log import record_cache_hit
+
+    record(
+        user_id="gone",
+        operation="translate_quick",
+        word="w",
+        context="c",
+        context_hash="h",
+        source_lang="en",
+        target_lang="zh",
+        response_raw="r",
+        latency_ms=1,
+    )
+    record_cache_hit(
+        user_id="gone",
+        operation="translate_quick",
+        word="w",
+        context_hash="h",
+        source_lang="en",
+        target_lang="zh",
+    )
+
+
+def test_delete_for_users_rolls_back_when_commit_fails(monkeypatch):
+    """A failed erasure must leave no open transaction on the shared connection."""
+    import sqlite3
+
+    from kg import translate_log
+
+    _seed_gone_user()
+    real = translate_log._get_conn()
+    proxy = _CommitFailsOnce(real)
+    monkeypatch.setattr(translate_log, "_get_conn", lambda *a, **k: proxy)
+
+    with pytest.raises(sqlite3.OperationalError):
+        translate_log.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert translate_log.delete_for_users(["gone"]) == 2
+
+
+def test_delete_for_users_is_atomic_when_second_delete_fails(monkeypatch):
+    """A failure on the cache-hit DELETE must not leave the translate_log DELETE applied."""
+    import sqlite3
+
+    from kg import translate_log
+
+    _seed_gone_user()
+    real = translate_log._get_conn()
+    monkeypatch.setattr(translate_log, "_get_conn", lambda: _CacheHitDeleteFails(real))
+
+    with pytest.raises(sqlite3.OperationalError):
+        translate_log.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert real.execute("SELECT COUNT(*) FROM translate_log WHERE user_id = 'gone'").fetchone()[0] == 1

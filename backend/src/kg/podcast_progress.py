@@ -260,9 +260,13 @@ def delete_for_users(user_ids: Iterable[str]) -> int:
 
     with _lock:
         conn = _get_conn()
-        cursor = conn.executemany(
-            "DELETE FROM podcast_progress WHERE user_id = ?",
-            ((user_id,) for user_id in ids),
-        )
-        conn.commit()
+        try:
+            cursor = conn.executemany(
+                "DELETE FROM podcast_progress WHERE user_id = ?",
+                ((user_id,) for user_id in ids),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return cursor.rowcount

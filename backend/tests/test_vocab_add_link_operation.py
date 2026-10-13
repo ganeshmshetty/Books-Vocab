@@ -736,3 +736,40 @@ def test_add_link_embedding_store_failure_keeps_other_enrich_fields(monkeypatch)
 
     assert cards.updates == [[("t1", {"meaning": "新", "note": "新注解"})]]
     assert graph.queued == []
+
+
+class _CommitFailsOnce:
+    """Proxy whose first commit raises; every other call delegates to the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+        self._armed = True
+
+    def commit(self):
+        if self._armed:
+            self._armed = False
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_delete_for_users_rolls_back_when_commit_fails(monkeypatch):
+    """A failed erasure must leave no open transaction on the shared connection."""
+    import sqlite3
+
+    import kg.vocab_add_link_operation as operations
+
+    operations.create_operation(user_id="gone", notebook_id="nb", idempotency_key="k", payload=payload())
+    real = operations._get_conn()
+    proxy = _CommitFailsOnce(real)
+    monkeypatch.setattr(operations, "_get_conn", lambda *a, **k: proxy)
+
+    with pytest.raises(sqlite3.OperationalError):
+        operations.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert operations.delete_for_users(["gone"]) == 1

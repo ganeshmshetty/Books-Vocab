@@ -221,3 +221,38 @@ def test_delete_for_users_is_idempotent_and_user_scoped():
     assert pipeline_log.delete_for_users([]) == 0
     assert pipeline_log.get_runs("deleted") == []
     assert len(pipeline_log.get_runs("other")) == 1
+
+
+class _CommitFailsOnce:
+    """Proxy whose first commit raises; every other call delegates to the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+        self._armed = True
+
+    def commit(self):
+        if self._armed:
+            self._armed = False
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_delete_for_users_rolls_back_when_commit_fails(monkeypatch):
+    """A failed erasure must leave no open transaction on the shared connection."""
+    import sqlite3
+
+    pipeline_log.start_run("r1", "gone", "nb1", "manual")
+    real = pipeline_log._get_conn()
+    proxy = _CommitFailsOnce(real)
+    monkeypatch.setattr(pipeline_log, "_get_conn", lambda *a, **k: proxy)
+
+    with pytest.raises(sqlite3.OperationalError):
+        pipeline_log.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert pipeline_log.delete_for_users(["gone"]) == 1

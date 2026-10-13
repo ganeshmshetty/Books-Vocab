@@ -716,3 +716,37 @@ def test_get_single_ep_num_rejects_zero(isolated_api):
         headers=isolated_api.headers,
     )
     assert resp.status_code == 422
+
+
+class _CommitFailsOnce:
+    """Proxy whose first commit raises; every other call delegates to the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+        self._armed = True
+
+    def commit(self):
+        if self._armed:
+            self._armed = False
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_delete_for_users_rolls_back_when_commit_fails(monkeypatch):
+    """A failed erasure must leave no open transaction on the shared connection."""
+    import sqlite3
+
+    real = progress_store._get_conn()
+    proxy = _CommitFailsOnce(real)
+    monkeypatch.setattr(progress_store, "_get_conn", lambda *a, **k: proxy)
+
+    with pytest.raises(sqlite3.OperationalError):
+        progress_store.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert progress_store.delete_for_users(["gone"]) == 0
