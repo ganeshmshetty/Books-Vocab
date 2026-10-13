@@ -99,6 +99,9 @@ for p in ops/data_inspect.py ops/official_decks/build_official.py ops/seeds/mark
     "$p" \
     '{"backend":true,"ops":true,"ios":false}'
 done
+assert_plan 'ops/podcast_preview_backfill.py is read by backend tests (#3475)' \
+  'ops/podcast_preview_backfill.py' \
+  '{"backend":true,"ops":true,"ios":false}'
 for p in docs/registry.yml docs/reference/testing/backend_strategy.md; do
   assert_plan "$p is read by backend tests: backend only (#2326)" \
     "$p" \
