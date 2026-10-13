@@ -264,10 +264,14 @@ class FakeWorld:
                 return ok(json.dumps(batch))
             if cmd[1:3] == ["api", "graphql"]:
                 number = int(_value(cmd, "number=", prefix=True))
+                # An untracked PR is open and not in the merge queue.
                 pr = next(
-                    p
-                    for p in sum(self.prs_by_branch.values(), [])
-                    if p["number"] == number
+                    (
+                        p
+                        for p in sum(self.prs_by_branch.values(), [])
+                        if p["number"] == number
+                    ),
+                    {"state": "OPEN"},
                 )
                 guard = self.pr_guard
                 extra = guard.pop(0) if len(guard) > 1 else (guard or [{}])[0]
@@ -1744,6 +1748,24 @@ def test_a_pr_merged_between_the_state_and_queue_reads_is_not_an_ejection() -> N
     code, result = ship(world, "--check", "u=good", "--merge")
     assert code == 0, result
     assert result["result"] == "merged"
+
+
+def test_a_rerun_on_a_pr_already_in_the_merge_queue_waits_and_never_requeues() -> None:
+    # GitHub rejects a second enqueue of a queued PR; the rerun must not make one.
+    world = FakeWorld(
+        record={"branch": "feat/thing", "status": "published", "external_ids": ["L"]},
+        prs=[{"number": 9, "state": "OPEN"}],
+        prs_by_branch={"feat/thing": [{"number": 9, "state": "OPEN"}]},
+        pr_state=["OPEN", "MERGED"],
+        pr_guard=[{"mergeQueueEntry": {"id": "q", "headCommit": {"oid": "a" * 40}}}],
+        fail_commands={"queue"},
+        stderr_for={"queue": "queue failed (rc=1): PR is not mergeable"},
+    )
+    code, result = ship(world, "--merge")
+    assert code == 0, result
+    assert result["result"] == "merged"
+    assert not any(_is_queue(call) for call in world.calls)
+    assert world.names() == ["cleanup-merged", "sync-main"]
 
 
 def test_the_review_bots_are_read_from_the_workflow() -> None:
