@@ -169,15 +169,9 @@ def create_manual_link(
         to_id=to_id,
     )
 
-    # The judge is a multi-second LLM call: re-validate both endpoints against the
-    # store as it is now, so a card deleted or archived meanwhile never gets a live edge.
-    _require_live_card(cards_store, from_id, notebook_id)
-    _require_live_card(cards_store, to_id, notebook_id)
-
-    # Blocked pair → unblock only now (add_link treats a blocked pair as existing).
-    if graph.is_blocked(from_id, to_id):
-        graph.unblock_pair(from_id, to_id)
-
+    # The judge is a multi-second LLM call. add_link re-validates both endpoints
+    # under its own lock, in the same critical section as the insert, so a card
+    # deleted or archived meanwhile never gets a live edge (no check-then-act gap).
     link = graph.add_link(
         from_id,
         to_id,
@@ -185,7 +179,13 @@ def create_manual_link(
         confidence=1.0,
         reason=judgement.reason,
         source="manual",
+        require_live=lambda card_id: _require_live_card(cards_store, card_id, notebook_id),
     )
+
+    # Blocked pair → unblock only after the link is in. A refused add must leave a
+    # user-deleted (blocked) pair blocked so the auto pipeline cannot re-create it.
+    if graph.is_blocked(from_id, to_id):
+        graph.unblock_pair(from_id, to_id)
 
     # New link is not cleanly reversible (add_link's inverse, hard_delete, would
     # introduce a blocked pair). Rely on the barrier: observable + re-raise.

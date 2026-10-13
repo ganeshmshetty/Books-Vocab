@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import weakref
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -262,6 +263,7 @@ class _LinksMixin:
         reason: str,
         *,
         source: str = "auto",
+        require_live: Callable[[str], Any] | None = None,
     ) -> GraphLink:
         """Create and store a new link. Idempotent per pair across store instances.
 
@@ -272,6 +274,12 @@ class _LinksMixin:
         the same-instance gap; _persist_new_link re-reads under the cross-process
         file lock so an already-persisted (active/hidden) pair returns the
         existing link instead of inserting a duplicate.
+
+        ``require_live`` is called for both endpoints under ``_lock`` before the
+        insert and may raise to refuse the link. The delete/archive path marks the
+        card dead before ``cleanup_for_card`` takes ``_lock`` to deprecate its
+        links, so a check and insert inside one critical section either sees the
+        card dead or is deprecated by that cleanup; no live edge can survive it.
         """
         if from_id == to_id:
             raise ValueError("cannot link a card to itself")
@@ -285,6 +293,9 @@ class _LinksMixin:
             reason=reason,
         )
         with self._lock:
+            if require_live is not None:
+                require_live(from_id)
+                require_live(to_id)
             existing = self._find_link_between_unlocked(from_id, to_id)
             if existing is not None:
                 return existing
