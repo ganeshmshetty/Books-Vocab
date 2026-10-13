@@ -4,7 +4,7 @@
 # 供 Claude Code 代理呼叫。不需理解底層 SSH/Docker 細節，直接執行子指令。
 #
 # Agent 用法：
-#   DEVOPS_YES=1 ./devops.sh delete-user <id>   # 跳過互動確認
+#   ./devops.sh delete-user <id>                 # 已停用（#3441）：一律拒絕，改走 DELETE /api/user/account
 #   ./devops.sh run "docker ps"                  # 執行任意遠端指令
 # =============================================================================
 
@@ -821,20 +821,18 @@ except Exception as e:
 \" $db_path"
 }
 
-# ── 指令：delete-user <user_id> [--yes] ───────────────────────────────────────
+# ── 指令：delete-user <user_id> ───────────────────────────────────────────────
+# 已停用（#3441）：本指令原本只 rm -rf users/<uid>，不 tombstone users.json 的身分紀錄
+#（email→uid 索引仍指向舊 uid，重新登入會重建空目錄）、不清外部 API key digest、不掃
+# library.db 的 S3 資產（物件留在 bucket 無索引），卻宣稱第三方整合映射已刪。
+# 完整 erasure 只有應用內路徑（DELETE /api/user/account → delete_user_account_response，
+# 持 users lock、tombstone、purge 外部 key、S3 sweep 後才 rmtree）。拒絕發生在任何遠端
+# 指令之前，不留半刪狀態。
 cmd_delete_user() {
   local uid="${1:-}"
-  local yes_flag="${2:-}"
-  [[ -z "$uid" ]] && err "用法: $0 delete-user <user_id> [--yes]"
+  [[ -z "$uid" ]] && err "用法: $0 delete-user <user_id>（已停用，見下方說明）"
   validate_uid "$uid"
-
-  info "即將刪除的資料:"
-  run_remote "ls -lah $REMOTE_DATA_DIR/users/$uid/ 2>/dev/null || (echo '用戶不存在'; exit 1)"
-
-  [[ "$yes_flag" == "--yes" ]] && DEVOPS_YES=1
-  confirm "永久刪除用戶 '$uid' 的所有資料（SQLite、向量、圖譜、第三方整合映射）。此操作不可逆。"
-  run_remote "rm -rf $REMOTE_DATA_DIR/users/$uid"
-  ok "用戶 $uid 的資料已刪除。"
+  err "delete-user 已停用，未對 '$uid' 做任何變更。本指令只會刪 users/<uid> 目錄，不會 tombstone 身分紀錄、清除外部 API key、或刪除 S3 library 資產。請改走完整刪除路徑：用戶本人以已登入身分呼叫 DELETE /api/user/account（backend/src/kg/user_handlers.py:delete_user_account_response）。"
 }
 
 # ── 指令：push-env [file] ─────────────────────────────────────────────────────
