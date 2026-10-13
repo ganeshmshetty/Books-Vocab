@@ -246,9 +246,6 @@ final class AddLinkCreationCoordinator {
         case .archived:
             block(message: AddLinkCreationFailure(reason: "target_archived").message)
             return
-        case .active:
-            block(message: L10n.string("addLink.target.linkable"))
-            return
         case .linked:
             block(message: L10n.string("addLink.target.alreadyLinked"))
             return

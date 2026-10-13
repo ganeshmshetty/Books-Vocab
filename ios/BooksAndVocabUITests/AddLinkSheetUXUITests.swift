@@ -115,10 +115,9 @@ final class AddLinkSheetUXUITests: UITestCase {
             marker("addLink.error.reason", in: app).waitUntilExists(timeout: 10),
             "Return on the exact word starts the existing-word link"
         )
-        XCTAssertEqual(
-            app.descendants(matching: .any).matching(identifier: "addLink.creation.progress").count,
-            0,
-            "linking an existing word never opens the creation progress"
+        XCTAssertTrue(
+            marker("addLink.creation.progress", in: app).waitUntilExists(timeout: 5),
+            "linking an existing word runs under the creation progress pipeline (#3115)"
         )
         captureStep("add-link-return-exact", app: app)
     }
@@ -144,7 +143,7 @@ final class AddLinkSheetUXUITests: UITestCase {
         XCTAssertTrue(pill.waitUntilExists(timeout: 5), "a user-triggered link failure must post a pill")
         XCTAssertEqual(pill.value as? String, "error", "the failure pill uses the error style")
 
-        let retry = marker("addLink.error.retry", in: app)
+        let retry = marker("addLink.creation.retry", in: app)
         XCTAssertTrue(retry.waitUntilExists(timeout: 5), "the failure panel keeps the retry action")
         retry.tapWhenReady()
         XCTAssertTrue(marker("addLink.error.reason", in: app).waitUntilExists(timeout: 10))
