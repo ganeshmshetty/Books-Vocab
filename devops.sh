@@ -685,7 +685,9 @@ while IFS= read -r -d '' rel; do
   [[ "$(sqlite3 "$dir/.snap.db" 'PRAGMA quick_check' </dev/null)" == ok ]] \
     || { echo "snapshot quick_check failed: $rel" >&2; exit 1; }
   mv "$dir/.snap.db" "$dir/$(basename "$rel")"
-done < <(find . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' \( -type f -o -type l \) -print0)
+# -L：進入目錄 symlink（#3561）；否則其下的 *.db 無聲不進快照。壞掉的 symlink 在 -L 下仍為 type l，
+# 由 sqlite3 開檔失敗 exit 1 接住。
+done < <(find -L . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' \( -type f -o -type l \) -print0)
 REMOTE
 }
 
@@ -766,7 +768,9 @@ cmd_backup() {
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
     err "本地冷快照失敗：遠端 *.db 一致快照未完成（見上方）。此指令沒有產出可用備份；不得進行 migrate-run。"
   fi
-  if ! rsync -az --delete "${progress_flags[@]}" \
+  # --copy-links：與遠端 find -L 一致（#3561）。不解參照時 dest 會留下指向遠端路徑的 symlink，
+  # 與 tar 拉回的快照版面不一致；解參照後 dest 的 users/<x>/ 為真目錄，快照落在同一位置。
+  if ! rsync -az --delete --copy-links "${progress_flags[@]}" \
     --exclude='_ops_backups/' \
     --exclude='_ops_world_backups/' \
     --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \

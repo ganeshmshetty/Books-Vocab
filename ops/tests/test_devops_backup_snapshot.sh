@@ -230,4 +230,55 @@ leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' 
 [[ -z "$leftover" ]] || fail "snapshot-phase interrupt left a remote stage behind: $leftover"
 pass "SIGINT during the snapshot removes the pre-created remote stage"
 
+# ── 7. #3561：symlink 目錄下的 *.db 不可被靜默漏掉 ───────────────────────────
+# users/u2 是指向 data 目錄外某目錄的 symlink，該目錄內 cards.db 含 WAL-only row。
+# 遠端 find 不進入目錄 symlink 時，這顆 DB 不進快照，備份無聲缺失。
+# rsync 替身模擬真實 rsync：無 --copy-links 時複製 symlink 本身（tar 不解參照），
+# 有 --copy-links 時解參照（tar -h）。若 dest 殘留 symlink，tar 拉回會穿過它寫進外部目錄，
+# 因此下方同時斷言拉回的 users/u2 是真目錄、外部來源 DB 未被改寫。
+OUTSIDE_ROOT="$TMP/outside-root"
+make_wal_fixture "$OUTSIDE_ROOT"
+DATA_DIRLINK="$TMP/remote-dirlink"
+mkdir -p "$DATA_DIRLINK/users"
+ln -s "$OUTSIDE_ROOT/users/u1" "$DATA_DIRLINK/users/u2"
+outside_before="$(sqlite3 "$OUTSIDE_ROOT/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')"
+RSYNC_MODEL_BIN="$TMP/rsync-model-bin"
+mkdir -p "$RSYNC_MODEL_BIN"
+cat >"$RSYNC_MODEL_BIN/rsync" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$#" -eq 1 && "$1" == --version ]]; then
+  echo "openrsync: protocol version 29"
+  exit 0
+fi
+printf '%s\n' "$*" >>"${SNAP_TEST_RSYNC_LOG:?}"
+deref=()
+src=""; dst=""
+for a; do
+  [[ "$a" == --copy-links ]] && deref=(-h)
+  src="$dst"; dst="$a"
+done
+src="${src#*:}"; src="${src%/}"
+mkdir -p "$dst"
+tar -C "$src" "${deref[@]}" -cf - \
+  --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' . \
+  | tar -C "$dst" -xf -
+exit 0
+STUB
+chmod 755 "$RSYNC_MODEL_BIN/rsync"
+OUT_DIRLINK="$TMP/backups-dirlink"; mkdir -p "$OUT_DIRLINK"
+set +e
+RSYNC_STUB_DIR="$RSYNC_MODEL_BIN" run_backup "$DATA_DIRLINK" "$OUT_DIRLINK" cmd_backup >"$TMP/dirlink.out" 2>&1
+dirlink_rc=$?
+set -e
+(( dirlink_rc == 0 )) || { cat "$TMP/dirlink.out" >&2; fail "cmd_backup failed on a symlinked-directory fixture (rc=$dirlink_rc)"; }
+dirlink_db="$(find "$OUT_DIRLINK" -path '*/users/u2/cards.db' -type f | head -n 1)"
+[[ -n "$dirlink_db" ]] || fail "*.db under a symlinked directory was silently dropped from the backup"
+[[ ! -L "$(dirname "$dirlink_db")" ]] || fail "restored users/u2 is still a symlink; tar wrote through it"
+dirlink_count="$(sqlite3 "$dirlink_db" 'SELECT COUNT(*) FROM card;')"
+[[ "$dirlink_count" == 2 ]] \
+  || fail "symlinked-dir *.db not snapshotted (rows=$dirlink_count, want 2): remote find did not follow the directory symlink"
+[[ "$(sqlite3 "$OUTSIDE_ROOT/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')" == "$outside_before" ]] \
+  || fail "backup wrote through the symlink into the source directory"
+pass "*.db under a symlinked directory is snapshotted with its WAL rows"
+
 printf 'backup snapshot: all checks passed\n'
