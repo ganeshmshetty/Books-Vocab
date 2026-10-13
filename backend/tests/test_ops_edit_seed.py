@@ -7,6 +7,47 @@ from argparse import Namespace
 from _ops_edit_support import *  # noqa: F403
 
 
+class TestSeedReplaceWorkerLock:
+    def test_replace_commit_refused_while_worker_lock_held_and_keeps_vocab(self, tmp_path, monkeypatch):
+        import fcntl
+
+        from kg import ops_edit_seed_commands as seed_commands
+        from kg.worker_guard import WorkerLockHeldError
+
+        uid = _mk_user(tmp_path)
+        seed_path = tmp_path / "seed.json"
+        seed_path.write_text(json.dumps({"cards": [{"content": "saved", "meaning": "m"}]}))
+        seeded = _edit(str(tmp_path), "seed", uid, str(seed_path), "--commit", "--json")
+        assert seeded.returncode == 0, seeded.stderr
+
+        # plan 階段的唯讀 SQLite 開檔可能補出 -wal/-shm sidecar(非破壞性);主檔 inode+bytes 不變才代表未被 unlink。
+        def vocab_state() -> dict[str, tuple[int, bytes]]:
+            return {
+                p.name: (p.stat().st_ino, p.read_bytes())
+                for p in sorted(_user_dir(tmp_path, uid).iterdir())
+                if p.is_file() and not p.name.endswith(("-wal", "-shm"))
+            }
+
+        before = vocab_state()
+        assert "cards.db" in before
+        replace_path = tmp_path / "replace.json"
+        replace_path.write_text(json.dumps({"cards": [{"content": "fresh", "meaning": "m"}]}))
+        monkeypatch.setattr(seed_commands, "data_dir", lambda: tmp_path)
+
+        # 模擬執行中的 API：持有 <dd>/.worker.lock 的 flock（不同 open file description）。
+        with open(tmp_path / ".worker.lock", "a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with pytest.raises(seed_commands.EditError) as exc:
+                    seed_commands.cmd_seed(
+                        Namespace(uid=uid, commit=True, json=True, replace=True, spec=str(replace_path))
+                    )
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        assert isinstance(exc.value.__cause__, WorkerLockHeldError)
+        assert vocab_state() == before
+
+
 class TestSeedReplace:
     def _seed(self, tmp_path, uid, spec, *extra):
         p = tmp_path / "spec.json"

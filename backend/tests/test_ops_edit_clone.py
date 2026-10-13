@@ -369,6 +369,39 @@ def _run_clone_in_process(data_dir: Path, monkeypatch, capsys, *, fail: bool) ->
     return out
 
 
+def test_clone_commit_refused_while_worker_lock_held_and_keeps_target_vocab(tmp_path, monkeypatch):
+    import fcntl
+    from argparse import Namespace
+
+    import pytest
+
+    import kg.ops_edit_seed_commands as seed_cmd
+    from kg.worker_guard import WorkerLockHeldError
+
+    _full_fixture(tmp_path)
+    ud = _udir(tmp_path, TGT)
+
+    def vocab_bytes() -> dict[str, bytes]:
+        return {p.name: p.read_bytes() for p in sorted(ud.iterdir()) if p.is_file()}
+
+    before = vocab_bytes()
+    assert "cards.db" in before and any(n.startswith("graph_") for n in before)
+    monkeypatch.setattr(seed_cmd, "data_dir", lambda: tmp_path)
+
+    # 模擬執行中的 API：持有 <dd>/.worker.lock 的 flock。
+    with open(tmp_path / ".worker.lock", "a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with pytest.raises(seed_cmd.EditError) as exc:
+                seed_cmd.cmd_clone_demo(
+                    Namespace(source_uid=SRC, target_uid=TGT, commit=True, json=True, expect_source_fingerprint=None)
+                )
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    assert isinstance(exc.value.__cause__, WorkerLockHeldError)
+    assert vocab_bytes() == before
+
+
 def test_clone_failure_after_unlink_reports_data_mutated(tmp_path, monkeypatch, capsys):
     _full_fixture(tmp_path)
     out = _run_clone_in_process(tmp_path, monkeypatch, capsys, fail=True)

@@ -6,6 +6,8 @@ import os
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -708,6 +710,19 @@ def verify_seed(
     return out
 
 
+@contextmanager
+def _destructive_worker_lock(dd: Path) -> Iterator[None]:
+    """破壞性 commit 期間持有 worker flock：執行中的 API 持鎖時拒絕（同 world-restore），鎖持續到寫入結束。"""
+    try:
+        lock_fd = hold_worker_lock(dd / WORKER_LOCK_FILENAME)
+    except WorkerLockHeldError as e:
+        raise EditError(f"{e}；破壞性 commit 須在 API 停止後執行") from e
+    try:
+        yield
+    finally:
+        os.close(lock_fd)
+
+
 def _run_seed(
     spec: SeedSpec,
     ctx: EditContext,
@@ -716,12 +731,15 @@ def _run_seed(
     replace: bool,
 ) -> int:
     state: dict[str, Any] = {}
-    return ctx.run(
-        action="seed",
-        plan=plan,
-        apply_fn=lambda: apply_seed(spec, ctx, state, replace=replace),
-        verify_fn=lambda: verify_seed(spec, ctx, state, replace=replace),
-    )
+    # --replace commit 會 unlink 活體 vocab inode;dry-run 零副作用,不取鎖。
+    guard = _destructive_worker_lock(ctx.data_dir) if replace and ctx.commit else nullcontext()
+    with guard:
+        return ctx.run(
+            action="seed",
+            plan=plan,
+            apply_fn=lambda: apply_seed(spec, ctx, state, replace=replace),
+            verify_fn=lambda: verify_seed(spec, ctx, state, replace=replace),
+        )
 
 
 def cmd_clone_demo(args: argparse.Namespace) -> int:
@@ -825,7 +843,10 @@ def cmd_clone_demo(args: argparse.Namespace) -> int:
             "files_ok": files_ok,
         }
 
-    return ctx.run(action="clone-demo", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
+    # apply_fn 會 unlink 目標 vocab inode;commit 時鎖須覆蓋整個 backup→apply→verify。
+    guard = _destructive_worker_lock(dd) if args.commit else nullcontext()
+    with guard:
+        return ctx.run(action="clone-demo", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
 
 
 def cmd_world_snapshot(args: argparse.Namespace) -> int:
