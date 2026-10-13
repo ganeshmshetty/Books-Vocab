@@ -200,6 +200,24 @@ if [ "$guard_mismatch" -ne 0 ]; then
   exit 1
 fi
 
+# #2923 (owner decision 2026-10-13, option A): direct ssh is the single documented human exception and
+# it covers §2.5 only. Every other restore step stays behind devops_run_guard: §2.6 chown is guard-blocked
+# and §2.7 docker compose is guard-allowed, both pinned in the §2.5a table above; the §2.5 mv/tar lines
+# are pinned as guard-blocked, which is the stated reason for the exception.
+awk '/^### 2\.5 /{f=1;next} /^#### 2\.5a /{f=0} f' docs/sop/backup_restore.md >"$TMP/sop_25.txt"
+require_grep 'direct ssh' "$TMP/sop_25.txt"
+require_grep '唯一' "$TMP/sop_25.txt"
+awk '/^### 2\.6 /{f=1} /^## 4\. /{f=0} f' docs/sop/backup_restore.md >"$TMP/sop_post25.txt"
+if grep -q 'direct ssh' "$TMP/sop_post25.txt"; then
+  echo "backup_restore.md documents direct ssh outside §2.5, the single human exception (#2923)" >&2
+  exit 1
+fi
+require_grep '不屬 §2.5 例外' "$TMP/sop_post25.txt"
+require_grep 'chown -R chenliangyu ~/kg-data.*擋' "$TMP/sop_25a.txt"
+require_grep 'mv ~/kg-data ~/kg-data.broken.*擋' "$TMP/sop_25a.txt"
+require_grep 'tar xzf /tmp/2026-05-31.tar.gz -C ~/.*擋' "$TMP/sop_25a.txt"
+require_grep 'docker compose up -d.*允許' "$TMP/sop_25a.txt"
+
 # #3264: tech_index CI row names every merge-group required input; SOP states the PR-side clarification.
 ci_row="$(grep -m1 '^| CI |' docs/reference/tech_index.md || true)"
 for ctx in short-gate ios-quality ops-suite; do

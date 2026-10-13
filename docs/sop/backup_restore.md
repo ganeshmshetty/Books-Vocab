@@ -131,6 +131,8 @@ ACTUAL=$(sha256sum /tmp/${DATE}.tar.gz | awk '{print $1}')
 
 archive 第一層是 `basename(KG_DATA_DIR)`（`ops/kg_backup.sh:62`）：standby 為 `kg-data/`，僅舊 Lightsail 為 `data/`。以下以 standby 為準，`DATA` 為現役 data 目錄；先 `tar tzf` 確認第一層名稱 == `basename "$DATA"` 才解壓。archive 不含 `-wal`/`-shm`，所以必須先把壞掉的現場整個移開，不可直接覆蓋（否則殘留 sidecar 與備份後的檔案會混進還原結果）。
 
+**執行方式：本節是還原流程中唯一的人工 direct ssh 例外**（owner 2026-10-13 決策）。下方整段指令必須經 `ssh chenliangyu@100.118.39.104` 直接在 standby 主機上執行，不經 `devops_kg_safe.sh run`／`devops.sh run`。原因：守門判定整段指令為擋（`mv "$DATA"` 移開現場、`tar xzf -C` 解壓皆被擋，見 §2.5a 表）。此例外只涵蓋本節；§2.6 起的其餘還原步驟不屬於例外，仍受守門約束。
+
 ```bash
 set -e
 DATE=2026-05-31  # 同 §2.3
@@ -155,7 +157,7 @@ ls -la "$DATA/users/" | head
 
 #### 2.5a 受保護名稱與守門範圍
 
-`devops_kg_safe.sh run`、`devops.sh run`、`container-run`、`migrate-run` 共用 `ops/lib/devops_run_guard.sh` 的 `devops_run_is_blocked` 守門。本節只為排查維運指令「為何被擋」而寫，不是替代路徑；被擋的操作若確有需要，須另立 issue 由 owner 決策，本 SOP 不新增替代路徑。
+`devops_kg_safe.sh run`、`devops.sh run`、`container-run`、`migrate-run` 共用 `ops/lib/devops_run_guard.sh` 的 `devops_run_is_blocked` 守門。本節只為排查維運指令「為何被擋」而寫，不新增替代路徑；唯一的人工例外是 §2.5 的 direct ssh（owner 2026-10-13 決策）。被擋的操作若確有需要，須另立 issue 由 owner 決策。
 
 路徑級受保護名稱：`kg-data`、`kg-prod`、`/app/data`、`/app` 本身、home／root 目錄（`~`、`$HOME`、`/home/ubuntu`、`/Users/<x>`、`/root`）、`knowledge_graph_api`、`knowledge-graph-api_data`。
 
@@ -170,6 +172,10 @@ docker volumes 不是路徑級受保護名稱，只有命令級守門：`docker 
 | run | `sqlite3 /app/data/x.db "VACUUM INTO '/tmp/y'"` | 擋 | 含受保護路徑的 sqlite 寫入 |
 | run | `find . -name __pycache__ -exec rm -rf {} +` | 擋 | `find -exec rm` 落在受保護根（cwd 為 home） |
 | run | `rm -rf kg-data/tmp` | 擋 | 受保護名稱 `kg-data` |
+| run | `mv ~/kg-data ~/kg-data.broken.20260531` | 擋 | §2.5 移開現場：目標為受保護名稱 `kg-data`（direct ssh 例外的理由） |
+| run | `tar xzf /tmp/2026-05-31.tar.gz -C ~/` | 擋 | §2.5 解壓：`tar x` 寫入受保護的 home 根（direct ssh 例外的理由） |
+| run | `chown -R chenliangyu ~/kg-data` | 擋 | §2.6 owner 修正：`chown -R` 落在 kg-data，不屬 §2.5 例外 |
+| run | `cd ~/kg-prod/backend && docker compose up -d` | 允許 | §2.7 啟動：非破壞性，守門放行 |
 | run | `docker volume rm kg_data` | 擋 | docker volume 命令級，不看目標 |
 | run | `docker compose down -v` | 擋 | compose down 帶 volume 移除，命令級 |
 | run | `rm -rf /var/lib/docker/volumes/kg_data/_data` | 允許 | 已知缺口：守門不以路徑判斷 docker volume，此結果不是許可 |
@@ -181,7 +187,7 @@ docker volumes 不是路徑級受保護名稱，只有命令級守門：`docker 
 
 ### 2.6 修正 owner
 
-standby 上檔案 owner 應為 `chenliangyu`（tar 以當前使用者解壓即是，通常不需處理）。若異常再修正，macOS 不需 `sudo`：
+standby 上檔案 owner 應為 `chenliangyu`（tar 以當前使用者解壓即是，通常不需處理）。下列指令落在 kg-data，會被守門擋（§2.5a 表）；本步不屬 §2.5 例外，不得以 ssh 直接執行，若異常需修正須依 §2.5a 另立 issue 由 owner 決策。macOS 不需 `sudo`：
 
 ```bash
 chown -R "$(id -un)" "$DATA"
@@ -196,6 +202,8 @@ curl -s -o /dev/null -w 'docs=%{http_code}\n' http://127.0.0.1:8000/docs
 curl -s https://wordnexus.lol/docs | head -5
 (cd ~/kg-prod/backend && docker compose logs --tail=30 kg-api)
 ```
+
+§2.7 不屬 §2.5 例外；其中 `docker compose` 指令經守門判定為放行（§2.5a 表）。
 
 預期:`docs=200`、SwaggerUI 可載入、container log 無 startup error、`/api/system/info` 回 200。
 
