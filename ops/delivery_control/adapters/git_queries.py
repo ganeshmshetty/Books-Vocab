@@ -52,6 +52,16 @@ WHITESPACE_NORMALIZED_PATCH_EQUIVALENCE_QUERY_TIMEOUT_SECONDS = 5.0
 WHITESPACE_NORMALIZED_EXTRA_COMMIT_LIMIT = 20
 REMOTE_REF_QUERY_TIMEOUT_SECONDS = 30.0
 _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_ABSENT_COMMIT_RE = re.compile(
+    r"^fatal: Not a valid (?:commit|object) name ([0-9a-f]{40})$"
+)
+
+
+def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> bool:
+    """Whether git reported one of ``shas`` as a missing object (exact match only)."""
+
+    match = _ABSENT_COMMIT_RE.fullmatch(stderr.strip())
+    return match is not None and match.group(1) in shas
 _HUNK_HEADER_RE = re.compile(r"^@@ -[0-9]+(?:,[0-9]+)? \+[0-9]+(?:,[0-9]+)? @@")
 _RANGE_DIFF_MATCH_RE = re.compile(
     r"^\s*\d+:\s+([0-9a-f]{40})\s+([=!])\s+\d+:\s+([0-9a-f]{40})(?:\s+.*)?$"
@@ -440,6 +450,12 @@ class GitQueries:
         if result.exit_code == 0:
             return True
         if result.exit_code == 1 and not result.stderr.strip():
+            return False
+        if result.exit_code == 128 and _absent_commit_named(
+            result.stderr, (ancestor_sha, descendant_sha)
+        ):
+            # #3348: an object this clone never fetched cannot be an ancestor
+            # of anything here; callers treat "not contained" as a typed refusal.
             return False
         raise AdapterCommandError(result)
 
