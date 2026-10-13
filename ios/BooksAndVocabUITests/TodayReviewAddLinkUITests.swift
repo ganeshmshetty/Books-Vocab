@@ -143,9 +143,11 @@ final class TodayReviewAddLinkUITests: UITestCase {
         }
         // Closed port: the operation fails fast, but it must stay visible as failed.
         XCTAssertTrue(
-            pending.waitUntilValueEquals("failed", timeout: 30),
-            "建立失敗時項目必須顯示失敗狀態，不得無聲消失"
+            review.pendingLinkStripStatus("failed").waitUntilExists(timeout: 30),
+            "建立失敗時項目必須以 identifier 暴露失敗狀態，不得無聲消失"
         )
+        // The strip item must not expose a raw English state token to VoiceOver.
+        XCTAssertNotEqual(pending.value as? String, "failed", "strip 項目不得以原始英文 token 作為 accessibilityValue")
         captureStep("pending-item-failed", app: app)
 
         pending.tapWhenReady()
