@@ -1,0 +1,9 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3467,
+  "raise": {
+    "ops": 494,
+    "workflows": 51
+  },
+  "note": "targeted PR-level ops-suite planner: run only the Linux groups a diff references (#3467)"
+}
