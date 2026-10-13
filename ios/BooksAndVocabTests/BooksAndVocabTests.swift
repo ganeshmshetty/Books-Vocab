@@ -261,7 +261,7 @@ struct BooksAndVocabTests {
         #expect(restored.currentIndex == 1)
         #expect(restored.rememberedCount == 1)
         #expect(restored.forgotCount == 0)
-        #expect(restored.progressText == "2 / 2")
+        #expect(restored.progressText == "1 / 2")
         TodayReviewSessionSnapshotStore.clear(for: nil)
     }
 
@@ -579,14 +579,26 @@ struct BooksAndVocabTests {
     /// re-flush. Verified at the scoring layer (markFlushed).
     @Test @MainActor func scoringMarkFlushedFlipsAnswerFlag() async throws {
         let scoring = ReviewScoringState()
-        scoring.record(.remembered, at: 0)
+        let sent = scoring.record(.remembered, at: 0)
         #expect(scoring.submittedAnswers[0]?.flushed == false)
 
-        scoring.markFlushed(at: 0)
+        scoring.markFlushed(at: 0, confirming: sent)
         #expect(scoring.submittedAnswers[0]?.flushed == true)
 
         // Marking a non-existent index is a no-op (no crash).
-        scoring.markFlushed(at: 99)
+        scoring.markFlushed(at: 99, confirming: sent)
+    }
+
+    /// #3409 at the scoring layer: a confirmation for a submission that has since been replaced must
+    /// not flip the replacement's flag.
+    @Test @MainActor func scoringMarkFlushedIgnoresReplacedSubmission() {
+        let scoring = ReviewScoringState()
+        let sent = scoring.record(.remembered, at: 0)
+        scoring.score(.forgot, at: 0)
+
+        scoring.markFlushed(at: 0, confirming: sent)
+        #expect(scoring.submittedAnswers[0]?.feedback == .forgot)
+        #expect(scoring.submittedAnswers[0]?.flushed == false)
     }
 
     @Test func readerBridgePlannerEmitsSingleWordHighlightCommand() async throws {

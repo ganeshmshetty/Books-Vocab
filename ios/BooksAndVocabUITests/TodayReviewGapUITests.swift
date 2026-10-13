@@ -119,7 +119,7 @@ final class TodayReviewGapUITests: UITestCase {
             _ = review.cardBack.waitUntilExists(timeout: 5)
             RunLoop.current.run(until: Date().addingTimeInterval(0.3))
             review.tapRemembered()
-            _ = review.waitForProgress("\(i + 2) / \(Self.deckSize)")
+            _ = review.waitForProgress("\(i + 1) / \(Self.deckSize)")
             _ = review.cardBack.waitUntilGone(timeout: 5)
         }
 
@@ -299,7 +299,7 @@ final class TodayReviewGapUITests: UITestCase {
             )
 
             review.tapRemembered()
-            _ = review.waitForProgress("\(i + 2) / \(Self.deckSize)")
+            _ = review.waitForProgress("\(i + 1) / \(Self.deckSize)")
             _ = review.cardBack.waitUntilGone(timeout: 5)
         }
 
@@ -366,7 +366,7 @@ final class TodayReviewGapUITests: UITestCase {
             review.flipCard()
             _ = review.cardBack.waitUntilExists(timeout: 5)
             review.tapRemembered()
-            _ = review.waitForProgress("\(step + 2) / \(Self.deckSize)")
+            _ = review.waitForProgress("\(step + 1) / \(Self.deckSize)")
             _ = review.cardBack.waitUntilGone(timeout: 5)
 
             let zone = review.expandZone

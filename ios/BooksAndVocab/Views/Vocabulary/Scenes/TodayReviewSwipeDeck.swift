@@ -187,7 +187,7 @@ extension TodayReviewPresenter {
     func logSlotGeometry(slot: Int, role: TodayReviewCardSlotRole, kind: String, word: String, height: CGFloat) {
         PerfLog.review.mark(
             "gap.geom",
-            "slot=\(slot) role=\(role) kind=\(kind) w=\(word) h=\(String(format: "%.1f", height)) reveal=\(state.revealStage.rawValue) dismiss=\(dismissPhase == .idle ? 0 : 1) off=\(Int(swipeOffset)) idx=\(state.progressText)"
+            "slot=\(slot) role=\(role) kind=\(kind) w=\(word) h=\(String(format: "%.1f", height)) reveal=\(state.revealStage.rawValue) dismiss=\(dismissPhase == .idle ? 0 : 1) off=\(Int(swipeOffset)) idx=\(state.positionText)"
         )
     }
     #endif

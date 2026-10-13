@@ -133,7 +133,7 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
 
         // Layout only: the card must still be on its front, still card 1.
         review.assertCardBackDoesNotExist()
-        XCTAssertTrue(review.waitForProgress("1 / "))
+        XCTAssertTrue(review.waitForProgress("0 / "), "版面變更不得計入已評數（#3371）")
 
         // ── 3. Reopening keeps the edit ─────────────────────────────────────────
         review.layoutEditorButton.tapWhenReady()
@@ -253,7 +253,7 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
 
         // And they must still actually grade.
         review.tapRemembered()
-        XCTAssertTrue(review.waitForProgress("2 / "), "評分後佇列必須推進")
+        XCTAssertTrue(review.waitForProgress("1 / "), "評分後已評數必須前進到 1")
     }
 
     @MainActor
@@ -315,6 +315,15 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
         func anyDetailFieldMounted(timeout: TimeInterval) -> Bool {
             detailFields.contains { review.backField($0).waitUntilExists(timeout: timeout) }
         }
+        /// ‹ › 只換卡、不改已評數（#3371），所以換卡以正面單字確認；前景卡尚未出現時繼續等。
+        func waitForFrontWord(_ word: String, toBe expected: Bool, timeout: TimeInterval = 8) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if review.cardFront.exists, (review.frontWord == word) == expected { return true }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+            return review.cardFront.exists && (review.frontWord == word) == expected
+        }
 
         // ── 1. Compact card shows the button, back has no detail fields ────────
         guard review.waitForTemporaryDetail("showDetail", timeout: 10) else {
@@ -322,6 +331,7 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
             XCTFail("精簡卡 ⋯ 選單必須帶出『暫時顯示詳細』狀態")
             return
         }
+        let firstWord = review.frontWord
         review.flipCard()
         XCTAssertTrue(review.waitForUnique("todayReview.card.back", timeout: 8))
         XCTAssertFalse(anyDetailFieldMounted(timeout: 1), "精簡背面不得有例句／詳解／搭配詞")
@@ -332,15 +342,15 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
         review.temporaryDetailMenuItem.tapWhenReady()
         XCTAssertTrue(review.waitForTemporaryDetail("restoreCompact"), "同一個選單項目必須翻成『恢復精簡』")
         XCTAssertTrue(anyDetailFieldMounted(timeout: 3), "暫時詳細後背面必須出現例句等詳細內容")
-        XCTAssertTrue(review.waitForProgress("1 / "), "切換版面不得推進佇列")
+        XCTAssertTrue(review.waitForProgress("0 / "), "切換版面不得計入已評數")
         captureStep("temporary-detail.detailed", app: app)
 
         // ── 3. Leave the card, come back: compact again ───────────────────────
         review.nextButton.tapWhenReady()
-        XCTAssertTrue(review.waitForProgress("2 / "))
+        XCTAssertTrue(waitForFrontWord(firstWord, toBe: false), "下一張卡必須換上")
         XCTAssertTrue(review.waitForTemporaryDetail("showDetail"), "下一張卡不得繼承暫時詳細")
         review.previousButton.tapWhenReady()
-        XCTAssertTrue(review.waitForProgress("1 / "))
+        XCTAssertTrue(waitForFrontWord(firstWord, toBe: true), "必須回到原卡")
         XCTAssertTrue(review.waitForTemporaryDetail("showDetail"), "回到原卡必須仍為精簡")
         review.flipCard()
         XCTAssertTrue(review.waitForUnique("todayReview.card.back", timeout: 8))
@@ -489,7 +499,8 @@ final class ReviewCardLayoutEditorUITests: UITestCase {
             while review.frontWord != targetFrontWord && position < 8 {
                 review.tapRemembered()
                 position += 1
-                guard review.waitForProgress("\(position) / ", timeout: 10) else {
+                // header 為已評數（#3371）：評完第 position-1 張後為 position-1。
+                guard review.waitForProgress("\(position - 1) / ", timeout: 10) else {
                     captureStep("target-card-not-reached", app: app)
                     XCTFail("複習 queue 未能前進到 canonical card \(targetFrontWord)")
                     throw ReviewCardLayoutEditorUITestError.preconditionFailed

@@ -8,7 +8,9 @@ struct TodayReviewSessionState<Entry> {
         return queue[currentIndex]
     }
 
-    var progressText: String {
+    /// 瀏覽位置「n / m」：只作 autoplay 換卡的重置訊號，不是 header 進度（#3390）。
+    /// header 進度見 `TodayReviewState.progressText`（已評數）。
+    var positionText: String {
         "\(min(currentIndex + 1, queue.count)) / \(queue.count)"
     }
 

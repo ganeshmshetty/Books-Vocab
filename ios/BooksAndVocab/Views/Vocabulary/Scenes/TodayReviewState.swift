@@ -67,6 +67,14 @@ final class TodayReviewState {
         /// confirmed success. New answers start `false`; restore re-flushes any
         /// answer left `false`.
         var flushed: Bool = false
+
+        /// 同一筆作答？replace 會保留 `reviewRecordID` 但換掉 feedback 與 `answeredAt`，
+        /// 所以只比 record ID 不夠（#3409）。
+        func isSameSubmission(as other: SubmittedAnswer) -> Bool {
+            feedback == other.feedback
+                && answeredAt == other.answeredAt
+                && reviewRecordID == other.reviewRecordID
+        }
     }
 
     // MARK: - Card Navigation
@@ -211,8 +219,14 @@ final class TodayReviewState {
         session.currentEntry
     }
 
+    /// header 與 toolbar 的進度：已評數 / 總數（#3371、#3390）。瀏覽（‹ ›、autoplay）不改變它。
     var progressText: String {
-        session.progressText
+        ReviewGradeProgress(graded: scoring.gradedCount, total: session.queue.count).text
+    }
+
+    /// 瀏覽位置（不顯示）：autoplay 換卡時重置旁白狀態的訊號（見 TodayReviewPresenter）。
+    var positionText: String {
+        session.positionText
     }
 
     var presenterState: TodayReviewPresenterState {
@@ -237,13 +251,13 @@ final class TodayReviewState {
             autoplaySoundEnabled: autoplaySoundEnabled,
             temporaryDetailCardKey: temporaryDetail.detailedCardKey,
             linkExpansion: linkExpansion,
-            keyboardGrade: keyboardGrade
+            keyboardGrade: keyboardGrade,
+            positionText: positionText
         )
     }
 
     private var currentCardState: TodayReviewPresenterState.CurrentCard? {
-        guard let current = currentEntry else { return nil }
-        return cachedOrBuildCard(for: current)
+        cardContent(at: currentIndex)
     }
 
     var currentCardForTesting: TodayReviewPresenterState.CurrentCard? {
@@ -251,16 +265,14 @@ final class TodayReviewState {
     }
 
     private var nextCardState: TodayReviewPresenterState.CurrentCard? {
-        let nextIndex = currentIndex + 1
-        guard nextIndex < queue.count else { return nil }
-        return cachedOrBuildCard(for: queue[nextIndex])
+        cardContent(at: currentIndex + 1)
     }
 
     /// 常駐三 slot 投影（Phase 4）— 指派純推導自 (currentIndex, queue.count)，
     /// 內容走與 current/next 相同的 render-safe cache 路徑（非 mutating）。
     private var slotModels: [TodayReviewCardSlotModel] {
         TodayReviewCardSlotModel.make(currentIndex: currentIndex, queueCount: queue.count) { index in
-            cachedOrBuildCard(for: queue[index])
+            cardContent(at: index)
         }
     }
 
@@ -277,6 +289,15 @@ final class TodayReviewState {
         // prewarm-covered, near-impossible miss builds an ephemeral card without
         // writing the observed cache (self-heals on the next prewarmCardWindow()).
         cardCache.cached(for: entry) ?? TodayReviewCardCache.buildOne(entry, peers: linkedEntryLookup)
+    }
+
+    /// 指定 queue index 的卡片內容，附上此位置的已評標示（#3371）。標示逐 index 讀評分 state，
+    /// 不寫進 `cardCache`（cache 以 entry 為鍵，同一張卡在不同位置的評分各自不同）。
+    private func cardContent(at index: Int) -> TodayReviewPresenterState.CurrentCard? {
+        guard index >= 0, index < queue.count,
+              var content = cachedOrBuildCard(for: queue[index]) else { return nil }
+        content.gradedBadge = ReviewGradedBadge.resolve(scoring.gradedFeedback(at: index))
+        return content
     }
 
     // MARK: - Actions
@@ -622,6 +643,8 @@ final class TodayReviewState {
                 }
                 self.syncCurrentEntryDerivedState()
                 self.prewarmCardWindow()
+                // #3410：與 goNext() 一致，autoplay 推進後也要寫回快照，否則 kill 後還原停在播放前的卡。
+                self.persistSnapshot()
                 return true
             }
         )
@@ -696,15 +719,21 @@ final class TodayReviewState {
         onFinalize: @escaping @MainActor () -> Void = {},
         onFailure: (@MainActor @Sendable () -> Void)? = nil
     ) {
+        // Snapshot what this flush writes: a confirmation may only mark that exact submission
+        // flushed, not whatever the index holds once the flush returns (#3409).
+        let sent = scoring.submittedAnswers
         persistence.flushPendingAnswers(
-            submittedAnswers: scoring.submittedAnswers,
+            submittedAnswers: sent,
             container: container,
             notebookSettingsSnapshot: notebookSettingsSnapshot,
             onFinalize: onFinalize,
             onFailure: onFailure,
             onFlushed: { [weak self] indices in
                 if let self {
-                    for i in indices { self.scoring.markFlushed(at: i) }
+                    for i in indices {
+                        guard let answer = sent[i] else { continue }
+                        self.scoring.markFlushed(at: i, confirming: answer)
+                    }
                 }
             }
         )

@@ -268,6 +268,33 @@ struct ReviewSessionFlushTests {
         #expect(records.count == 1)
     }
 
+    /// #3409: a grade replaced while its flush is in flight must stay un-flushed. The old flush
+    /// confirms the answer it wrote; by then the index holds a different submission, which was never
+    /// written, so that confirmation must not mark the replacement flushed.
+    @Test func replacedAnswerIsNotMarkedFlushedByTheOldFlush() async throws {
+        TodayReviewSessionSnapshotStore.clear(for: Self.userID)
+        defer { TodayReviewSessionSnapshotStore.clear(for: Self.userID) }
+        let entries = makeEntries(1)
+        let (container, _) = try makeContainer(entries)
+        let state = TodayReviewState(entries: entries, allEntries: entries, currentUserID: Self.userID)
+        state.scoring.record(.remembered, at: 0)
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            state.flushPendingAnswers(
+                container: container,
+                reviewSettings: .default,
+                onFinalize: { continuation.resume() },
+                onFailure: { continuation.resume() }
+            )
+            // The flush is still in flight: its confirmation reaches the main actor only once this
+            // scope suspends, so the replacement lands before the old flush can mark anything.
+            state.scoring.score(.forgot, at: 0)
+        }
+
+        #expect(state.scoring.submittedAnswers[0]?.feedback == .forgot)
+        #expect(state.scoring.submittedAnswers[0]?.flushed == false)
+    }
+
     /// #3123 (review P3): re-flushing restored answers must finalize like the dismiss path, so a
     /// completed session's snapshot is cleared once every restored answer is confirmed.
     @Test func reflushOfRestoredCompletedSessionClearsSnapshot() async throws {

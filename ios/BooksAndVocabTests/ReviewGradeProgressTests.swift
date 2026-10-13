@@ -147,4 +147,77 @@ struct ReviewGradeProgressTests {
         #expect(ReviewGradedBadge(feedback: .forgot).text
             == L10n.format("todayReview.card.graded", L10n.string("忘記")))
     }
+
+    // MARK: - Card content carries the badge of its own queue index
+
+    private func makeState(cardCount: Int) -> TodayReviewState {
+        let entries = (0..<cardCount).map { index -> VocabularyEntry in
+            let entry = VocabularyEntry(
+                word: "grade-\(UUID().uuidString.prefix(6))-\(index)",
+                translation: "translation-\(index)",
+                context: "A sample sentence for card \(index).",
+                bookTitle: "Sample"
+            )
+            entry.markSynced()
+            return entry
+        }
+        return TodayReviewState(entries: entries, allEntries: entries, currentUserID: nil)
+    }
+
+    @Test func revisitedGradedCardCarriesItsBadgeOnTheCardContent() {
+        let state = makeState(cardCount: 3)
+        state.scoring.record(.forgot, at: 0)
+
+        #expect(state.currentCardForTesting?.gradedBadge == ReviewGradedBadge(feedback: .forgot))
+
+        state.goNext()
+        #expect(state.currentCardForTesting?.gradedBadge == nil)
+
+        state.goPrevious()
+        #expect(state.currentCardForTesting?.gradedBadge == ReviewGradedBadge(feedback: .forgot))
+    }
+
+    // MARK: - Header progress on the presenter (#3371, #3390)
+
+    @Test func headerProgressIsTheGradedCountAndIgnoresBrowsing() {
+        let state = makeState(cardCount: 5)
+        state.scoring.record(.remembered, at: 0)
+        #expect(state.progressText == "1 / 5")
+        #expect(state.progressText == ReviewGradeProgress(graded: state.scoring.gradedCount, total: state.queue.count).text)
+
+        state.goNext()
+        state.goPrevious()
+        state.goNext()
+        #expect(state.currentIndex == 1)
+        #expect(state.progressText == "1 / 5")
+    }
+
+    @Test func regradingKeepsTheHeaderCount() {
+        let state = makeState(cardCount: 5)
+        state.scoring.record(.remembered, at: 0)
+        state.scoring.score(.forgot, at: 0)
+        #expect(state.progressText == "1 / 5")
+    }
+
+    @Test func positionSignalStillMovesWhileTheHeaderStaysGraded() {
+        let state = makeState(cardCount: 5)
+        #expect(state.positionText == "1 / 5")
+
+        state.goNext()
+        #expect(state.positionText == "2 / 5")
+        #expect(state.progressText == "0 / 5")
+    }
+
+    /// The presenter state is what the view reads: the position signal must reach it (autoplay reset
+    /// in `TodayReviewPresenter` observes `state.positionText`), and the header must stay graded.
+    @Test func presenterStateCarriesThePositionSignalAlongsideTheGradedHeader() {
+        let state = makeState(cardCount: 5)
+        state.scoring.record(.remembered, at: 0)
+        #expect(state.presenterState.progressText == "1 / 5")
+        #expect(state.presenterState.positionText == "1 / 5")
+
+        state.goNext()
+        #expect(state.presenterState.positionText == "2 / 5")
+        #expect(state.presenterState.progressText == "1 / 5")
+    }
 }

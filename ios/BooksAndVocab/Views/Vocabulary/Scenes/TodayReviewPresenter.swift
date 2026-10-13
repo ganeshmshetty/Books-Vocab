@@ -39,6 +39,9 @@ struct TodayReviewPresenterState {
     var linkExpansion = ReviewCardLinkExpansion()
     /// #3127：鍵盤評分請求（與按鈕、滑動同一條甩出路徑）。變化即由 view 觸發一次 `flingCard`。
     var keyboardGrade: KeyboardGradeRequest? = nil
+    /// 瀏覽位置「n / m」（不顯示）：autoplay 換卡時重置旁白狀態的訊號（見 `TodayReviewPresenter` 的 onChange）。
+    /// 與 `progressText`（已評數）分開，瀏覽不改變 header。靜態 fixture 沒有 queue index，維持空字串。
+    var positionText: String = ""
 }
 
 /// reference box：可被 onGeometryChange 逐幀寫入而不觸發 SwiftUI 失效。
@@ -432,7 +435,7 @@ struct TodayReviewPresenter: View {
                     DispatchQueue.main.async { suppressFoldAnimation = false }
                 }
             }
-            .onChange(of: state.progressText) { _, _ in
+            .onChange(of: state.positionText) { _, _ in
                 if lastAutoplaySpokenCardKey != nil { lastAutoplaySpokenCardKey = nil }
             }
             .onChange(of: state.keyboardGrade) { _, request in
@@ -592,7 +595,7 @@ struct TodayReviewPresenter: View {
             #if DEBUG
             PerfLog.review.mark(
                 "gap.geom",
-                "slot=-1 role=deck kind=deck w=\(card.word) h=\(String(format: "%.1f", h)) reveal=\(state.revealStage.rawValue) dismiss=\(dismissPhase == .idle ? 0 : 1) off=\(Int(swipeOffset)) idx=\(state.progressText)"
+                "slot=-1 role=deck kind=deck w=\(card.word) h=\(String(format: "%.1f", h)) reveal=\(state.revealStage.rawValue) dismiss=\(dismissPhase == .idle ? 0 : 1) off=\(Int(swipeOffset)) idx=\(state.positionText)"
             )
             #endif
         }
