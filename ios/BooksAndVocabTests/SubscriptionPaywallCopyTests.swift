@@ -167,6 +167,81 @@ struct SubscriptionPaywallCopyTests {
         #expect(!text.contains(resyncLabel))
     }
 
+    // MARK: - Purchase outcome message (#3418)
+
+    /// Optimistic Pro committed before the backend sync must never be reported as success
+    /// when the sync did not apply, even if the follow-up refresh still reports Pro.
+    @Test(arguments: [true, false])
+    func purchaseOutcome_optimisticProWithoutBackendSyncIsPending(refreshApplied: Bool) {
+        let key = SubscriptionPurchaseCopy.purchaseOutcomeMessage(
+            syncApplied: false,
+            refreshApplied: refreshApplied,
+            hasProAccess: true
+        )
+        #expect(key == SubscriptionPurchaseCopy.backendSyncPendingKey)
+    }
+
+    @Test func purchaseOutcome_successOnlyWhenSyncRefreshAndProAllApply() {
+        #expect(
+            SubscriptionPurchaseCopy.purchaseOutcomeMessage(syncApplied: true, refreshApplied: true, hasProAccess: true)
+                == SubscriptionPurchaseCopy.activatedKey
+        )
+        #expect(
+            SubscriptionPurchaseCopy.purchaseOutcomeMessage(syncApplied: true, refreshApplied: false, hasProAccess: true)
+                == SubscriptionPurchaseCopy.backendSyncPendingKey
+        )
+        #expect(
+            SubscriptionPurchaseCopy.purchaseOutcomeMessage(syncApplied: true, refreshApplied: true, hasProAccess: false)
+                == SubscriptionPurchaseCopy.backendSyncPendingKey
+        )
+    }
+
+    // MARK: - Restore outcome message (#3419)
+
+    /// A missing StoreKit entitlement and a backend 403 (transaction bound to another account)
+    /// must not collapse into the transient "backend sync failed, retry" copy.
+    @Test func restoreOutcome_noEntitlementAndRejectedDoNotShowRetryCopy() {
+        let retry = SubscriptionPurchaseCopy.restoreOutcomeMessage(result: .failed, hasProAccess: false)
+        let none = SubscriptionPurchaseCopy.restoreOutcomeMessage(result: .noEntitlement, hasProAccess: false)
+        let rejected = SubscriptionPurchaseCopy.restoreOutcomeMessage(result: .rejected, hasProAccess: false)
+        #expect(retry == SubscriptionPurchaseCopy.restoreSyncRetryKey)
+        #expect(none != retry)
+        #expect(rejected != retry)
+        #expect(none != rejected)
+    }
+
+    @Test func restoreOutcome_proAccessAlwaysReportsRestored() {
+        for result in [CurrentEntitlementSyncOutcome.noEntitlement, .synced, .rejected, .failed] {
+            #expect(
+                SubscriptionPurchaseCopy.restoreOutcomeMessage(result: result, hasProAccess: true)
+                    == SubscriptionPurchaseCopy.restoredKey
+            )
+        }
+    }
+
+    // MARK: - Expiry display uses the formatted accessor, never the raw ISO-8601 (#3422)
+
+    @Test func billedAmount_adminExpiryShowsFormattedDateNotRawISO() {
+        let s = status(isActive: true, source: "admin", expiresAt: "2026-11-13T08:00:00Z")
+        let line = SubscriptionPaywallCopy.billedAmount(s, productDisplayPrice: nil)
+        #expect(!line.contains("2026-11-13T08:00:00Z"))
+        #expect(line == L10n.format("管理員授權 · 有效至 %@", s.formattedExpiryDate))
+    }
+
+    @Test func presentation_adminDetailShowsFormattedDateNotRawISO() {
+        let s = status(isActive: true, source: "admin", expiresAt: "2026-11-13T08:00:00Z")
+        let detail = SubscriptionPresentation.detail(for: s, proProduct: nil)
+        #expect(!detail.contains("2026-11-13T08:00:00Z"))
+        #expect(detail == L10n.format("來源：管理員授權 · 有效至 %@", s.formattedExpiryDate))
+    }
+
+    @Test func presentation_priceDetailShowsFormattedExpiryNotRawISO() {
+        let s = status(expiresAt: "2026-11-13T08:00:00Z", priceDisplay: "NT$170")
+        let detail = SubscriptionPresentation.detail(for: s, proProduct: nil)
+        #expect(!detail.contains("2026-11-13T08:00:00Z"))
+        #expect(detail == L10n.format("%@ · 到期 %@", "NT$170", s.formattedExpiryDate))
+    }
+
     // MARK: - SubscriptionPresentation has no backend-derived trial claim
 
     @Test func presentation_detailAndCtaMakeNoTrialClaim() {

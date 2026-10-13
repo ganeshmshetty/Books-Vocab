@@ -29,6 +29,7 @@ protocol SubscriptionManaging: AnyObject {
     var entitlements: KGEntitlements { get }
     var isLoading: Bool { get }
     var lastError: String? { get }
+    var productLoadFailed: Bool { get }
     var activePaywallSource: PaywallSource? { get set }
     var proProduct: Product? { get }
     var proProductIdentifier: String { get }
@@ -77,6 +78,9 @@ final class SubscriptionManager: SubscriptionManaging {
     func beginLoading() { loadingDepth += 1 }
     func endLoading() { loadingDepth = max(0, loadingDepth - 1) }
     var lastError: String?
+    /// 商品載入是否已耗盡重試仍失敗。只由 loadProducts 設定／清除；refresh 寫入的 `lastError = nil`
+    /// 不得清掉它，否則 paywall 會從重試回到永久載入中（#3420）。
+    var productLoadFailed = false
     var activePaywallSource: PaywallSource?
     var proProduct: Product?
     var proProductIdentifier: String { Self.proProductID }
@@ -178,6 +182,36 @@ final class SubscriptionManager: SubscriptionManaging {
         return true
     }
 
+    /// 已驗證交易的結算結果（#3421）。
+    enum TransactionSettlement {
+        /// 後端已同步且交易已 finish；StoreKit 不會再重送。
+        case finished
+        /// 未登入：未 finish，交由 StoreKit 於之後重送。
+        case skippedNotLoggedIn
+        /// 後端同步失敗：未 finish，交由 StoreKit 於之後重送。
+        case syncFailed(Error)
+    }
+
+    /// 決定已驗證交易何時 finish（#3421）。finish 等於告知 StoreKit「不再重送」，因此只能在後端同步成功後執行；
+    /// 未登入或同步失敗則保留未完成，StoreKit 會於之後再次送出。泛型化是為了讓測試能注入假交易，
+    /// 因為 `Transaction` 無法於測試程序中建構。
+    static func settleVerifiedTransaction<T>(
+        _ transaction: T,
+        isLoggedIn: Bool,
+        sync: (T) async throws -> Void,
+        finish: (T) async -> Void
+    ) async -> TransactionSettlement {
+        // 只有在使用者已登入時才同步至後端，避免用錯誤帳號的 auth 送出交易
+        guard isLoggedIn else { return .skippedNotLoggedIn }
+        do {
+            try await sync(transaction)
+        } catch {
+            return .syncFailed(error)
+        }
+        await finish(transaction)
+        return .finished
+    }
+
     /// 在 app 啟動時呼叫，持續監聽 Transaction.updates 以捕捉中斷購買、續訂等事件
     func listenForTransactionUpdates(using kgService: any KGServing, authManager: any AuthManaging) {
         _kgService = kgService
@@ -187,27 +221,32 @@ final class SubscriptionManager: SubscriptionManaging {
             for await result in Transaction.updates {
                 guard let self, !Task.isCancelled else { return }
                 guard let transaction = try? self.checkVerified(result) else { continue }
-                await transaction.finish()
-
-                // 只有在使用者已登入時才同步至後端，避免用錯誤帳號的 auth 送出交易
-                guard authManager.isLoggedIn else {
-                    AppLog.subscription.warning("Transaction update received but no user logged in, skipping sync")
-                    continue
-                }
 
                 let product = self.proProduct
-                do {
-                    try await self.syncTransaction(
-                        transaction,
-                        signedTransactionInfo: result.jwsRepresentation,
-                        product: product,
-                        using: kgService
-                    )
-                } catch {
+                let settlement = await Self.settleVerifiedTransaction(
+                    transaction,
+                    isLoggedIn: authManager.isLoggedIn,
+                    sync: { transaction in
+                        try await self.syncTransaction(
+                            transaction,
+                            signedTransactionInfo: result.jwsRepresentation,
+                            product: product,
+                            using: kgService
+                        )
+                    },
+                    finish: { transaction in await transaction.finish() }
+                )
+                switch settlement {
+                case .skippedNotLoggedIn:
+                    AppLog.subscription.warning("Transaction update received but no user logged in; leaving it unfinished for StoreKit redelivery")
+                    continue
+                case .syncFailed(let error):
                     AppLog.subscription.error("syncTransaction failed: \(error.localizedDescription)")
                     if !(error is CancellationError) {
                         AppCrashReporting.record(error, context: "subscription.sync.transaction")
                     }
+                case .finished:
+                    break
                 }
                 await self.refresh(using: kgService, authManager: authManager, force: true)
             }

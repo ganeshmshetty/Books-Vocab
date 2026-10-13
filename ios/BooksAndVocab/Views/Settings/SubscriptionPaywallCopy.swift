@@ -33,7 +33,7 @@ enum SubscriptionPaywallCopy {
     static func billedAmount(_ status: KGSubscriptionStatus, productDisplayPrice: String?) -> String {
         if isAdminGranted(status) {
             if let expiresAt = status.expires_at, !expiresAt.isEmpty {
-                return L10n.format("管理員授權 · 有效至 %@", expiresAt)
+                return L10n.format("管理員授權 · 有效至 %@", status.formattedExpiryDate)
             }
             return L10n.string("管理員授權")
         }

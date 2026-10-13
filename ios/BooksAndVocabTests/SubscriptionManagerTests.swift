@@ -355,6 +355,46 @@ struct SubscriptionManagerTests {
         )
     }
 
+    /// A product-load failure must keep the paywall on its retry affordance even when a later
+    /// successful refresh clears the shared `lastError` (#3420).
+    @MainActor
+    @Test func productLoadFailure_survivesSuccessfulRefresh() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedOwner = mgr.entitlementsOwnerUserId
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        let savedLoadFailed = mgr.productLoadFailed
+        let savedProduct = mgr.proProduct
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.entitlementsOwnerUserId = savedOwner
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+            mgr.productLoadFailed = savedLoadFailed
+            mgr.proProduct = savedProduct
+        }
+        mgr.lastRefreshTime = nil
+        // 共享單例可能被先前測試留下已載入的商品；本案例驗證「無商品」狀態，必須明確清空。
+        mgr.proProduct = nil
+        // loadProducts 耗盡重試後同時留下：無商品、lastError 與 productLoadFailed。
+        mgr.lastError = "尚未取得訂閱方案，請稍後再試。"
+        mgr.productLoadFailed = true
+
+        // 之後的 refresh 成功並清除 lastError，但不得清除商品載入失敗狀態。
+        let service = GatedSubscriptionService(responses: [1: KGEntitlements(pro: status())], suspended: [])
+        let succeeded = await mgr.refreshEntitlements(using: service, authManager: RefreshOrderAuthStub(), force: true)
+        #expect(succeeded)
+        #expect(mgr.lastError == nil)
+        #expect(
+            SubscriptionManager.productLoadState(
+                isLoading: false,
+                hasProduct: mgr.proProduct != nil,
+                hasError: mgr.productLoadFailed
+            ) == .retry
+        )
+    }
+
     @MainActor
     @Test func proProductID_is_stable_and_exposed_via_instance() {
         // The product identifier is a release-critical constant; pin it and confirm
@@ -825,6 +865,76 @@ struct SubscriptionManagerTests {
         )
         #expect(!applied)
         #expect(!mgr.hasProAccess)
+    }
+
+    // MARK: - transaction settlement (#3421)
+
+    private struct TransactionSyncStubError: Error {}
+
+    /// 未登入時交易不得 finish（finish 後 StoreKit 不再重送，會永久丟失）；登入後重試須同步成功才 finish。
+    @MainActor
+    @Test func settle_loggedOutTransaction_staysUnfinishedUntilRetriedWhileLoggedIn() async {
+        var events: [String] = []
+        let loggedOut = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-1",
+            isLoggedIn: false,
+            sync: { _ in events.append("sync") },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events.isEmpty)
+        guard case .skippedNotLoggedIn = loggedOut else {
+            Issue.record("expected skippedNotLoggedIn, got \(loggedOut)")
+            return
+        }
+
+        let retried = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-1",
+            isLoggedIn: true,
+            sync: { _ in events.append("sync") },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync", "finish"])
+        guard case .finished = retried else {
+            Issue.record("expected finished, got \(retried)")
+            return
+        }
+    }
+
+    /// 登入使用者的同步失敗時交易必須保持未完成，讓 StoreKit 於之後重送，而不是先 finish 再同步。
+    @MainActor
+    @Test func settle_failedSyncForLoggedInUser_leavesTransactionUnfinished() async {
+        var events: [String] = []
+        let outcome = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-2",
+            isLoggedIn: true,
+            sync: { _ in
+                events.append("sync")
+                throw TransactionSyncStubError()
+            },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync"])
+        guard case .syncFailed = outcome else {
+            Issue.record("expected syncFailed, got \(outcome)")
+            return
+        }
+    }
+
+    /// 成功路徑的順序必須是「同步成功後才 finish」。
+    @MainActor
+    @Test func settle_successfulSync_finishesOnlyAfterSync() async {
+        var events: [String] = []
+        let outcome = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-3",
+            isLoggedIn: true,
+            sync: { _ in events.append("sync") },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync", "finish"])
+        guard case .finished = outcome else {
+            Issue.record("expected finished, got \(outcome)")
+            return
+        }
     }
 }
 

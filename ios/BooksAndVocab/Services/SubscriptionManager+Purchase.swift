@@ -5,6 +5,29 @@ import StoreKit
 /// syncCurrentEntitlements), so the user is never sent to a missing 重新同步.
 enum SubscriptionPurchaseCopy {
     static let backendSyncPendingKey = "Apple 購買成功，但後端同步尚未完成。請稍後點「恢復購買」。"
+    static let activatedKey = "訂閱已啟用，感謝支持！"
+
+    /// 購買後的結果文案（純函式）。樂觀寫入的 Pro 不算成功：只有後端同步與重新整理都套用、
+    /// 且權益為 Pro 時才回報已啟用，否則導向「恢復購買」重試（#3418）。
+    static func purchaseOutcomeMessage(syncApplied: Bool, refreshApplied: Bool, hasProAccess: Bool) -> String {
+        syncApplied && refreshApplied && hasProAccess ? activatedKey : backendSyncPendingKey
+    }
+
+    static let restoredKey = "購買已恢復，Pro 已啟用。"
+    static let restoreSyncRetryKey = "已向 App Store 恢復購買，但後端尚未同步成功。請稍後再試。"
+    static let restoreNoEntitlementKey = "App Store 上找不到可恢復的 Pro 訂閱。"
+    static let restoreRejectedKey = "此 App Store 訂閱已綁定其他帳號，無法在此帳號恢復。"
+
+    /// 還原購買的結果文案（純函式）。權益為 Pro 即回報已恢復；否則依同步結果區分：
+    /// 無交易、後端拒絕（綁定他人帳號）與暫時失敗各自給出不同指引，不再一律要求重試（#3419）。
+    static func restoreOutcomeMessage(result: CurrentEntitlementSyncOutcome, hasProAccess: Bool) -> String {
+        if hasProAccess { return restoredKey }
+        switch result {
+        case .noEntitlement: return restoreNoEntitlementKey
+        case .rejected: return restoreRejectedKey
+        case .synced, .failed: return restoreSyncRetryKey
+        }
+    }
 }
 
 enum SubscriptionProductLoadState: Equatable {
@@ -57,6 +80,7 @@ extension SubscriptionManager {
         beginLoading()
         defer { endLoading() }
         lastError = nil
+        productLoadFailed = false
         for attempt in 1...Self.productRetryAttempts {
             do {
                 let products = try await Product.products(for: [Self.proProductID])
@@ -83,6 +107,7 @@ extension SubscriptionManager {
         }
         // All retries exhausted — product still unavailable
         proProduct = nil
+        productLoadFailed = true
         lastError = L10n.string("尚未取得訂閱方案，請稍後再試。")
     }
 
@@ -113,6 +138,7 @@ extension SubscriptionManager {
                     optimisticEntitlements(from: product, status: inferredStatus(for: product)),
                     owner: authManager.userId
                 )
+                var syncApplied = false
                 do {
                     try await syncTransaction(
                         transaction,
@@ -120,6 +146,7 @@ extension SubscriptionManager {
                         product: product,
                         using: kgService
                     )
+                    syncApplied = true
                     AppLog.subscription.info("Sync succeeded")
                 } catch {
                     AppLog.subscription.warning("Sync failed: \(error.localizedDescription)")
@@ -127,12 +154,15 @@ extension SubscriptionManager {
                         AppCrashReporting.record(error, context: "subscription.purchase.sync")
                     }
                 }
-                await refresh(using: kgService, authManager: authManager, force: true)
-                if hasProAccess {
-                    purchaseStatusMessage = L10n.string("訂閱已啟用，感謝支持！")
+                let refreshApplied = await refreshEntitlements(using: kgService, authManager: authManager, force: true)
+                let outcome = SubscriptionPurchaseCopy.purchaseOutcomeMessage(
+                    syncApplied: syncApplied,
+                    refreshApplied: refreshApplied,
+                    hasProAccess: hasProAccess
+                )
+                purchaseStatusMessage = L10n.string(outcome)
+                if outcome == SubscriptionPurchaseCopy.activatedKey {
                     scheduleClearPurchaseMessage()
-                } else {
-                    purchaseStatusMessage = L10n.string(SubscriptionPurchaseCopy.backendSyncPendingKey)
                 }
             case .userCancelled:
                 purchaseStatusMessage = L10n.string("已取消購買。")
@@ -160,13 +190,11 @@ extension SubscriptionManager {
 
         do {
             try await AppStore.sync()
-            await syncCurrentEntitlements(using: kgService)
+            let syncOutcome = await syncCurrentEntitlements(using: kgService)
             await refresh(using: kgService, authManager: authManager, force: true)
-            if hasProAccess {
-                purchaseStatusMessage = L10n.string("購買已恢復，Pro 已啟用。")
-            } else {
-                purchaseStatusMessage = L10n.string("已向 App Store 恢復購買，但後端尚未同步成功。請稍後再試。")
-            }
+            purchaseStatusMessage = L10n.string(
+                SubscriptionPurchaseCopy.restoreOutcomeMessage(result: syncOutcome, hasProAccess: hasProAccess)
+            )
             scheduleClearPurchaseMessage()
         } catch {
             if !(error is CancellationError) {

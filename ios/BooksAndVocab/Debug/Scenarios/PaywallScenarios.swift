@@ -58,6 +58,7 @@ private final class PreviewSubscriptionManager: SubscriptionManaging {
     var entitlements: KGEntitlements
     var isLoading: Bool = false
     var lastError: String?
+    var productLoadFailed = false
     var activePaywallSource: PaywallSource?
     var proProduct: Product?
     var proProductIdentifier: String = BrandIdentity.proProductID

@@ -528,6 +528,8 @@
 "開啟單字詳情，點底部的封存按鈕即可收進這裡。" = "Open a word’s detail and tap the archive button at the bottom to file it here.";
 "字母序" = "Alphabetical";
 "尚未取得訂閱方案，請稍後再試。" = "Subscription plans not yet loaded. Please try again later.";
+"App Store 上找不到可恢復的 Pro 訂閱。" = "No restorable Pro subscription was found on the App Store.";
+"此 App Store 訂閱已綁定其他帳號，無法在此帳號恢復。" = "This App Store subscription is linked to another account and cannot be restored here.";
 "已向 App Store 恢復購買，但後端尚未同步成功。請稍後再試。" = "Restore sent to the App Store, but backend sync has not completed. Please try again later.";
 "搜尋封存單字" = "Search archived words";
 "最近新增" = "Recently Added";

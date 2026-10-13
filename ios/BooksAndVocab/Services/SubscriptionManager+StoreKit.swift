@@ -1,5 +1,17 @@
 import StoreKit
 
+/// `syncCurrentEntitlements` 的結果，供還原購買區分「沒有交易」「後端拒絕」與「暫時失敗」（#3419）。
+enum CurrentEntitlementSyncOutcome: Equatable {
+    /// StoreKit 沒有本 app 的 Pro 交易可同步。
+    case noEntitlement
+    /// 後端已接受並套用。
+    case synced
+    /// 後端 403：交易綁定其他帳號，重試不會成功。
+    case rejected
+    /// 其他錯誤（網路、5xx 等），可重試。
+    case failed
+}
+
 extension SubscriptionManager {
     func syncTransaction(
         _ transaction: Transaction,
@@ -50,7 +62,8 @@ extension SubscriptionManager {
         applySyncResponse(response, requestedAt: generation, owner: owner)
     }
 
-    func syncCurrentEntitlements(using kgService: any KGServing) async {
+    @discardableResult
+    func syncCurrentEntitlements(using kgService: any KGServing) async -> CurrentEntitlementSyncOutcome {
         for await result in Transaction.currentEntitlements {
             guard
                 let transaction = try? checkVerified(result),
@@ -66,12 +79,17 @@ extension SubscriptionManager {
                     using: kgService
                 )
                 AppLog.subscription.info("currentEntitlements sync succeeded")
+                return .synced
             } catch {
                 AppLog.subscription.warning("currentEntitlements sync failed: \(error.localizedDescription)")
+                if case .httpError(statusCode: 403, _)? = error as? KGError {
+                    return .rejected
+                }
+                return .failed
             }
-            return
         }
         AppLog.subscription.warning("No current entitlement found for \(Self.proProductID)")
+        return .noEntitlement
     }
 
     /// 從 StoreKit 2 的 Product.SubscriptionInfo 查詢真實的自動續訂狀態
