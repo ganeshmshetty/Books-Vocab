@@ -166,6 +166,47 @@ class TestBackupWorld:
         path = shared.backup_world(tmp_path, label="hello world!!")
         assert "hello-world" in path.name
 
+    def test_wal_db_snapshot_survives_checkpoint_during_archive(self, tmp_path, monkeypatch):
+        user_dir = tmp_path / "users" / "u1"
+        user_dir.mkdir(parents=True)
+        (tmp_path / "users.json").write_text('{"u1": {}}')
+        writer = sqlite3.connect(user_dir / "cards.db")
+        try:
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+            writer.execute("CREATE TABLE card (content TEXT)")
+            writer.execute("INSERT INTO card VALUES ('before-backup')")
+            writer.commit()
+            assert (user_dir / "cards.db-wal").exists()
+
+            original_addfile = tarfile.TarFile.addfile
+
+            def addfile_then_checkpoint(tar, tarinfo, fileobj=None):
+                # 模擬 live writer：main .db 已被讀入 archive 後，WAL 才被 checkpoint 並截斷。
+                result = original_addfile(tar, tarinfo, fileobj)
+                if tarinfo.name.endswith("/cards.db"):
+                    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                return result
+
+            monkeypatch.setattr(tarfile.TarFile, "addfile", addfile_then_checkpoint)
+            archive = shared.backup_world(tmp_path)
+        finally:
+            writer.close()
+
+        with tarfile.open(archive) as tar:
+            names = tar.getnames()
+            tar.extractall(tmp_path / "restore", filter="data")
+        restored = tmp_path / "restore" / "__kg_world__" / "users" / "u1" / "cards.db"
+        restored_conn = sqlite3.connect(restored)
+        try:
+            try:
+                rows = restored_conn.execute("SELECT content FROM card").fetchall()
+            except sqlite3.OperationalError as exc:
+                pytest.fail(f"restored world snapshot lost committed rows: {exc}")
+        finally:
+            restored_conn.close()
+        assert rows == [("before-backup",)]
+        assert not any(name.endswith((".db-wal", ".db-shm", ".db-journal")) for name in names)
+
 
 # ── list_user_backups ────────────────────────────────────────────────────
 

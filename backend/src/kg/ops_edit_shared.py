@@ -171,8 +171,13 @@ def _sqlite_online_backup(src: Path, dst: Path) -> None:
 
 def _copy_user_snapshot_tree(src: Path, dst: Path) -> None:
     """把 user tree 複製到穩定 staging；sidecar 消失視為可忽略的 transient。"""
+    _copy_snapshot_children(sorted(src.iterdir(), key=lambda path: path.name), dst)
+
+
+def _copy_snapshot_children(children: list[Path], dst: Path) -> None:
+    """把指定的 children 複製進 ``dst``；``.db`` 一律經 online backup，sidecar 跳過。"""
     dst.mkdir(parents=True, exist_ok=True)
-    for child in sorted(src.iterdir(), key=lambda path: path.name):
+    for child in children:
         if _is_sqlite_sidecar(child):
             continue
         target = dst / child.name
@@ -273,14 +278,19 @@ def backup_world(data_dir: Path, *, label: str = "world") -> Path:
         "capturedAt": _now_iso(),
         "members": [p.name for p in members],
     }
-    with tarfile.open(dest, "w:gz") as tar:
-        for member in members:
-            tar.add(member, arcname=f"{_WORLD_ROOT_ARCNAME}/{member.name}")
-        _add_bytes_member(
-            tar,
-            _world_meta_arc(_BACKUP_MANIFEST),
-            json.dumps(manifest, ensure_ascii=False, default=str).encode("utf-8"),
-        )
+    # live WAL 必須先經 online backup 固化成單檔再打包：直接 tar 會把 main .db 與
+    # -wal/-shm 分時讀取，遇到並發 checkpoint 即得到互不一致的 torn snapshot。
+    with tempfile.TemporaryDirectory(prefix="kg-world-backup-") as staging:
+        staged_root = Path(staging) / _WORLD_ROOT_ARCNAME
+        _copy_snapshot_children(members, staged_root)
+        with tarfile.open(dest, "w:gz") as tar:
+            for staged in sorted(staged_root.iterdir(), key=lambda path: path.name):
+                tar.add(staged, arcname=f"{_WORLD_ROOT_ARCNAME}/{staged.name}")
+            _add_bytes_member(
+                tar,
+                _world_meta_arc(_BACKUP_MANIFEST),
+                json.dumps(manifest, ensure_ascii=False, default=str).encode("utf-8"),
+            )
     return dest
 
 
