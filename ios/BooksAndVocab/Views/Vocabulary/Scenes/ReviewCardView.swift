@@ -178,6 +178,8 @@ struct ReviewCardView: View {
     @Environment(\.appSkin) private var appSkin
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.speechService) private var speechService
+    /// #2042 Stage 3：辨識⇄產出切換（選單項目）。nil ＝ 不顯示。
+    @Environment(\.reviewModeSwitchAction) private var reviewModeSwitchAction
 
     let content: ReviewCardContent
     let profile: ReviewCardLayoutProfile
@@ -331,10 +333,12 @@ struct ReviewCardView: View {
         )
     }
 
-    /// The `⋯` menu is shown only when it has an item (the temporary-detail toggle
-    /// today; #2042 adds the production toggle here). Without items it is absent
-    /// rather than an empty menu, so standard-preset wrapping stays as it was (#3112).
-    private var hasCardMenu: Bool { temporaryDetailToggle != .unavailable }
+    /// The `⋯` menu is shown only when it has an item (the temporary-detail toggle,
+    /// or the #2042 recognition⇄production switch when the action is injected). Without
+    /// items it is absent rather than an empty menu, so standard-preset wrapping stays as it was (#3112).
+    private var hasCardMenu: Bool {
+        temporaryDetailToggle != .unavailable || reviewModeSwitchAction != nil
+    }
 
     /// Fields the detailed face would add, pre-measured by hidden probes while the
     /// card is still compact so the expansion animates to real heights.
@@ -517,6 +521,18 @@ struct ReviewCardView: View {
     private func cardMenu(interactive: Bool) -> some View {
         if interactive {
             Menu {
+                if let reviewModeSwitch = reviewModeSwitchAction {
+                    Button {
+                        reviewModeSwitch.perform()
+                    } label: {
+                        Label(
+                            L10n.string(content.card.reviewMode.toggledReviewMode.switchTargetLabelKey),
+                            systemImage: "arrow.left.arrow.right"
+                        )
+                    }
+                    .disabled(!reviewModeSwitch.isAvailable)
+                    .accessibilityIdentifier("todayReview.card.reviewMode")
+                }
                 Button {
                     actions.toggleTemporaryDetail?()
                 } label: {

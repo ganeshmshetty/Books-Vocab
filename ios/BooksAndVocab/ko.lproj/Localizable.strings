@@ -1360,6 +1360,13 @@
 "todayReview.card.temporaryDetail.show" = "이 카드 자세히 잠시 보기";
 "todayReview.card.temporaryDetail.restore" = "간단히 보기로 돌아가기";
 "todayReview.card.more" = "더 보기";
+"todayReview.card.reviewMode.toProduction" = "생성으로 전환";
+"todayReview.card.reviewMode.toRecognition" = "인식으로 전환";
+"todayReview.reviewMode.sheet.confirm" = "확인";
+"todayReview.reviewMode.level.label" = "망각 정도";
+"todayReview.reviewMode.level.keep" = "진행 상황 유지";
+"todayReview.reviewMode.level.reset" = "진행 상황 초기화";
+"todayReview.reviewMode.level.partial" = "일부 망각";
 
 "addLink.error.quotaExhausted" = "오늘의 AI 할당량을 모두 사용했습니다. 내일 다시 시도해 주세요.";
 "addLink.error.sourceUnavailable" = "원본 카드를 더 이상 사용할 수 없습니다(삭제, 보관 또는 이동됨).";
