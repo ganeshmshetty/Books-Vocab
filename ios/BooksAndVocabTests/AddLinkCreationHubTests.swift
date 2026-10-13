@@ -1131,4 +1131,41 @@ struct AddLinkJobCompletionNoticeTests {
         #expect(rig.poster.items.count == 1)
         #expect(rig.poster.items.first?.style == .success)
     }
+
+    /// `retryWarnings()` settles straight from `.succeededWithWarnings` to `.succeeded`
+    /// without a `.running` phase, so the record stays `.warning` on completion (#3380).
+    @Test("a warning retry that completes after close posts one success notice (#3380)")
+    func warningRetryAfterCloseNoticesOnce() async throws {
+        let service = ScriptedCreationService(
+            onStart: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 1) },
+            onFetch: { _, _ in CreationFixtures.status("op-1", "succeeded", sequence: 2) }
+        )
+        let record = PendingLinkCreationRecord(
+            jobKey: jobKey,
+            word: "luminous",
+            sourceCardID: "src",
+            notebookId: "nb",
+            idempotencyKey: "persisted-key",
+            operationId: "op-1",
+            operationTerminal: true,
+            state: .warning,
+            message: nil,
+            createdAt: Date(timeIntervalSince1970: 1),
+            warnings: [AddLinkCreationWarning.enrichmentIncomplete.rawValue],
+            userId: nil
+        )
+        let rig = try makeRig(service: service, records: [record])
+        rig.hub.resume(services: AddLinkCreationServices(
+            operationService: service,
+            syncService: service,
+            container: rig.container
+        ))
+        #expect(rig.hub.retry(jobKey: jobKey))
+        #expect(await CreationFixtures.eventually { rig.hub.jobs.isEmpty })
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        #expect(rig.poster.items.first?.style == .success)
+        #expect(rig.poster.items.first?.key == AddLinkJobNotice.key(jobKey: jobKey))
+    }
 }

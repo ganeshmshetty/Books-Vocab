@@ -255,7 +255,8 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         for state: AddLinkCreationJobState,
         coordinator: AddLinkCreationCoordinator
     ) -> AppToastItem? {
-        guard jobs[state.jobKey]?.record.state == .creating,
+        guard let recordState = jobs[state.jobKey]?.record.state,
+              Self.completesUnattended(recordState: recordState, phase: state.phase),
               owns(coordinator, jobKey: state.jobKey),
               !isPresenting(coordinator) else { return nil }
         return AddLinkJobNotice.item(
@@ -264,6 +265,24 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
             word: state.word,
             message: state.message
         )
+    }
+
+    /// Whether a job's transition is an unattended completion worth a notice. A
+    /// `.creating` job may reach any terminal phase. A `.warning` job only settles
+    /// `.succeeded` from a warning retry (`retryWarnings()` has no `.running` phase);
+    /// its `.succeededWithWarnings` re-publishes are not new outcomes (#3380).
+    private static func completesUnattended(
+        recordState: PendingLinkCreationRecord.State,
+        phase: AddLinkCreationPhase
+    ) -> Bool {
+        switch recordState {
+        case .creating:
+            return true
+        case .warning:
+            return phase == .succeeded
+        case .failed:
+            return false
+        }
     }
 
     private func upsert(
