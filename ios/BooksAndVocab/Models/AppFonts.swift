@@ -42,6 +42,11 @@ enum AppFonts {
 
     // MARK: - Font Builders
 
+    /// Dynamic Type 縮放後的 point size。RED 階段：尚未套用縮放。
+    static func scaledPointSize(_ size: CGFloat, compatibleWith traits: UITraitCollection? = nil) -> CGFloat {
+        size
+    }
+
     private static func platformFont(descriptor: PlatformFontDescriptor, size: CGFloat) -> PlatformFont {
         PlatformFont(descriptor: descriptor, size: size)
     }
