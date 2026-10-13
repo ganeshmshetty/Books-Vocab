@@ -313,10 +313,17 @@ def evaluate_delivery(data: dict[str, Any] | None, now: datetime) -> Finding:
 REVIEW_QUOTA_PHRASE = "usage limits"
 REVIEW_QUOTA_WINDOW_DAYS = 30
 REVIEW_QUOTA_RECENT_DAYS = 3
+REVIEW_QUOTA_NOTE = (
+    "Codex review quota looks exhausted: agent-review settles neutral; use the "
+    "recorded CR fallback in docs/sop/review_discipline.md"
+)
+REVIEW_FALLBACK_HEADING = "### Recorded CR fallback"
 
 
-def evaluate_review_quota(data: dict[str, int] | None) -> Finding:
-    """How often the review bot answered "usage limits" instead of reviewing."""
+def evaluate_review_quota(
+    data: dict[str, int] | None, *, fallback_documented: bool = False
+) -> Finding:
+    """How often the review bot answered "usage limits"; a documented CR fallback makes it informational."""
     if data is None:
         return Finding(
             "review", "warn", "review bot quota unavailable (gh read failed)"
@@ -327,38 +334,32 @@ def evaluate_review_quota(data: dict[str, int] | None) -> Finding:
         f"{REVIEW_QUOTA_RECENT_DAYS}d"
     )
     if data["recent"]:
-        return Finding(
-            "review",
-            "warn",
-            text,
-            [
-                (
-                    "Codex review quota looks exhausted: agent-review settles "
-                    "neutral; use the recorded CR fallback in "
-                    "docs/sop/review_discipline.md"
-                )
-            ],
-        )
+        level = "ok" if fallback_documented else "warn"
+        return Finding("review", level, text, [REVIEW_QUOTA_NOTE])
     return Finding("review", "ok", text)
 
 
 ACCEPTANCE_TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER"})
 
 
+# Solver Packets and issue forms fence runnable commands under several headings
+# (Acceptance, Done when, Verification commands, and the Chinese 驗收/驗證 forms).
+ACCEPTANCE_HEADING = re.compile(
+    r"^#{2,3}\s+(?:Acceptance\b|Done when\b|Verification\b|驗收|驗證|完成判準)[^\n]*$(.*?)(?=^#{2,3}\s|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+# Epics are planning containers; their child issues carry the runnable commands.
+ACCEPTANCE_EXEMPT_LABELS = frozenset({"epic"})
+
+
 def parse_acceptance(body: str | None) -> list[str]:
-    """Shell commands in fenced blocks under the issue's ``## Acceptance`` (or ``### Acceptance criteria``) heading."""
+    """Shell commands in fenced blocks under every acceptance or verification heading."""
 
     if not body:
         return []
-    section = re.search(
-        r"^#{2,3}\s+Acceptance\b[^\n]*$(.*?)(?=^#{2,3}\s|\Z)",
-        body,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not section:
-        return []
     return [
         block.strip()
+        for section in ACCEPTANCE_HEADING.finditer(body)
         for block in re.findall(
             r"```(?:sh|bash|shell)\n(.*?)```", section.group(1), re.DOTALL
         )
@@ -377,6 +378,10 @@ def runnable_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _labels(issue: dict[str, Any]) -> set[str]:
+    return {label.get("name") for label in issue.get("labels", [])}
+
+
 def evaluate_issues(
     issues: list[dict[str, Any]], results: dict[int, dict[str, Any]] | None = None
 ) -> Finding:
@@ -386,7 +391,8 @@ def evaluate_issues(
     for issue in issues:
         number = issue["number"]
         if not parse_acceptance(issue.get("body")):
-            unverifiable.append(f"#{number} has no machine acceptance command")
+            if not _labels(issue) & ACCEPTANCE_EXEMPT_LABELS:
+                unverifiable.append(f"#{number} has no machine acceptance command")
             continue
         if results and number in results:
             outcome = results[number]
@@ -620,6 +626,12 @@ def collect_review_quota(
     return counts
 
 
+def collect_review_fallback_documented(repo: Path) -> bool:
+    """Whether the SOP still records the CR fallback that settles exhausted-quota reviews."""
+    sop = repo / "docs" / "sop" / "review_discipline.md"
+    return sop.is_file() and REVIEW_FALLBACK_HEADING in sop.read_text(encoding="utf-8")
+
+
 def collect_disk() -> dict[str, Any] | None:
     try:
         return json.loads(DISK_GUARD_FILE.read_text())
@@ -670,11 +682,7 @@ HEALTH_LABEL = "health-report"
 
 def exclude_health_report(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The weekly report is this tool's own output; counting it would make it self-referential."""
-    return [
-        issue
-        for issue in issues
-        if HEALTH_LABEL not in {label.get("name") for label in issue.get("labels", [])}
-    ]
+    return [issue for issue in issues if HEALTH_LABEL not in _labels(issue)]
 
 
 # --------------------------------------------------------------------------
@@ -734,7 +742,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     complexity_finding = evaluate_complexity(*collect_complexity(repo))
     delivery = evaluate_delivery(collect_delivery(repo), now)
-    review = evaluate_review_quota(collect_review_quota(repo, now))
+    review = evaluate_review_quota(
+        collect_review_quota(repo, now),
+        fallback_documented=collect_review_fallback_documented(repo),
+    )
     issues_finding = (
         Finding("issues", "warn", "could not list open issues via gh", [issues_error])
         if issues_error is not None

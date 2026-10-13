@@ -272,6 +272,27 @@ def test_parse_acceptance_accepts_h3_criteria_and_stops_at_next_heading() -> Non
     assert doctor.parse_acceptance(body) == ["echo b"]
 
 
+def test_issue_detector_follows_the_shapes_the_project_writes() -> None:
+    # Real issue bodies (#2091/#2042/#3113) fence runnable commands under a
+    # verification heading; epics are containers, not solver work.
+    packet = (
+        "## Solver Packet\n### Verification\nprose\n"
+        "### Verification commands\n```bash\necho p\n```\n"
+    )
+    issues = [
+        {"number": 1, "body": packet},
+        {
+            "number": 2,
+            "body": "## 驗收\n- [ ] x\n### 驗證指令\n```bash\necho zh\n```\n",
+        },
+        {"number": 3, "body": "## Done when\n```sh\necho d\n```\n"},
+        {"number": 4, "body": "## Problem\nno command", "labels": [{"name": "bug"}]},
+        {"number": 5, "body": "## Problem\nparent", "labels": [{"name": "epic"}]},
+    ]
+    finding = doctor.evaluate_issues(issues)
+    assert finding.detail == ["#4 has no machine acceptance command"]
+
+
 def _gh_api(stdout: str, returncode: int = 0, stderr: str = ""):
     class Done:
         pass
@@ -652,6 +673,17 @@ def test_review_quota_unavailable_reads_as_warn_not_zero() -> None:
     assert doctor.evaluate_review_quota(None).level == "warn"
 
 
+def test_review_quota_is_informational_under_the_documented_fallback() -> None:
+    data = {"month": 442, "recent": 83}
+    finding = doctor.evaluate_review_quota(data, fallback_documented=True)
+    assert finding.level == "ok" and "83 in the last 3d" in finding.summary
+
+
+def test_the_sop_heading_behind_the_review_check_is_pinned() -> None:
+    assert doctor.collect_review_fallback_documented(OPS.parent) is True
+    assert doctor.collect_review_fallback_documented(OPS) is False
+
+
 def test_collect_review_quota_counts_prs_for_both_windows() -> None:
     seen: list[list[str]] = []
 
@@ -694,4 +726,4 @@ def test_main_reports_the_review_quota_section(
     doctor.main(["--json", "--ci"])
     report = json.loads(capsys.readouterr().out)
     [review] = [f for f in report["findings"] if f["section"] == "review"]
-    assert review["level"] == "warn" and "5 PR(s)" in review["summary"]
+    assert review["level"] == "ok" and "5 PR(s)" in review["summary"]
