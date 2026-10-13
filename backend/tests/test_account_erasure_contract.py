@@ -699,3 +699,27 @@ def test_local_directory_removal_runs_before_prefix_sweep(tmp_path, monkeypatch)
     _call_delete(tmp_path, {"canonical": {"linked_ids": [], "config": {}}}, MagicMock(), user_id="canonical")
 
     assert order == ["remove:canonical", "sweep"]
+
+
+def test_prefix_sweep_still_runs_when_local_removal_raises_unexpectedly(tmp_path, monkeypatch):
+    """#3360: a non-OSError escaping the removal loop must not skip the account
+    prefix sweep. The request still fails, unhandled, after the sweep ran."""
+    import kg.user_handlers as user_handlers
+
+    sweeps: list[list[str]] = []
+
+    def _record_sweep(ids, **_kwargs):
+        sweeps.append(list(ids))
+        return 0
+
+    def _unexpected(_data_dir, _uid):
+        raise RuntimeError("unexpected removal failure")
+
+    monkeypatch.setattr(user_handlers, "sweep_account_prefixes", _record_sweep)
+    monkeypatch.setattr(user_handlers, "_remove_user_dir", _unexpected)
+
+    with pytest.raises(RuntimeError, match="unexpected removal failure"):
+        _call_delete(tmp_path, _linked_users(), MagicMock(), user_id="canonical")
+
+    assert len(sweeps) == 1
+    assert set(sweeps[0]) == {"canonical", "linked1"}
