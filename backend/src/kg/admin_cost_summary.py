@@ -79,6 +79,12 @@ def model_for(call_type: str) -> str:
     return _MODEL_MAP.get(call_type, _DEFAULT_MODEL)
 
 
+def _oldest_retained_at(conn: Any) -> str | None:
+    """Earliest ``token_usage.created_at`` still on disk (the prune horizon), or None if empty."""
+    row = conn.execute("SELECT MIN(created_at) FROM token_usage").fetchone()
+    return row[0] if row else None
+
+
 def query_cost_rows(conn: Any, *, user_id: str | None = None, since: str | None = None) -> list[tuple]:
     """Connection-agnostic:對 ``token_usage`` 跑唯一的 cost 聚合 query。
 
@@ -223,13 +229,25 @@ def get_user_cost_summary(user_id: str, *, range_: str = "month") -> dict[str, A
     with _lock:
         conn = _get_conn()
         rows = query_cost_rows(conn, user_id=user_id, since=since)
+        oldest = _oldest_retained_at(conn) if range_ == "all" else None
 
     summary = fold_user_summary(rows)
+
+    # range='all' is only lifetime up to the token_usage prune horizon; disclose it.
+    retention: dict[str, Any] = {}
+    if range_ == "all":
+        from .log_retention import _effective_days
+
+        retention = {
+            "retention_days": _effective_days("token", None),
+            "oldest_retained_at": oldest,
+        }
 
     return {
         "user_id": user_id,
         "range": range_,
         "since": since,
+        **retention,
         "total_calls": summary["total_calls"],
         "total_input_tokens": summary["total_input_tokens"],
         "total_output_tokens": summary["total_output_tokens"],
