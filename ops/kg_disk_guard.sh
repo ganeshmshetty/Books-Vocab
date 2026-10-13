@@ -136,9 +136,11 @@ free_bytes() {
   fi
 }
 
+# One argv line per process.  Callers anchor on argv[0] (the executable as
+# invoked), so text that merely mentions a command never matches (#3444).
 process_snapshot() {
   [[ "${KG_DISK_GUARD_PROCESS_PROBE_FAIL:-0}" == "1" ]] && return 1
-  ps ax 2>/dev/null
+  ps -axww -o args= 2>/dev/null
 }
 
 # One executable path per line.  macOS prints the full path, spaces included, so
@@ -148,15 +150,30 @@ process_command_snapshot() {
   ps -axo comm= 2>/dev/null
 }
 
+# True when PID $1 is this process or one of its ancestors.
+caller_tree_has_pid() {
+  local target="$1" pid="$$" parent hops=0
+  while [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && "$hops" -lt 64 ]]; do
+    [[ "$pid" == "$target" ]] && return 0
+    parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ "$parent" != "$pid" ]] || break
+    pid="$parent"; hops=$((hops + 1))
+  done
+  return 1
+}
+
 # Live owner of the machine-global iOS build lock (shlock writes the owner PID).
-# The guard's own PID never counts: it takes this lock only after the
-# active-build verdict, so a lock it holds is not a competing build.
+# A lock the caller holds is not a competing build: the guard's own PID, the
+# caller's process tree (ios_ops.sh runs the guard as a child of the holder),
+# and BUILD_LOCK_HELD=1 (the caller declares it holds the lock) never count.
 build_lock_has_live_owner() {
   local holder
+  [[ "${KG_DISK_GUARD_BUILD_LOCK_HELD:-0}" == "1" ]] && return 1
   holder="$(cat "$BUILD_LOCK_FILE" 2>/dev/null || true)"
   case "$holder" in ''|*[!0-9]*) return 1 ;; esac
   [[ "$holder" != "$$" ]] || return 1
-  kill -0 "$holder" 2>/dev/null
+  kill -0 "$holder" 2>/dev/null || return 1
+  ! caller_tree_has_pid "$holder"
 }
 
 # A build is an xcodebuild executable or a live build-lock owner.  Argv text is
@@ -376,13 +393,24 @@ docker_cache_kb() {
   [[ -n "$reclaim" ]] && size_to_kb "$reclaim" || printf '0'
 }
 
+# A docker build is a per-invocation build process: the buildx plugin (matched
+# by executable), or the docker CLI whose argv[0] is docker and whose subcommand
+# is a build.  Argv text that merely mentions a build (wrappers, log tails,
+# deliver notes) never matches.  Long-lived docker daemons are deliberately not
+# counted: they run whether or not a build does and would defer eviction forever.
 docker_active() {
   if [[ -n "${KG_DISK_GUARD_DOCKER_ACTIVE:-}" ]]; then
     [[ "$KG_DISK_GUARD_DOCKER_ACTIVE" == "1" ]] && printf '1' || printf '0'; return
   fi
-  local snapshot
-  snapshot="$(process_snapshot)" || { printf '2'; return; }
-  grep -E '[d]ocker (build|builder|compose build)|[b]uildx build' <<<"$snapshot" >/dev/null 2>&1 && printf '1' || printf '0'
+  local commands argv
+  commands="$(process_command_snapshot)" || { printf '2'; return; }
+  argv="$(process_snapshot)" || { printf '2'; return; }
+  if grep -Eq '(^|/)docker-buildx$' <<<"$commands" \
+    || grep -Eq '^([^ ]*/)?docker (build|builder build|buildx build|compose build)( |$)' <<<"$argv"; then
+    printf '1'
+  else
+    printf '0'
+  fi
 }
 
 prune_docker_cache() {
