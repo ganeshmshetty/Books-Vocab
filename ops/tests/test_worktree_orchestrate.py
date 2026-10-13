@@ -1562,6 +1562,53 @@ def test_rebase_preflight_blocks_declared_scope_collision(tmp_path: Path) -> Non
     assert result["collisions"] == ["ops/incoming_main.py"]
 
 
+def test_rebase_preflight_collides_on_renamed_scope_path_from_incoming_main(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rename-preflight-repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _commit(repo, "ops/old_name.py", "shared content\nline two\nline three\n", "base")
+    _git(repo, "branch", "base")
+    _git(repo, "checkout", "-q", "-b", "incoming-main", "base")
+    _git(repo, "mv", "ops/old_name.py", "ops/new_name.py")
+    _git(repo, "commit", "-qm", "rename on main")
+    _git(repo, "checkout", "-q", "-b", "solver", "base")
+    _commit(repo, "ios/issue_3438.py", "branch\n", "solver branch")
+    scope = {
+        "schema": "kg.worktree.scope.v1",
+        "files": [{"path": "ops/old_name.py", "operation": "modify"}],
+    }
+
+    result = coordinator._rebase_preflight(
+        repo, base="base", incoming_main="incoming-main", scope=scope
+    )
+
+    assert result["verdict"] == "block"
+    assert "ops/old_name.py" in result["collisions"]
+
+
+def test_changed_files_reports_both_sides_of_a_committed_rename(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "rename-changed-repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _commit(repo, "ops/old_name.py", "shared content\nline two\nline three\n", "base")
+    _git(repo, "branch", "base")
+    _git(repo, "mv", "ops/old_name.py", "ops/new_name.py")
+    _git(repo, "commit", "-qm", "rename in lane")
+
+    files = coordinator._changed_files(repo, "base")
+
+    assert "ops/old_name.py" in files
+    assert "ops/new_name.py" in files
+
+
 def test_rebase_preflight_fails_closed_for_missing_refs(tmp_path: Path) -> None:
     repo = _synthetic_rebase_refs(tmp_path)
     scope = {

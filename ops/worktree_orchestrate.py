@@ -942,7 +942,7 @@ def cmd_recover_published_remote(args: argparse.Namespace) -> int:
 
 
 def _changed_files(worktree: Path, base: str) -> list[str]:
-    rc, output = _git(["diff", "--name-only", "-z", base], worktree)
+    rc, output = _git(["diff", "--name-only", "--no-renames", "-z", base], worktree)
     files = set(output.split("\0")) if rc == 0 else set()
     rc, output = _git(["ls-files", "--others", "--exclude-standard", "-z"], worktree)
     if rc == 0:
@@ -956,7 +956,9 @@ def _resolve_commit(worktree: Path, ref: str) -> str | None:
 
 
 def _diff_names(worktree: Path, start: str, end: str) -> list[str] | None:
-    rc, output = _git(["diff", "--name-only", f"{start}..{end}"], worktree)
+    rc, output = _git(
+        ["diff", "--name-only", "--no-renames", f"{start}..{end}"], worktree
+    )
     if rc != 0:
         return None
     return sorted({item for item in output.splitlines() if item})
