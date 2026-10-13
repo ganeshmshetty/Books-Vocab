@@ -14,6 +14,7 @@ from delivery_control.adapters import github_commands, github_parsing
 from delivery_control.adapters.errors import AdapterCommandError, AdapterPayloadError
 from delivery_control.adapters.github_cli import GitHubCliAdapter
 from delivery_control.adapters.github_client import GitHubCliClient
+from delivery_control.adapters.subprocess_runner import SubprocessCommandRunner
 from delivery_control.domain.candidate_issues import CANDIDATE_ISSUE_LABEL
 from delivery_control.domain.errors import CompareAndSwapConflict
 from delivery_control.domain.models import CheckStatus
@@ -131,8 +132,9 @@ def _queue_configuration_payload(*, configured: bool) -> dict[str, object]:
     }
 
 
-def test_github_json_query_retries_transient_failure_once() -> None:
-    repo = Path("/tmp/kg-github-retry")
+def test_github_json_query_retries_transient_failure_once(tmp_path: Path) -> None:
+    # The repo must exist: a missing path makes the client fall back to an ancestor cwd.
+    repo = tmp_path
     argv = ("gh", "repo", "view", "--json", "nameWithOwner")
     runner = StaticRunner(
         [
@@ -165,8 +167,10 @@ def test_github_json_query_retries_timed_out_result_once() -> None:
     assert runner.calls == [argv, argv]
 
 
-def test_github_json_query_retry_exhaustion_preserves_command_failure() -> None:
-    repo = Path("/tmp/kg-github-retry")
+def test_github_json_query_retry_exhaustion_preserves_command_failure(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path
     argv = ("gh", "repo", "view", "--json", "nameWithOwner")
     first = CommandResult(argv, 1, "", "connection reset by peer")
     second = CommandResult(argv, 1, "", "connection refused")
@@ -300,8 +304,8 @@ def test_github_graphql_query_with_flags_before_endpoint_retries() -> None:
     assert runner.calls == [_with_include(argv), _with_include(argv)]
 
 
-def test_github_json_query_exposes_each_command_attempt() -> None:
-    repo = Path("/tmp/kg-github-retry")
+def test_github_json_query_exposes_each_command_attempt(tmp_path: Path) -> None:
+    repo = tmp_path
     argv = ("gh", "repo", "view", "--json", "nameWithOwner")
     first = CommandResult(argv, 1, "", "connection reset by peer")
     second = CommandResult(argv, 0, '{"nameWithOwner":"owner/repo"}', "")
@@ -2052,3 +2056,52 @@ def test_adapters_use_typed_field_only_for_the_int_number_variable() -> None:
         'for variable, int_value in int_variables:\n            argv.extend(("-F"'
         in source
     )
+
+
+def _fake_gh_on_path(bin_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install a gh that reports its working directory, using only this PATH."""
+
+    bin_dir.mkdir()
+    fake = bin_dir / "gh"
+    fake.write_text("#!/bin/sh\npwd -P\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
+def test_github_client_runs_gh_from_nearest_ancestor_of_removed_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A removed lane dir must not turn into FileNotFoundError from subprocess."""
+    _fake_gh_on_path(tmp_path / "bin", monkeypatch)
+    ancestor = tmp_path / "worktrees"
+    ancestor.mkdir()
+    removed_lane = ancestor / "issue-3461-wave"
+    client = GitHubCliClient(
+        repo=removed_lane,
+        runner=SubprocessCommandRunner(timeout_seconds=30),
+        cache_dir=tmp_path / "cache",
+    )
+
+    stdout = client.run(("gh", "pr", "list"))
+
+    assert Path(stdout) == ancestor.resolve()
+    assert client.last_command_attempts[0].cwd == ancestor
+
+
+def test_github_client_recreated_lane_dir_runs_gh_inside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the lane dir exists again (quota-wait recreate), gh runs inside it."""
+    _fake_gh_on_path(tmp_path / "bin", monkeypatch)
+    lane = tmp_path / "worktrees" / "issue-3461-wave"
+    client = GitHubCliClient(
+        repo=lane,
+        runner=SubprocessCommandRunner(timeout_seconds=30),
+        cache_dir=tmp_path / "cache",
+    )
+    lane.mkdir(parents=True)
+
+    stdout = client.run(("gh", "pr", "list"))
+
+    assert Path(stdout) == lane.resolve()
+    assert client.last_command_attempts[0].cwd == lane
