@@ -1280,12 +1280,24 @@ class Delivery:
             # A rerun may find the PR already in the queue (an earlier run queued
             # it); GitHub rejects a second enqueue, so wait for that entry instead (#3481).
             if self._queue_entry(repo, number) is None:
-                self.mutate(
-                    [*delivery, "queue", "--pr", str(number)],
-                    self.home,
-                    "queue",
-                )
-                self.say(f"queued #{number}")
+                try:
+                    self.mutate(
+                        [*delivery, "queue", "--pr", str(number)],
+                        self.home,
+                        "queue",
+                    )
+                except DeliverError:
+                    # #3520: a concurrent run may have queued the PR between the
+                    # pre-check and this enqueue, which GitHub rejects (rc=1).
+                    # An entry now present is the same outcome as the pre-check
+                    # finding it; any other failure stays a failure.
+                    if self._queue_entry(repo, number) is None:
+                        raise
+                    self.say(
+                        f"#{number} is already in the merge queue; waiting for merge"
+                    )
+                else:
+                    self.say(f"queued #{number}")
             else:
                 self.say(f"#{number} is already in the merge queue; waiting for merge")
             self.queued = True
