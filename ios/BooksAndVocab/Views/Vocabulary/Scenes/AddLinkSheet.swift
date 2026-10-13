@@ -544,7 +544,6 @@ struct AddLinkSheet: View {
                     .accessibilityIdentifier(
                         AddLinkCoordinator.detailMissingExampleIdentifier(for: entry, senseIndex: senseIndex)
                     )
-                    .accessibilityValue("missing")
             } else {
                 ForEach(Array(sense.examples.enumerated()), id: \.offset) { exampleIndex, example in
                     VStack(alignment: .leading, spacing: appSkin.metrics.cardBlockInnerGap) {

@@ -446,8 +446,11 @@ struct TodayReviewPage {
     /// Detail sheet opened by tapping a pending item.
     var pendingLinkDetail: XCUIElement { queryElement("todayReview.card.link.pending.detail") }
 
-    /// Status block inside the detail sheet; value is `creating` or `failed`.
-    var pendingLinkDetailStatus: XCUIElement { queryElement("todayReview.card.link.pending.status") }
+    /// Status block inside the detail sheet. The creation state (`creating`, `failed`,
+    /// `warning`) is encoded in the identifier, not in the accessibility value (#3425).
+    func pendingLinkDetailStatus(_ state: String) -> XCUIElement {
+        queryElement("todayReview.card.link.pending.status.\(state)")
+    }
 
     var pendingLinkRetryButton: XCUIElement { queryElement("todayReview.card.link.pending.retry") }
 

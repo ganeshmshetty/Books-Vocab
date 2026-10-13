@@ -154,14 +154,14 @@ final class TodayReviewAddLinkUITests: UITestCase {
             XCTFail("點擊建立中項目必須顯示說明，而不是靜默無反應")
             return
         }
-        XCTAssertEqual(review.pendingLinkDetailStatus.value as? String, "failed")
+        XCTAssertTrue(review.pendingLinkDetailStatus("failed").waitUntilExists(timeout: 3), "失敗狀態必須以 identifier 暴露")
         XCTAssertTrue(review.pendingLinkRetryButton.waitUntilExists(timeout: 3), "失敗必須有重試入口")
         captureStep("pending-detail-failed", app: app)
 
         review.pendingLinkRetryButton.tapWhenReady()
         // The retry re-enters the creation path; against a closed port it fails again.
         XCTAssertTrue(
-            review.pendingLinkDetailStatus.waitUntilValueEquals("failed", timeout: 30),
+            review.pendingLinkDetailStatus("failed").waitUntilExists(timeout: 30),
             "重試後仍失敗時必須回到失敗狀態，並保留重試入口"
         )
 
