@@ -1774,6 +1774,68 @@ actual_cancel_report="$(push_cancel_violations "$cancel_tmp"/{push-cancel,push-c
 [[ "$actual_cancel_report" == "$expected_cancel_report" ]] \
   || fail "push cancel checker positive control: expected [$expected_cancel_report], got [$actual_cancel_report]"
 
+# --- Push runs collapse to one pending run per workflow (#3547) ---------------
+# Each push-triggered component workflow carries a top-level concurrency group
+# whose push branch is a constant per-workflow literal, so a newer main push
+# replaces only a still-pending older run. Every other event gets a unique
+# group (run_id + run_attempt) and keeps its behaviour. cancel-in-progress stays
+# false so a running main verification always finishes.
+push_group_violations() {
+  ruby -e 'require "yaml"
+    group_re = /\A\$\{\{ github\.event_name == \x27push\x27 && \x27([a-z-]+)-main-push\x27 \|\| format\(\x27\1-\{0\}-\{1\}\x27, github\.run_id, github\.run_attempt\) \}\}\z/
+    seen = {}
+    ARGV.each do |path|
+      c = YAML.load_file(path)["concurrency"]
+      m = c.is_a?(Hash) && c["group"].is_a?(String) && c["group"].match(group_re)
+      unless m
+        puts "#{path}: concurrency group is not the push-only collapse form"
+        next
+      end
+      puts "#{path}: cancel-in-progress must be false" unless c["cancel-in-progress"] == false
+      if seen.key?(m[1])
+        puts "#{path}: prefix #{m[1]} shared with #{seen[m[1]]}"
+      else
+        seen[m[1]] = path
+      end
+    end' "$@"
+}
+live_push_group="$(push_group_violations .github/workflows/{ops-suite,design-system,ui-quality-gate,llm-eval}.yml 2>&1 || true)"
+[[ -z "$live_push_group" ]] \
+  || fail "push-only concurrency collapse missing or wrong: [$live_push_group]"
+# Positive control: the checker passes the exact collapse form and reports a
+# missing group, a non-false cancel-in-progress and a prefix shared with another file.
+group_tmp="$wf_tmp/group"
+mkdir -p "$group_tmp"
+cat >"$group_tmp/ok.yml" <<'YAML'
+on: {push: {branches: [main]}}
+concurrency:
+  group: ${{ github.event_name == 'push' && 'ok-main-push' || format('ok-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: false
+jobs: {}
+YAML
+cat >"$group_tmp/bad-cancel.yml" <<'YAML'
+on: {push: {branches: [main]}}
+concurrency:
+  group: ${{ github.event_name == 'push' && 'bad-main-push' || format('bad-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: true
+jobs: {}
+YAML
+cat >"$group_tmp/no-group.yml" <<'YAML'
+on: {push: {branches: [main]}}
+jobs: {}
+YAML
+cat >"$group_tmp/dup.yml" <<'YAML'
+on: {push: {branches: [main]}}
+concurrency:
+  group: ${{ github.event_name == 'push' && 'ok-main-push' || format('ok-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: false
+jobs: {}
+YAML
+expected_group_report="$group_tmp/bad-cancel.yml: cancel-in-progress must be false"$'\n'"$group_tmp/no-group.yml: concurrency group is not the push-only collapse form"$'\n'"$group_tmp/dup.yml: prefix ok shared with $group_tmp/ok.yml"
+actual_group_report="$(push_group_violations "$group_tmp"/{ok,bad-cancel,no-group,dup}.yml 2>&1 || true)"
+[[ "$actual_group_report" == "$expected_group_report" ]] \
+  || fail "push group checker positive control: expected [$expected_group_report], got [$actual_group_report]"
+
 # --- PR diffs start at the merge base, never at the base branch tip -----------
 # `pull_request.base.sha` is main's tip when the run starts, not the PR's fork
 # point. Once main has moved past the fork, `git diff BASE HEAD` also contains
