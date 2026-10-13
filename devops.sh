@@ -713,7 +713,7 @@ cmd_backup() {
 
   info "本地冷快照（pull from standby）：$SERVER:$REMOTE_DATA_DIR → ${dest}（排除 _ops_backups / _ops_world_backups）"
 
-  # 找最近一份備份目錄當增量基準（未變的 db 走硬連結，只傳當日有寫入的）
+  # 找最近一份備份目錄當增量基準（非 DB 檔走 rsync --link-dest；未變的 *.db 於拉回後硬連結，見下方 #3474）
   local prev
   # 帶 .INCOMPLETE 標記的目錄不可當增量基準（硬連結會把殘缺／損毀的 db 傳染進新備份）。
   local cand
@@ -797,6 +797,19 @@ cmd_backup() {
   fi
   [[ -n "$prev" ]] && info "增量基準: $(basename "$prev")（未變檔走硬連結）" \
                    || info "首次全量備份（無基準）"
+  # 未變的 *.db 硬連結到基準（#3474）：*.db 不經 rsync --link-dest（改由一致快照 tar 拉回），
+  # 故在拉回後逐位元組比對，相同者改為指向基準 inode、省下磁碟空間；不同或基準缺檔則保留新檔。
+  # 先建 temp 硬連結再 mv 覆蓋，失敗（如 exFAT 不支援硬連結）時只清 temp，絕不遺失新檔。
+  if [[ -n "$prev" ]]; then
+    while IFS= read -r -d '' db; do
+      local base="$prev/${db#"$dest"/}"
+      if [[ -f "$base" && ! -L "$base" ]] && cmp -s "$db" "$base" && ln "$base" "$db.lnk" 2>/dev/null; then
+        mv -f "$db.lnk" "$db"
+      else
+        rm -f "$db.lnk"
+      fi
+    done < <(find "$dest" -name '*.db' -type f -print0)
+  fi
 
   # ── 完整性驗證：SQLite integrity_check ──────────────────────────────────
   section "驗證備份完整性"
