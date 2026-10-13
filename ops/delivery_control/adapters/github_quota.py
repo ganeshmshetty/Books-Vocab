@@ -28,11 +28,14 @@ whether a write or a merge is authorized; a cached answer there would replay one
 head on every retry, bind checks to an old head, or let a queued PR pass abandonment. Authoritative reads still pay the budget wait and the spend-log
 row.
 
-Below ``WAIT_BELOW`` the governor sleeps until the bottleneck resource resets (bounded
-by ``MAX_RESET_WAITS``), then fails closed with ``GitHubQuotaExhausted``. Every governed
-call, including probes, appends one NDJSON spend-log line under a lock; a spend-log
-write or decode failure fails open (the call proceeds and its row is lost). The
-spend log is
+Below ``WAIT_BELOW`` the governor sleeps until the bottleneck resource resets, then fails
+closed with ``GitHubQuotaExhausted``. Reset waits are bounded twice: at most
+``MAX_RESET_WAITS`` per call, and a total wait budget of ``max_wait_seconds`` (default
+``MAX_WAIT_SECONDS``, 600 s) summed over the governor's lifetime. A reset further away than
+the remaining budget fails closed at once without sleeping, so a delivery never blocks past
+its budget while holding the operation lock. Every governed call, including probes,
+appends one NDJSON spend-log line under a lock; a spend-log write or decode failure fails
+open (the call proceeds and its row is lost). The spend log is
 bounded: once it reaches ``SPEND_LOG_MAX_BYTES`` only the newest
 ``SPEND_LOG_KEEP_LINES`` rows are kept.
 """
@@ -58,6 +61,7 @@ STALE_CACHE_TTL_SECONDS = 300.0
 WAIT_BELOW = 50
 PROBE_TTL_SECONDS = 60.0
 MAX_RESET_WAITS = 3
+MAX_WAIT_SECONDS = 600.0
 SPEND_LOG_MAX_BYTES = 256 * 1024
 SPEND_LOG_KEEP_LINES = 1_000
 # One real request per resource; ``-i`` prints the response headers on stdout. The
@@ -76,7 +80,8 @@ CallKind = Literal["cached-read", "live-read", "mutation"]
 
 
 class GitHubQuotaExhausted(AdapterError):
-    """Raised when the budget stays below WAIT_BELOW after bounded reset waits."""
+    """Raised when the budget stays below WAIT_BELOW after bounded reset waits, or when the
+    next reset lies beyond the remaining wait budget."""
 
 
 @dataclass(frozen=True)
@@ -127,12 +132,15 @@ class GitHubQuotaGovernor:
         spend_log: Path,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        max_wait_seconds: float = MAX_WAIT_SECONDS,
     ) -> None:
         self._repo = repo
         self._runner = runner
         self._spend_log = spend_log.expanduser().resolve()
         self._clock = clock
         self._sleep = sleep
+        self._max_wait_seconds = max_wait_seconds
+        self._wait_budget_left = max_wait_seconds
         self._budget: BudgetState | None = None
         self._probed_at: float | None = None
         self._read_cache: dict[tuple[str, ...], tuple[CommandResult, float]] = {}
@@ -249,6 +257,16 @@ class GitHubQuotaGovernor:
                     f"GitHub budget stayed below {WAIT_BELOW} after {waits} reset waits"
                 )
             delay = max(0.0, self._budget.reset_epoch - self._clock())
+            if delay > self._wait_budget_left:
+                reset_at = datetime.fromtimestamp(
+                    self._budget.reset_epoch, tz=UTC
+                ).isoformat(timespec="seconds")
+                raise GitHubQuotaExhausted(
+                    f"GitHub budget stays below {WAIT_BELOW} until reset at {reset_at} "
+                    f"({delay:.0f} s away), beyond the remaining wait budget of "
+                    f"{self._wait_budget_left:.0f} s of {self._max_wait_seconds:.0f} s"
+                )
+            self._wait_budget_left -= delay
             self._sleep(delay)
             waits += 1
             self._record(
