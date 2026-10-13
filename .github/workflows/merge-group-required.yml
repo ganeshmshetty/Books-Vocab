@@ -58,29 +58,31 @@ jobs:
           fi
           rg --version
 
-      # HEADGREEN gates the group on its head's `required` only, and for a
-      # cumulative group (#8 behind #7) merge_group.base_sha is #7's merge, which
-      # hides #7 from the diff check and scope router.  Use origin/main's fork
-      # point (the ref agent-review bounds membership with); fail closed.
+      # Delta routing: merge_group.base_sha is the group directly ahead, so BASE..HEAD is
+      # only this entry's change.  Sound only because the queue uses ALLGREEN (each entry
+      # must pass alone before anything merges); HEADGREEN requires cumulative routing.
+      # An unverified base falls back to origin/main's fork point, fail closed.
       - name: Resolve merge-group diff base
         id: base
         env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          if ! git rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null; then
-            echo "origin/main is unavailable; cannot bound the cumulative merge group" >&2
+          if ! cumulative_base="$(git merge-base refs/remotes/origin/main "$HEAD_SHA")"; then
+            echo "origin/main is unavailable or shares no history with merge-group head $HEAD_SHA; cannot bound the merge group" >&2
             exit 1
           fi
-          if ! base_sha="$(git merge-base refs/remotes/origin/main "$HEAD_SHA")"; then
-            echo "no merge base between origin/main and merge-group head $HEAD_SHA" >&2
+          if [[ ! "$cumulative_base" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "merge base is not an exact commit SHA: $cumulative_base" >&2
             exit 1
           fi
-          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "merge base is not an exact commit SHA: $base_sha" >&2
-            exit 1
+          if [[ "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$MERGE_GROUP_BASE_SHA^{commit}" && git merge-base --is-ancestor "$MERGE_GROUP_BASE_SHA" "$HEAD_SHA"; then
+            echo "sha=$MERGE_GROUP_BASE_SHA" >>"$GITHUB_OUTPUT"
+          else
+            echo "merge_group.base_sha '$MERGE_GROUP_BASE_SHA' is absent, not an exact SHA, not in the checkout, or not an ancestor of HEAD; using cumulative base $cumulative_base" >&2
+            echo "sha=$cumulative_base" >>"$GITHUB_OUTPUT"
           fi
-          echo "sha=$base_sha" >>"$GITHUB_OUTPUT"
 
       - name: Check merge-group diff
         env:
@@ -164,22 +166,24 @@ jobs:
       - name: Resolve merge-group diff base
         id: base
         env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          if ! git rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null; then
-            echo "origin/main is unavailable; cannot bound the cumulative merge group" >&2
+          if ! cumulative_base="$(git merge-base refs/remotes/origin/main "$HEAD_SHA")"; then
+            echo "origin/main is unavailable or shares no history with merge-group head $HEAD_SHA; cannot bound the merge group" >&2
             exit 1
           fi
-          if ! base_sha="$(git merge-base refs/remotes/origin/main "$HEAD_SHA")"; then
-            echo "no merge base between origin/main and merge-group head $HEAD_SHA" >&2
+          if [[ ! "$cumulative_base" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "merge base is not an exact commit SHA: $cumulative_base" >&2
             exit 1
           fi
-          if [[ ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "merge base is not an exact commit SHA: $base_sha" >&2
-            exit 1
+          if [[ "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$MERGE_GROUP_BASE_SHA^{commit}" && git merge-base --is-ancestor "$MERGE_GROUP_BASE_SHA" "$HEAD_SHA"; then
+            echo "sha=$MERGE_GROUP_BASE_SHA" >>"$GITHUB_OUTPUT"
+          else
+            echo "merge_group.base_sha '$MERGE_GROUP_BASE_SHA' is absent, not an exact SHA, not in the checkout, or not an ancestor of HEAD; using cumulative base $cumulative_base" >&2
+            echo "sha=$cumulative_base" >>"$GITHUB_OUTPUT"
           fi
-          echo "sha=$base_sha" >>"$GITHUB_OUTPUT"
 
       - name: Classify merge-group scope
         id: scope

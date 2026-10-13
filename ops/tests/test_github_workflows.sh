@@ -284,12 +284,11 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     || fail "merge-group required gate is not pinned to ubuntu-24.04"
   grep -Fq "version: '0.8.23'" <<<"$merge_group_required_block" \
     || fail "merge-group required gate does not pin uv to the backend-quality version"
-  # merge_group.base_sha is the PRECEDING PR's synthetic merge for a cumulative
-  # group, so the required job may not diff or classify from it (review P2): a
-  # docs-only #8 behind a backend #7 would skip pytest and merge #7 unverified.
-  if grep -q 'github.event.merge_group.base_sha' <<<"$merge_group_required_block"; then
-    fail "merge-group required job uses merge_group.base_sha, which hides a preceding queued PR from the diff check and scope router"
-  fi
+  # merge_group.base_sha is the group directly ahead (delta routing). Only the diff
+  # base resolver may read it; the diff check and scope router consume its verified output.
+  base_sha_reads="$(grep -c 'github.event.merge_group.base_sha' <<<"$merge_group_required_block" || true)"
+  [[ "$base_sha_reads" == 1 ]] \
+    || fail "merge-group short gate must read merge_group.base_sha exactly once, in the diff base resolver (found ${base_sha_reads})"
   grep -q 'github.event.merge_group.head_sha' "$MERGE_GROUP_REQUIRED" \
     || fail "merge-group required gate does not use the merge-group head SHA"
   grep -Fq './ops/test_ops.sh docs-lint worktree context-routing github-workflows delivery-control' <<<"$merge_group_required_block" \
@@ -523,8 +522,8 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
     || fail "merge-group scope router step must invoke ci_scope_router.sh on exactly one line, found ${scope_router_lines}"
   grep -Eq 'ci_scope_router\.sh --base .*--format github-output[[:space:]]*>>[[:space:]]*"\$GITHUB_OUTPUT"[[:space:]]*$' <<<"$scope_router_step" \
     || fail "merge-group scope router output is not appended to \"\$GITHUB_OUTPUT\" on the ci_scope_router.sh line, so backend steps never see it"
-  # The diff base is resolved once from origin/main's fork point and fed to both
-  # consumers; merge_group.base_sha (the preceding PR's merge) is never used.
+  # The diff base is resolved once and fed to both consumers: merge_group.base_sha
+  # (the group directly ahead) when verified, else origin/main's fork point.
   base_step_id="$(awk '
     /^      - name:/ { id="" }
     /^        id:/ { id=$2 }
@@ -543,6 +542,35 @@ if [[ -f "$MERGE_GROUP_REQUIRED" ]]; then
   fi
   grep -Fqx '          HEAD_SHA: ${{ github.event.merge_group.head_sha }}' <<<"$scope_router_step" \
     || fail "merge-group scope router HEAD_SHA is not the merge-group head SHA"
+  # Delta routing needs the resolver to verify merge_group.base_sha before trusting it:
+  # exact 40-hex, present in the checkout, and an ancestor of HEAD.  Anything else
+  # falls back to the cumulative base (checked behaviourally below).
+  grep -Fqx '          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}' <<<"$base_step" \
+    || fail "merge-group diff base step does not bind merge_group.base_sha through MERGE_GROUP_BASE_SHA"
+  grep -Fq '[[ "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]' <<<"$base_step" \
+    || fail "merge-group diff base step does not require merge_group.base_sha to be an exact commit SHA"
+  grep -Fq 'git cat-file -e "$MERGE_GROUP_BASE_SHA^{commit}"' <<<"$base_step" \
+    || fail "merge-group diff base step does not require merge_group.base_sha to be present in the checkout"
+  grep -Fq 'git merge-base --is-ancestor "$MERGE_GROUP_BASE_SHA" "$HEAD_SHA"' <<<"$base_step" \
+    || fail "merge-group diff base step does not require merge_group.base_sha to be an ancestor of HEAD"
+  grep -Fq 'using cumulative base' <<<"$base_step" \
+    || fail "merge-group diff base step does not fall back to the cumulative base with a printed reason"
+  # Delta routing is sound only under ALLGREEN. The workflow states the dependency and
+  # the runbook pins the strategy, so a HEADGREEN revert cannot land without cumulative routing.
+  grep -Fq 'queue uses ALLGREEN' "$MERGE_GROUP_REQUIRED" \
+    || fail "merge-group workflow does not state that delta routing depends on the ALLGREEN queue"
+  grep -Fq 'ruleset 為 ALLGREEN' docs/runbook/system.md \
+    || fail "runbook does not record the merge-queue grouping strategy as ALLGREEN"
+  # The route job classifies the same delta as short-gate, so it resolves the base identically.
+  route_block="$(awk '
+    /^  route:/ { in_route=1; next }
+    in_route && /^  [A-Za-z0-9_-]+:/ { exit }
+    in_route { print }
+  ' "$MERGE_GROUP_REQUIRED")"
+  grep -Fqx '          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}' <<<"$route_block" \
+    || fail "merge-group route job does not resolve its diff base from merge_group.base_sha"
+  grep -Fq 'git merge-base --is-ancestor "$MERGE_GROUP_BASE_SHA" "$HEAD_SHA"' <<<"$route_block" \
+    || fail "merge-group route job does not verify merge_group.base_sha is an ancestor of HEAD"
   # Positive control + mutation check: replay the base/diff/router steps of the
   # workflow file itself (env expressions included, so a revert of BASE_SHA to
   # merge_group.base_sha changes the result) against fixture repos, and require
@@ -574,6 +602,7 @@ Dir.mktmpdir do |tmp|
       end
     end
     stdout, stderr, status = Open3.capture3(env, "bash", "-e", "-c", step["run"], chdir: repo)
+    warn stderr if status.success? && !stderr.empty?
     unless status.success?
       warn "step '#{step["name"]}' failed with #{status.exitstatus}: #{stdout}#{stderr}"
       exit 1
@@ -589,13 +618,6 @@ RUBY
   sfx() { git -C "$scope_repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false "$@"; }
   sim_group() { # workflow group_base group_head -> "step-id.key=value" lines; status 1 = a step failed (reason in $scope_tmp/err)
     ruby -e "$group_sim_rb" "$1" "$scope_repo" "$2" "$3" 2>"$scope_tmp/err"
-  }
-  revert_base() { # src dst run-needle: point that step's BASE_SHA back at merge_group.base_sha
-    ruby -e 'require "yaml"
-      wf = YAML.load_file(ARGV[0])
-      step = wf["jobs"]["short-gate"]["steps"].find { |s| s["run"].to_s.include?(ARGV[2]) } or abort("no step runs #{ARGV[2]}")
-      step["env"]["BASE_SHA"] = "${{ github.event.merge_group.base_sha }}"
-      File.write(ARGV[1], YAML.dump(wf))' "$1" "$2" "$3"
   }
   mk_group() { # name path7 content7 -> "<#7 merge> <#8 merge>": #7 writes path7 and #8 a docs file, both on s_base
     local name="$1" path7="$2" content7="$3" q7
@@ -641,28 +663,39 @@ RUBY
   out="$(sim_group "$MERGE_GROUP_REQUIRED" "$s_base" "$s_docs_only" || true)"
   grep -Fxq "${scope_step_id}.backend=false" <<<"$out" \
     || fail "scope router step, docs-only change: backend=false did not reach \$GITHUB_OUTPUT, got '$out': $(cat "$scope_tmp/err")"
-  # Review P2: #7 changes backend/, #8 (docs only) is queued behind it, and the
-  # group head contains both while merge_group.base_sha is #7's merge.
+  # Delta routing (ALLGREEN): #7 (backend) is queued ahead of #8 (docs only). The group
+  # head contains both, but merge_group.base_sha is #7's group head, so #8's group routes
+  # only its own delta. #7's backend change is verified by #7's own group (base origin/main),
+  # which ALLGREEN requires to be green before #8 can merge.
   read -r g_base g_head < <(mk_group backend-7 backend/app/pr7.py 'x = 1')
-  out="$(sim_group "$MERGE_GROUP_REQUIRED" "$g_base" "$g_head" || true)"
-  grep -Fxq "${base_step_id}.sha=$s_base" <<<"$out" \
-    || fail "cumulative group: the diff base is not origin/main's fork point $s_base, got '$out': $(cat "$scope_tmp/err")"
+  out="$(sim_group "$MERGE_GROUP_REQUIRED" "$s_base" "$g_base" || true)"
   grep -Fxq "${scope_step_id}.backend=true" <<<"$out" \
-    || fail "cumulative group (#7 backend, #8 docs): backend=true was not reported at the group head, so #7's backend change would merge without pytest, got '$out'"
-  revert_base "$MERGE_GROUP_REQUIRED" "$scope_tmp/mutant-router.yml" 'ci_scope_router.sh'
-  out="$(sim_group "$scope_tmp/mutant-router.yml" "$g_base" "$g_head" || true)"
+    || fail "#7's own group (backend change, base origin/main) did not route backend=true, got '$out': $(cat "$scope_tmp/err")"
+  out="$(sim_group "$MERGE_GROUP_REQUIRED" "$g_base" "$g_head" || true)"
+  grep -Fxq "${base_step_id}.sha=$g_base" <<<"$out" \
+    || fail "delta base: #8's group must diff from merge_group.base_sha $g_base, got '$out': $(cat "$scope_tmp/err")"
   grep -Fxq "${scope_step_id}.backend=false" <<<"$out" \
-    || fail "mutation check: reverting the scope router BASE_SHA to merge_group.base_sha must report backend=false for the cumulative group (the P2 hole), got '$out'; the fixture no longer detects the revert"
-  # The whitespace check covers the same cumulative range.
+    || fail "delta routing: #8's group (docs only, base #7's group head) must not re-run backend for #7, got '$out'"
+  # The whitespace check is per group too: #7's own group must reject its whitespace error.
   read -r w_base w_head < <(mk_group ws-7 docs/ws7.md 'trailing space ')
-  if sim_group "$MERGE_GROUP_REQUIRED" "$w_base" "$w_head" >/dev/null; then
-    fail "diff check accepts a preceding PR's whitespace error at the cumulative group head"
+  if sim_group "$MERGE_GROUP_REQUIRED" "$s_base" "$w_base" >/dev/null; then
+    fail "#7's own group accepts its trailing whitespace error; ALLGREEN depends on it failing in #7's own group"
   elif ! grep -Fq 'trailing whitespace' "$scope_tmp/err"; then
-    fail "diff check rejected the cumulative group for the wrong reason: $(cat "$scope_tmp/err")"
+    fail "#7's own group rejected the whitespace error for the wrong reason: $(cat "$scope_tmp/err")"
   fi
-  revert_base "$MERGE_GROUP_REQUIRED" "$scope_tmp/mutant-diff.yml" 'git diff --check'
-  sim_group "$scope_tmp/mutant-diff.yml" "$w_base" "$w_head" >/dev/null \
-    || fail "mutation check: reverting the diff check BASE_SHA to merge_group.base_sha must let #7's whitespace error through (the P2 hole), but it still failed: $(cat "$scope_tmp/err")"
+  sim_group "$MERGE_GROUP_REQUIRED" "$w_base" "$w_head" >/dev/null \
+    || fail "#8's group (base #7's group head) re-checked #7's delta: $(cat "$scope_tmp/err")"
+  # Fail closed: a missing, malformed, unknown, or non-ancestor merge_group.base_sha falls
+  # back to the cumulative base (origin/main's fork point) and prints why.
+  for bad_base in '' 'not-a-sha' 0123456789abcdef0123456789abcdef01234567 "$s_docs_only"; do
+    out="$(sim_group "$MERGE_GROUP_REQUIRED" "$bad_base" "$g_head" || true)"
+    grep -Fxq "${base_step_id}.sha=$s_base" <<<"$out" \
+      || fail "fallback: base_sha '$bad_base' must fall back to the cumulative base $s_base, got '$out': $(cat "$scope_tmp/err")"
+    grep -Fq 'using cumulative base' "$scope_tmp/err" \
+      || fail "fallback: base_sha '$bad_base' fell back without printing the reason: $(cat "$scope_tmp/err")"
+    grep -Fxq "${scope_step_id}.backend=true" <<<"$out" \
+      || fail "fallback: cumulative base must route #7's backend change at the group head, base_sha '$bad_base', got '$out'"
+  done
   # Once #7 has landed on origin/main, #8 is the whole pending delta again.
   sfx update-ref refs/remotes/origin/main "$g_base"
   out="$(sim_group "$MERGE_GROUP_REQUIRED" "$g_base" "$g_head" || true)"
@@ -681,7 +714,7 @@ RUBY
   for unbounded_head in "$s_orphan" ""; do
     if sim_group "$MERGE_GROUP_REQUIRED" "$g_base" "$unbounded_head" >/dev/null; then
       fail "diff base step resolves a base for head '$unbounded_head' that shares no history with origin/main"
-    elif ! grep -Fq 'no merge base between origin/main' "$scope_tmp/err"; then
+    elif ! grep -Fq 'shares no history with merge-group head' "$scope_tmp/err"; then
       fail "diff base step failed for the wrong reason on head '$unbounded_head': $(cat "$scope_tmp/err")"
     fi
   done
