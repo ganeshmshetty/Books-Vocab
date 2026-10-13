@@ -1003,6 +1003,7 @@
 "todayReview.card.notebook.a11y" = "Notebook: %@";
 "todayReview.card.notebook.default" = "Default notebook";
 "todayReview.card.notebook.unnamed" = "Untitled notebook";
+"todayReview.card.graded" = "Graded: %@";
 "todayReview.saveFailure" = "Review result isn't saved yet. It will retry the next time you open Review.";
 "todayReview.linkHideFailed" = "Couldn't hide the link. It has been restored.";
 "todayReview.interval.hours" = "%@ hr";
