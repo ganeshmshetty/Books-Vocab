@@ -532,3 +532,40 @@ class TestUserDeleteRemoteAssets:
         assert not any(k.startswith("library/doomed/") for k in fake.objects)
         assert "library/keeper/c.epub" in fake.objects
         assert not (tmp_path / "users" / "doomed").exists()
+
+
+# ── cmd_user_delete: external API keys (#3429) ───────────────────────────
+
+
+class TestUserDeleteApiKeys:
+    def test_commit_purges_external_api_keys_so_recreated_account_cannot_reuse_them(self, tmp_path, monkeypatch):
+        from kg.auth_service import resolve_and_link_user
+        from kg.external_api_keys import authenticate_api_key, issue_api_key
+
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        users_path = tmp_path / "users.json"
+        lock = tmp_path / "users.json.lock"
+
+        def load():
+            return load_users_from(users_path, lambda x: (x, False))
+
+        def save(payload):
+            users_path.write_text(json.dumps(payload))
+
+        user_cmd.cmd_user_create(_make_args(uid="doomed", email="doomed@test.com", commit=True))
+        issued = issue_api_key("doomed", label="ci", users_lock_file=lock, load_users=load, save_users=save)
+        assert authenticate_api_key(issued["apiKey"], load_users=load) is not None
+
+        assert user_cmd.cmd_user_delete(_make_args(uid="doomed", commit=True)) == 0
+        resolve_and_link_user(
+            "doomed",
+            "google",
+            users_lock_file=str(lock),
+            load_users_fn=load,
+            save_users_fn=save,
+            email="doomed@test.com",
+        )
+
+        assert authenticate_api_key(issued["apiKey"], load_users=load) is None
+        index = load().get("_external_api_keys", {})
+        assert not any(record.get("user_id") == "doomed" for record in index.values())

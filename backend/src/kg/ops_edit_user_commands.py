@@ -12,6 +12,7 @@ from kg.api_models.graph import AutoLinkConfig
 from kg.api_models.notebook import VocabUIConfig
 from kg.api_models.review import ReviewClockConfig, ReviewModeConfig
 from kg.api_models.translate import TranslationLanguageConfig
+from kg.external_api_keys import purge_external_api_keys
 from kg.ops_shared import data_dir
 from kg.settings import load_settings
 from kg.user_store import load_users_from, parse_datetime
@@ -201,6 +202,8 @@ def cmd_user_delete(args: argparse.Namespace) -> int:
             terminated_ids = set(terminated) if isinstance(terminated, list) else set()
             terminated_ids.add(uid)
             current["_terminated"] = sorted(terminated_ids)
+            # 與 app 內刪帳一致:撤銷外部 API key,否則重新登入後舊 key 仍可通過 authenticate_api_key。
+            purge_external_api_keys(current, [uid])
             return {
                 "removed_record": removed_record is not None,
                 "dropped_index_keys": dropped,
