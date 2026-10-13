@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_record_and_retrieve(tmp_path, monkeypatch):
     """Insert accepted decision, verify all fields round-trip."""
@@ -274,3 +276,51 @@ def test_delete_for_users_is_scoped_idempotent_and_handles_empty(tmp_path, monke
     assert judge_log.get_log("gone") == [] and judge_log.get_log("linked") == []
     assert len(judge_log.get_log("keep")) == 1
     judge_log._reset()
+
+
+class _CommitFailsOnce:
+    """Proxy whose first commit raises; every other call delegates to the real connection."""
+
+    def __init__(self, real):
+        self._real = real
+        self._armed = True
+
+    def commit(self):
+        if self._armed:
+            self._armed = False
+            import sqlite3
+
+            raise sqlite3.OperationalError("simulated commit failure")
+        self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_delete_for_users_rolls_back_when_commit_fails(tmp_path, monkeypatch):
+    """A failed erasure must leave no open transaction on the shared connection."""
+    import sqlite3
+
+    monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+    from kg import judge_log
+
+    judge_log._reset()
+    judge_log.record(
+        user_id="gone",
+        notebook_id="nb",
+        from_id="a",
+        to_id="b",
+        similarity=0.5,
+        verdict="shares_usage",
+        confidence=0.9,
+        accepted=True,
+    )
+    real = judge_log._get_conn()
+    proxy = _CommitFailsOnce(real)
+    monkeypatch.setattr(judge_log, "_get_conn", lambda *a, **k: proxy)
+
+    with pytest.raises(sqlite3.OperationalError):
+        judge_log.delete_for_users(["gone"])
+
+    assert real.in_transaction is False
+    assert judge_log.delete_for_users(["gone"]) == 1
