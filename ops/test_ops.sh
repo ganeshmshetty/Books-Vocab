@@ -149,6 +149,9 @@ run_one() {
       ./ops/tests/test_devops_transport_tripwire.sh &&
       ./ops/tests/test_ops_hermetic_lint.sh &&
       ./ops/tests/test_devops_backup_cleanup.sh &&
+      # #3442：cmd_backup 的 *.db 一致快照契約（WAL-only row、快照失敗即中止 migrate-run）。
+      # contract 測試會呼叫它，但 coverage 守衛要求每支 tracked test 在 group 內具名路由。
+      ./ops/tests/test_devops_backup_snapshot.sh &&
       ./ops/tests/test_backup_status.sh &&
       # IMP-20260805-947062：devops_kg_safe.sh 的 transport retarget 契約測試，
       # 主體與 test_devops.sh 同源（都測 wrapper），先前不屬於任何 group。
