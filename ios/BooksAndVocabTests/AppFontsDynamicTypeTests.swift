@@ -27,4 +27,18 @@ struct AppFontsDynamicTypeTests {
         let atAccessibility = AppFonts.scaledPointSize(AppFonts.TypeScale.body, compatibleWith: axTraits)
         #expect(atAccessibility > atDefault)
     }
+
+    @Test("live Dynamic Type change invalidates typography and bumps the render version")
+    func contentSizeChangeInvalidatesTypography() async throws {
+        let tracker = FontAvailabilityTracker()
+        let before = tracker.serifCJKVersion
+        NotificationCenter.default.post(name: UIContentSizeCategory.didChangeNotification, object: nil)
+        // Observer 以 .main 佇列投遞；輪詢至多 2 秒等待版本號變動。
+        var waited = 0
+        while tracker.serifCJKVersion == before && waited < 200 {
+            try await Task.sleep(for: .milliseconds(10))
+            waited += 1
+        }
+        #expect(tracker.serifCJKVersion == before + 1)
+    }
 }
