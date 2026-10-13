@@ -20,21 +20,26 @@ extension Notification.Name {
 final class FontAvailabilityTracker {
     var serifCJKVersion: Int = 0
 
-    private var observer: Any?
+    private var observers: [Any] = []
 
     init() {
-        observer = NotificationCenter.default.addObserver(
-            forName: .serifCJKFontDidBecomeAvailable,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            AppSkin.invalidateTypographyCache()
-            self?.serifCJKVersion += 1
+        let center = NotificationCenter.default
+        for name in [Notification.Name.serifCJKFontDidBecomeAvailable, UIContentSizeCategory.didChangeNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.typographyInputsDidChange()
+            })
         }
     }
 
+    /// 字型輸入變動（CJK 字型就緒、Dynamic Type 變更）時清除 typography cache，
+    /// 並遞增版本號讓依賴 `AppThemeContainer` 的視圖重建 token。
+    private func typographyInputsDidChange() {
+        AppSkin.invalidateTypographyCache()
+        serifCJKVersion += 1
+    }
+
     deinit {
-        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 }
 
@@ -44,7 +49,7 @@ enum AppFonts {
 
     /// Dynamic Type 縮放後的 point size（以 body 的 UIFontMetrics 曲線換算）。
     /// default category 下等於輸入值，故既有預設字級不變。
-    /// 字型在建構時固定 size；category 變更由 typography cache 重建時生效。
+    /// 字型在建構時固定 size；Dynamic Type 變更時 `FontAvailabilityTracker` 清除 typography cache，後續重建才會取得新 size。
     static func scaledPointSize(_ size: CGFloat, compatibleWith traits: UITraitCollection? = nil) -> CGFloat {
         UIFontMetrics(forTextStyle: .body).scaledValue(for: size, compatibleWith: traits)
     }
