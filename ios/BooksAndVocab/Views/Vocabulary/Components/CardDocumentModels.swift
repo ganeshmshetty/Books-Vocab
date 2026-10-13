@@ -95,32 +95,21 @@ extension CardDocument {
     /// 從完整文件中擷取複習用背面內容（meaning + collocations + 最多 1 例句，排除 hero/source）
     func reviewBackSubset() -> CardDocument {
         var result: [CardDocumentBlock] = []
-        var pendingDivider = false
         var exampleCount = 0
         for block in blocks {
             switch block {
-            case .hero:
-                pendingDivider = false
-            case .divider:
-                pendingDivider = true
+            case .hero, .divider, .source:
+                continue
             case .meaning(let meaning):
-                if pendingDivider && !result.isEmpty { result.append(.divider) }
                 // Review 背面已自行渲染 translation，meaning 只保留 explanation paragraphs
                 let stripped = CardDocumentMeaning(title: "", paragraphs: meaning.paragraphs)
                 result.append(.meaning(stripped))
-                pendingDivider = false
             case .collocations:
-                if pendingDivider && !result.isEmpty { result.append(.divider) }
                 result.append(block)
-                pendingDivider = false
             case .example:
                 guard exampleCount < 1 else { continue }
-                if pendingDivider && !result.isEmpty { result.append(.divider) }
                 result.append(block)
-                pendingDivider = false
                 exampleCount += 1
-            case .source:
-                pendingDivider = false
             }
         }
         return CardDocument(blocks: result)
