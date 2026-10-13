@@ -71,12 +71,17 @@ final class SyncCoordinator: SyncCoordinating {
     var summaryText: String = ""
     var failureKind: SyncFailureKind?
 
+    @ObservationIgnored private let executor: any VocabularySyncExecuting
     @ObservationIgnored private var pipelineTask: Task<Void, Never>?
     /// 使用者已按取消。`cancelSync()` 已搶先把終態設成 `.cancelled`;pipeline
     /// 收尾(success path 或 catch path)看到此旗標就不覆寫終態。
     /// `Task.isCancelled` 不夠用——非 cancel 的真實錯誤也可能在 cancel 之外發生,
     /// 而此旗標只在使用者主動取消時為 true。
     @ObservationIgnored private var wasCancelledByUser = false
+
+    init(executor: any VocabularySyncExecuting = VocabularySyncEngine()) {
+        self.executor = executor
+    }
 
     func buildSteps(deleteCount: Int, addCount: Int) {
         var list: [PipelineStep] = []
@@ -108,7 +113,6 @@ final class SyncCoordinator: SyncCoordinating {
         AppAnalytics.track(.syncStarted)
 
         let adapter = KGServingVocabularySyncAdapter(base: kgService)
-        let executor: any VocabularySyncExecuting = VocabularySyncEngine()
         pipelineTask = Task { [weak self] in
             defer { self?.pipelineTask = nil }
             guard let self else { return }
