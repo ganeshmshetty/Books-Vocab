@@ -218,6 +218,107 @@ def test_budget_still_below_50_after_bounded_waits_fails_closed(tmp_path: Path) 
     assert runner.count(WRITE) == 0
 
 
+def test_reset_inside_default_wait_budget_sleeps_and_proceeds(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_030)
+    clock = FakeClock(on_sleep=lambda _seconds: setattr(runner, "remaining", 5_000))
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    _, executed = _call(governor, runner, WRITE, read_only=False)
+
+    assert executed is True
+    assert clock.slept == [30.0]
+    assert runner.count(WRITE) == 1
+
+
+def test_reset_beyond_default_wait_budget_raises_at_once_without_sleeping(
+    tmp_path: Path,
+) -> None:
+    spend_log = tmp_path / "spend.ndjson"
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_000 + 3_600)
+    clock = FakeClock()
+    governor = _governor(runner, clock, spend_log)
+
+    with pytest.raises(
+        GitHubQuotaExhausted,
+        match=r"1970-01-01T01:16:40\+00:00.*3600 s away.*600 s",
+    ):
+        _call(governor, runner, WRITE, read_only=False)
+
+    assert clock.slept == []
+    assert runner.count(WRITE) == 0
+    assert all(row["outcome"] != "waited" for row in _spend_rows(spend_log))
+
+
+def test_cumulative_reset_waits_stop_at_the_default_budget(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_400)
+    clock = FakeClock(
+        on_sleep=lambda _seconds: setattr(runner, "reset", int(clock.now()) + 400)
+    )
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    with pytest.raises(GitHubQuotaExhausted):
+        _call(governor, runner, WRITE, read_only=False)
+
+    assert clock.slept == [400.0]
+    assert runner.count(WRITE) == 0
+
+
+def test_wait_budget_is_shared_across_calls_of_one_governor(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_400)
+    clock = FakeClock(on_sleep=lambda _seconds: setattr(runner, "remaining", 5_000))
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+    _call(governor, runner, WRITE, read_only=False)
+
+    clock.t += PROBE_TTL_SECONDS
+    runner.remaining = WAIT_BELOW - 1
+    runner.reset = int(clock.now()) + 400
+
+    with pytest.raises(GitHubQuotaExhausted):
+        _call(governor, runner, WRITE, read_only=False)
+
+    assert clock.slept == [400.0]
+
+
+def test_default_wait_budget_is_600_seconds(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_000 + 601)
+    clock = FakeClock()
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    with pytest.raises(GitHubQuotaExhausted):
+        _call(governor, runner, WRITE, read_only=False)
+
+    assert clock.slept == []
+
+
+def test_reset_exactly_at_default_wait_budget_still_sleeps(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_000 + 600)
+    clock = FakeClock(on_sleep=lambda _seconds: setattr(runner, "remaining", 5_000))
+    governor = _governor(runner, clock, tmp_path / "spend.ndjson")
+
+    _, executed = _call(governor, runner, WRITE, read_only=False)
+
+    assert executed is True
+    assert clock.slept == [600.0]
+
+
+def test_max_wait_seconds_argument_overrides_the_default_budget(tmp_path: Path) -> None:
+    runner = FakeRunner(remaining=WAIT_BELOW - 1, reset=1_000 + 120)
+    clock = FakeClock()
+    governor = GitHubQuotaGovernor(
+        repo=REPO,
+        runner=runner,
+        spend_log=tmp_path / "spend.ndjson",
+        clock=clock.now,
+        sleep=clock.sleep,
+        max_wait_seconds=60.0,
+    )
+
+    with pytest.raises(GitHubQuotaExhausted, match="60 s"):
+        _call(governor, runner, WRITE, read_only=False)
+
+    assert clock.slept == []
+
+
 def test_quota_exhaustion_is_a_structured_adapter_error() -> None:
     assert issubclass(GitHubQuotaExhausted, AdapterError)
 
