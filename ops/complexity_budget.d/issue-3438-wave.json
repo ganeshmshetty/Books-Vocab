@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3438,
+  "raise": {
+    "ops": 63
+  },
+  "note": "Issue #3438: regression tests for rename-aware changed-file and rebase-preflight diffs need ~3 ops lines over the base ceiling."
+}
