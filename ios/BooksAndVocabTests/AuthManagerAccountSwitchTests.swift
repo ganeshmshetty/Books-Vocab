@@ -457,7 +457,7 @@ struct AuthManagerAccountSwitchTests {
 
     /// #3328: a second confirm while the first rebuild is awaiting must not run the rebuild again. A duplicate
     /// that resumes after the marker is gone fails and would overwrite the restart message the first call sets.
-    @Test func stuck_wipe_second_confirm_during_rebuild_keeps_restart_message() async {
+    @Test func stuck_wipe_second_confirm_during_rebuild_keeps_restart_message() async throws {
         let cleaner = RecordingCleaner()
         cleaner.pendingLocalWipeOwner = "user-a"
         cleaner.failRetry = true
@@ -470,7 +470,13 @@ struct AuthManagerAccountSwitchTests {
 
         cleaner.holdRebuilds = true
         let first = Task { await manager.recoverFromStuckLocalWipe() }
-        while cleaner.suspendedRebuildCount == 0 { await Task.yield() }
+        // Bounded wait: if the rebuild never suspends, fail fast at the #require below instead of spinning forever.
+        var yields = 0
+        while cleaner.suspendedRebuildCount == 0, yields < 1000 {
+            await Task.yield()
+            yields += 1
+        }
+        try #require(cleaner.suspendedRebuildCount == 1, "the first rebuild must suspend before the duplicate confirm")
         let second = Task { await manager.recoverFromStuckLocalWipe() }
         for _ in 0..<20 { await Task.yield() }
 
