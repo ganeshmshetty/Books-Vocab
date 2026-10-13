@@ -8,7 +8,15 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 import kg.ops_cli_costs as costs
+
+
+@pytest.fixture(autouse=True)
+def _no_backend_observability(monkeypatch):
+    """Default: backend unreachable, so existing tests exercise the local-env fallback and never hit the network."""
+    monkeypatch.setattr(costs, "_backend_token_retention_days", lambda: None)
 
 
 def _make_args(**kwargs) -> argparse.Namespace:
@@ -198,3 +206,56 @@ class TestCmdCostRetentionDisclosure:
 
         assert "retention_days" not in payload
         assert "oldest_retained_at" not in payload
+
+
+class TestCmdCostBackendRetentionAuthority:
+    """#3500: the backend's effective window (observability) wins over the CLI process env."""
+
+    def test_range_all_reports_backend_window_not_cli_env(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("TOKEN_USAGE_RETENTION_DAYS", "90")
+        monkeypatch.setattr(costs, "_backend_token_retention_days", lambda: 30)
+        _seed_token_rows(tmp_path, [datetime.now(UTC).isoformat()])
+
+        costs.cmd_cost(_make_args(uid="u1", range="all", json=True))
+        payload = json.loads(capsys.readouterr().out)
+
+        assert payload["retention_days"] == 30
+
+    def test_backend_fetch_reads_token_usage_window_with_admin_bearer(self, monkeypatch):
+        import io
+
+        monkeypatch.undo()  # drop the autouse stub; exercise the real helper with urlopen stubbed
+        monkeypatch.setenv("ADMIN_TOKEN", "tok")
+        monkeypatch.setenv("KG_OPS_BACKEND_URL", "http://backend.test")
+        seen = {}
+
+        def fake_urlopen(req, timeout):
+            seen["url"] = req.full_url
+            seen["auth"] = req.get_header("Authorization")
+            body = {"log_db_health": {"token_usage": {"retention_days": 30}}}
+            return io.BytesIO(json.dumps(body).encode())
+
+        monkeypatch.setattr(costs.urllib.request, "urlopen", fake_urlopen)
+        assert costs._backend_token_retention_days() == 30
+        assert seen == {"url": "http://backend.test/api/admin/observability", "auth": "Bearer tok"}
+
+    def test_backend_fetch_without_admin_token_never_calls_network(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+
+        def boom(*a, **k):
+            raise AssertionError("network must not be touched without ADMIN_TOKEN")
+
+        monkeypatch.setattr(costs.urllib.request, "urlopen", boom)
+        assert costs._backend_token_retention_days() is None
+
+    def test_backend_fetch_failure_falls_back_to_none(self, monkeypatch):
+        monkeypatch.undo()
+        monkeypatch.setenv("ADMIN_TOKEN", "tok")
+
+        def refused(*a, **k):
+            raise ConnectionRefusedError("down")
+
+        monkeypatch.setattr(costs.urllib.request, "urlopen", refused)
+        assert costs._backend_token_retention_days() is None

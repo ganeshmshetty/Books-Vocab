@@ -4,12 +4,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import urllib.request
 
 from kg.admin_cost_summary import fold_user_summary, query_cost_rows, since_iso
 from kg.log_retention import _effective_days
 from kg.ops_shared import column_expr, connect_ro, data_dir, emit_json, print_table, provider_column_expr, resolve_uid
 from kg.quota_service import token_cost_usd
+
+_BACKEND_URL_ENV = "KG_OPS_BACKEND_URL"
+_DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
+
+
+def _backend_token_retention_days() -> int | None:
+    """Backend's effective token_usage retention from /api/admin/observability, or None if unavailable.
+
+    The pruner runs under the backend env_file, not this CLI's process env, so the backend is the
+    authority (#3500). Needs ADMIN_TOKEN in the CLI env; any failure returns None and the caller falls
+    back to the local *_RETENTION_DAYS resolution.
+    """
+    token = os.getenv("ADMIN_TOKEN", "")
+    if not token:
+        return None
+    base = os.getenv(_BACKEND_URL_ENV, _DEFAULT_BACKEND_URL).rstrip("/")
+    req = urllib.request.Request(f"{base}/api/admin/observability", headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            days = json.loads(resp.read())["log_db_health"]["token_usage"]["retention_days"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return days if isinstance(days, int) and not isinstance(days, bool) else None
 
 
 def cmd_cost(args: argparse.Namespace) -> None:
@@ -43,7 +68,11 @@ def cmd_cost(args: argparse.Namespace) -> None:
         summary["total_cost_usd"] = folded["total_cost_usd"]
         summary["by_call_type"] = folded["by_call_type"]
 
-    retention_days = _effective_days("token", None) if range_ == "all" else None
+    retention_days = None
+    if range_ == "all":
+        retention_days = _backend_token_retention_days()
+        if retention_days is None:
+            retention_days = _effective_days("token", None)
     if retention_days is not None:
         summary["retention_days"] = retention_days
         summary["oldest_retained_at"] = oldest
