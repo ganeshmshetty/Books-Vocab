@@ -576,6 +576,42 @@ def test_an_ancestry_check_that_cannot_run_fails_loudly_not_as_reuse() -> None:
         )
 
 
+def _ancestry_of(tmp_path: Path, stderr: str) -> Callable[[str, str], bool]:
+    """``is_ancestor`` of a Delivery whose every git call fails with rc 128."""
+    args = deliver.build_parser().parse_args(["--worktree", str(tmp_path)])
+    return deliver.Delivery(
+        args, lambda _cmd, _cwd: deliver.Proc(128, "", stderr), lambda _s: None
+    ).is_ancestor
+
+
+def test_an_absent_merged_head_is_not_an_ancestor_instead_of_a_crash(
+    tmp_path: Path,
+) -> None:
+    # the merged head was never fetched into this clone: nothing here can be
+    # contained in it, so the answer is a plain no (#3356, as git_queries does)
+    absent = "b" * 40
+    is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {absent}\n")
+    assert is_ancestor("a" * 40, absent) is False
+
+
+def test_an_absent_lane_head_is_not_an_ancestor_either(tmp_path: Path) -> None:
+    absent = "a" * 40
+    is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {absent}")
+    assert is_ancestor(absent, "b" * 40) is False
+
+
+def test_a_128_naming_some_other_commit_still_fails_loudly(tmp_path: Path) -> None:
+    is_ancestor = _ancestry_of(tmp_path, f"fatal: Not a valid commit name {'c' * 40}")
+    with pytest.raises(deliver.DeliverError, match="rc=128"):
+        is_ancestor("a" * 40, "b" * 40)
+
+
+def test_an_unrelated_128_still_fails_loudly(tmp_path: Path) -> None:
+    is_ancestor = _ancestry_of(tmp_path, "fatal: not a git repository")
+    with pytest.raises(deliver.DeliverError, match="rc=128"):
+        is_ancestor("a" * 40, "b" * 40)
+
+
 def test_a_merged_pr_with_no_local_branch_is_cleanup() -> None:
     # nothing local to drop: the branch is gone, so cleanup cannot lose commits
     pr = {"number": 3201, "state": "MERGED", "headRefOid": MERGED_OLD_HEAD}
