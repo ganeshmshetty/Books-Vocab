@@ -147,8 +147,9 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 | `Components/VocabSceneShell.swift` | `VocabSceneShell<Content>` + `VocabScenePhase`,統一 vocabulary 四態容器(loading / loadingSkeleton / empty / error / content)；error phase 可帶 description，retry action 維持 owner 注入 |
 | `Components/WordRow.swift` | `struct WordRow: View`；維持 word、pos、translation、book、trailing、status 的截斷與等寬數字布局契約 |
 | `Components/VocabReviewBanner.swift` | `struct VocabReviewBanner<FilterContent>: View`。完整 hero CTA(cardBackground + title + stats + button)，**僅** NotebookListView 使用作為 primary entry point。VocabularyListView 詳情頁不再渲染此 banner — CTA 改走 `VocabReviewCTAPill` 內嵌於 chip+sort 列。 |
-| `Components/CardDocumentView.swift` | card document 主 View；重型 card document render path 含 `PerfLog` tick |
-| `Components/CardRichTextRenderer.swift` | rich text renderer；render path 含 `PerfLog` tick |
+| `Components/CardExampleView.swift` | 書摘卡（#3113）：例句的唯一呈現，Linked Card／Word Detail 與複習卡背面共用。inset 填色 `mutedFill`、襯線 `typography.cardExample`、高亮引號字、footer（`CardExampleSource` 書名 · 章節；朗讀句子／複製為 44pt borderless）。複習卡正面（cloze）`showsFooter: false`，不朗讀答案。`CardExampleSource.make` 對 `Knowledge Graph` fallback 與空書名回 nil |
+| `Components/CardDocumentView.swift` | card document 主 View；`.example` 區塊委派 `CardExampleView`，`.divider` 不繪製（區塊間分隔只靠 padding，無 hairline）；render path 含 `PerfLog` tick。`CardInlineText(.example)` 目前仍供 Add Link 例句使用（Stage 3 遷移前保留） |
+| `Components/CardRichTextRenderer.swift` | 例句 inline renderer（`**` 與反引號皆高亮；`plainText` 去標記供朗讀／複製）；render path 含 `PerfLog` tick |
 | `Components/CardSections.swift` | card 各 section 元件 |
 | `Components/CardDocumentBuilder.swift` | `CardDocument` builder |
 | `Components/CardDocumentModels.swift` | `CardDocument` / `CardDocumentBlock` 等 data model |

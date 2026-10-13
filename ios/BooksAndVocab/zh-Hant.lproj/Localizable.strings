@@ -975,6 +975,7 @@
 "banner.action.dismiss" = "關閉";
 "translation.vocab.speak" = "播放 %@ 發音";
 "vocab.card.speak" = "播放 %@ 發音";
+"vocab.card.example.speak" = "朗讀句子";
 "vocab.card.addLink" = "新增連結";
 "sync.pending.undoDelete" = "復原刪除";
 "sync.pending.cancelAdd" = "取消待新增項目";

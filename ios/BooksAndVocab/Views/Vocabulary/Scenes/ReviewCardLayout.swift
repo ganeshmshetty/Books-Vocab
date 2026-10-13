@@ -164,12 +164,10 @@ extension ReviewCardField {
 }
 
 struct ReviewCardRenderPlan: Equatable {
+    /// 列序沒有 hairline：區塊之間只靠 spacing 分隔（#3113，layering）。
     enum Row: Equatable {
         case prompt
         case answer
-        case answerDivider
-        /// 相鄰兩個區塊之間的 hairline。
-        case fieldDivider
         case field(ReviewCardField)
     }
 
@@ -193,25 +191,9 @@ struct ReviewCardRenderPlan: Equatable {
         /// 畫在 core 之下那一欄（其餘全部）。
         var belowCore: [ReviewCardField] { ReviewCardField.split(blockFields, on: face).belowCore }
 
-        /// 真正畫出來的列序，含分隔線。inline 欄位不在其中：它們沒有自己的列。
+        /// 真正畫出來的列序。inline 欄位不在其中：它們沒有自己的列。
         var rows: [Row] {
-            let below = belowCore
-            let answerRule = coreRow == .answer
-                && ReviewCardLayoutSolver.drawsAnswerDivider(fields: below)
-            return columnRows(aboveCore)
-                + [coreRow]
-                + (answerRule ? [Row.answerDivider] : [])
-                + columnRows(below)
-        }
-
-        /// 一欄的列序：第二格起，每格前面帶一條 rule。與 solver 記帳用的
-        /// `fieldDividerCount` 共用同一個 predicate，兩邊不可能各算各的。
-        private func columnRows(_ column: [ReviewCardField]) -> [Row] {
-            column.enumerated().flatMap { pair -> [Row] in
-                ReviewCardLayoutSolver.drawsFieldDivider(face: face, atIndex: pair.offset)
-                    ? [Row.fieldDivider, .field(pair.element)]
-                    : [Row.field(pair.element)]
-            }
+            aboveCore.map(Row.field) + [coreRow] + belowCore.map(Row.field)
         }
     }
 
@@ -322,12 +304,6 @@ enum ReviewCardLayoutSolver {
         let minimumHeight: CGFloat
         let sectionSpacing: CGFloat
         let compactSectionSpacing: CGFloat
-        /// 欄位之間 hairline 的張數。它們是 VStack 的**同層 sibling**（不塞進被量測
-        /// 的子樹——欄位的 intermediate/compact 兩階是隱藏 probe 量的，包進去只會讓
-        /// natural 含線、另外兩階不含），所以由 solver 用常數 token 一階記帳。
-        var dividerCount: Int = 0
-        /// 一條 hairline 的高度（`AppMetrics.dividerThin`）。
-        var dividerHeight: CGFloat = 0
         /// Standard cards preserve every selected field and use scrolling when
         /// natural content exceeds the viewport. Only compact cards may enter
         /// the summary ladder.
@@ -429,14 +405,11 @@ enum ReviewCardLayoutSolver {
             )
         }
         /// n sections carry n-1 gaps, so dropping to compact spacing frees
-        /// `(natural - compact) * gapCount` — never a fixed amount. 欄位之間的
-        /// hairline 是額外的 VStack child，所以它同時貢獻自己的高度**與**一個 gap。
+        /// `(natural - compact) * gapCount` — never a fixed amount.
         func totalHeight() -> CGFloat {
             let heights = activeSections.reduce(CGFloat(0)) { $0 + (policies[$1]?.height ?? 0) }
-            let gapCount = max(activeSections.count + input.dividerCount - 1, 0)
-            return heights
-                + CGFloat(input.dividerCount) * input.dividerHeight
-                + CGFloat(gapCount) * currentSpacing()
+            let gapCount = max(activeSections.count - 1, 0)
+            return heights + CGFloat(gapCount) * currentSpacing()
         }
         func compact(_ section: Section) {
             guard let measurement = input.measurements[section], var policy = policies[section] else { return }
@@ -554,34 +527,6 @@ enum ReviewCardLayoutSolver {
         }
     }
 
-    /// The answer's section rule under the word — drawn only when a field follows it,
-    /// exactly as the shipped card did (it never trailed the card with a bare line).
-    static func drawsAnswerDivider(fields: [ReviewCardField]) -> Bool {
-        !fields.isEmpty
-    }
-
-    /// 相鄰區塊之間的 hairline。重構前背面走 `CardDocumentView`，而
-    /// `CardDocument.reviewBackSubset()` 在相鄰 block 之間插 `.divider`（不領頭、
-    /// 不收尾），所以舊畫面每兩個區塊之間是 24pt gap + 0.5pt rule + 24pt gap。
-    ///
-    /// 一欄的第一格貼的是 core（或卡頂）不是另一格，所以它不帶線；答案底下那條由
-    /// `drawsAnswerDivider` 負責。正面舊畫面本來就沒有 rule，故 face 直接寫進
-    /// predicate —— 日後正面若複用同一支 renderer，也畫不出沒被記帳的線。
-    static func drawsFieldDivider(face: ReviewCardFace, atIndex index: Int) -> Bool {
-        face == .back && index > 0
-    }
-
-    /// 張數由 predicate 推導，不另寫一份 index 算式：同一條規則的兩份副本正是這張
-    /// 票在防的那種 drift（solver 相信的高度 != 畫面真的畫的高度）。
-    static func fieldDividerCount(face: ReviewCardFace, fields: [ReviewCardField]) -> Int {
-        fields.indices.filter { drawsFieldDivider(face: face, atIndex: $0) }.count
-    }
-
-    /// 每一欄各自記帳。core 之上與之下是兩欄，接起來算 n-1 會多收一條。
-    static func fieldDividerCount(face: ReviewCardFace, columns: [[ReviewCardField]]) -> Int {
-        columns.reduce(0) { $0 + fieldDividerCount(face: face, fields: $1) }
-    }
-
     static func missingMeasurementLevels(
         hasNatural: Bool,
         hasIntermediate: Bool,
@@ -607,8 +552,7 @@ extension ReviewCardLayoutSolver.Input {
         measurements: [ReviewCardLayoutSolver.Section: ReviewCardLayoutSolver.Measurement],
         viewportHeight: CGFloat,
         minimumHeight: CGFloat,
-        preset: ReviewCardLayoutPreset = .standard,
-        columns: [[ReviewCardField]]? = nil
+        preset: ReviewCardLayoutPreset = .standard
     ) {
         self.fields = fields
         self.measurements = measurements
@@ -618,12 +562,5 @@ extension ReviewCardLayoutSolver.Input {
         self.minimumHeight = minimumHeight
         self.sectionSpacing = TodayReviewMetrics.foldSectionSpacing
         self.compactSectionSpacing = TodayReviewMetrics.foldSectionSpacingCompact
-        // 渲染端把 block 欄位分成 core 之上／之下兩欄畫，每一欄各自記帳 hairline。
-        // 沒給 columns 就是單欄（測試用的任意幾何）。
-        self.dividerCount = ReviewCardLayoutSolver.fieldDividerCount(
-            face: face,
-            columns: columns ?? [fields]
-        )
-        self.dividerHeight = AppMetrics.dividerThin
     }
 }

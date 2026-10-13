@@ -986,6 +986,7 @@
 "banner.action.dismiss" = "Dismiss";
 "translation.vocab.speak" = "Speak %@";
 "vocab.card.speak" = "Speak %@";
+"vocab.card.example.speak" = "Read sentence aloud";
 "vocab.card.addLink" = "Add knowledge link";
 "sync.pending.undoDelete" = "Undo delete";
 "sync.pending.cancelAdd" = "Cancel pending add";

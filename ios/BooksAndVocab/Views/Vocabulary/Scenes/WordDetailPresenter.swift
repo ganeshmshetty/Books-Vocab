@@ -113,6 +113,7 @@ struct WordDetailPresenter: View {
                 VStack(alignment: .leading, spacing: 0) {
                     CardDocumentView(
                         document: state.card.document,
+                        exampleSource: state.card.exampleSource,
                         collocationExplanations: state.collocationExplanations,
                         onExplainCollocation: onExplainCollocation,
                         onViewCollocationExplanation: onViewCollocationExplanation,
@@ -122,7 +123,6 @@ struct WordDetailPresenter: View {
                         .accessibilityIdentifier("wordDetail.document")
 
                     if !state.card.forms.isEmpty {
-                        CardSectionDivider()
                         CardFormsSection(
                             forms: state.card.forms,
                             rootForm: state.rootForm,
@@ -134,18 +134,15 @@ struct WordDetailPresenter: View {
                     }
 
                     if !state.card.activeLinkGroups.isEmpty || !state.card.hiddenLinks.isEmpty || onAddLink != nil {
-                        CardSectionDivider()
                         linksSection
                             .padding(appSkin.metrics.cardBlockPadding)
                     }
 
                     if let reviewProgress = state.reviewProgress {
-                        CardSectionDivider()
                         reviewProgressSection(reviewProgress)
                             .padding(appSkin.metrics.cardBlockPadding)
                     }
 
-                    CardSectionDivider()
                     metadataFooter
                         .padding(appSkin.metrics.cardBlockPadding)
                         .accessibilityElement(children: .contain)

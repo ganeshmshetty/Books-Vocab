@@ -29,16 +29,13 @@ struct ReviewCardRenderPlanTests {
         #expect(plan.back.aboveCore == [.difficultyTier])
         #expect(plan.back.belowCore == [.graphLinks, .example, .explanation, .collocations])
         #expect(plan.front.aboveCore.isEmpty)
+        // 背面沒有 hairline：欄位之間的分隔只靠 spacing（layering，見 #3113）。
         #expect(plan.back.rows == [
             .field(.difficultyTier),
             .answer,
-            .answerDivider,
             .field(.graphLinks),
-            .fieldDivider,
             .field(.example),
-            .fieldDivider,
             .field(.explanation),
-            .fieldDivider,
             .field(.collocations)
         ])
     }
@@ -72,14 +69,12 @@ struct ReviewCardRenderPlanTests {
         #expect(plan.front.inlineFields == [.partOfSpeech])
         #expect(plan.front.blockFields.isEmpty)
         #expect(plan.front.rows == [.prompt])
-        // 難度仍是答案之上的徽章；答案底下只剩圖譜連結，所以有 answerDivider
-        // 而沒有 fieldDivider（一欄的第一格不帶線）。
+        // 難度仍是答案之上的徽章；答案底下只剩圖譜連結，沒有任何 hairline。
         #expect(plan.back.aboveCore == [.difficultyTier])
         #expect(plan.back.belowCore == [.graphLinks])
         #expect(plan.back.rows == [
             .field(.difficultyTier),
             .answer,
-            .answerDivider,
             .field(.graphLinks)
         ])
     }
@@ -112,10 +107,10 @@ struct ReviewCardRenderPlanTests {
         #expect(plan.front.fields == [.example])
         #expect(plan.back.fields == [.example])
         #expect(plan.front.rows == [.prompt, .field(.example)])
-        #expect(plan.back.rows == [.answer, .answerDivider, .field(.example)])
+        #expect(plan.back.rows == [.answer, .field(.example)])
     }
 
-    @Test func an_empty_back_face_does_not_draw_a_trailing_divider() {
+    @Test func an_empty_back_face_draws_only_the_answer() {
         let plan = ReviewCardRenderPlan.make(profile: .default, mode: .recognition, availability: .init(
             partOfSpeech: false,
             difficultyTier: false,

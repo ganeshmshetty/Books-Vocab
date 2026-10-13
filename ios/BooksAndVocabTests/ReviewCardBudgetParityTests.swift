@@ -207,12 +207,8 @@ struct ReviewCardDefaultParityTests {
         #expect(ReviewCardLayoutSolver.naturalExampleRadius(for: .front, staticRadius: 5) == 5)
     }
 
-    @Test func the_answer_divider_is_drawn_only_when_something_follows_it() {
-        #expect(!ReviewCardLayoutSolver.drawsAnswerDivider(fields: []))
-        #expect(ReviewCardLayoutSolver.drawsAnswerDivider(fields: [.graphLinks]))
-
-        // 難度搬到 core 之上後，「背面只開難度」底下已經沒有東西了 —— 那條線若照畫
-        // 就是一條懸空的分隔線，正是這條規則當初存在的理由。
+    @Test func back_only_difficulty_stays_above_the_answer_without_a_rule() {
+        // 難度搬到 core 之上後，「背面只開難度」底下已經沒有東西了。
         // 版面自 APP-20260808-7f0f3a 起只有兩個 preset，表達不了「背面只有難度」。
         // 精簡背面是 [.difficultyTier, .graphLinks]，把圖譜連結標成不可用即得到同一個面
         // —— 驗的本來就是 availability 過濾後的結果，不是 profile 能不能任意組合。
@@ -229,37 +225,12 @@ struct ReviewCardDefaultParityTests {
             )
         )
         #expect(tierOnly.back.aboveCore == [.difficultyTier])
-        #expect(!ReviewCardLayoutSolver.drawsAnswerDivider(fields: tierOnly.back.belowCore))
         #expect(tierOnly.back.rows == [.field(.difficultyTier), .answer])
     }
 
-    /// 重構前背面走 `CardDocumentView`，相鄰 block 之間插一條 `.divider`。改由 solver
-    /// 驅動的 VStack 逐欄位渲染後只剩間距。補回來時它必須**同時**被畫出來與被記帳，
-    /// 否則就是 be3f9b642 整篇在修的那一族缺陷（solver 相信的高度 != 畫面畫的高度）。
-    @Test func back_face_draws_a_rule_between_adjacent_sections_and_charges_it() {
-        // (a) 張數：不領頭、不收尾；正面沒有 rule。
-        #expect(ReviewCardLayoutSolver.fieldDividerCount(face: .back, fields: []) == 0)
-        #expect(ReviewCardLayoutSolver.fieldDividerCount(face: .back, fields: [.example]) == 0)
-        #expect(ReviewCardLayoutSolver.fieldDividerCount(
-            face: .back,
-            fields: [.example, .explanation, .collocations]
-        ) == 2)
-        #expect(ReviewCardLayoutSolver.fieldDividerCount(
-            face: .front,
-            fields: [.example, .explanation, .collocations]
-        ) == 0)
-        // 每一欄各自記帳：接起來當一欄算會多收一條。
-        #expect(ReviewCardLayoutSolver.fieldDividerCount(
-            face: .back,
-            columns: [[.difficultyTier], [.example, .explanation, .collocations]]
-        ) == 2)
-
-        // (b) predicate 本身。
-        #expect(!ReviewCardLayoutSolver.drawsFieldDivider(face: .back, atIndex: 0))
-        #expect(ReviewCardLayoutSolver.drawsFieldDivider(face: .back, atIndex: 1))
-        #expect(!ReviewCardLayoutSolver.drawsFieldDivider(face: .front, atIndex: 1))
-
-        // (c) 預算：4 段內容 + 2 條 rule = 6 個 child → 5 個 gap。
+    /// 背面 hairline 全數移除（#3113，layering）：相鄰區塊只靠 spacing 分隔，solver
+    /// 不再為任何線記帳。gap 數 = section 數 − 1，高度只剩內容與 spacing。
+    @Test func back_face_has_no_hairlines_and_budget_charges_spacing_only() {
         let fields: [ReviewCardField] = [.example, .explanation, .collocations]
         let sections = [ReviewCardLayoutSolver.Section.core] + fields.map(ReviewCardLayoutSolver.Section.field)
         let measurements = Dictionary(uniqueKeysWithValues: sections.map {
@@ -272,9 +243,8 @@ struct ReviewCardDefaultParityTests {
             viewportHeight: 4000,
             minimumHeight: 0
         )
-        #expect(input.dividerCount == 2)
-        #expect(input.dividerHeight == AppMetrics.dividerThin)
+        // 4 段內容 → 3 個 gap；沒有 rule 的高度與 gap。
         #expect(ReviewCardLayoutSolver.solve(input).cardHeight
-            == 40 * 4 + AppMetrics.dividerThin * 2 + TodayReviewMetrics.foldSectionSpacing * 5)
+            == 40 * 4 + TodayReviewMetrics.foldSectionSpacing * 3)
     }
 }

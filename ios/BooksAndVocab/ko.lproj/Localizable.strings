@@ -967,6 +967,7 @@
 "banner.action.dismiss" = "닫기";
 "translation.vocab.speak" = "%@ 읽기";
 "vocab.card.speak" = "%@ 읽기";
+"vocab.card.example.speak" = "문장 읽기";
 "vocab.card.addLink" = "지식 링크 추가";
 "sync.pending.undoDelete" = "삭제 취소";
 "sync.pending.cancelAdd" = "추가 대기 취소";

@@ -967,6 +967,7 @@
 "banner.action.dismiss" = "閉じる";
 "translation.vocab.speak" = "%@ を読み上げる";
 "vocab.card.speak" = "%@ を読み上げる";
+"vocab.card.example.speak" = "文を読み上げる";
 "vocab.card.addLink" = "ナレッジリンクを追加";
 "sync.pending.undoDelete" = "削除を取り消す";
 "sync.pending.cancelAdd" = "追加待ちをキャンセル";
