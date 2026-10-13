@@ -13,6 +13,8 @@ struct ReviewCardContent {
     /// measurement state in the prepared card so the slot can be recycled
     /// without making the hidden probes cold again for every card.
     let measurementCache: ReviewCardMeasurementCache
+    /// 此卡在本 session 的已評標示（#3371）。依 queue index 逐次設定，不屬於卡片本身，因此不進 cache。
+    var gradedBadge: ReviewGradedBadge? = nil
 
     init(
         card: CardPresentation,
@@ -231,11 +233,16 @@ struct ReviewCardView: View {
                 viewport: viewport
             )
             .overlay(alignment: .topLeading) {
-                // 單字本標示是 overlay，坐在正面既有的頂部留白裡：不進 layout，
-                // 正面／背面高度與 solver 預算都不因它出現而變（#2040）。背面展開時
+                // 單字本標示與已評標示都是 overlay，坐在正面既有的頂部留白裡：不進 layout，
+                // 正面／背面高度與 solver 預算都不因它出現而變（#2040、#3371）。背面展開時
                 // 正面仍在上方，所以兩面都看得到。
-                if let notebookBadge {
-                    notebookBadgeView(notebookBadge)
+                VStack(alignment: .leading, spacing: 0) {
+                    if let notebookBadge {
+                        notebookBadgeView(notebookBadge)
+                    }
+                    if let gradedBadge = content.gradedBadge {
+                        gradedBadgeView(gradedBadge, belowNotebookBadge: notebookBadge != nil)
+                    }
                 }
             }
             .overlay(alignment: .topTrailing) {
@@ -569,6 +576,15 @@ struct ReviewCardView: View {
     /// 卡片所屬單字本（色點 ＋ 名稱）。純標示、不可點：點擊照常落到正面的翻卡手勢。
     /// 寬度讓出右上角 chrome；字級上限鎖住，確保在 Accessibility Dynamic Type 下仍
     /// 收在單字列上方的留白內、不壓到單字。
+    /// 已評標示（#3371）：與單字本標示共用頂部留白；同時有單字本標示時往下讓一行，不互相覆蓋。
+    func gradedBadgeView(_ badge: ReviewGradedBadge, belowNotebookBadge: Bool) -> some View {
+        ReviewGradedBadgeView(badge: badge)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, belowNotebookBadge ? AppSpacing.s1 : TodayReviewMetrics.notebookBadgeTopInset)
+            .padding(.leading, reviewCardPadding)
+            .padding(.trailing, reviewCardPadding + frontChromeReserveWidth)
+    }
+
     func notebookBadgeView(_ badge: ReviewCardNotebookBadge) -> some View {
         HStack(spacing: AppSpacing.s1) {
             if badge.colorHex != nil {

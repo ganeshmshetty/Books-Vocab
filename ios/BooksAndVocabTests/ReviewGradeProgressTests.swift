@@ -147,4 +147,33 @@ struct ReviewGradeProgressTests {
         #expect(ReviewGradedBadge(feedback: .forgot).text
             == L10n.format("todayReview.card.graded", L10n.string("忘記")))
     }
+
+    // MARK: - Card content carries the badge of its own queue index
+
+    private func makeState(cardCount: Int) -> TodayReviewState {
+        let entries = (0..<cardCount).map { index -> VocabularyEntry in
+            let entry = VocabularyEntry(
+                word: "grade-\(UUID().uuidString.prefix(6))-\(index)",
+                translation: "translation-\(index)",
+                context: "A sample sentence for card \(index).",
+                bookTitle: "Sample"
+            )
+            entry.markSynced()
+            return entry
+        }
+        return TodayReviewState(entries: entries, allEntries: entries, currentUserID: nil)
+    }
+
+    @Test func revisitedGradedCardCarriesItsBadgeOnTheCardContent() {
+        let state = makeState(cardCount: 3)
+        state.scoring.record(.forgot, at: 0)
+
+        #expect(state.currentCardForTesting?.gradedBadge == ReviewGradedBadge(feedback: .forgot))
+
+        state.goNext()
+        #expect(state.currentCardForTesting?.gradedBadge == nil)
+
+        state.goPrevious()
+        #expect(state.currentCardForTesting?.gradedBadge == ReviewGradedBadge(feedback: .forgot))
+    }
 }
