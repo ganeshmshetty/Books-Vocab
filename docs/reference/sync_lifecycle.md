@@ -64,6 +64,8 @@ iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performC
 2. 呼叫 `restorePendingEntry()`
 3. 顯示在閱讀器與待同步清單
 
+閱讀器重新擷取同字（`restoreExistingEntryForSave`）遇到非 in-flight 的 queued delete：`kgCardId` 為空 → `restorePendingEntry()`（add+pending）；`kgCardId` 非空（server 已持卡）→ `queueEdit()`（pending edit，保留 `kgCardId`，以新譯文 PATCH）。後者不得重送 add：batchAdd 對既有卡回 `skipped` 並仍回傳既有 cardId，`convergeAddedEntries` 會 `markSynced`，新譯文將永遠不到 server（#3408）。
+
 ### 本地新增上傳成功（`pending + add` → `synced + add`）
 
 1. `SyncCoordinator` 批次上傳 → `POST /api/vocab` 回 `VocabAddResponse{ cardIds, duplicates, rejected, ... }`（逐筆驗證：無效項進 `rejected[{index, word, reason}]`，其餘照常建立，不再整批 422；非 list body 或超過 500 筆仍 422；iOS `KGAddResponse.rejected` 解碼（缺欄位視為空），依 `index` 指向原提交 entry 並 `markRejected(reason:)`：進 `failed + add` 且寫入 `rejectedReason` 終態，**不再納入 `shouldUploadOnNextSync`**（確定性拒收不自動重送，否則每次 sync 重報同一錯誤）；`markSynced`／`queueDelete` 清除該欄位，`restorePendingEntry` 亦清除但僅 queued delete 列會呼叫（`VocabularyContextStore` 與 `SyncCoordinator` 收斂皆以 `syncAction == .delete` 守門），failed add 列不會經此路徑復活；**例外**：add 於 in-flight 期間已被 `deleteLocally` 排成 delete 者，`markRejected` 不改寫為終態，保留 pending delete，下一輪 batchDelete 以 `not_found` 本地移除（#2733）；該步驟本次回報 error 並使 sync 為 partial）
@@ -82,7 +84,7 @@ iOS 端把 vocab 批次請求（add／delete／archive）以 `KGService.performC
 5. **I3（不變式）**：列被擷取（`isUploadInFlight`）期間，使用者的撤銷與閱讀器重新擷取都不得改寫其 `syncAction`。`undoQueuedDelete()` 為 no-op；`restoreExistingEntryForSave` 對 in-flight 的 delete 回 `nil`，由呼叫端新增一筆 `pending + add`；`SyncView` 忽略該列的「還原」點擊。唯一允許的使用者轉移是 → delete。因此擷取時為 delete 的列，在 batch 回應或逐卡 fallback 抵達時仍是 delete；post-await 只做防禦性重查（`syncAction == .delete` 且仍在 in-flight），不需撤銷競態分支。
 6. 反例（已修，#2484 撤銷競態）：撤銷發生在 batch delete 往返期間，曾把仍有 `kgCardId` 的列標成 synced；server 刪除成功後，回應被守門忽略，接著的 full pull 把它當 orphan 刪除，撤銷等於遺失卡片。逐卡 fallback 的 `deleteCard` 期間撤銷，曾在請求返回後無條件硬刪。兩者皆因 I3 不可達。
 7. **retryPendingDeletes 守門（#2733、#3059）**：待刪 banner 的第二條 drain（`KGVocabCoordinator.retryPendingDeletes`）在 engine 之外發送 batch／逐卡 delete。本地收斂一律經 `settleResolvedDelete`：`isUploadInFlight` 的列保留給進行中 sync 的回應收斂（I3）並計為延後，延後時不宣稱「已同步」；await 之後重驗 `syncAction`：仍為 delete 則硬刪；撤銷過的列（已非 delete，為 add 或 #3059 還原的 edit）清除失效的 `kgCardId` 後改回 pending add（T7，不留 synced 的失效列；server 卡已被本次 delete 移除，本地內容由下一輪 batchAdd 重建）。
-8. **編輯守門（#3248）**：`WordEditSheet.commitEdit` 對 `isUploadInFlight` 的列拒絕儲存（`EditValidationError.uploadInFlight`，草稿保留）。edit 的回應收斂以送出快照比對：送出後又被改寫的列維持 `pending + edit`，不標 synced、也不標 rejected，交下一輪上傳較新內容。**已知殘餘（另案）**：(c) 登出／重設的 `clearUserData` 可硬刪進行中的列，sync 的 post-await 會讀到已刪列（見下節「logout-cleanup gate」的 accepted residual）。
+8. **編輯守門（#3248）**：`WordEditSheet.commitEdit` 對 `isUploadInFlight` 的列拒絕儲存（`EditValidationError.uploadInFlight`，草稿保留）。終態拒收的列由使用者再次編輯重新排入 pending：edit 走 `queueEdit()`（#3207），add 走 `restorePendingEntry()`（#3412）。edit 的回應收斂以送出快照比對：送出後又被改寫的列維持 `pending + edit`，不標 synced、也不標 rejected，交下一輪上傳較新內容。**已知殘餘（另案）**：(c) 登出／重設的 `clearUserData` 可硬刪進行中的列，sync 的 post-await 會讀到已刪列（見下節「logout-cleanup gate」的 accepted residual）。
 
 ### 已同步單字被刪除
 

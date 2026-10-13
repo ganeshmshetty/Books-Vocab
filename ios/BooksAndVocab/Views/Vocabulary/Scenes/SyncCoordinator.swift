@@ -71,12 +71,21 @@ final class SyncCoordinator: SyncCoordinating {
     var summaryText: String = ""
     var failureKind: SyncFailureKind?
 
+    @ObservationIgnored private let executor: any VocabularySyncExecuting
     @ObservationIgnored private var pipelineTask: Task<Void, Never>?
+    /// 每次 `startSync` 遞增。只有最新一輪可以改寫 handle、步驟進度與終態（#3407）。
+    @ObservationIgnored private var runGeneration = 0
     /// 使用者已按取消。`cancelSync()` 已搶先把終態設成 `.cancelled`;pipeline
     /// 收尾(success path 或 catch path)看到此旗標就不覆寫終態。
     /// `Task.isCancelled` 不夠用——非 cancel 的真實錯誤也可能在 cancel 之外發生,
     /// 而此旗標只在使用者主動取消時為 true。
     @ObservationIgnored private var wasCancelledByUser = false
+
+    /// 預設執行器在 init body 內建立（已屬 MainActor 隔離）。不可寫成預設參數：預設參數
+    /// 於呼叫端的非隔離同步上下文求值，直接呼叫 `@MainActor` 的 `VocabularySyncEngine()` 會編譯失敗（#3407）。
+    init(executor: (any VocabularySyncExecuting)? = nil) {
+        self.executor = executor ?? VocabularySyncEngine()
+    }
 
     func buildSteps(deleteCount: Int, addCount: Int) {
         var list: [PipelineStep] = []
@@ -107,20 +116,36 @@ final class SyncCoordinator: SyncCoordinating {
         wasCancelledByUser = false
         AppAnalytics.track(.syncStarted)
 
+        runGeneration += 1
+        let generation = runGeneration
+        // cancelSync() 會立即把 phase 設為 failed，但上一輪可能仍在 executor 內 unwind 並持有 outbox。
+        // 新一輪必須等它返回才 execute，兩輪不得併發改寫同一批列（#3407）。
+        let previousRun = pipelineTask
+        let snapshotIDs = Set(pendingEntries.map(\.id))
         let adapter = KGServingVocabularySyncAdapter(base: kgService)
-        let executor: any VocabularySyncExecuting = VocabularySyncEngine()
         pipelineTask = Task { [weak self] in
-            defer { self?.pipelineTask = nil }
-            guard let self else { return }
+            await previousRun?.value
+            guard let self, !Task.isCancelled else { return }
+            defer {
+                if self.runGeneration == generation { self.pipelineTask = nil }
+            }
+            // 等待期間使用者可能已硬刪快照內未送出的 add（無 in-flight 保護），已刪列不得再被存取（#3407）。
+            let live = previousRun == nil
+                ? pendingEntries
+                : SyncCoordinator.liveSnapshot(ids: snapshotIDs, modelContext: modelContext)
 
-            let result = await executor.execute(
-                pendingEntries: pendingEntries,
+            let result = await self.executor.execute(
+                pendingEntries: live,
                 modelContext: modelContext,
                 service: adapter,
                 emit: { [weak self] event in
-                    self?.project(event)
+                    // 被取代的輪次不得再改寫目前這一輪的步驟進度（#3407）。
+                    guard let self, self.runGeneration == generation else { return }
+                    self.project(event)
                 }
             )
+            // 被取代的上一輪結果不得覆寫正在進行的新一輪的 phase／summary（#3407）。
+            guard self.runGeneration == generation else { return }
 
             switch result.terminalOutcome {
             case .keepCancelled:
@@ -204,9 +229,11 @@ final class SyncCoordinator: SyncCoordinating {
     /// 同 notebook 同字的「待刪 + 待新增」收斂成還原待刪那筆（#2105 defense-in-depth）。
     ///
     /// 若照原樣上傳，delete 先跑會刪掉 server card（SRS 歷史、AI 內容、graph links），
-    /// add 再建一張沒有歷史的新卡。收斂規則：待刪那筆 `restorePendingEntry()` 並承接
-    /// 新擷取的 translation／rootForm，新增那筆本機刪除（它從未上過 server），其 id
-    /// 回傳給呼叫端排除在上傳批次外。只碰「從未同步的 add」，不碰 edit。
+    /// add 再建一張沒有歷史的新卡。收斂規則：待刪那筆承接新擷取的 translation／rootForm，
+    /// 新增那筆本機刪除（它從未上過 server），其 id 回傳給呼叫端排除在上傳批次外。
+    /// 待刪那筆若 server 已持有卡（`hasServerCard`）必須走 `queueEdit()`：`restorePendingEntry()`
+    /// 會把它改成 pending add 經 batchAdd 重送，server 不會套用新 translation（#3408）。
+    /// 只碰「從未同步的 add」，不碰 edit。
     private static func collapseRecapturedDeletes(
         pendingEntries: [VocabularyEntry],
         modelContext: ModelContext
@@ -222,13 +249,24 @@ final class SyncCoordinator: SyncCoordinating {
         for add in uploadable where add.syncAction == .add && add.kgCardId == nil {
             guard let queuedDelete = deletesByKey[outboxKey(add)] else { continue }
             AppLog.kg.warning("collapse delete+add into restore: \(add.word) in \(add.notebookId)")
-            queuedDelete.restorePendingEntry()
+            if queuedDelete.hasServerCard {
+                queuedDelete.queueEdit()
+            } else {
+                queuedDelete.restorePendingEntry()
+            }
             queuedDelete.translation = add.translation
             if let rootForm = add.rootForm { queuedDelete.rootForm = rootForm }
             removed.insert(add.id)
             modelContext.delete(add)
         }
         return removed
+    }
+
+    /// 等待上一輪期間才用的快照重驗：以 `id`（穩定 UUID）從 context 重新撈回仍存在且仍待上傳的快照列。
+    /// 撈取失敗時本輪不上傳（fail closed），不回退到可能含已刪列的舊快照。
+    static func liveSnapshot(ids: Set<UUID>, modelContext: ModelContext) -> [VocabularyEntry] {
+        guard let fetched = try? modelContext.fetch(FetchDescriptor<VocabularyEntry>()) else { return [] }
+        return fetched.filter { ids.contains($0.id) && $0.shouldUploadOnNextSync }
     }
 
     private static func outboxKey(_ entry: VocabularyEntry) -> String {

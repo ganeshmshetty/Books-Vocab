@@ -288,9 +288,13 @@ struct ReaderVocabularyCaptureTests {
         #expect(all.count == 1, "re-capture must restore the queued-delete row, not insert a second entry")
         let restored = try #require(all.first)
         #expect(restored.persistentModelID == originalId)
-        #expect(restored.syncAction == .add)
+        #expect(restored.syncAction == .edit, "a server-held card is restored as a pending edit, never a re-sent add (#3408)")
+        #expect(restored.isPendingEdit)
         #expect(restored.kgCardId == "card_harbor", "the server card id must survive so its history is kept")
         #expect(restored.translation == "港口")
+        #expect(restored.rootForm == "harbor")
+        let uploadableAdds = all.filter { $0.syncAction == .add && $0.shouldUploadOnNextSync }
+        #expect(uploadableAdds.isEmpty, "batchAdd must not carry the word: the server would skip it and markSynced the stale translation")
         #expect(!all.contains { $0.syncAction == .delete }, "no delete may remain queued for upload")
     }
 
@@ -320,7 +324,7 @@ struct ReaderVocabularyCaptureTests {
         )
 
         #expect(excluded.contains(freshAddId), "the collapsed add must be excluded from the upload batches")
-        #expect(queuedDelete.syncAction == .add, "the delete row is restored instead of deleting the server card")
+        #expect(queuedDelete.syncAction == .edit, "a server-held card becomes a pending edit, never a re-sent add (#3408)")
         #expect(queuedDelete.isPending)
         #expect(queuedDelete.kgCardId == "card_harbor")
         #expect(queuedDelete.translation == "港口", "the latest capture's translation wins")
