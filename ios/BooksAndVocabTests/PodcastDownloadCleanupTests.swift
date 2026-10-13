@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import SwiftData
 import Testing
 @testable import BooksAndVocab
 
