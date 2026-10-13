@@ -230,4 +230,108 @@ leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' 
 [[ -z "$leftover" ]] || fail "snapshot-phase interrupt left a remote stage behind: $leftover"
 pass "SIGINT during the snapshot removes the pre-created remote stage"
 
+# ── 7. #3561：symlink 目錄下的 *.db 不可被靜默漏掉 ───────────────────────────
+# users/u2 是指向 data 目錄外某目錄的 symlink，該目錄內 cards.db 含 WAL-only row。
+# 遠端 find 不進入目錄 symlink 時，這顆 DB 不進快照，備份無聲缺失。
+# rsync 替身模擬真實 rsync：無 --copy-links 時複製 symlink 本身（tar 不解參照），
+# 有 --copy-links 時解參照（tar -h）。若 dest 殘留 symlink，tar 拉回會穿過它寫進外部目錄，
+# 因此下方同時斷言拉回的 users/u2 是真目錄、外部來源 DB 未被改寫。
+OUTSIDE_ROOT="$TMP/outside-root"
+make_wal_fixture "$OUTSIDE_ROOT"
+DATA_DIRLINK="$TMP/remote-dirlink"
+mkdir -p "$DATA_DIRLINK/users"
+ln -s "$OUTSIDE_ROOT/users/u1" "$DATA_DIRLINK/users/u2"
+outside_before="$(sqlite3 "$OUTSIDE_ROOT/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')"
+RSYNC_MODEL_BIN="$TMP/rsync-model-bin"
+mkdir -p "$RSYNC_MODEL_BIN"
+cat >"$RSYNC_MODEL_BIN/rsync" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$#" -eq 1 && "$1" == --version ]]; then
+  echo "openrsync: protocol version 29"
+  exit 0
+fi
+printf '%s\n' "$*" >>"${SNAP_TEST_RSYNC_LOG:?}"
+deref=()
+src=""; dst=""
+for a; do
+  [[ "$a" == --copy-links ]] && deref=(-h)
+  src="$dst"; dst="$a"
+done
+src="${src#*:}"; src="${src%/}"
+mkdir -p "$dst"
+tar -C "$src" "${deref[@]}" -cf - \
+  --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' . \
+  | tar -C "$dst" -xf -
+exit 0
+STUB
+chmod 755 "$RSYNC_MODEL_BIN/rsync"
+OUT_DIRLINK="$TMP/backups-dirlink"; mkdir -p "$OUT_DIRLINK"
+set +e
+RSYNC_STUB_DIR="$RSYNC_MODEL_BIN" run_backup "$DATA_DIRLINK" "$OUT_DIRLINK" cmd_backup >"$TMP/dirlink.out" 2>&1
+dirlink_rc=$?
+set -e
+(( dirlink_rc == 0 )) || { cat "$TMP/dirlink.out" >&2; fail "cmd_backup failed on a symlinked-directory fixture (rc=$dirlink_rc)"; }
+dirlink_db="$(find "$OUT_DIRLINK" -path '*/users/u2/cards.db' -type f | head -n 1)"
+[[ -n "$dirlink_db" ]] || fail "*.db under a symlinked directory was silently dropped from the backup"
+[[ ! -L "$(dirname "$dirlink_db")" ]] || fail "restored users/u2 is still a symlink; tar wrote through it"
+dirlink_count="$(sqlite3 "$dirlink_db" 'SELECT COUNT(*) FROM card;')"
+[[ "$dirlink_count" == 2 ]] \
+  || fail "symlinked-dir *.db not snapshotted (rows=$dirlink_count, want 2): remote find did not follow the directory symlink"
+[[ "$(sqlite3 "$OUTSIDE_ROOT/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')" == "$outside_before" ]] \
+  || fail "backup wrote through the symlink into the source directory"
+pass "*.db under a symlinked directory is snapshotted with its WAL rows"
+
+# ── 8. #3474：未變的 *.db 必須硬連結到增量基準，變動的不可連結 ─────────────────
+# *.db 不走 rsync --link-dest（改由一致快照 tar 拉回），因此必須在拉回後以位元組比對補硬連結。
+# 基準目錄 .INCOMPLETE 者不得成為基準。
+DATA_LINKB="$TMP/remote-linkb"
+make_wal_fixture "$DATA_LINKB"
+U2_SRC="$TMP/linkb-u2"
+make_wal_fixture "$U2_SRC"
+mkdir -p "$DATA_LINKB/users"
+mv "$U2_SRC/users/u1" "$DATA_LINKB/users/u2"
+OUT_LINKB="$TMP/backups-linkb"; mkdir -p "$OUT_LINKB"
+run_backup "$DATA_LINKB" "$OUT_LINKB" cmd_backup >"$TMP/linkb1.out" 2>&1 \
+  || { cat "$TMP/linkb1.out" >&2; fail "cmd_backup baseline run failed"; }
+# 同一分鐘內的兩次 run 目錄名相同：把第一份改名成更早的時間戳，使其成為下一次的增量基準。
+first_dir="$(find "$OUT_LINKB" -mindepth 1 -maxdepth 1 -type d -name 'data_*' | head -n 1)"
+[[ -n "$first_dir" ]] || fail "baseline run produced no data_* directory"
+mv "$first_dir" "$OUT_LINKB/data_20200101_0000"
+# 第二次 run 前只改 users/u1（變動），users/u2 保持不變（未變）。
+sqlite3 "$DATA_LINKB/users/u1/cards.db" "INSERT INTO card VALUES(3,'changed');" </dev/null
+run_backup "$DATA_LINKB" "$OUT_LINKB" cmd_backup >"$TMP/linkb2.out" 2>&1 \
+  || { cat "$TMP/linkb2.out" >&2; fail "cmd_backup incremental run failed"; }
+second_dir="$(find "$OUT_LINKB" -mindepth 1 -maxdepth 1 -type d -name 'data_*' ! -name 'data_20200101_0000' | head -n 1)"
+[[ -n "$second_dir" ]] || fail "incremental run produced no data_* directory"
+inode_of() { ls -i "$1" | awk '{print $1}'; }
+base_u2="$OUT_LINKB/data_20200101_0000/users/u2/cards.db"
+new_u2="$second_dir/users/u2/cards.db"
+base_u1="$OUT_LINKB/data_20200101_0000/users/u1/cards.db"
+new_u1="$second_dir/users/u1/cards.db"
+[[ "$(inode_of "$new_u2")" == "$(inode_of "$base_u2")" ]] \
+  || fail "unchanged users/u2/cards.db was not hardlinked to the incremental base"
+pass "unchanged *.db is hardlinked to the incremental base"
+[[ "$(inode_of "$new_u1")" != "$(inode_of "$base_u1")" ]] \
+  || fail "changed users/u1/cards.db was hardlinked to the stale base"
+[[ "$(sqlite3 "$new_u1" 'SELECT COUNT(*) FROM card;')" == 3 ]] \
+  || fail "changed users/u1/cards.db lost the new row"
+pass "changed *.db is not linked to the base and keeps its new content"
+
+# 基準帶 .INCOMPLETE：即使它是唯一候選，也不得被用來硬連結。
+OUT_INC="$TMP/backups-inc"; mkdir -p "$OUT_INC"
+run_backup "$DATA_LINKB" "$OUT_INC" cmd_backup >"$TMP/inc1.out" 2>&1 \
+  || { cat "$TMP/inc1.out" >&2; fail "cmd_backup incomplete-base fixture run failed"; }
+inc_first="$(find "$OUT_INC" -mindepth 1 -maxdepth 1 -type d -name 'data_*' | head -n 1)"
+mv "$inc_first" "$OUT_INC/data_20200101_0000"
+touch "$OUT_INC/data_20200101_0000/.INCOMPLETE"
+# 殘缺基準會在本次 run 結尾被 cleanup_old_backups 刪除，故先記下其 inode。
+inc_base_inode="$(inode_of "$OUT_INC/data_20200101_0000/users/u2/cards.db")"
+run_backup "$DATA_LINKB" "$OUT_INC" cmd_backup >"$TMP/inc2.out" 2>&1 \
+  || { cat "$TMP/inc2.out" >&2; fail "cmd_backup run with incomplete base failed"; }
+inc_second="$(find "$OUT_INC" -mindepth 1 -maxdepth 1 -type d -name 'data_*' ! -name 'data_20200101_0000' | head -n 1)"
+[[ -n "$inc_second" && -n "$inc_base_inode" ]] || fail "incomplete-base run produced no comparable backup"
+[[ "$(inode_of "$inc_second/users/u2/cards.db")" != "$inc_base_inode" ]] \
+  || fail ".INCOMPLETE base was used as the hardlink source"
+pass ".INCOMPLETE base is never used for hardlinks"
+
 printf 'backup snapshot: all checks passed\n'
