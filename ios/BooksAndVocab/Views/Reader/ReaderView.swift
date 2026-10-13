@@ -145,7 +145,12 @@ struct ReaderView: View {
             prepareRestoreState()
             await loadPublication()
         }
+        .onAppear {
+            // 閱讀頁面文字是整頁全出血，沒有安全的帶狀區給背景工作膠囊（#3116）。
+            AppJobCapsuleSuppression.shared.setHeld(true, by: "reader")
+        }
         .onDisappear {
+            AppJobCapsuleSuppression.shared.setHeld(false, by: "reader")
             // dismiss / pop 時取消 in-flight 翻譯 task，避免網路 Task
             // 續跑到完成後寫回已棄置的 handler（多餘網路/寫入）。
             // 用 onDisappear 而非 @MainActor @Observable 的 deinit

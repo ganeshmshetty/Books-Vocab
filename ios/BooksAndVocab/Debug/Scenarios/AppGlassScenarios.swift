@@ -13,6 +13,9 @@ enum AppGlassScenarios {
             Scenario("Surfaces and states", layout: .fillH) {
                 GlassSurfacesScene()
             }
+            Scenario("Background job capsule", layout: .fillH) {
+                GlassJobCapsuleScene()
+            }
         }
     }
 }
@@ -135,6 +138,45 @@ private struct GlassSurfacesScene: View {
                 )
 
                 AppSkeletonCard(lineCount: 3, showAvatar: true)
+            }
+            .padding(AppSpacing.s5)
+        }
+        .background(appTheme.palette.pageBackground.ignoresSafeArea())
+    }
+}
+
+/// 背景工作膠囊（#3116）的視覺基準：單一工作、多個工作、長單字、Dynamic Type accessibility3、深色。
+private struct GlassJobCapsuleScene: View {
+    @Environment(\.appTheme) private var appTheme
+
+    private static let single = AppJobCapsuleModel(entries: [
+        .init(jobKey: "single", word: "luminous", fraction: 0.4), // i18n-allow: debug-only visual review fixture
+    ])
+    private static let aggregate = AppJobCapsuleModel(entries: [
+        .init(jobKey: "a", word: "alpha", fraction: 0.2), // i18n-allow: debug-only visual review fixture
+        .init(jobKey: "b", word: "beta", fraction: 0.6), // i18n-allow: debug-only visual review fixture
+        .init(jobKey: "c", word: "gamma", fraction: 0.4), // i18n-allow: debug-only visual review fixture
+    ])
+    private static let longWord = AppJobCapsuleModel(entries: [
+        .init(jobKey: "long", word: "incomprehensibilities-nevertheless", fraction: 0.8), // i18n-allow: debug-only visual review fixture
+    ])
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: AppSpacing.s4) {
+                Text(L10n.string("Background job capsule")) // i18n-allow: debug-only visual review fixture
+                    .font(AppFonts.h2(weight: .semibold))
+                    .foregroundStyle(appTheme.palette.primaryText)
+
+                AppJobCapsule(model: Self.single, onOpen: { _ in })
+                AppJobCapsule(model: Self.aggregate, onOpen: { _ in })
+                AppJobCapsule(model: Self.longWord, onOpen: { _ in })
+                AppJobCapsule(model: Self.single, onOpen: { _ in })
+                    .environment(\.dynamicTypeSize, .accessibility3)
+                AppJobCapsule(model: Self.aggregate, onOpen: { _ in })
+                    .environment(\.colorScheme, .dark)
+                    .padding(AppSpacing.s3)
+                    .background(Color.black)
             }
             .padding(AppSpacing.s5)
         }

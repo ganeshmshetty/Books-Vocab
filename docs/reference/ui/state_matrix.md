@@ -185,6 +185,8 @@ Scope: `ios/BooksAndVocab`
 | 新增連結：完全成功 | operation `succeeded` 且本地 pull 成功 | sheet 自動關閉（`onLinked`）；來源卡出現一般連結 | 已覆蓋（單元 `AddLinkCreationFailureTests`） |
 | 新增連結：部分完成（sheet 開著） | `succeeded_with_warnings`（`enrichment_failed`／`link_projection_pending`）或本地 pull 失敗 | **不自動關閉**：`addLink.creation.warning` 顯示「已建立，但有一部分沒完成」，逐項 `addLink.creation.warning.item.<code>`；`addLink.creation.retry` 只重跑未完成部分（缺解釋→重排 pipeline，再 pull，不再 POST）；`addLink.creation.warning.done` 才關閉 | 已覆蓋（單元；UITest 為原始碼契約，live warning 情境未覆蓋） |
 | 新增連結：部分完成（sheet 已關） | 同上，但 sheet 先被關閉 | 來源卡項目顯示警示（value=`warning`），不會自行消失；詳情列出未完成部分＋`...pending.retry`＋`...pending.dismiss`（完成）；重試進行中按完成＝取消該重試並移除項目（`AddLinkCreationHub.dismiss` 先 `cancel()`，重試結束不會把項目帶回來） | 已覆蓋（單元） |
+| 新增連結：建立中（sheet 已關） 的背景膠囊 | hub 有 `.creating` 工作且沒有 sheet 呈現其 coordinator | 根層底部玻璃膠囊 `addLink.job.capsule`（單一工作報單字、多個報數量），value=整體百分比；點擊開最舊工作的 `PendingLinkDetailSheet`；閱讀器出現期間移開；沒有工作時不渲染 | 已覆蓋（單元 `AppJobCapsuleModelTests`；UITest 與 Catalog 截圖 NOT RUN） |
+| 新增連結：完成通知（sheet 已關） | 建立中的工作以 `.succeeded`／`.failed`／`.succeededWithWarnings` 結束，且無 sheet 呈現它 | 發一則 pill（成功 `success`、失敗 `error`、部分 `warning`），每個工作一個穩定 key、只發一次；sheet 開著時 hub 保持沉默，由 sheet 自己的 pill／面板回報 | 已覆蓋（單元 `AddLinkJobCompletionNoticeTests`） |
 | 新增連結：失敗分類 | operation `failed`／`interrupted`、client 逾時、輪詢 404、斷線 | `addLink.error.reason` value＝原因碼；文案依 `AddLinkCreationFailure`（額度、來源不可用、目標已封存、不能連到自己、服務不可用、伺服器中斷、逾時、請求已不存在、網路、登入）；不可重試者（封存／自己／來源不可用／額度／登入）不顯示重試；`addLink.creation.backToSearch` 回搜尋並移除該失敗 job | 已覆蓋（單元＋UITest 斷線路徑） |
 | 新增連結：輪詢逾時 | 一次嘗試（含 POST）超過 90 秒仍非終態 | 停止輪詢，失敗 `timed_out`（可重試，重試換新 key） | 已覆蓋（單元，fake clock） |
 | 新增連結：既有字連結中 | 點候選列 | 該列 `addLink.row.linking.<cardId>` 進度、所有列與建立鈕鎖定；再次點擊不重送 | 已覆蓋（單元） |

@@ -248,7 +248,8 @@ Books & Vocab 的 motion system 不接受各頁自由書寫 `.spring(...)` / `.e
 
 | 情境 | 用 | 例 |
 |------|----|----|
-| 一次性通知：已完成、背景結果、輕度警告／錯誤 | 頂端 pill：`toastCoordinator.success/info/warning/error` | 已複製、已刪除、同步完成、儲存失敗 |
+| 一次性通知：已完成、背景結果、輕度警告／錯誤 | 頂端 pill：`toastCoordinator.success/info/warning/error` | 已複製、已刪除、同步完成、儲存失敗、新增連結在 sheet 關閉後完成（#3116） |
+| 進行中工作的整體進度，且**沒有 sheet 呈現它** | 背景工作膠囊：根層底部玻璃膠囊（`AppJobCapsule`），點擊開明細（見下方「背景工作膠囊」） | 新增連結建立中、sheet 已關閉 |
 | 需要使用者決定或操作的**持續狀態**（重試、完成、關閉） | 畫面內面板：`AppStateMessageCard`（App Shell）／`VocabStateMessageCard`（Vocabulary 層）＋ `.appCompactAction` 具名按鈕 | 快取資料過期＋重試、刪除待同步＋重試、新增連結警告的重試／完成 |
 | 破壞性操作確認、需明確知悉的阻斷結果 | 系統 `.alert` / `.confirmationDialog` | 移除未同步單字、登入已過期、帳號刪除失敗 |
 | 持續性環境狀態（不是事件、也不需操作） | 既有專屬 strip：`AppOfflineBanner`、`DemoBanner` | 離線、Demo 模式 |
@@ -279,6 +280,19 @@ Books & Vocab 的 motion system 不接受各頁自由書寫 `.spring(...)` / `.e
 - **位置**：該畫面內容流頂端（受影響內容上方），隨內容捲動；不是 overlay。
 - **進出場**：插入點掛 `.transition(.statusRowReveal)`，容器以 `.animation(AppMotion.phaseChange, value: <狀態>)` 驅動，不得跳變。
 - **生命週期**：狀態解除（重試成功、使用者關閉）才消失；不自動計時消失。
+
+### 背景工作膠囊（#3116）
+
+第三種暫時性提示：**持續、非模態、可點、只報告狀態**。pill 是事件、會自動消失；畫面內面板需要使用者決定；膠囊既不是事件也不要求決定，只在有工作進行中時存在。
+
+- **元件**：`UIComponents/AppJobCapsule.swift`。`AppJobCapsuleModel` 是純資料投影（進行中工作、平均進度、點擊目標）；`AppJobCapsule` 是玻璃膠囊加細進度環（無描邊、無 elevation，`Button` 命中區 ≥ 44pt）；`.appJobCapsuleOverlay()` 把宿主掛在根層，與 `toastOverlay()` 同一層。選取器 `addLink.job.capsule`，VoiceOver value 為整體百分比。
+- **顯示**：至少一個 `AddLinkCreationHub.runningJobs` 時顯示；多個時報數量與平均進度。沒有工作時完全不渲染，因此不佔命中區。
+- **點擊**：開最舊那個工作的 `PendingLinkDetailSheet`（與待連結項目同一份明細）。
+- **閱讀器抑制**：閱讀頁面整頁全出血，沒有安全的帶狀區，`AppJobCapsuleSuppression`（以持有者為單位）在閱讀器出現期間移開膠囊，確保不遮住頁面文字。
+- **不提供取消**：伺服器無法取消建立，「停止追蹤」會誤導；v1 只開明細。
+- **完成通知**：工作在沒有 sheet 呈現它時結束，hub 發一則 pill（成功 `success`、失敗 `error`、部分完成 `warning`），key 為每個工作穩定的 `AddLinkJobNotice.key(jobKey:)`，不疊加。sheet 開著時 hub 保持沉默，由 sheet 自己的 pill 或面板回報，避免兩則。
+- **動效**：進出場 `AppMotion.panelState` 驅動 `AnyTransition.readerPanelReveal`，Reduce Motion 改 `overlayFade`；進度環用 `AppMotion.feedbackPulse`。
+- **位置未驗證**：根層底部，`AppJobCapsuleMetrics.bottomClearance` 讓出浮動 tab bar。此數值尚未以 Catalog 截圖或真機確認，列為待驗證。
 
 ---
 

@@ -32,6 +32,13 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// The signed-in account, read when a job is stamped and when stored jobs are
     /// resumed (never cached: an account switch changes it under a long-lived hub).
     @ObservationIgnored private let userIDProvider: @MainActor () -> String?
+    /// Receives the completion notice of a job no sheet shows (#3116). Weak: the app
+    /// root owns the toast coordinator for its whole life.
+    @ObservationIgnored weak var outcomePoster: (any AddLinkJobOutcomePosting)?
+    /// Coordinators whose sheet is on screen; their own pill or panel carries the outcome.
+    /// Weak, never raw `ObjectIdentifier`: a freed coordinator's address can be reused by a
+    /// later job, which would then have its completion notice silenced (#3116).
+    @ObservationIgnored private var presentingCoordinators: [WeakCoordinator] = []
 
     init(
         store: any PendingLinkCreationStoring = PendingLinkCreationStores.makeDefault(),
@@ -55,6 +62,25 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
 
     func job(forJobKey jobKey: String) -> Job? { jobs[jobKey] }
 
+    /// Jobs still creating, oldest first: what the job capsule represents (#3116).
+    var runningJobs: [Job] {
+        jobs.values
+            .filter { $0.record.state == .creating }
+            .sorted { $0.record.createdAt < $1.record.createdAt }
+    }
+
+    /// The sheet that owns `coordinator` is on screen. Its own pill or panel carries
+    /// the outcome, so the hub posts nothing for that job (#3116).
+    func sheetDidAppear(_ coordinator: AddLinkCreationCoordinator) {
+        prunePresentingCoordinators()
+        guard !isPresenting(coordinator) else { return }
+        presentingCoordinators.append(WeakCoordinator(value: coordinator))
+    }
+
+    func sheetDidDisappear(_ coordinator: AddLinkCreationCoordinator) {
+        presentingCoordinators.removeAll { $0.value == nil || $0.value === coordinator }
+    }
+
     /// Source card ids whose cached card must be rebuilt because their pending
     /// links changed. Consumed by the review screen that owns the card cache.
     func takeDirtySourceCardIDs() -> Set<String> {
@@ -66,6 +92,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
 
     func creationDidChange(_ coordinator: AddLinkCreationCoordinator) {
         guard let state = coordinator.jobState else { return }
+        let notice = unattendedNotice(for: state, coordinator: coordinator)
         switch state.phase {
         case .running:
             upsert(from: state, coordinator: coordinator, recordState: .creating)
@@ -87,6 +114,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         case .blocked:
             break
         }
+        if let notice { outcomePoster?.postJobOutcome(notice) }
     }
 
     func creationIsActive(jobKey: String, excluding coordinator: AddLinkCreationCoordinator) -> Bool {
@@ -212,6 +240,32 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         return live === coordinator
     }
 
+    private func isPresenting(_ coordinator: AddLinkCreationCoordinator) -> Bool {
+        presentingCoordinators.contains { $0.value === coordinator }
+    }
+
+    private func prunePresentingCoordinators() {
+        presentingCoordinators.removeAll { $0.value == nil }
+    }
+
+    /// The completion notice for a job that was running, is still owned by
+    /// `coordinator`, and has no sheet on screen. Read before the upsert/remove so
+    /// the previous record state still says "running" (#3116).
+    private func unattendedNotice(
+        for state: AddLinkCreationJobState,
+        coordinator: AddLinkCreationCoordinator
+    ) -> AppToastItem? {
+        guard jobs[state.jobKey]?.record.state == .creating,
+              owns(coordinator, jobKey: state.jobKey),
+              !isPresenting(coordinator) else { return nil }
+        return AddLinkJobNotice.item(
+            phase: state.phase,
+            jobKey: state.jobKey,
+            word: state.word,
+            message: state.message
+        )
+    }
+
     private func upsert(
         from state: AddLinkCreationJobState,
         coordinator: AddLinkCreationCoordinator,
@@ -284,5 +338,57 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
         )
         descriptor.fetchLimit = 1
         return try? context.fetch(descriptor).first
+    }
+}
+
+/// Holds a sheet's coordinator without keeping it alive (#3116).
+private struct WeakCoordinator {
+    weak var value: AddLinkCreationCoordinator?
+}
+
+/// Where a completion notice goes. `AppToastCoordinator` is the production sink.
+@MainActor
+protocol AddLinkJobOutcomePosting: AnyObject {
+    func postJobOutcome(_ item: AppToastItem)
+}
+
+extension AppToastCoordinator: AddLinkJobOutcomePosting {
+    func postJobOutcome(_ item: AppToastItem) {
+        show(item)
+    }
+}
+
+/// Completion copy for a job that finished while no sheet shows it (#3116). The key
+/// is stable per job, so one job never stacks two pills.
+enum AddLinkJobNotice {
+    static func key(jobKey: String) -> String {
+        "addLink.job.notice|\(jobKey)"
+    }
+
+    static func item(
+        phase: AddLinkCreationPhase,
+        jobKey: String,
+        word: String,
+        message: String?
+    ) -> AppToastItem? {
+        let key = key(jobKey: jobKey)
+        switch phase {
+        case .succeeded:
+            return AppToastItem(
+                message: L10n.format("addLink.job.notice.succeeded", word),
+                style: .success,
+                key: key
+            )
+        case .failed:
+            return AppToastItem(message: message ?? L10n.string("新增連結失敗"), style: .error, key: key)
+        case .succeededWithWarnings:
+            return AppToastItem(
+                message: message ?? L10n.string("addLink.creation.warning.summary"),
+                style: .warning,
+                key: key
+            )
+        case .idle, .running, .cancelled, .blocked:
+            return nil
+        }
     }
 }

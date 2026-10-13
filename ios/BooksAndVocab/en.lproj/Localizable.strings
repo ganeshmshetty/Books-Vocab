@@ -1433,6 +1433,10 @@
 
 /* #2862: tap-to-expand hint for a truncated toast pill */
 "toast.expand.hint" = "Tap to show the full message";
+"addLink.job.capsule.single" = "Adding: %@";
+"addLink.job.capsule.multi" = "%@ links in progress";
+"addLink.job.capsule.hint" = "Tap to see progress";
+"addLink.job.notice.succeeded" = "Link added: %@";
 "翻譯需為 1 至 1000 字，教學筆記最多 5000 字" = "Translation must be 1 to 1000 characters; study notes up to 5000.";
 /* #3129: linked-card overlay title fallback when the word is empty */
 "連結卡片" = "Linked Card";
