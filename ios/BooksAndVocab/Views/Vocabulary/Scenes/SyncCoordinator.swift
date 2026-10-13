@@ -81,8 +81,10 @@ final class SyncCoordinator: SyncCoordinating {
     /// 而此旗標只在使用者主動取消時為 true。
     @ObservationIgnored private var wasCancelledByUser = false
 
-    init(executor: any VocabularySyncExecuting = VocabularySyncEngine()) {
-        self.executor = executor
+    /// 預設執行器在 init body 內建立（已屬 MainActor 隔離）。不可寫成預設參數：預設參數
+    /// 於呼叫端的非隔離同步上下文求值，直接呼叫 `@MainActor` 的 `VocabularySyncEngine()` 會編譯失敗（#3407）。
+    init(executor: (any VocabularySyncExecuting)? = nil) {
+        self.executor = executor ?? VocabularySyncEngine()
     }
 
     func buildSteps(deleteCount: Int, addCount: Int) {
