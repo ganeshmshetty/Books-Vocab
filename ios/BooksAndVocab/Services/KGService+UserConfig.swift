@@ -176,7 +176,22 @@ extension KGService {
         return config
     }
 
+    /// #3417: a 401 here is returned, not turned into a generic session teardown. The caller
+    /// (`SettingsCoordinator.deleteAccount`) has already captured the account id, and
+    /// `logoutAfterAccountDeletion` then erases that account's local data and namespaced
+    /// preferences. A plain http_401 logout would skip the namespaced preference purge.
     func deleteAccount() async throws {
-        try await authenticatedVoid(path: "api/user/account", method: "DELETE")
+        let (data, response) = try await authenticatedRequest(
+            path: "api/user/account",
+            method: "DELETE",
+            retryPolicy: .none,
+            unauthorized: .returnResponse
+        )
+        guard response.statusCode == 401 || (200...299).contains(response.statusCode) else {
+            throw KGError.httpError(
+                statusCode: response.statusCode,
+                detail: String(data: data, encoding: .utf8) ?? "DELETE api/user/account failed"
+            )
+        }
     }
 }
