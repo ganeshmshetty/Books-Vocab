@@ -113,6 +113,51 @@ for p in backend/ops_cli.py backend/ops_edit.py backend/src/kg/ops_edit_app.py b
     '{"backend":true,"ops":true,"ios":false}'
 done
 
+# Issue #3440: fixtures that ios/BooksAndVocabTests and the app-side fixture
+# resolver read by path must select the iOS suite (and ui-smoke), not ops only.
+for p in ops/demo/ui_world_seed/history_plan.json ops/demo/generated/ios_fixture_dataset.json ops/fixtures/assets/reader-real-book.epub; do
+  assert_plan "iOS-read fixture selects ops plus iOS (#3440): $p" \
+    "$p" \
+    '{"backend":false,"ops":true,"ios":true}'
+done
+# docs/sop/architecture.md is read by backend test_library_assets (#3440): it must
+# select backend confidence instead of an empty plan.
+assert_plan 'architecture.md read by backend tests selects backend only (#3440)' \
+  'docs/sop/architecture.md' \
+  '{"backend":true,"ops":false,"ios":false}'
+if grep -Fqx "      - 'docs/sop/architecture.md'" "$ROOT/.github/workflows/backend-quality.yml"; then
+  pass 'backend-quality push paths mirror architecture.md route (#3440)'
+else
+  fail 'backend-quality push paths omit docs/sop/architecture.md (#3440)'
+fi
+
+# Issue #3440 audit: every quoted repo-root path literal read by a suite must
+# enable that suite's confidence lane (ios/BooksAndVocabTests -> ios,
+# backend/tests -> backend). Scans literals only; computed joins are not visible.
+audit_paths() { # dir pattern-prefix; prints unique normalized literal paths
+  grep -rhoE "[\"'](docs|ops|lab|scripts|backend|ios|\.github|\.claude)/[A-Za-z0-9_./+-]*\.[A-Za-z0-9]+[\"']" "$1" \
+    | tr -d "\"'" | grep -vE '\.\.|/\./|//' | sort -u
+}
+audit_count=0
+audit_check() { # suite-key source-dir
+  local suite="$1" dir="$2" audit_path audit_plan
+  while IFS= read -r audit_path; do
+    audit_count=$((audit_count + 1))
+    if ! audit_plan="$(printf '%s\n' "$audit_path" | "$ROUTER" --paths-stdin --format json)"; then
+      fail "audit: router failed on $audit_path"
+      continue
+    fi
+    if jq -e --arg s "$suite" '.[$s] == true' <<<"$audit_plan" >/dev/null; then
+      pass "audit: $dir reads $audit_path -> $suite (#3440)"
+    else
+      fail "audit: $dir reads $audit_path but $suite is not selected (#3440): $audit_plan"
+    fi
+  done < <(audit_paths "$dir")
+}
+audit_check ios "$ROOT/ios/BooksAndVocabTests"
+audit_check backend "$ROOT/backend/tests"
+[[ "$audit_count" -gt 0 ]] || fail 'audit: scanned no test-read paths (#3440 scan pattern broken)'
+
 # macOS runner scope (Issue #2641). `macos_ops` gates the macOS native ops job
 # and `ui_smoke` gates the ui-smoke leg; both fail closed (select_all and every
 # unclassified path turn them on).
@@ -135,7 +180,7 @@ done
 for p in docs/sop/ios.md ops/backup_verify.sh ops/review_flip_probe.sh ops/ui_quality_plane.py ops/app_review/2.0.0.json ops/app_review_evidence.py ops/app_review_gate.py ops/asc.sh ops/asc_text_bundle.py ops/sentry_release.sh ops/sentry_tool.py ops/sentry_api.py ops/kg_disk_guard.sh ops/kg_reconcile.sh ops/release.sh ops/p9_review_calendar_evidence.py ops/lldb_crash_forensics.py ops/install_lldb_forensics.sh ops/tests/test_ios_ops_release_heartbeat.sh ops/tests/test_lldb_crash_forensics.sh ops/tests/test_sentry_wiring.sh ops/test_ios_ops.sh ops/test_ops.sh ops/ci_macos_queue_probe.sh ops/tests/test_ci_macos_queue_probe.sh .github/workflows/ops-suite.yml; do
   assert_macos "macOS native ops only for $p (#2641)" "$p" true false
 done
-for p in ios/BooksAndVocab/Views/Foo.swift ops/fixtures/ui_worlds/marketing_demo.json .github/workflows/ios-quality.yml; do
+for p in ios/BooksAndVocab/Views/Foo.swift ops/fixtures/ui_worlds/marketing_demo.json ops/demo/ui_world_seed/history_plan.json ops/demo/generated/ios_fixture_dataset.json ops/fixtures/assets/reader-real-book.epub .github/workflows/ios-quality.yml; do
   assert_macos "ui-smoke only for $p (#2641)" "$p" false true
 done
 # Helpers the iOS entrypoints run or source change what the ui-smoke leg executes,
