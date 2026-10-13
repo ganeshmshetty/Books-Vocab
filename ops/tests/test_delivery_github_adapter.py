@@ -132,8 +132,9 @@ def _queue_configuration_payload(*, configured: bool) -> dict[str, object]:
     }
 
 
-def test_github_json_query_retries_transient_failure_once() -> None:
-    repo = Path("/tmp/kg-github-retry")
+def test_github_json_query_retries_transient_failure_once(tmp_path: Path) -> None:
+    # The repo must exist: a missing path makes the client fall back to an ancestor cwd.
+    repo = tmp_path
     argv = ("gh", "repo", "view", "--json", "nameWithOwner")
     runner = StaticRunner(
         [
@@ -166,8 +167,10 @@ def test_github_json_query_retries_timed_out_result_once() -> None:
     assert runner.calls == [argv, argv]
 
 
-def test_github_json_query_retry_exhaustion_preserves_command_failure() -> None:
-    repo = Path("/tmp/kg-github-retry")
+def test_github_json_query_retry_exhaustion_preserves_command_failure(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path
     argv = ("gh", "repo", "view", "--json", "nameWithOwner")
     first = CommandResult(argv, 1, "", "connection reset by peer")
     second = CommandResult(argv, 1, "", "connection refused")
@@ -301,8 +304,8 @@ def test_github_graphql_query_with_flags_before_endpoint_retries() -> None:
     assert runner.calls == [_with_include(argv), _with_include(argv)]
 
 
-def test_github_json_query_exposes_each_command_attempt() -> None:
-    repo = Path("/tmp/kg-github-retry")
+def test_github_json_query_exposes_each_command_attempt(tmp_path: Path) -> None:
+    repo = tmp_path
     argv = ("gh", "repo", "view", "--json", "nameWithOwner")
     first = CommandResult(argv, 1, "", "connection reset by peer")
     second = CommandResult(argv, 0, '{"nameWithOwner":"owner/repo"}', "")
