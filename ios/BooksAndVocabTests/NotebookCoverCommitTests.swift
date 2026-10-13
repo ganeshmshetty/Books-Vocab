@@ -75,6 +75,42 @@ struct NotebookCoverCommitTests {
         try? FileManager.default.removeItem(atPath: path)
     }
 
+    // MARK: - discardUncommittedStaged（sheet 關閉路徑，#3414）
+
+    /// #3414：sheet 未提交即關閉（swipe down / 取消）→ staged 新圖必須被清掉，原圖保留。
+    @Test func dismissWithoutCommitDiscardsStagedCover() throws {
+        let original = try writeTempJPEG()
+        let staged = try writeTempJPEG()
+
+        NotebookCoverCommit.discardUncommittedStaged(staged: staged, original: original, committed: false)
+
+        #expect(!FileManager.default.fileExists(atPath: staged))
+        #expect(FileManager.default.fileExists(atPath: original))
+        try? FileManager.default.removeItem(atPath: original)
+    }
+
+    /// #3414：已交給 onSave（committed）→ 不可刪，改由 coordinator 的 API / save 失敗路徑負責。
+    @Test func dismissAfterCommitKeepsStagedCover() throws {
+        let original = try writeTempJPEG()
+        let staged = try writeTempJPEG()
+
+        NotebookCoverCommit.discardUncommittedStaged(staged: staged, original: original, committed: true)
+
+        #expect(FileManager.default.fileExists(atPath: staged))
+        try? FileManager.default.removeItem(atPath: original)
+        try? FileManager.default.removeItem(atPath: staged)
+    }
+
+    /// #3414：未換圖（staged == original）即使未提交也絕不刪原圖。
+    @Test func dismissWithUnchangedCoverKeepsOriginal() throws {
+        let path = try writeTempJPEG()
+
+        NotebookCoverCommit.discardUncommittedStaged(staged: path, original: path, committed: false)
+
+        #expect(FileManager.default.fileExists(atPath: path))
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
     /// 模擬 API **失敗路徑**：`removeStaleFile` 從不被呼叫 → 舊圖必然保留，
     /// 可在重試 / 取消時恢復。此處直接驗證「不呼叫即不刪」的安全保證。
     @Test func failurePathNeverTouchesOldImage() throws {
