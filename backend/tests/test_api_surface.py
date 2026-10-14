@@ -575,12 +575,12 @@ def test_auth_verify_links_google_and_apple_by_email(isolated_api):
             patch.object(
                 auth_router_mod,
                 "verify_google_token",
-                new=AsyncMock(return_value=("google-sub", "same@example.com", True)),
+                new=AsyncMock(return_value=("google-sub", "same@gmail.com", True)),
             ),
             patch.object(
                 auth_router_mod,
                 "verify_apple_token",
-                return_value=("apple-sub", "same@example.com", True),
+                return_value=("apple-sub", "same@gmail.com", True),
             ),
         ):
             # Linkage now driven by *token-derived verified email*, NOT by
@@ -601,7 +601,7 @@ def test_auth_verify_links_google_and_apple_by_email(isolated_api):
             assert r_apple.json()["user_id"] == "google-sub"
 
         users_data = json.loads(isolated_api.users_file.read_text())
-        assert users_data["_email_index"]["same@example.com"] == "google-sub"
+        assert users_data["_email_index"]["same@gmail.com"] == "google-sub"
         assert users_data["google-sub"]["linked_ids"] == ["apple-sub"]
         assert users_data["apple-sub"]["_linked_to"] == "google-sub"
 

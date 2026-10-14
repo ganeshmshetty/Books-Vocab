@@ -54,9 +54,12 @@ def _build_handler_kwargs(tmp_path, *, google_sub, google_email, google_email_ve
 
     def link(provider_user_id, provider, email=None):
         return resolve_and_link_user(
-            provider_user_id, provider,
+            provider_user_id,
+            provider,
             users_lock_file=lock,
-            load_users_fn=load, save_users_fn=save, email=email,
+            load_users_fn=load,
+            save_users_fn=save,
+            email=email,
         )
 
     def jwt(user_id, provider):
@@ -84,12 +87,12 @@ async def test_client_supplied_email_cannot_link_to_victim(tmp_path):
     users_file, kwargs = _build_handler_kwargs(
         tmp_path,
         google_sub="attacker_sub",
-        google_email="attacker@x.com",
+        google_email="attacker@gmail.com",
         google_email_verified=True,
     )
-    _seed_victim(users_file, "victim@x.com", victim_id="victim-sub")
+    _seed_victim(users_file, "victim@gmail.com", victim_id="victim-sub")
 
-    req = AuthVerifyRequest(provider="google", token="g-token", email="victim@x.com")
+    req = AuthVerifyRequest(provider="google", token="g-token", email="victim@gmail.com")
     resp = await auth_verify_response(req, **kwargs)
 
     # Attacker gets their own canonical id, NOT the victim's.
@@ -100,9 +103,9 @@ async def test_client_supplied_email_cannot_link_to_victim(tmp_path):
     assert "victim-sub" in users
     assert users["victim-sub"].get("linked_ids", []) == []
     # Email index for victim still points to victim.
-    assert users["_email_index"]["victim@x.com"] == "victim-sub"
+    assert users["_email_index"]["victim@gmail.com"] == "victim-sub"
     # Attacker linked under their own token email only.
-    assert users["_email_index"].get("attacker@x.com") == "attacker_sub"
+    assert users["_email_index"].get("attacker@gmail.com") == "attacker_sub"
     # Attacker NOT linked under victim email.
     assert users["attacker_sub"].get("_linked_to") is None
 
@@ -117,13 +120,13 @@ async def test_unverified_token_email_does_not_link_existing_user(tmp_path):
     users_file, kwargs = _build_handler_kwargs(
         tmp_path,
         google_sub="new_sub",
-        google_email="existing@x.com",
+        google_email="existing@gmail.com",
         google_email_verified=False,
     )
     # Pre-existing user with same email (verified earlier some other way).
-    _seed_victim(users_file, "existing@x.com", victim_id="existing-sub")
+    _seed_victim(users_file, "existing@gmail.com", victim_id="existing-sub")
 
-    req = AuthVerifyRequest(provider="google", token="g-token", email="existing@x.com")
+    req = AuthVerifyRequest(provider="google", token="g-token", email="existing@gmail.com")
     resp = await auth_verify_response(req, **kwargs)
 
     # Independent account.
@@ -133,5 +136,5 @@ async def test_unverified_token_email_does_not_link_existing_user(tmp_path):
     assert "existing-sub" in users
     assert users["existing-sub"].get("linked_ids", []) == []
     # Email index for existing user untouched (still points to existing-sub).
-    assert users["_email_index"]["existing@x.com"] == "existing-sub"
+    assert users["_email_index"]["existing@gmail.com"] == "existing-sub"
     assert users["new_sub"].get("_linked_to") is None

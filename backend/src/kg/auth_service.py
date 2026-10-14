@@ -41,27 +41,57 @@ def create_jwt_token(
 
 
 _GOOGLE_CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+# Domains whose mailboxes Apple provisions itself (iCloud Mail, the private
+# relay) plus the consumer domains it also checks against the issuing provider.
+_APPLE_AUTHORITATIVE_DOMAINS = frozenset(
+    {"icloud.com", "me.com", "mac.com", "privaterelay.appleid.com"} | _GOOGLE_CONSUMER_DOMAINS
+)
 
 
 def _email_is_authoritative(provider: str, email: str, hd: str | None) -> bool:
     """Whether ``provider`` is the authority for the (already verified) ``email``.
 
-    Apple verifies every address it reports. Google only owns consumer
+    Only authoritative addresses are written to or looked up in
+    ``_email_index``; a provider's ``email_verified`` flag elsewhere records a
+    past check, not current control of the mailbox. Google owns consumer
     addresses and addresses of a Workspace domain whose ``hd`` claim matches;
-    for any other domain ``email_verified`` records a past check, not current
-    control of the mailbox.
+    Apple owns its own domains. Unknown providers and malformed addresses are
+    never authoritative.
     """
+    local, _, domain = email.rpartition("@")
+    domain = domain.lower()
+    if not local or not domain:
+        return False
     if provider == "apple":
-        return True
+        return domain in _APPLE_AUTHORITATIVE_DOMAINS
     if provider == "google":
-        domain = email.rpartition("@")[2]
-        return domain in _GOOGLE_CONSUMER_DOMAINS or (bool(hd) and hd == domain)
+        return domain in _GOOGLE_CONSUMER_DOMAINS or (bool(hd) and hd.lower() == domain)
     return False
 
 
 def _is_independent_account(record: object) -> bool:
     """A user record holding real account state (anything beyond a bare link pointer)."""
     return isinstance(record, dict) and any(key != "_linked_to" for key in record)
+
+
+def _indexed_owner(users: UsersPayload, email: str | None) -> str | None:
+    """Account an address is indexed to, ignoring entries whose account no longer exists.
+
+    An entry naming a link pointer (``_linked_to``) resolves to that pointer's
+    canonical account, so an address is never owned by a pointer record.
+    """
+    owner = users["_email_index"].get(email) if email else None
+    if not (isinstance(owner, str) and not owner.startswith("_") and isinstance(users.get(owner), dict)):
+        return None
+    canonical = users[owner].get("_linked_to")
+    if (
+        isinstance(canonical, str)
+        and canonical != owner
+        and not canonical.startswith("_")
+        and isinstance(users.get(canonical), dict)
+    ):
+        return canonical
+    return owner
 
 
 def resolve_and_link_user(
@@ -93,6 +123,10 @@ def resolve_and_link_user(
         # Email written onto the canonical record. None means "keep what is
         # stored", exactly like Apple's email-less follow-up sign-ins.
         profile_email = email
+        # Only an address this provider is the authority for takes part in
+        # linking: it is the only kind that is indexed or looked up.
+        link_email = email if email and _email_is_authoritative(provider, email, hd) else None
+        email_owner = _indexed_owner(users, link_email)
 
         if has_valid_link:
             # A linked provider id always resolves to its canonical, whatever
@@ -101,39 +135,30 @@ def resolve_and_link_user(
             # session whose account deletion reaches the canonical through
             # this `_linked_to` pointer.
             canonical_id = linked_canonical_id
-            if email:
-                email_owner = users["_email_index"].get(email)
-                if email_owner is None or email_owner == provider_user_id:
-                    # Unindexed, or still indexed to this linked id (its own
-                    # pre-merge email, or a split left by #2256): an alias of
-                    # the canonical.
-                    users["_email_index"][email] = canonical_id
-                elif email_owner != canonical_id:
-                    # Owned by a different canonical: never re-link or move the
-                    # index silently, and never copy that account's email here.
-                    profile_email = None
+            if link_email and email_owner in (None, canonical_id):
+                # Unindexed, or indexed to this canonical already: directly, or
+                # through this linked id's pointer (its own pre-merge email, or
+                # a split left by #2256), which resolves to the canonical. An
+                # address owned by a different canonical is never re-pointed,
+                # and earlier entries are left as they are.
+                users["_email_index"][link_email] = canonical_id
         elif (
-            email
-            and email in users["_email_index"]
-            and users["_email_index"][email] != provider_user_id
-            and (not _email_is_authoritative(provider, email, hd) or _is_independent_account(existing_user))
+            link_email
+            and email_owner is not None
+            and email_owner != provider_user_id
+            and _is_independent_account(existing_user)
         ):
-            # Either the provider cannot vouch for this address, or this id
-            # already is an independent account with its own data and
-            # subscription. Neither is re-pointed at the address's owner: the
-            # id keeps resolving to itself and the index keeps its owner.
+            # This id already is an independent account with its own data and
+            # subscription: it is not re-pointed at the address's owner, it
+            # keeps resolving to itself and the index keeps its owner.
             canonical_id = provider_user_id
-            if canonical_id not in users:
-                users[canonical_id] = {}
-            profile_email = None
-            if _is_independent_account(existing_user):
-                logger.warning(
-                    "auth: existing account %s signed in with an email indexed to %s; not linking (merge manually)",
-                    provider_user_id,
-                    users["_email_index"][email],
-                )
-        elif email and email in users["_email_index"]:
-            canonical_id = users["_email_index"][email]
+            logger.warning(
+                "auth: existing account %s signed in with an email indexed to %s; not linking (merge manually)",
+                provider_user_id,
+                email_owner,
+            )
+        elif link_email and email_owner is not None:
+            canonical_id = email_owner
 
             if canonical_id != provider_user_id:
                 if "linked_ids" not in users[canonical_id]:
@@ -149,8 +174,8 @@ def resolve_and_link_user(
             canonical_id = provider_user_id
             if canonical_id not in users:
                 users[canonical_id] = {}
-            if email:
-                users["_email_index"][email] = canonical_id
+            if link_email:
+                users["_email_index"][link_email] = canonical_id
 
         if canonical_id not in users:
             users[canonical_id] = {}
@@ -160,6 +185,10 @@ def resolve_and_link_user(
             # invalid (has_valid_link was false). Drop it: deletion from this
             # session must not fan out through a pointer login ignored.
             users[canonical_id].pop("_linked_to", None)
+
+        # Never copy an address indexed to another account onto this record.
+        if profile_email and _indexed_owner(users, profile_email) not in (None, canonical_id, provider_user_id):
+            profile_email = None
 
         users[canonical_id]["provider"] = provider
         # Apple omits email on follow-up sign-ins. Preserve the verified

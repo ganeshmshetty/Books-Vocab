@@ -39,7 +39,7 @@ def test_resolve_and_link_user_merges_by_email(tmp_path):
         users_lock_file=str(lock_file),
         load_users_fn=load_users,
         save_users_fn=save_users,
-        email="same@example.com",
+        email="same@gmail.com",
     )
     assert canonical == "google-sub"
 
@@ -49,12 +49,12 @@ def test_resolve_and_link_user_merges_by_email(tmp_path):
         users_lock_file=str(lock_file),
         load_users_fn=load_users,
         save_users_fn=save_users,
-        email="same@example.com",
+        email="same@gmail.com",
     )
     assert linked == "google-sub"
 
     stored = json.loads(users_file.read_text())
-    assert stored["_email_index"]["same@example.com"] == "google-sub"
+    assert stored["_email_index"]["same@gmail.com"] == "google-sub"
     assert stored["google-sub"]["linked_ids"] == ["apple-sub"]
     assert stored["apple-sub"]["_linked_to"] == "google-sub"
 
@@ -117,7 +117,7 @@ def test_repeated_login_updates_last_login_without_duplicating(tmp_path):
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
-        email="u@example.com",
+        email="u@gmail.com",
     )
     first_login = json.loads(users_file.read_text())["user-1"]["last_login"]
 
@@ -127,7 +127,7 @@ def test_repeated_login_updates_last_login_without_duplicating(tmp_path):
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
-        email="u@example.com",
+        email="u@gmail.com",
     )
     stored = json.loads(users_file.read_text())
     second_login = stored["user-1"]["last_login"]
@@ -136,7 +136,7 @@ def test_repeated_login_updates_last_login_without_duplicating(tmp_path):
     # no linked_ids — same user, not a merge
     assert "linked_ids" not in stored["user-1"]
     # email_index still points to the same id
-    assert stored["_email_index"]["u@example.com"] == "user-1"
+    assert stored["_email_index"]["u@gmail.com"] == "user-1"
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ def test_repeated_login_updates_last_login_without_duplicating(tmp_path):
 
 def test_three_providers_same_email_all_link_to_first(tmp_path):
     users_file, lock, load, save = _make_store(tmp_path)
-    email = "shared@example.com"
+    email = "shared@gmail.com"
 
     first = resolve_and_link_user(
         "google-1",
