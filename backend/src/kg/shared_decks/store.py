@@ -312,6 +312,13 @@ class SharedDeckStore:
                 return None
             return deck
 
+    def get_any(self, deck_id: str) -> SharedDeck | None:
+        """Return a deck row regardless of discoverability. Internal only: copy
+        replay and the reveal sweep settle copies of decks that may since have
+        been hidden or unpublished (#3898). Never expose through browse or get."""
+        with Session(self.engine) as session:
+            return session.get(SharedDeck, deck_id)
+
     def browse(
         self,
         *,
@@ -409,6 +416,14 @@ class SharedDeckStore:
         """Look up a prior copy by its idempotency key (transport-retry replay)."""
         with Session(self.engine) as session:
             return session.get(SharedDeckCopyLog, (copier_id, idempotency_key))
+
+    def list_uncounted_copies(self) -> list[SharedDeckCopyLog]:
+        """Copy-log rows whose reveal marker is unset: committed copies whose
+        reveal did not finish. Input to the reveal sweep (#3897)."""
+        with Session(self.engine) as session:
+            return list(
+                session.exec(select(SharedDeckCopyLog).where(SharedDeckCopyLog.download_counted.is_(False))).all()
+            )
 
     def has_copy_log_for_notebook(self, notebook_id: str) -> bool:
         """True when a copy_log row points at ``notebook_id`` (copy is committed)."""

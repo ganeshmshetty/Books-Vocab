@@ -70,6 +70,7 @@ def create_app(settings: KGSettings | None = None) -> FastAPI:
     from . import runtime_data_root
     from .pipeline_log import reap_orphaned_runs
     from .service_factories import reset_async_clients, reset_clients
+    from .shared_decks.copy import reveal_uncounted_copies, run_reveal_sweep_forever
     from .shared_decks.reaper import reap_stale_staged_copies
     from .vocab_add_link_operation import reap_interrupted_operations
     from .worker_guard import assert_single_worker, release_worker_lock
@@ -92,6 +93,10 @@ def create_app(settings: KGSettings | None = None) -> FastAPI:
                 reap_stale_staged_copies_fn=partial(
                     reap_stale_staged_copies, shared_decks_path=settings.shared_decks_path
                 ),
+                reveal_uncounted_copies_fn=partial(
+                    reveal_uncounted_copies, shared_decks_path=settings.shared_decks_path
+                ),
+                reveal_sweep_loop_fn=partial(run_reveal_sweep_forever, shared_decks_path=settings.shared_decks_path),
                 log_retention_loop_fn=LogRetentionScheduler().run_forever,
             )
         ),

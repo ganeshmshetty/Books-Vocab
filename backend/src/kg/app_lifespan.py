@@ -32,6 +32,10 @@ class AppLifespanDependencies:
     reset_async_clients_fn: Callable[[], Awaitable[None]]
     # Optional: compensates orphaned staged shared-deck copies (#2269).
     reap_stale_staged_copies_fn: Callable[[Path], int] | None = None
+    # Optional: finishes committed shared-deck copies whose reveal raised (#3897).
+    # Runs once at startup, then periodically via reveal_sweep_loop_fn.
+    reveal_uncounted_copies_fn: Callable[[Path], int] | None = None
+    reveal_sweep_loop_fn: Callable[[Path], Awaitable[None]] | None = None
     # Optional: the daily log-retention loop (#2091). Started once the worker
     # lock is held and cancelled before that lock is released.
     log_retention_loop_fn: Callable[[], Awaitable[None]] | None = None
@@ -69,6 +73,11 @@ def build_app_lifespan_from_dependencies(
                 if dependencies.reap_stale_staged_copies_fn is not None
                 else 0
             )
+            revealed_copies = (
+                dependencies.reveal_uncounted_copies_fn(data_root)
+                if dependencies.reveal_uncounted_copies_fn is not None
+                else 0
+            )
         except BaseException:
             dependencies.release_worker_lock_fn()
             worker_lock_path.unlink(missing_ok=True)
@@ -85,10 +94,17 @@ def build_app_lifespan_from_dependencies(
             )
         if reaped_staged:
             dependencies.logger.info("Reaped %d orphaned staged shared-deck copy(ies)", reaped_staged)
+        if revealed_copies:
+            dependencies.logger.info("Revealed %d committed shared-deck copy(ies) left unrevealed", revealed_copies)
         dependencies.bind_runtime_data_root_fn(data_root)
         retention_task = (
             asyncio.create_task(dependencies.log_retention_loop_fn())
             if dependencies.log_retention_loop_fn is not None
+            else None
+        )
+        reveal_task = (
+            asyncio.create_task(dependencies.reveal_sweep_loop_fn(data_root))
+            if dependencies.reveal_sweep_loop_fn is not None
             else None
         )
         # Teardown also runs when the server aborts instead of sending a clean
@@ -98,17 +114,20 @@ def build_app_lifespan_from_dependencies(
             yield
         finally:
             dependencies.logger.info("KG API shutting down")
-            retention_interrupt: asyncio.CancelledError | None = None
-            if retention_task is not None:
-                # Stop background writers before the runtime root and worker lock go.
-                retention_task.cancel()
-                retention_interrupt = await _wait_until_done(retention_task)
+            # Stop background writers before the runtime root and worker lock go.
+            interrupts: list[asyncio.CancelledError] = []
+            for background_task in (retention_task, reveal_task):
+                if background_task is not None:
+                    background_task.cancel()
+                    interrupted = await _wait_until_done(background_task)
+                    if interrupted is not None:
+                        interrupts.append(interrupted)
             dependencies.release_runtime_data_root_fn(data_root)
             dependencies.release_worker_lock_fn()
             dependencies.reset_clients_fn()
             await dependencies.reset_async_clients_fn()
-            if retention_interrupt is not None:
-                raise retention_interrupt
+            if interrupts:
+                raise interrupts[0]
 
     return lifespan
 
