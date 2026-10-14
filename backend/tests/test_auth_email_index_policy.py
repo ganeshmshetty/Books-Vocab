@@ -232,6 +232,21 @@ def test_entry_pointing_at_missing_account_is_replaced_for_linked_identity(tmp_p
     assert _index(load)["alice@me.com"] == owner
 
 
+def test_entry_pointing_at_link_pointer_resolves_to_its_canonical(tmp_path):
+    login, load, save = _make_login(tmp_path)
+    owner = login("google-owner", "google", "alice@gmail.com")
+    users = load()
+    users["apple-pointer"] = {"_linked_to": owner}
+    users["_email_index"]["alice@icloud.com"] = "apple-pointer"
+    save(users)
+
+    assert login("apple-new", "apple", "alice@icloud.com") == owner
+
+    users = load()
+    assert users["apple-new"]["_linked_to"] == owner
+    assert users[owner]["linked_ids"] == ["apple-new"]
+
+
 # ---------------------------------------------------------------------------
 # Account deletion removes the account's index entries
 # ---------------------------------------------------------------------------

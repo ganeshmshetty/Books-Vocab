@@ -75,11 +75,23 @@ def _is_independent_account(record: object) -> bool:
 
 
 def _indexed_owner(users: UsersPayload, email: str | None) -> str | None:
-    """Account an address is indexed to, ignoring entries whose account no longer exists."""
+    """Account an address is indexed to, ignoring entries whose account no longer exists.
+
+    An entry naming a link pointer (``_linked_to``) resolves to that pointer's
+    canonical account, so an address is never owned by a pointer record.
+    """
     owner = users["_email_index"].get(email) if email else None
-    if isinstance(owner, str) and not owner.startswith("_") and isinstance(users.get(owner), dict):
-        return owner
-    return None
+    if not (isinstance(owner, str) and not owner.startswith("_") and isinstance(users.get(owner), dict)):
+        return None
+    canonical = users[owner].get("_linked_to")
+    if (
+        isinstance(canonical, str)
+        and canonical != owner
+        and not canonical.startswith("_")
+        and isinstance(users.get(canonical), dict)
+    ):
+        return canonical
+    return owner
 
 
 def resolve_and_link_user(
@@ -123,11 +135,12 @@ def resolve_and_link_user(
             # session whose account deletion reaches the canonical through
             # this `_linked_to` pointer.
             canonical_id = linked_canonical_id
-            if link_email and (email_owner is None or email_owner == provider_user_id):
-                # Unindexed, or still indexed to this linked id (its own
-                # pre-merge email, or a split left by #2256): an alias of the
-                # canonical. An address owned by a different canonical is
-                # never re-pointed, and earlier entries are left as they are.
+            if link_email and email_owner in (None, canonical_id):
+                # Unindexed, or indexed to this canonical already: directly, or
+                # through this linked id's pointer (its own pre-merge email, or
+                # a split left by #2256), which resolves to the canonical. An
+                # address owned by a different canonical is never re-pointed,
+                # and earlier entries are left as they are.
                 users["_email_index"][link_email] = canonical_id
         elif (
             link_email
