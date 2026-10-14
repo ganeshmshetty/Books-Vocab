@@ -82,7 +82,9 @@ extension VocabularyContextStore {
             guard !existing.isUploadInFlight else { return nil }
             // server 已持有卡（kgCardId 非空）：還原為 pending edit，不重送 add。batchAdd 對既有卡回 skipped 並仍回傳
             // 既有 cardId，convergeAddedEntries 會 markSynced，新譯文就永遠不會到 server（#3408 reader 路徑）。
-            if existing.hasServerCard {
+            // uploadSubmittedAt 非 nil 的 in-doubt add（#3584）同理：markSyncFailed 保留它（T4），server 可能已建卡，
+            // 尚未收到 cardId 也不可重送 add。
+            if existing.hasServerCard || existing.uploadSubmittedAt != nil {
                 existing.queueEdit()
             } else {
                 existing.restorePendingEntry()

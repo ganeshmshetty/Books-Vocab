@@ -298,6 +298,38 @@ struct ReaderVocabularyCaptureTests {
         #expect(!all.contains { $0.syncAction == .delete }, "no delete may remain queued for upload")
     }
 
+    /// Issue #3584: an add whose upload was submitted but never confirmed
+    /// (`uploadSubmittedAt` set, no `kgCardId`) may already exist on the server.
+    /// `markSyncFailed` keeps `uploadSubmittedAt` on purpose (T4), so the reader
+    /// re-capture must treat it like a server-held card: queue an edit, never
+    /// re-send the add (the server would answer `skipped` and converge the stale
+    /// translation).
+    @Test func saveEntry_restoresInDoubtAddAsEditNotResend() throws {
+        let ctx = try makeContext()
+        let inDoubt = makeEntry(word: "lantern", notebookId: "default", syncStatus: 2, actionType: "delete")
+        inDoubt.kgCardId = nil
+        inDoubt.uploadSubmittedAt = Date()
+        ctx.insert(inDoubt)
+        try ctx.save()
+        let originalId = inDoubt.persistentModelID
+
+        let capture = makeCapture(ctx: ctx, vocabulary: [])
+        let saved = capture.saveEntry(
+            selection: WordSelection(word: "lantern", context: "ctx", position: .zero),
+            translation: "燈籠",
+            rootForm: nil
+        )
+
+        #expect(saved == true)
+        let all = try ctx.fetch(FetchDescriptor<VocabularyEntry>())
+        #expect(all.count == 1, "re-capture must restore the in-doubt row, not insert a second entry")
+        let restored = try #require(all.first)
+        #expect(restored.persistentModelID == originalId)
+        #expect(restored.syncAction == .edit, "an in-doubt add may already exist on the server: restore as edit, never re-send add (#3584)")
+        #expect(restored.translation == "燈籠")
+        #expect(!all.contains { $0.syncAction == .add && $0.shouldUploadOnNextSync }, "batchAdd must not carry the word")
+    }
+
     // MARK: - sanitizeOutbox delete+add collapse
 
     /// Defence in depth for #2105: a pending delete and a pending add for the
