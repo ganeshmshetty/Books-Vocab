@@ -442,3 +442,27 @@ def test_refused_manual_link_keeps_user_deleted_pair_blocked(store):
             from_id="card_a", to_id="card_b", cards_store=cards, graph=store, judge=judge, notebook_id="default"
         )
     assert store.is_blocked("card_a", "card_b") is True
+
+
+def test_batch_flush_failure_rolls_back_provisional_links(store, monkeypatch):
+    """A batch whose flush raises must not leave unpersisted rows that add_link can return (#3625)."""
+    failed_ids: set[str] = set()
+
+    def failing_flush(*_args, **_kwargs):
+        failed_ids.update(store._links)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_flush_held_links_and_reconcile", failing_flush)
+
+    with pytest.raises(OSError):
+        store.batch_add_links([("card_a", "card_b", LinkKind.CONTRASTS_WITH, 1.0, "batch")])
+
+    assert failed_ids, "batch must have inserted a provisional row before the flush"
+    assert store.find_link_between("card_a", "card_b") is None
+    assert not set(store._links) & failed_ids
+
+    monkeypatch.undo()
+    link = store.add_link("card_a", "card_b", LinkKind.CONTRASTS_WITH, 1.0, "single")
+    assert link.id not in failed_ids
+    persisted = json.loads((store.links_path).read_text(encoding="utf-8"))
+    assert [row["id"] for row in persisted] == [link.id]
