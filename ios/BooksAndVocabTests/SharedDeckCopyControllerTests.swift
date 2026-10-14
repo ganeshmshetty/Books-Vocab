@@ -527,6 +527,38 @@ struct SharedDeckCopyControllerTests {
         #expect(store.load().first?.createdAt == seeded)
     }
 
+    /// 同一 controller 存活超過到期期限（或以超期 restored 建構）時，copy 不得重放舊 key：
+    /// server 的 key 永久冪等，重放只會回已被使用者刪除的舊 notebook。必換新 key 並重置年齡（#3601）。
+    /// 修前（copy 不檢查年齡）會沿用 stale-key → 紅。
+    @Test func stale_intent_mints_fresh_key_and_resets_age_on_copy() async {
+        let stale = Date().addingTimeInterval(-(SharedDeckCopyRegistry.restoredIntentMaxAge + 1))
+        let store = EphemeralSharedDeckCopyIntentStore()
+        let restored = PendingDeckCopyIntent(owner: "A", deckId: "d1", idempotencyKey: "stale-key", notebookName: "GRE 3000", createdAt: stale)
+        let c = SharedDeckCopyController(owner: "A", makeKey: { "fresh-key" }, intents: store, restored: restored)
+        let fake = FakeDeckCopier([.failure(URLError(.timedOut))])
+        let before = Date()
+        await c.copy(deckId: "d1", notebookName: "GRE 3000", using: fake)
+
+        #expect(fake.receivedKeys == ["fresh-key"], "stale key must not be replayed")
+        #expect(c.currentIdempotencyKey == "fresh-key")
+        let persisted = store.load().first
+        #expect(persisted?.idempotencyKey == "fresh-key")
+        #expect((persisted?.createdAt ?? .distantPast) >= before, "intent age is reset to the new intent's first send")
+    }
+
+    /// 未超期的接回意圖 retry 仍沿用原 key（#3423 語意不變）：修法只針對超期意圖。
+    @Test func fresh_restored_intent_still_reuses_key_on_copy() async {
+        let seeded = Date().addingTimeInterval(-3600)
+        let store = EphemeralSharedDeckCopyIntentStore()
+        let restored = PendingDeckCopyIntent(owner: "A", deckId: "d1", idempotencyKey: "kept-key", notebookName: nil, createdAt: seeded)
+        let c = SharedDeckCopyController(owner: "A", makeKey: { "fresh-key" }, intents: store, restored: restored)
+        let fake = FakeDeckCopier([.failure(URLError(.timedOut))])
+        await c.copy(deckId: "d1", notebookName: nil, using: fake)
+
+        #expect(fake.receivedKeys == ["kept-key"])
+        #expect(store.load().first?.createdAt == seeded)
+    }
+
     /// 持久化意圖以帳號 owner 隔離（B 不得接到 A 的 key）；success 後清除（下次複製為新意圖）。
     @Test func persisted_intent_is_owner_scoped_and_cleared_on_success() async {
         let store = EphemeralSharedDeckCopyIntentStore()

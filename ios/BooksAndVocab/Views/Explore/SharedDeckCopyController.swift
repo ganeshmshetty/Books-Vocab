@@ -102,11 +102,19 @@ final class SharedDeckCopyController {
         // Re-entry guard：inflight 期間再呼叫直接忽略，杜絕併發不同-key（View 亦
         // disable 按鈕，此為第二道防線）。
         guard !isInflight else { return }
+        let now = Date()
+        // 超過到期期限的意圖（存活於行程內、或以超期 restored 建構）不得重放舊 key：server 的
+        // key 永久冪等，重放只會回使用者可能已刪除的舊 notebook。改為新意圖（新 key、重置年齡）（#3601）。
+        if let created = intentCreatedAt,
+           now.timeIntervalSince(created) > SharedDeckCopyRegistry.restoredIntentMaxAge {
+            idempotencyKey = nil
+            intentCreatedAt = nil
+        }
         let key = idempotencyKey ?? makeKey()
         idempotencyKey = key
         lastNotebookName = notebookName
         // 先落盤再送出：回應前行程被殺，重啟後仍以同一把 key 重試（失敗時此筆已持久化，不需另寫）。
-        let createdAt = intentCreatedAt ?? Date()
+        let createdAt = intentCreatedAt ?? now
         intentCreatedAt = createdAt
         intents.upsert(PendingDeckCopyIntent(
             owner: owner, deckId: deckId, idempotencyKey: key, notebookName: notebookName, createdAt: createdAt
