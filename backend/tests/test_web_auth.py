@@ -496,4 +496,79 @@ def test_apple_login_redirect_pins_authorize_params(web_auth_env):
     assert params["scope"] == ["email"]
     assert params["redirect_uri"] == [settings.apple_redirect_uri]
     assert params["state"][0]
-    assert f"oauth_state={params['state'][0]}" in resp.headers.get("set-cookie", "")
+    assert resp.cookies.get("oauth_state") == params["state"][0]
+
+
+# ── Unverified-email sign-in must not link an existing account (#3791) ──────
+# End-to-end counterpart of the #3730 mock-level checks above: the real
+# _resolve_and_link_user runs against a seeded victim account, so the no-link
+# outcome itself is asserted rather than only the email kwarg.
+
+_VICTIM_ID = "victim-uid"
+
+
+def _seed_victim(web_auth_env) -> None:
+    users_file = web_auth_env.data_dir / "users.json"
+    users_file.write_text(
+        json.dumps(
+            {
+                _VICTIM_ID: {"config": {}, "email": "victim@gmail.com"},
+                "_email_index": {"victim@gmail.com": _VICTIM_ID},
+            }
+        )
+    )
+
+
+def _assert_no_link_to_victim(web_auth_env, *, user_count_before: int) -> None:
+    users = json.loads((web_auth_env.data_dir / "users.json").read_text())
+    victim = users[_VICTIM_ID]
+    assert "linked_ids" not in victim
+    assert victim.get("email") == "victim@gmail.com"
+    assert users["_email_index"] == {"victim@gmail.com": _VICTIM_ID}
+    accounts = [k for k in users if not k.startswith("_")]
+    assert len(accounts) == user_count_before + 1
+    for uid in accounts:
+        if uid != _VICTIM_ID:
+            assert users[uid].get("_linked_to") != _VICTIM_ID
+
+
+def test_google_unverified_email_does_not_link_victim(web_auth_env):
+    _seed_victim(web_auth_env)
+    client = web_auth_env.client
+    state = _bootstrap_google_state(client)
+    fake_resp = httpx.Response(
+        200,
+        json={"id_token": "fake-id-token"},
+        request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+    )
+
+    async def fake_post(self, url, data=None, **kwargs):
+        return fake_resp
+
+    async def fake_verify(token, client_id):
+        return ("attacker-sub", "victim@gmail.com", False)
+
+    with (
+        patch("httpx.AsyncClient.post", new=fake_post),
+        patch("kg.routers.web_auth.verify_google_token", new=fake_verify),
+    ):
+        resp = client.get(f"/auth/web/google/callback?code=fake-code&state={state}", follow_redirects=False)
+    assert resp.status_code == 200, resp.text
+    _assert_no_link_to_victim(web_auth_env, user_count_before=1)
+
+
+def test_apple_unverified_email_does_not_link_victim(web_auth_env):
+    _seed_victim(web_auth_env)
+    client = web_auth_env.client
+    login_resp = client.get("/auth/web/apple/login", follow_redirects=False)
+    assert login_resp.status_code == 307
+    state = parse_qs(urlparse(login_resp.headers["location"]).query)["state"][0]
+
+    with patch("kg.routers.web_auth.verify_apple_token", return_value=("attacker-sub", "victim@gmail.com", False)):
+        resp = client.post(
+            "/auth/web/apple/callback",
+            data={"id_token": "fake-apple-id-token", "state": state},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200, resp.text
+    _assert_no_link_to_victim(web_auth_env, user_count_before=1)
