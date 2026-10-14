@@ -149,8 +149,8 @@ struct NotebookCoverCommitTests {
         #expect(outcome == .adoptStaged(staleStaged: nil))
     }
 
-    /// 換圖時先前的 staged 新檔（非 original）必須清掉，否則成為 orphan。
-    @Test func photoWriteReplacingStagedRemovesPreviousStagedFile() {
+    /// 換圖時先前的 staged 新檔（非 original）回傳為 stale，由呼叫端清掉，否則成為 orphan。
+    @Test func photoWriteReturnsPreviousStagedAsStale() {
         let outcome = NotebookEditPhotoWrite.outcome(
             previousStaged: "/covers/staged-1.jpg", original: "/covers/orig.jpg", committed: false, dismissed: false
         )
