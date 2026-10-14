@@ -44,11 +44,35 @@ final class TranslationStubURLProtocol: URLProtocol, @unchecked Sendable {
         lock.withLock { entries.filter { $0.marker == marker }.map(\.request) }
     }
 
+    /// URLSession 交給 URLProtocol 的 POST body 放在 `httpBodyStream`，`httpBody` 為 nil。
+    /// 先讀進 `httpBody` 再記錄，測試才能解析實際送出的 JSON。
+    private static func materializingBody(of request: URLRequest) -> URLRequest {
+        guard request.httpBody == nil, let stream = request.httpBodyStream else { return request }
+        var copy = request
+        copy.httpBody = drain(stream)
+        copy.httpBodyStream = nil
+        return copy
+    }
+
+    private static func drain(_ stream: InputStream) -> Data {
+        let capacity = 4096
+        var buffer = [UInt8](repeating: 0, count: capacity)
+        var data = Data()
+        stream.open()
+        defer { stream.close() }
+        while true {
+            let count = stream.read(&buffer, maxLength: capacity)
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer[0..<count])
+        }
+        return data
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let request = request
+        let request = Self.materializingBody(of: self.request)
         let marker = request.value(forHTTPHeaderField: Self.markerHeader) ?? ""
         let reply = Self.lock.withLock { () -> (statusCode: Int, body: Data) in
             Self.entries.append((marker, request))
@@ -70,6 +94,17 @@ final class TranslationStubURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+/// `QuotaProviding` 替身。放在 @MainActor enum 之外：production `QuotaStore` 同為 nonisolated，
+/// 巢狀於 @MainActor enum 內可能繼承 isolation，與 nonisolated protocol 要求產生不必要的衝突。
+private final class StubQuotaStore: QuotaProviding {
+    var fraction: Double { 0 }
+    var isExhausted: Bool { false }
+    var level: QuotaStore.Level { .normal }
+    var resetText: String { "" }
+
+    func update(from response: HTTPURLResponse) {}
+}
+
 /// `TranslationService` 測試共用的 auth／quota 替身與 JWT 產生器。
 @MainActor
 enum TranslationTestSupport {
@@ -78,15 +113,6 @@ enum TranslationTestSupport {
         let token: String?
 
         init(token: String?) { self.token = token }
-    }
-
-    final class StubQuotaStore: QuotaProviding {
-        var fraction: Double { 0 }
-        var isExhausted: Bool { false }
-        var level: QuotaStore.Level { .normal }
-        var resetText: String { "" }
-
-        func update(from response: HTTPURLResponse) {}
     }
 
     /// 只需 `exp` claim；`JWTExpiry` 只解 payload。
