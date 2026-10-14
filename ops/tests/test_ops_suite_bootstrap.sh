@@ -150,6 +150,39 @@ bad_range="$("$UV_CMD" run --no-project --python 3.13 "$PLAN" --scope targeted -
 if ! jq -e '.mode == "full"' <<<"$bad_range" >/dev/null 2>&1; then
   fail "targeted scope with a non-SHA range does not fail safe to the full suite: $bad_range"
 fi
+# (h) a rename out of ops/ must still select the ops group that routes the source path (#3846).
+# Probe the planner's own git_paths against a throwaway repo (ROOT is repointed for the
+# diff only), then plan the result with the real routing.
+rename_repo="$(mktemp -d)"
+git -C "$rename_repo" init -q
+mkdir -p "$rename_repo/ops"
+printf 'x\n' >"$rename_repo/ops/deliver.py"
+git -C "$rename_repo" add -A
+git -C "$rename_repo" -c user.name=ci -c user.email=ci@invalid -c commit.gpgsign=false commit -q -m base
+rename_base="$(git -C "$rename_repo" rev-parse HEAD)"
+mkdir -p "$rename_repo/backend"
+git -C "$rename_repo" mv ops/deliver.py backend/deliver.py
+git -C "$rename_repo" -c user.name=ci -c user.email=ci@invalid -c commit.gpgsign=false commit -q -m rename
+rename_head="$(git -C "$rename_repo" rev-parse HEAD)"
+rename_probe='
+import importlib.util, json, sys
+from pathlib import Path
+plan_path, repo, base, head = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("ci_ops_suite_plan", plan_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.ROOT = Path(repo)
+paths = mod.git_paths(base, head)
+mod.ROOT = Path(plan_path).resolve().parents[1]
+result = mod.targeted_plan(paths, mod.Routing(), mod.linux_groups())
+print(json.dumps({"paths": paths, "group_count": result["group_count"], "decisions": result["decisions"]}))
+'
+if ! rename_out="$("$UV_CMD" run --no-project --python 3.13 python -c "$rename_probe" "$PLAN" "$rename_repo" "$rename_base" "$rename_head" 2>/dev/null)" \
+  || ! jq -e '(.paths | index("ops/deliver.py")) != null and .group_count > 0 and ((.decisions["ops/deliver.py"] // []) | length > 0)' <<<"$rename_out" >/dev/null; then
+  fail "a rename out of ops/ hides the source path from the targeted plan: ${rename_out:-planner did not run}"
+fi
+rm -rf "$rename_repo"
+
 # (d) the full scope ignores the diff: the merge group always gets every group.
 expect_plan 'full scope runs every Linux group regardless of the diff' full \
   ".mode == \"full\" and .shard_count == 8 and .groups == $linux_json" \

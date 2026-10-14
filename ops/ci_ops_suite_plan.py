@@ -288,14 +288,16 @@ def git_paths(base: str, head: str) -> list[str]:
         text=True,
         check=True,
     ).stdout.strip()
+    # --no-renames: a rename must list its source as well as its destination, or a
+    # move out of ops/ hides the routed path (#3846). -z: NUL-separated, unquoted names.
     diff = subprocess.run(
-        ["git", "diff", "--name-only", merge_base, head],
+        ["git", "diff", "--no-renames", "--name-only", "-z", merge_base, head],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    return [line for line in diff.splitlines() if line]
+    return [path for path in diff.split("\0") if path]
 
 
 def main() -> int:
