@@ -127,6 +127,9 @@ final class AddLinkCreationCoordinator {
     /// True while `retryWarnings()` re-runs the missing parts; the phase stays
     /// `.succeededWithWarnings` so the durable job never looks "creating" again.
     private(set) var isRetryingWarnings = false
+    /// True when the latest publish ended a warning retry by `cancel()`, not by settling it.
+    /// The observer must not read that publish as the retry's outcome (#3603).
+    private(set) var warningRetryWasCancelled = false
     private(set) var idempotencyKey: String = ""
     private(set) var operationTerminal = false
     private(set) var context: AddLinkCreationContext?
@@ -297,6 +300,7 @@ final class AddLinkCreationCoordinator {
         let pending = warnings
         pollingTask?.cancel()
         isRetryingWarnings = true
+        warningRetryWasCancelled = false
         publish()
 
         pollingTask = Task { @MainActor [weak self] in
@@ -381,6 +385,7 @@ final class AddLinkCreationCoordinator {
             transition(.cancelled, message: nil)
         } else if wasRetryingWarnings {
             // A cancelled warning retry is a state change observers must see, not an outcome.
+            warningRetryWasCancelled = true
             publish()
         }
     }

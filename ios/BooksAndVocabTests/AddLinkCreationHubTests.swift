@@ -1287,6 +1287,25 @@ struct AddLinkJobCompletionNoticeTests {
         #expect(rig.poster.items.first?.style == .warning)
     }
 
+    @Test("a warning retry cancelled while no sheet is presented is not a settled outcome (#3603)")
+    func cancelledWarningRetryPostsNoPartialNotice() async throws {
+        let gate = Gate()
+        let rig = try restoredWarningRig(pipelineGate: gate)
+        #expect(rig.hub.retry(jobKey: jobKey))
+        #expect(await CreationFixtures.eventually { rig.service.pipelineNotebookIds.count == 1 })
+        let live = try #require(rig.hub.jobs[jobKey]?.coordinator)
+        #expect(live.isRetryingWarnings)
+
+        // The cancel publishes with the phase unchanged; the job must stay a warning and stay silent.
+        live.cancel()
+        #expect(!live.isRetryingWarnings)
+        #expect(rig.hub.job(forJobKey: jobKey)?.record.state == .warning)
+        await gate.release()
+        for _ in 0..<10 { await Task.yield() }
+        #expect(rig.poster.items.isEmpty)
+        #expect(rig.hub.job(forJobKey: jobKey)?.record.state == .warning)
+    }
+
     @Test("dismissing a warning whose retry is in flight posts no notice for the removed job (#3512)")
     func dismissDuringWarningRetryPostsNothing() async throws {
         let gate = Gate()

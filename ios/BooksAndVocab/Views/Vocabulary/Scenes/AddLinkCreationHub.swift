@@ -333,7 +333,9 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
 
     /// Whether a warning retry for this job has settled, consuming its in-flight
     /// mark. The coordinator clears `isRetryingWarnings` before its settling publish,
-    /// so the mark is only consumed by that publish, never by the retry's start.
+    /// so the mark is only consumed by that publish, never by the retry's start. A
+    /// cancelled retry clears the flag too, but it ends without an outcome: it consumes
+    /// the mark and settles nothing (#3603).
     private func settleWarningRetry(
         for state: AddLinkCreationJobState,
         coordinator: AddLinkCreationCoordinator
@@ -342,7 +344,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
               warningRetriesInFlight.contains(state.jobKey),
               !coordinator.isRetryingWarnings else { return false }
         warningRetriesInFlight.remove(state.jobKey)
-        return true
+        return !coordinator.warningRetryWasCancelled
     }
 
     private func upsert(
