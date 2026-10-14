@@ -10,7 +10,7 @@ import json
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -637,6 +637,30 @@ class TestPutPosition:
             headers=isolated_api.headers,
         ).json()[0]
         assert after == before
+
+    def test_put_position_rejects_far_future_updated_at_without_pinning(self, isolated_api):
+        book = _create_book(isolated_api.client, isolated_api.headers, "Book")
+        book_id = book["id"]
+
+        far = isolated_api.client.put(
+            f"/api/library/books/{book_id}/position",
+            json={"locator": "far", "progression": 0.9, "updated_at": "9999-12-31T23:59:59+00:00"},
+            headers=isolated_api.headers,
+        )
+        assert far.status_code == 422
+
+        current = isolated_api.client.put(
+            f"/api/library/books/{book_id}/position",
+            json={
+                "locator": "current",
+                "progression": 0.2,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+            headers=isolated_api.headers,
+        )
+        assert current.status_code == 200
+        assert current.json()["locator"] == "current"
+        assert current.json()["progression"] == 0.2
 
     def test_put_position_rejects_deleted_book_without_mutating_tombstone(self, isolated_api):
         book = _create_book(isolated_api.client, isolated_api.headers, "Book")
