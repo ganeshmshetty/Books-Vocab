@@ -187,13 +187,10 @@ def test_require_admin_header_takes_priority_over_cookie():
     assert exc_info.value.status_code == 403
 
 
-def test_admin_ui_response_sets_signed_cookie():
-    from kg.admin_handlers import admin_ui_response
+def test_admin_login_post_sets_signed_cookie():
+    from kg.admin_handlers import admin_login_post
 
-    resp = admin_ui_response(
-        admin_token="secret",
-        admin_html="<h1>Admin</h1>",
-    )
+    resp = admin_login_post("secret", admin_password="secret", admin_token="secret")
     cookie_header = resp.headers.get("set-cookie", "")
     # Cookie value uses expiry-bound payload + signature; verify structure
     # by extracting the value and confirming require_admin accepts it.
@@ -210,25 +207,19 @@ def test_admin_ui_response_sets_signed_cookie():
     assert "path=/" in cookie_header.lower()
 
 
-def test_admin_ui_response_returns_200():
+def test_admin_ui_response_returns_200_without_cookie():
     from kg.admin_handlers import admin_ui_response
 
-    resp = admin_ui_response(
-        admin_token="secret",
-        admin_html="<h1>Admin</h1>",
-    )
+    resp = admin_ui_response(admin_html="<h1>Admin</h1>")
     assert resp.status_code == 200
+    assert "admin_session" not in resp.headers.get("set-cookie", "")
 
 
-def test_admin_tests_ui_response_sets_cookie():
+def test_admin_tests_ui_response_does_not_set_cookie():
     from kg.admin_handlers import admin_tests_ui_response
 
-    resp = admin_tests_ui_response(
-        admin_token="secret",
-        admin_tests_html="<h1>Tests</h1>",
-    )
-    cookie_header = resp.headers.get("set-cookie", "")
-    assert "admin_session=" in cookie_header
+    resp = admin_tests_ui_response(admin_tests_html="<h1>Tests</h1>")
+    assert "admin_session" not in resp.headers.get("set-cookie", "")
 
 
 # ── expiry-bound cookie binding (C5) ──────────────────────────────────────────
@@ -294,9 +285,9 @@ def test_default_ttl_is_seven_days():
     assert ADMIN_COOKIE_TTL_SECONDS == 7 * 24 * 60 * 60
 
 
-def test_set_admin_cookie_uses_seven_day_max_age():
-    from kg.admin_handlers import admin_ui_response
+def test_login_cookie_uses_seven_day_max_age():
+    from kg.admin_handlers import admin_login_post
 
-    resp = admin_ui_response(admin_token="secret", admin_html="<h1>Admin</h1>")
+    resp = admin_login_post("secret", admin_password="secret", admin_token="secret")
     cookie_header = resp.headers.get("set-cookie", "")
     assert f"max-age={7 * 24 * 60 * 60}" in cookie_header.lower()

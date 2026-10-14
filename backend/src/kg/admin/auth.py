@@ -15,6 +15,8 @@ logger = logging.getLogger("kg.admin_handlers")
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from . import session_store
+
 ADMIN_COOKIE_NAME = "admin_session"
 ADMIN_COOKIE_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
@@ -67,7 +69,9 @@ def _verify_cookie(cookie_value: str, admin_token: str) -> bool:
     expected_sig = _sign_payload(admin_token, f"{expires_at_str}.{nonce}")
     if not _secrets_equal(sig, expected_sig):
         return False
-    return time.time() <= int(expires_at_str)
+    if time.time() > int(expires_at_str):
+        return False
+    return not session_store.is_revoked(nonce)
 
 
 def _verified_cookie_nonce(cookie_value: str | None, admin_token: str) -> str | None:
@@ -105,10 +109,11 @@ def require_admin(
     raise HTTPException(403, "Forbidden")
 
 
-def _set_admin_cookie(response: HTMLResponse, admin_token: str, *, nonce_hex: str | None = None) -> HTMLResponse:
+def _set_admin_cookie(response: HTMLResponse, admin_token: str) -> HTMLResponse:
+    """Issue a session cookie. Called only at login: its expiry is fixed there."""
     response.set_cookie(
         key=ADMIN_COOKIE_NAME,
-        value=_sign_cookie(admin_token, nonce_hex=nonce_hex),
+        value=_sign_cookie(admin_token),
         httponly=True,
         secure=True,
         samesite="lax",
@@ -195,8 +200,8 @@ def admin_actor_fingerprint(
     source = "token"
     material: str | None = raw
     if material is None and cookie_token:
-        # Use the session nonce, not the whole cookie: every admin page GET re-signs
-        # the cookie with the same nonce, so the actor stays stable for the session.
+        # Use the session nonce, not the whole cookie: the nonce identifies the login
+        # session and stays fixed for its lifetime, so the actor is stable across requests.
         material = _verified_cookie_nonce(cookie_token, admin_token) or cookie_token
         source = "cookie"
     if not material:
@@ -223,14 +228,16 @@ def check_admin_auth(
     return False
 
 
-def admin_ui_response(
-    *,
-    admin_token: str,
-    admin_html: str,
-    cookie_token: str | None = None,
-) -> HTMLResponse:
-    return _set_admin_cookie(
-        HTMLResponse(admin_html),
-        admin_token,
-        nonce_hex=_verified_cookie_nonce(cookie_token, admin_token),
-    )
+def admin_ui_response(*, admin_html: str) -> HTMLResponse:
+    """Render an admin page. Page GETs never re-issue the session cookie (#3904)."""
+    return HTMLResponse(admin_html)
+
+
+def admin_logout_response(*, cookie_token: str | None, admin_token: str) -> RedirectResponse:
+    """Revoke the presented admin session (if it is valid) and clear its cookie."""
+    if cookie_token and _verify_cookie(cookie_token, admin_token):
+        expires_at_str, nonce, _sig = cookie_token.split(".")
+        session_store.revoke(nonce, int(expires_at_str))
+    resp = RedirectResponse("/admin/login", status_code=302)
+    resp.delete_cookie(ADMIN_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+    return resp

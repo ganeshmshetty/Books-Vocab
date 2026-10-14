@@ -178,6 +178,15 @@ def build_login_routes(
             admin_token=settings.admin_token,
         )
 
+    @router.post("/admin/logout", include_in_schema=False)
+    async def admin_logout(admin_session: str | None = Cookie(None)) -> RedirectResponse:
+        from ..admin_handlers import admin_logout_response
+
+        return admin_logout_response(
+            cookie_token=admin_session,
+            admin_token=runtime_settings_fn().admin_token,
+        )
+
     return router
 
 
@@ -215,7 +224,7 @@ def _build_html_admin_router_from_handlers(
     ) -> Response:
         if not _is_authed(token, authorization, admin_session):
             return RedirectResponse("/admin/login", status_code=302)
-        return handlers.admin_ui(admin_session)
+        return handlers.admin_ui()
 
     @router.get("/admin/tests", response_class=HTMLResponse, include_in_schema=False)
     async def admin_tests_page(
@@ -226,7 +235,7 @@ def _build_html_admin_router_from_handlers(
     ) -> Response:
         if not _is_authed(token, authorization, admin_session):
             return RedirectResponse("/admin/login", status_code=302)
-        return handlers.admin_tests_ui(admin_session)
+        return handlers.admin_tests_ui()
 
     @router.get("/admin/test", response_class=HTMLResponse, include_in_schema=False)
     async def admin_test_page(
@@ -237,7 +246,7 @@ def _build_html_admin_router_from_handlers(
     ) -> Response:
         if not _is_authed(token, authorization, admin_session):
             return RedirectResponse("/admin/login", status_code=302)
-        return handlers.admin_tests_ui(admin_session)
+        return handlers.admin_tests_ui()
 
     if handlers.admin_user_detail_ui is not None:
 
@@ -251,7 +260,7 @@ def _build_html_admin_router_from_handlers(
         ) -> Response:
             if not _is_authed(token, authorization, admin_session):
                 return RedirectResponse("/admin/login", status_code=302)
-            return handlers.admin_user_detail_ui(admin_session)
+            return handlers.admin_user_detail_ui()
 
     return router
 

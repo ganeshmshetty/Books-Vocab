@@ -161,3 +161,55 @@ def test_admin_ui_non_ascii_bearer_redirects_to_login_not_500(admin_app):
     )
     assert resp.status_code == 302
     assert "/admin/login" in resp.headers["location"]
+
+
+# ── 10. Session lifecycle: no sliding renewal, logout revokes (#3904) ─────
+
+
+def _login_cookie() -> str:
+    # Direct handler call: the HTTP login route shares a process-wide brute-force
+    # limiter that earlier tests in this module already spend.
+    import re
+
+    from kg.admin_handlers import admin_login_post
+
+    resp = admin_login_post(ADMIN_PASSWORD, admin_password=ADMIN_PASSWORD, admin_token=ADMIN_TOKEN)
+    assert resp.status_code == 302
+    m = re.search(r"admin_session=([^;]+)", resp.headers["set-cookie"])
+    assert m is not None
+    return m.group(1)
+
+
+def test_admin_ui_does_not_reissue_cookie(admin_app):
+    cookie = _login_cookie()
+    admin_app.client.cookies.set("admin_session", cookie)
+    resp = admin_app.client.get("/admin", follow_redirects=False)
+    assert resp.status_code == 200
+    assert not any(h.startswith("admin_session=") for h in resp.headers.get_list("set-cookie"))
+
+
+def test_admin_logout_clears_and_revokes_cookie(admin_app):
+    cookie = _login_cookie()
+    admin_app.client.cookies.set("admin_session", cookie)
+    resp = admin_app.client.post("/admin/logout", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/admin/login"
+    cleared = [h.lower() for h in resp.headers.get_list("set-cookie") if h.startswith("admin_session=")]
+    assert cleared and "max-age=0" in cleared[0]
+    admin_app.client.cookies.set("admin_session", cookie)
+    replay = admin_app.client.get("/admin", follow_redirects=False)
+    assert replay.status_code == 302
+    assert "/admin/login" in replay.headers["location"]
+
+
+def test_admin_logout_revocation_survives_store_restart(admin_app):
+    from kg.admin import session_store
+
+    cookie = _login_cookie()
+    admin_app.client.cookies.set("admin_session", cookie)
+    admin_app.client.post("/admin/logout", follow_redirects=False)
+    session_store.reset()  # simulate process restart: drop every open handle
+    admin_app.client.cookies.set("admin_session", cookie)
+    replay = admin_app.client.get("/admin", follow_redirects=False)
+    assert replay.status_code == 302
+    assert "/admin/login" in replay.headers["location"]

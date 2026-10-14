@@ -7,7 +7,7 @@ from http.cookies import SimpleCookie
 import pytest
 
 from kg import admin_audit
-from kg.admin_handlers import _sign_cookie, admin_actor_fingerprint, admin_ui_response
+from kg.admin_handlers import _sign_cookie, admin_actor_fingerprint, admin_login_post, admin_ui_response
 
 ADMIN_TOKEN = "test-admin-token-audit"
 ADMIN_PASSWORD = "audit-pw"
@@ -304,21 +304,22 @@ def _admin_session_value(resp) -> str:
     return cookie["admin_session"].value
 
 
-def test_cookie_actor_fingerprint_stable_across_admin_page_resigns():
-    """Each admin page GET re-signs the session cookie; the audit actor must not change."""
-    first = admin_ui_response(admin_token="server-tok", admin_html="<html></html>")
-    cookie1 = _admin_session_value(first)
-    second = admin_ui_response(admin_token="server-tok", admin_html="<html></html>", cookie_token=cookie1)
-    cookie2 = _admin_session_value(second)
+def test_cookie_actor_fingerprint_stable_across_admin_page_gets():
+    """Admin page GETs do not re-issue the session cookie (#3904); the audit actor stays on the login cookie."""
+    cookie1 = _admin_session_value(
+        admin_login_post("server-tok", admin_password="server-tok", admin_token="server-tok")
+    )
+    page = admin_ui_response(admin_html="<html></html>")
+    assert "admin_session" not in page.headers.get("set-cookie", "")
     fp1 = admin_actor_fingerprint(token=None, authorization=None, cookie_token=cookie1, admin_token="server-tok")
-    fp2 = admin_actor_fingerprint(token=None, authorization=None, cookie_token=cookie2, admin_token="server-tok")
+    fp2 = admin_actor_fingerprint(token=None, authorization=None, cookie_token=cookie1, admin_token="server-tok")
     assert fp1 == fp2
 
 
 def test_cookie_actor_fingerprint_differs_across_logins():
     """A fresh login (no incoming session cookie) is a distinct admin session."""
-    a = _admin_session_value(admin_ui_response(admin_token="server-tok", admin_html=""))
-    b = _admin_session_value(admin_ui_response(admin_token="server-tok", admin_html=""))
+    a = _admin_session_value(admin_login_post("server-tok", admin_password="server-tok", admin_token="server-tok"))
+    b = _admin_session_value(admin_login_post("server-tok", admin_password="server-tok", admin_token="server-tok"))
     fp_a = admin_actor_fingerprint(token=None, authorization=None, cookie_token=a, admin_token="server-tok")
     fp_b = admin_actor_fingerprint(token=None, authorization=None, cookie_token=b, admin_token="server-tok")
     assert fp_a != fp_b

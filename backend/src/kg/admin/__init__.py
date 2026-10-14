@@ -3,7 +3,8 @@
 Split from the former monolithic ``kg.admin_handlers`` module into
 responsibility-scoped submodules:
 
-- ``auth`` — cookie signing/verification, ``require_admin``, login pages, UI responses
+- ``auth`` — cookie signing/verification, ``require_admin``, login pages, UI responses, logout
+- ``session_store`` — revocation ledger for logged-out admin session nonces
 - ``stats`` — user stats, host metrics, usage ranges, log retrieval
 - ``test_matrix`` — pytest-matrix run/result/catalog handlers
 - ``entitlements`` — Pro grant/revoke, entitlement lookup, audit log
@@ -27,6 +28,7 @@ from .auth import (
     admin_actor_fingerprint,
     admin_login_page,
     admin_login_post,
+    admin_logout_response,
     admin_ui_response,
     check_admin_auth,
     require_admin,
@@ -69,6 +71,7 @@ __all__ = [
     "admin_last_test_run_response",
     "admin_login_page",
     "admin_login_post",
+    "admin_logout_response",
     "admin_logs_response",
     "admin_revoke_pro_access_response",
     "admin_run_tests_response",

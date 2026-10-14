@@ -89,7 +89,7 @@ class AdminHandlerDependencies:
 
 @dataclass(frozen=True)
 class AdminHandlers:
-    admin_ui: Callable[[str | None], HTMLResponse]
+    admin_ui: Callable[[], HTMLResponse]
     admin_stats: Callable[[], AdminEndpointResult]
     admin_logs: Callable[[int, str | None], AdminEndpointResult]
     admin_user_entitlement: Callable[[str], AdminUserEntitlementResponse]
@@ -101,7 +101,7 @@ class AdminHandlers:
     admin_run_tests: Callable[[AdminTestRunRequest | None], AdminEndpointResult]
     admin_last_test_run: Callable[[], AdminEndpointResult]
     admin_test_catalog: Callable[[], AdminEndpointResult]
-    admin_tests_ui: Callable[[str | None], HTMLResponse]
+    admin_tests_ui: Callable[[], HTMLResponse]
     admin_graph_density: Callable[[str, str], AdminEndpointResult]
     admin_graph_playback: Callable[[str, str], AdminEndpointResult]
     admin_pipeline_runs: Callable[[str, int], AdminEndpointResult]
@@ -116,7 +116,7 @@ class AdminHandlers:
     admin_stats_trends: Callable[[int], AdminEndpointResult]
     admin_log_retention_run: Callable[[], Awaitable[AdminEndpointResult]]
     admin_audit: Callable[[str | None, int, str | None], AdminEndpointResult]
-    admin_user_detail_ui: Callable[[str | None], HTMLResponse]
+    admin_user_detail_ui: Callable[[], HTMLResponse]
     admin_orphans_scan: Callable[[], Awaitable[AdminEndpointResult]]
 
 
@@ -140,13 +140,9 @@ def create_admin_handlers_from_dependencies(
     build_entitlements_response_fn = dependencies.build_entitlements_response_fn
     current_admin_grant_record_fn = dependencies.current_admin_grant_record_fn
 
-    def admin_ui(admin_session: str | None = None) -> HTMLResponse:
+    def admin_ui() -> HTMLResponse:
         """Admin dashboard UI."""
-        return admin_ui_response(
-            admin_html=ADMIN_HTML,
-            admin_token=runtime_settings_fn().admin_token,
-            cookie_token=admin_session,
-        )
+        return admin_ui_response(admin_html=ADMIN_HTML)
 
     def admin_stats() -> AdminEndpointResult:
         """Return per-user token + vocab stats for admin dashboard."""
@@ -250,13 +246,9 @@ def create_admin_handlers_from_dependencies(
             build_test_catalog=build_test_catalog,
         )
 
-    def admin_tests_ui(admin_session: str | None = None) -> HTMLResponse:
+    def admin_tests_ui() -> HTMLResponse:
         """Minimal grayscale test matrix dashboard."""
-        return admin_tests_ui_response(
-            admin_tests_html=ADMIN_TESTS_HTML,
-            admin_token=runtime_settings_fn().admin_token,
-            cookie_token=admin_session,
-        )
+        return admin_tests_ui_response(admin_tests_html=ADMIN_TESTS_HTML)
 
     def _safe_user_dir(uid: str) -> Path:
         """Resolve user directory, rejecting path traversal.
@@ -415,13 +407,9 @@ def create_admin_handlers_from_dependencies(
         """
         return admin_audit_response(since=since, limit=limit, action=action)
 
-    def admin_user_detail_ui(admin_session: str | None = None) -> HTMLResponse:
+    def admin_user_detail_ui() -> HTMLResponse:
         """User detail page UI."""
-        return admin_ui_response(
-            admin_html=ADMIN_USER_DETAIL_HTML,
-            admin_token=runtime_settings_fn().admin_token,
-            cookie_token=admin_session,
-        )
+        return admin_ui_response(admin_html=ADMIN_USER_DETAIL_HTML)
 
     async def admin_orphans_scan() -> AdminEndpointResult:
         """Return a read-only data-consistency scan report.
