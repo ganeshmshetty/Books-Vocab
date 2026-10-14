@@ -38,6 +38,16 @@ def _backend_base_is_trusted(base: str) -> bool:
         return False
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib replays Authorization on 3xx; refusing redirects keeps ADMIN_TOKEN on the trusted base (#3588)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_BACKEND_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _backend_token_retention_days() -> int | None:
     """Backend's effective token_usage retention from /api/admin/observability, or None if unavailable.
 
@@ -53,7 +63,7 @@ def _backend_token_retention_days() -> int | None:
         return None
     req = urllib.request.Request(f"{base}/api/admin/observability", headers={"Authorization": f"Bearer {token}"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with _BACKEND_OPENER.open(req, timeout=5) as resp:
             days = json.loads(resp.read())["log_db_health"]["token_usage"]["retention_days"]
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
         return None
