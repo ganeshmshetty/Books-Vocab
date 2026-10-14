@@ -169,9 +169,11 @@ def test_index_exists(store):
     with store.engine.connect() as conn:
         rows = conn.execute(text("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='card'")).all()
     names = {r[0] for r in rows}
-    assert "ix_card_updated_at_id" in names
-    # old single-column index preserved
-    assert "ix_card_updated_at" in names
+    # Sync cursor index is an expression index on the same key the queries use (#3828).
+    assert "ix_card_updated_key_id" in names
+    # Raw-column indexes are superseded and dropped.
+    assert "ix_card_updated_at_id" not in names
+    assert "ix_card_updated_at" not in names
 
 
 def test_get_modified_since_is_db_bounded_and_ordered(store):
@@ -288,3 +290,57 @@ def test_since_pages_over_modified_set_larger_than_bind_limit(store):
             break
     assert len(seen) == total
     assert len(set(seen)) == total
+
+
+def _captured_plan(store: CardStore, run) -> str:
+    """Run ``run`` and return SQLite's EXPLAIN QUERY PLAN for the card SELECT it emitted."""
+    from sqlalchemy import event
+
+    captured: list[tuple[str, tuple]] = []
+
+    @event.listens_for(store.engine, "before_cursor_execute")
+    def _capture(_conn, _cursor, statement, params, _ctx, _many):
+        if "FROM card" in statement and statement.lstrip().upper().startswith("SELECT"):
+            captured.append((statement, params))
+
+    try:
+        run()
+    finally:
+        event.remove(store.engine, "before_cursor_execute", _capture)
+
+    assert captured, "query did not reach the card table"
+    statement, params = captured[-1]
+    with store.engine.connect() as conn:
+        rows = conn.exec_driver_sql("EXPLAIN QUERY PLAN " + statement, params).all()
+    return "\n".join(str(row[-1]) for row in rows)
+
+
+def test_cursor_and_since_queries_use_index_not_full_scan_plus_sort(store):
+    # Regression for #3828: the sync cursor queries order and filter by the
+    # computed UTC-microsecond key, so SQLite must be able to walk an index on
+    # that same expression. Otherwise every page is SCAN card + temp B-tree sort.
+    base = datetime(2024, 1, 1, 0, 0, 0)
+    ids = _seed_distinct(store, 20, base)
+    cursor = (base + timedelta(seconds=3), ids[3])
+
+    plans = {
+        "page_cards(after=None)": _captured_plan(
+            store, lambda: store.page_cards(limit=5, after=None, include_deleted=False, notebook_id=None)
+        ),
+        "page_cards(after=...)": _captured_plan(
+            store, lambda: store.page_cards(limit=5, after=cursor, include_deleted=False, notebook_id=None)
+        ),
+        "get_modified_since(since=...)": _captured_plan(
+            store, lambda: store.get_modified_since(base, limit=5, after=cursor)
+        ),
+    }
+
+    for name, plan in plans.items():
+        assert "USE TEMP B-TREE FOR ORDER BY" not in plan, f"{name}: {plan}"
+        # A bare "SCAN card" is a table walk; "SCAN card USING INDEX" is the
+        # ordered index walk that page_cards(after=None) needs (LIMIT stops it early).
+        assert not any(line.startswith("SCAN card") and "USING" not in line for line in plan.splitlines()), name
+        assert "USING INDEX" in plan or "USING COVERING INDEX" in plan, f"{name}: {plan}"
+    # Cursor and since lookups must seek the index, not walk it from the start.
+    for name in ("page_cards(after=...)", "get_modified_since(since=...)"):
+        assert "SEARCH card USING INDEX ix_card_updated_key_id" in plans[name], f"{name}: {plans[name]}"
