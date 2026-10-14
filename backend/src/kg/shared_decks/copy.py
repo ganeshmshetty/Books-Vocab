@@ -13,7 +13,9 @@ here so the router stays a thin adapter:
   page boundary silently drop cards on sync-down), and
   ``source_shared_card_guid`` = the source card's ``content_guid``.
 * **idempotency**: ``shared_deck_copy_log(copier_id, idempotency_key)`` UNIQUE —
-  a transport retry replays to the same notebook, never a duplicate.
+  a transport retry replays to the same notebook, never a duplicate. Replay is
+  keyed by the log alone, so it still works after the source is unpublished or
+  hidden (#3898); the discoverability gate applies only to new copies.
 * **materialization barrier + compensating rollback**: cards.db / notebooks.db
   have no cross-file transaction, so the notebook is staged HIDDEN and revealed
   only after the idempotency log commits. Any pre-commit failure compensates
@@ -28,6 +30,10 @@ here so the router stays a thin adapter:
   them), then ``download_counted`` is committed. The marker is the durable
   "reveal complete" bit, so a crash at any point inside the reveal is redone
   whole by the retry, and a settled deck is never touched again.
+* **reveal sweep (#3897)**: a reveal that raises after the point of no return
+  leaves a durable copy with its marker unset, and the client may never retry
+  the key. :func:`reveal_uncounted_copies` settles those rows at startup and
+  every 5 minutes, under the same per-user lock as the request path.
 * **count-equality**: copied distinct cards == source snapshot, else fail-loud
   (a NOCASE/NFC collapse under the card table's per-notebook uniqueness — e.g. a
   homograph pair distinct only by pos/meaning — must not silently drop a card).
@@ -41,6 +47,7 @@ here so the router stays a thin adapter:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -53,7 +60,7 @@ from pathlib import Path
 from ..cards import CardStore
 from ..exceptions import ConflictError, NotFoundError
 from ..notebook import NotebookStore
-from .store import SharedDeck, SharedDeckStore
+from .store import SharedDeckStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -271,28 +278,22 @@ def copy_shared_deck(
     """
     now = now or datetime.now(UTC)
 
-    deck = shared_store.get(deck_id)
-    if deck is None:  # not discoverable → 404 (never leak hidden decks)
-        raise NotFoundError("Deck", deck_id)
-    if deck.source != "official":
-        # Explore copy is intentionally limited to curated official content.
-        # Community publishing/copying remains a separate product phase.
-        raise ConflictError("Only official decks can be copied")
-
     # Serialize per-user copies (see _user_copy_lock): the copy handler is a SYNC
     # FastAPI endpoint, so two concurrent same-user copies run on separate
     # threadpool threads. Without this lock they would both read the pre-create
     # notebook snapshot, compute the SAME unique name, and both INSERT → two
     # same-named active notebooks → world-export's name→id map collapses (§2 name
     # uniqueness is mandatory). Held through materialize so the second copy sees
-    # the first's committed notebook and disambiguates to "X (2)".
+    # the first's committed notebook and disambiguates to "X (2)". The
+    # discoverability gate also runs under the lock, so it cannot race a replay
+    # that the in-flight copy is about to log.
     with _user_copy_lock(user_dir):
         return _copy_locked(
             shared_store=shared_store,
             card_store=card_store,
             notebook_store=notebook_store,
             user_dir=user_dir,
-            deck=deck,
+            deck_id=deck_id,
             copier_id=copier_id,
             idempotency_key=idempotency_key,
             notebook_name=notebook_name,
@@ -307,7 +308,7 @@ def _copy_locked(
     card_store: CardStore,
     notebook_store: NotebookStore,
     user_dir: Path,
-    deck: SharedDeck,
+    deck_id: str,
     copier_id: str,
     idempotency_key: str,
     notebook_name: str | None,
@@ -315,15 +316,34 @@ def _copy_locked(
     _on_card: Callable[[int], None] | None,
 ) -> CopyOutcome:
     """The per-user-serialized body of :func:`copy_shared_deck`, executed while
-    holding the per-user copy lock. ``deck`` is the already-resolved discoverable
-    deck; every user-dir mutation (name-compute → create → card copy →
-    record_copy → materialize) happens here so a concurrent same-user copy is
-    fully queued behind it."""
-    # Idempotent replay: a prior copy with this key short-circuits (no new work,
-    # no second download count) — transport-retry safety.
+    holding the per-user copy lock. Every user-dir mutation (name-compute →
+    create → card copy → record_copy → materialize) happens here so a concurrent
+    same-user copy is fully queued behind it."""
+    # Idempotent replay is keyed by the copy log, not by discoverability: a
+    # same-key retry after the source was unpublished or hidden must still replay
+    # (and finish an interrupted reveal) instead of 404ing (#3898). Only a NEW
+    # copy passes the discoverability gate below.
     prior = shared_store.get_copy_log(copier_id, idempotency_key)
     if prior is not None:
-        return _replay(shared_store, notebook_store, card_store, prior, deck.id)
+        if prior.source_shared_deck_id != deck_id:
+            # Cross-deck key reuse. Only a discoverable deck may learn that the key
+            # is taken (409); a hidden or unknown deck answers 404 exactly like a
+            # nonexistent one, so the reply cannot probe for hidden decks (#3898).
+            if shared_store.get(deck_id) is None:
+                raise NotFoundError("Deck", deck_id)
+            raise ConflictError("idempotency key already belongs to another deck")
+        source = shared_store.get_any(deck_id)
+        if source is None or source.source != "official":
+            raise NotFoundError("Deck", deck_id)
+        return _replay(shared_store, notebook_store, card_store, prior, source.id)
+
+    deck = shared_store.get(deck_id)
+    if deck is None:  # not discoverable → 404 (never leak hidden decks)
+        raise NotFoundError("Deck", deck_id)
+    if deck.source != "official":
+        # Explore copy is intentionally limited to curated official content.
+        # Community publishing/copying remains a separate product phase.
+        raise ConflictError("Only official decks can be copied")
 
     version = deck.current_version
     src_cards = shared_store.all_cards(deck.id, version=version)
@@ -434,4 +454,83 @@ def _copy_locked(
     )
 
 
-__all__ = ["CopyOutcome", "copy_shared_deck"]
+def reveal_uncounted_copies(data_root: Path, *, shared_decks_path: Path) -> int:
+    """Finish committed copies whose reveal raised (#3897).
+
+    The request path raises after the point of no return when materialize,
+    restamp or the counter fails. The copy is durable, but the client may never
+    retry the same key, so nothing else would reveal the notebook. This sweep
+    drives every copy_log row with ``download_counted`` unset through
+    :func:`_reveal`, the same idempotent finisher ``_replay`` uses.
+
+    Each row is settled under the copier's per-user copy lock, which the request
+    holds across its own ``_reveal``: an in-flight copy is never raced, and the
+    marker is re-read under the lock so a settled copy is skipped. A row that
+    still fails is logged and retried by the next pass. Returns the number of
+    copies settled in this pass.
+    """
+    users_dir = data_root / "users"
+    if not users_dir.is_dir():
+        return 0
+    shared = SharedDeckStore(shared_decks_path)
+    settled = 0
+    try:
+        for row in shared.list_uncounted_copies():
+            user_dir = users_dir / row.copier_id
+            if not (user_dir / "notebooks.db").is_file():
+                continue
+            try:
+                with _user_copy_lock(user_dir):
+                    current = shared.get_copy_log(row.copier_id, row.idempotency_key)
+                    if current is None or current.download_counted:
+                        continue
+                    if shared.get_any(current.source_shared_deck_id) is None:
+                        # _reveal would flip the notebook visible and then fail to
+                        # count it. Keep it staged (hidden) until the deck exists.
+                        _LOGGER.warning("reveal sweep: source deck missing for copy %s", row.copier_id)
+                        continue
+                    notebooks = NotebookStore(user_dir / "notebooks.db")
+                    cards = CardStore(user_dir / "cards.db")
+                    try:
+                        _reveal(
+                            shared,
+                            cards,
+                            notebooks,
+                            copier_id=current.copier_id,
+                            idempotency_key=current.idempotency_key,
+                            notebook_id=current.result_notebook_id,
+                            deck_id=current.source_shared_deck_id,
+                        )
+                    finally:
+                        notebooks.close()
+                        cards.close()
+                settled += 1
+            except Exception:  # noqa: BLE001 — one stuck copy must not block the others
+                _LOGGER.warning("reveal sweep failed for copy %s", row.copier_id, exc_info=True)
+    finally:
+        shared.close()
+    return settled
+
+
+REVEAL_SWEEP_INTERVAL = timedelta(minutes=5)
+
+
+async def run_reveal_sweep_forever(
+    data_root: Path,
+    *,
+    shared_decks_path: Path,
+    interval: timedelta = REVEAL_SWEEP_INTERVAL,
+) -> None:
+    """Run :func:`reveal_uncounted_copies` every ``interval`` for the process
+    lifetime. Blocking SQLite work runs in a worker thread. Cancellation is safe
+    at any point: a pass interrupted by shutdown leaves the marker unset, and
+    the next startup sweep redoes that copy whole."""
+    while True:
+        await asyncio.sleep(interval.total_seconds())
+        try:
+            await asyncio.to_thread(reveal_uncounted_copies, data_root, shared_decks_path=shared_decks_path)
+        except Exception:  # noqa: BLE001 — keep the loop alive; the next pass retries
+            _LOGGER.warning("reveal sweep pass failed", exc_info=True)
+
+
+__all__ = ["CopyOutcome", "copy_shared_deck", "reveal_uncounted_copies", "run_reveal_sweep_forever"]
