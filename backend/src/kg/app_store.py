@@ -130,16 +130,25 @@ def _ensure_certificate_valid_now(cert: x509.Certificate) -> None:
         raise AppStoreVerificationError("App Store certificate is outside its validity period.")
 
 
+def _extensions(cert: x509.Certificate) -> x509.Extensions:
+    """Parse extensions; cryptography raises a bare ValueError on malformed DER,
+    which must collapse to the domain error (only it maps to HTTP 400)."""
+    try:
+        return cert.extensions
+    except ValueError as exc:
+        raise AppStoreVerificationError("App Store certificate has malformed extensions.") from exc
+
+
 def _ensure_certificate_can_issue(cert: x509.Certificate) -> None:
     """Require a non-leaf certificate to be a CA allowed to sign certificates."""
     try:
-        basic_constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+        basic_constraints = _extensions(cert).get_extension_for_class(x509.BasicConstraints).value
     except x509.ExtensionNotFound as exc:
         raise AppStoreVerificationError("App Store issuing certificate is missing BasicConstraints.") from exc
     if not basic_constraints.ca:
         raise AppStoreVerificationError("App Store issuing certificate is not a CA.")
     try:
-        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+        key_usage = _extensions(cert).get_extension_for_class(x509.KeyUsage).value
     except x509.ExtensionNotFound:
         return
     if not key_usage.key_cert_sign:
@@ -168,7 +177,7 @@ def _verify_certificate_chain(certificates: list[x509.Certificate], trusted_root
         _verify_certificate_signature(certificates[index], certificates[index + 1])
 
     try:
-        certificates[1].extensions.get_extension_for_oid(APPLE_INTERMEDIATE_OID)
+        _extensions(certificates[1]).get_extension_for_oid(APPLE_INTERMEDIATE_OID)
     except x509.ExtensionNotFound as exc:
         raise AppStoreVerificationError(
             "App Store JWS intermediate certificate is missing the Apple intermediate OID extension."
@@ -201,7 +210,7 @@ def _ensure_leaf_is_app_store_certificate(leaf: x509.Certificate) -> None:
     attacker mint forged transaction/notification proofs.
     """
     try:
-        leaf.extensions.get_extension_for_oid(APPLE_APP_STORE_OID)
+        _extensions(leaf).get_extension_for_oid(APPLE_APP_STORE_OID)
     except x509.ExtensionNotFound as exc:
         raise AppStoreVerificationError(
             "App Store JWS leaf certificate is missing the Apple App Store OID extension."

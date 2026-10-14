@@ -358,3 +358,86 @@ def test_malformed_header_collapses_to_verification_error():
     """Malformed JWS segments must not leak parser errors to the caller."""
     with pytest.raises(AppStoreVerificationError):
         verify_and_decode_signed_jws("bm90LWpzb24.aW52YWxpZA.x")
+
+
+# ---------------------------------------------------------------------------
+# Malformed certificate extensions: cryptography raises a bare ValueError when
+# a known extension's DER is invalid. That must collapse to the domain error
+# (billing_handlers maps only AppStoreVerificationError to HTTP 400; a bare
+# ValueError escapes as HTTP 500).
+# ---------------------------------------------------------------------------
+
+MALFORMED_BASIC_CONSTRAINTS = x509.UnrecognizedExtension(ObjectIdentifier("2.5.29.19"), b"\xff\xff")
+
+
+def _build_raw_certificate(subject_cn: str, *, issuer_cert, issuer_key, extensions: list):
+    """Like _build_certificate but takes the exact extension list (no implicit BasicConstraints)."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.now(tz=UTC)
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject_cn)]))
+        .issuer_name(issuer_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
+    )
+    for ext in extensions:
+        builder = builder.add_extension(ext, critical=False)
+    return key, builder.sign(private_key=issuer_key, algorithm=hashes.SHA256())
+
+
+def _install_root(monkeypatch, tmp_path, root_cert) -> None:
+    root_pem = tmp_path / "root.pem"
+    root_pem.write_text(root_cert.public_bytes(serialization.Encoding.PEM).decode("utf-8"))
+    monkeypatch.setenv("APP_STORE_ROOT_CA_PATH", str(root_pem))
+    monkeypatch.delenv("APP_STORE_ROOT_CA_PEM", raising=False)
+
+
+def test_malformed_intermediate_extension_collapses_to_verification_error(monkeypatch, tmp_path):
+    root_key, root_cert = _build_certificate("Test Apple Root")
+    _install_root(monkeypatch, tmp_path, root_cert)
+    inter_key, inter_cert = _build_raw_certificate(
+        "Test Apple Intermediate",
+        issuer_cert=root_cert,
+        issuer_key=root_key,
+        extensions=[
+            MALFORMED_BASIC_CONSTRAINTS,
+            x509.UnrecognizedExtension(ObjectIdentifier(APPLE_INTERMEDIATE_OID), b"\x05\x00"),
+        ],
+    )
+    leaf_key, leaf_cert = _build_raw_certificate(
+        "Test Apple Leaf",
+        issuer_cert=inter_cert,
+        issuer_key=inter_key,
+        extensions=[x509.UnrecognizedExtension(ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00")],
+    )
+    chain = {"root_cert": root_cert, "inter_cert": inter_cert, "leaf_key": leaf_key, "leaf_cert": leaf_cert}
+    token = _sign(_valid_payload(), chain=chain)
+    with pytest.raises(AppStoreVerificationError):
+        verify_and_decode_signed_jws(token, bundle_id=BUNDLE_ID)
+
+
+def test_malformed_leaf_extension_collapses_to_verification_error(monkeypatch, tmp_path):
+    root_key, root_cert = _build_certificate("Test Apple Root")
+    _install_root(monkeypatch, tmp_path, root_cert)
+    inter_key, inter_cert = _build_certificate(
+        "Test Apple Intermediate",
+        issuer_cert=root_cert,
+        issuer_key=root_key,
+        extra_extensions=[x509.UnrecognizedExtension(ObjectIdentifier(APPLE_INTERMEDIATE_OID), b"\x05\x00")],
+    )
+    leaf_key, leaf_cert = _build_raw_certificate(
+        "Test Apple Leaf",
+        issuer_cert=inter_cert,
+        issuer_key=inter_key,
+        extensions=[
+            MALFORMED_BASIC_CONSTRAINTS,
+            x509.UnrecognizedExtension(ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00"),
+        ],
+    )
+    chain = {"root_cert": root_cert, "inter_cert": inter_cert, "leaf_key": leaf_key, "leaf_cert": leaf_cert}
+    token = _sign(_valid_payload(), chain=chain)
+    with pytest.raises(AppStoreVerificationError, match="malformed extensions"):
+        verify_and_decode_signed_jws(token, bundle_id=BUNDLE_ID)
