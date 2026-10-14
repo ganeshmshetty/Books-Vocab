@@ -394,20 +394,22 @@ docker_cache_kb() {
 }
 
 # A docker build is a per-invocation build process: the buildx plugin running a
-# build or bake subcommand (matched by argv, so `docker buildx ls/inspect` is
-# not a build), or the docker CLI whose argv[0] is docker and whose subcommand
-# is a build.  Argv text that merely mentions a build (wrappers, log tails,
-# deliver notes) never matches.  Long-lived docker daemons are deliberately not
-# counted: they run whether or not a build does and would defer eviction forever.
+# build or bake subcommand, or the docker CLI whose argv[0] is docker and whose
+# subcommand is a build or bake (`buildx build|bake`).  The docker CLI execs the
+# plugin as `docker-buildx buildx <sub>`, so the optional `buildx` word is part
+# of the match.  Matching is anchored on argv[0] and the subcommand: `docker
+# buildx ls/inspect` is not a build, and argv text that merely mentions a build
+# (wrappers, log tails, deliver notes) never matches.  Long-lived docker daemons
+# are deliberately not counted: they run whether or not a build does and would
+# defer eviction forever.
 docker_active() {
   if [[ -n "${KG_DISK_GUARD_DOCKER_ACTIVE:-}" ]]; then
     [[ "$KG_DISK_GUARD_DOCKER_ACTIVE" == "1" ]] && printf '1' || printf '0'; return
   fi
   local argv
-  process_command_snapshot >/dev/null || { printf '2'; return; }
   argv="$(process_snapshot)" || { printf '2'; return; }
-  if grep -Eq '(^|/)docker-buildx (build|bake)( |$)' <<<"$argv" \
-    || grep -Eq '^([^ ]*/)?docker (build|builder build|buildx build|compose build)( |$)' <<<"$argv"; then
+  if grep -Eq '^([^ ]*/)?docker-buildx (buildx )?(build|bake)( |$)' <<<"$argv" \
+    || grep -Eq '^([^ ]*/)?docker (build|builder build|buildx (build|bake)|compose build)( |$)' <<<"$argv"; then
     printf '1'
   else
     printf '0'
