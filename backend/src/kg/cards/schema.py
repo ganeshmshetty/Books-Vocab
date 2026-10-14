@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from ..sqlite_utils import ensure_columns
 from ..text_utils import normalize_nfc_lower
 from .model import Card
+from .query import updated_at_key_index_sql
 
 _RETIRED_DICTIONARY_CARD_COLUMNS = (
     "card_role",
@@ -39,11 +40,17 @@ def init_schema(engine: Engine) -> None:
 def _create_indexes(engine: Engine) -> None:
     """Ensure all secondary indexes on the card table exist."""
     with engine.connect() as conn:
-        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_card_updated_at ON card (updated_at)")
-        # Composite index backing cursor pagination — row-value comparison and
-        # ORDER BY both use (updated_at, id). Kept alongside the single-column
-        # index above (still used by get_modified_since's `updated_at >` scan).
-        conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_card_updated_at_id ON card (updated_at, id)")
+        # Sync cursor queries (page_cards, get_modified_since) filter and order by
+        # the UTC-microsecond key expression, not the raw column, so SQLite can
+        # only use an index whose expression is that same key. Generated from the
+        # query's own expression to keep the two identical.
+        conn.exec_driver_sql(
+            f"CREATE INDEX IF NOT EXISTS ix_card_updated_key_id ON card ({updated_at_key_index_sql()}, id)"
+        )
+        # Raw-column indexes superseded by the expression index above; no query
+        # filters or orders by raw updated_at any more.
+        conn.exec_driver_sql("DROP INDEX IF EXISTS ix_card_updated_at")
+        conn.exec_driver_sql("DROP INDEX IF EXISTS ix_card_updated_at_id")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_card_content ON card (content)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_card_content_nocase ON card (content COLLATE NOCASE)")
         conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_card_content_nfc_lower ON card (content_nfc_lower)")

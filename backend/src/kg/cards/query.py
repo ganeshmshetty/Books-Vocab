@@ -9,7 +9,9 @@ from __future__ import annotations
 from collections.abc import Collection, Iterator
 from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, String, case, cast, func, tuple_
+from sqlalchemy import BigInteger, String, case, cast, func, literal_column, tuple_
+from sqlalchemy import column as sql_column
+from sqlalchemy.dialects import sqlite
 from sqlmodel import Session, select
 
 from ..text_utils import normalize_nfc_lower
@@ -34,30 +36,74 @@ def _epoch_microseconds(value: datetime) -> int:
     return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
 
 
+def _sql_int(value: int):
+    """Inline an integer constant as SQL text (not a bind parameter).
+
+    SQLite only matches a query expression against an expression index when
+    the trees are identical, and a bound ``?`` never equals a literal. Inlining
+    every constant lets the query and the index DDL compile to the same text.
+    """
+    return literal_column(str(int(value)))
+
+
+def _sql_str(value: str):
+    """Inline a string constant as SQL text (see :func:`_sql_int`)."""
+    return literal_column("'" + value.replace("'", "''") + "'", String)
+
+
 def _is_ascii_digit(value, position: int):
     """Build a SQLite expression that checks one timestamp character."""
-    return func.substr(value, position, 1).op("GLOB")("[0-9]")
+    return func.substr(value, _sql_int(position), _sql_int(1)).op("GLOB")(_sql_str("[0-9]"))
 
 
 def _fractional_microseconds(value):
     """Build an exact six-digit fractional-second expression for SQLite text."""
+
+    def _prefix(length: int):
+        return cast(func.substr(value, _sql_int(21), _sql_int(length)), BigInteger)
+
     return case(
-        (func.substr(value, 20, 1) != ".", 0),
-        (~_is_ascii_digit(value, 21), 0),
-        (~_is_ascii_digit(value, 22), cast(func.substr(value, 21, 1), BigInteger) * 100_000),
-        (~_is_ascii_digit(value, 23), cast(func.substr(value, 21, 2), BigInteger) * 10_000),
-        (~_is_ascii_digit(value, 24), cast(func.substr(value, 21, 3), BigInteger) * 1_000),
-        (~_is_ascii_digit(value, 25), cast(func.substr(value, 21, 4), BigInteger) * 100),
-        (~_is_ascii_digit(value, 26), cast(func.substr(value, 21, 5), BigInteger) * 10),
-        else_=cast(func.substr(value, 21, 6), BigInteger),
+        (func.substr(value, _sql_int(20), _sql_int(1)) != _sql_str("."), _sql_int(0)),
+        (~_is_ascii_digit(value, 21), _sql_int(0)),
+        (~_is_ascii_digit(value, 22), _prefix(1) * _sql_int(100_000)),
+        (~_is_ascii_digit(value, 23), _prefix(2) * _sql_int(10_000)),
+        (~_is_ascii_digit(value, 24), _prefix(3) * _sql_int(1_000)),
+        (~_is_ascii_digit(value, 25), _prefix(4) * _sql_int(100)),
+        (~_is_ascii_digit(value, 26), _prefix(5) * _sql_int(10)),
+        else_=_prefix(6),
     )
 
 
 def _stored_timestamp_key(column):
     """Build a UTC-microsecond key from an ISO timestamp stored in SQLite."""
     value = cast(column, String)
-    seconds = cast(func.strftime("%s", value), BigInteger)
-    return seconds * 1_000_000 + _fractional_microseconds(value)
+    seconds = cast(func.strftime(_sql_str("%s"), value), BigInteger)
+    return seconds * _sql_int(1_000_000) + _fractional_microseconds(value)
+
+
+def _cursor_filter(updated_at_key, after: tuple[datetime, str]):
+    """Return the WHERE terms for the strict ``(updated_at, id) > after`` cursor.
+
+    SQLite cannot seek an expression index with a row-value comparison alone
+    (it falls back to a full ordered index scan), so the cheap ``key >= cursor``
+    bound is added to drive the seek. The row-value term keeps the exact
+    tie-break semantics: the bound is implied by it and only trims the walk.
+    """
+    cursor_key = _epoch_microseconds(after[0])
+    return (
+        updated_at_key >= cursor_key,
+        tuple_(updated_at_key, Card.id) > tuple_(cursor_key, after[1]),
+    )
+
+
+def updated_at_key_index_sql() -> str:
+    """Return the ``card`` column list of the expression index on the sync key.
+
+    Generated from the same :func:`_stored_timestamp_key` the cursor queries
+    use, so the index DDL and the query expression cannot drift apart.
+    """
+    expression = _stored_timestamp_key(sql_column("updated_at"))
+    return str(expression.compile(dialect=sqlite.dialect(), compile_kwargs={"literal_binds": True}))
 
 
 class CardQueryMixin:
@@ -165,9 +211,7 @@ class CardQueryMixin:
                 statement = statement.where(Card.notebook_id.not_in(list(exclude_notebook_ids)))
             updated_at_key = _stored_timestamp_key(Card.updated_at)
             if after is not None:
-                statement = statement.where(
-                    tuple_(updated_at_key, Card.id) > tuple_(_epoch_microseconds(after[0]), after[1])
-                )
+                statement = statement.where(*_cursor_filter(updated_at_key, after))
             statement = statement.order_by(updated_at_key, Card.id).limit(limit)
             return list(session.exec(statement).all())
 
@@ -198,9 +242,7 @@ class CardQueryMixin:
             elif exclude_notebook_ids:
                 statement = statement.where(Card.notebook_id.not_in(list(exclude_notebook_ids)))
             if after is not None:
-                statement = statement.where(
-                    tuple_(updated_at_key, Card.id) > tuple_(_epoch_microseconds(after[0]), after[1])
-                )
+                statement = statement.where(*_cursor_filter(updated_at_key, after))
             statement = statement.order_by(updated_at_key, Card.id)
             if limit is not None:
                 statement = statement.limit(limit)
