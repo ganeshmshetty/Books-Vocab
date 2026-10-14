@@ -20,10 +20,15 @@ async def auth_verify(req: AuthVerifyRequest, request: Request):
     def _jwt_token(user_id: str, provider: str) -> str:
         return _create_jwt_token(user_id, provider, settings=settings)
 
-    def _link_user(provider_user_id: str, provider: str, email: str | None = None) -> str:
+    def _link_user(provider_user_id: str, provider: str, email: str | None = None, hd: str | None = None) -> str:
         return _resolve_and_link_user(
-            provider_user_id, provider, email,
-            settings=settings, load_users_fn=load_users_fn, save_users_fn=save_users_fn,
+            provider_user_id,
+            provider,
+            email,
+            hd=hd,
+            settings=settings,
+            load_users_fn=load_users_fn,
+            save_users_fn=save_users_fn,
         )
 
     return await auth_verify_response(

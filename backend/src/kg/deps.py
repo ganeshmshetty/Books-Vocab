@@ -294,6 +294,7 @@ def _resolve_and_link_user(
     provider: str,
     email: str | None = None,
     *,
+    hd: str | None = None,
     settings: KGSettings,
     load_users_fn: Callable,
     save_users_fn: Callable,
@@ -305,6 +306,7 @@ def _resolve_and_link_user(
         load_users_fn=load_users_fn,
         save_users_fn=save_users_fn,
         email=email,
+        hd=hd,
     )
 
 

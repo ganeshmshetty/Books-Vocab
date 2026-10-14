@@ -175,6 +175,7 @@ async def test_web_apple_callback_verifies_and_links_off_the_event_loop(web_app_
     monkeypatch.setattr(web_auth, "verify_apple_token", verify_apple)
     monkeypatch.setattr(web_auth, "_resolve_and_link_user", link)
 
+    web_auth._issue_apple_state("nonce-1")
     async with _asgi_client() as client:
         resp = await client.post(
             "/auth/web/apple/callback",

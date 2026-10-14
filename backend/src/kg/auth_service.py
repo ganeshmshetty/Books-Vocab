@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -7,6 +8,8 @@ import jwt
 
 from .types import UsersPayload
 from .users_lock import users_file_lock
+
+logger = logging.getLogger(__name__)
 
 
 def create_jwt_token(
@@ -37,6 +40,30 @@ def create_jwt_token(
     return jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
 
 
+_GOOGLE_CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+def _email_is_authoritative(provider: str, email: str, hd: str | None) -> bool:
+    """Whether ``provider`` is the authority for the (already verified) ``email``.
+
+    Apple verifies every address it reports. Google only owns consumer
+    addresses and addresses of a Workspace domain whose ``hd`` claim matches;
+    for any other domain ``email_verified`` records a past check, not current
+    control of the mailbox.
+    """
+    if provider == "apple":
+        return True
+    if provider == "google":
+        domain = email.rpartition("@")[2]
+        return domain in _GOOGLE_CONSUMER_DOMAINS or (bool(hd) and hd == domain)
+    return False
+
+
+def _is_independent_account(record: object) -> bool:
+    """A user record holding real account state (anything beyond a bare link pointer)."""
+    return isinstance(record, dict) and any(key != "_linked_to" for key in record)
+
+
 def resolve_and_link_user(
     provider_user_id: str,
     provider: str,
@@ -45,6 +72,7 @@ def resolve_and_link_user(
     load_users_fn: Callable[[], UsersPayload],
     save_users_fn: Callable[[UsersPayload], None],
     email: str | None = None,
+    hd: str | None = None,
 ) -> str:
     with users_file_lock(users_lock_file):
         users = load_users_fn()
@@ -84,6 +112,26 @@ def resolve_and_link_user(
                     # Owned by a different canonical: never re-link or move the
                     # index silently, and never copy that account's email here.
                     profile_email = None
+        elif (
+            email
+            and email in users["_email_index"]
+            and users["_email_index"][email] != provider_user_id
+            and (not _email_is_authoritative(provider, email, hd) or _is_independent_account(existing_user))
+        ):
+            # Either the provider cannot vouch for this address, or this id
+            # already is an independent account with its own data and
+            # subscription. Neither is re-pointed at the address's owner: the
+            # id keeps resolving to itself and the index keeps its owner.
+            canonical_id = provider_user_id
+            if canonical_id not in users:
+                users[canonical_id] = {}
+            profile_email = None
+            if _is_independent_account(existing_user):
+                logger.warning(
+                    "auth: existing account %s signed in with an email indexed to %s; not linking (merge manually)",
+                    provider_user_id,
+                    users["_email_index"][email],
+                )
         elif email and email in users["_email_index"]:
             canonical_id = users["_email_index"][email]
 
