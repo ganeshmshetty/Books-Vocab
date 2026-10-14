@@ -20,7 +20,8 @@ trap 'rm -rf "$TMP"' EXIT
 # grep 的旗標區（緊接 grep 之後）必須含 q；不可跨到 `[ -eq 1 ]` 之類的非 grep 旗標。
 PATTERN='(^|[^[:alnum:]_.-])(echo|printf)[^&;]*[|][[:space:]]*grep([[:space:]]+-[[:alpha:]]+)*[[:space:]]+-[[:alpha:]]*q'
 
-# scan <root>：印出 <root>/ops 下、含 pipefail 的 *.sh 中、非註解行的違規站點（file:line: text）。
+# scan <root>：印出 <root>/ops（*.sh）與 <root>/.githooks（無副檔名 hook）下、含 pipefail 的
+# 檔案中、非註解行的違規站點（file:line: text）。.githooks 同樣是 set -o pipefail 腳本（#3838）。
 scan() {
   local root="$1" f
   while IFS= read -r f; do
@@ -31,14 +32,28 @@ scan() {
       continue
     fi
     awk -v re="$PATTERN" '$0 ~ re && $0 !~ /^[ \t]*#/ { printf "%s:%d: %s\n", FILENAME, FNR, $0 }' "$f"
-  done < <(find "$root/ops" -type f -name '*.sh' | LC_ALL=C sort)
+  done < <(
+    {
+      find "$root/ops" -type f -name '*.sh'
+      if [[ -d "$root/.githooks" ]]; then
+        find "$root/.githooks" -type f
+      fi
+    } | LC_ALL=C sort
+  )
 }
 
 fail=0
 ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fail=1; }
 
-mkdir -p "$TMP/seeded/ops" "$TMP/clean/ops" "$TMP/nopipefail/ops"
+mkdir -p "$TMP/seeded/ops" "$TMP/seeded/.githooks" "$TMP/clean/ops" "$TMP/nopipefail/ops"
+
+cat >"$TMP/seeded/.githooks/pre-commit" <<'FIXTURE'
+#!/usr/bin/env bash
+set -o pipefail
+STAGED="a.txt"
+echo "$STAGED" | grep -qE 'a' && echo matched
+FIXTURE
 
 cat >"$TMP/seeded/ops/bad.sh" <<'FIXTURE'
 #!/usr/bin/env bash
@@ -83,6 +98,12 @@ if [[ "$seeded_hits" == *"multi.sh:4:"* && "$seeded_hits" == *"multi.sh:5:"* ]];
   ok "multi-stage echo|tr|grep -q and printf|sed|grep -q violations are caught"
 else
   bad "multi-stage pipefail violation not caught: [$seeded_hits]"
+fi
+
+if [[ "$seeded_hits" == *".githooks/pre-commit:4:"* ]]; then
+  ok "pipefail git hook under .githooks/ is caught"
+else
+  bad "pipefail git hook under .githooks/ not caught: [$seeded_hits]"
 fi
 
 if [[ -z "$(scan "$TMP/clean")" ]]; then
