@@ -247,6 +247,40 @@ def test_entry_pointing_at_link_pointer_resolves_to_its_canonical(tmp_path):
     assert users[owner]["linked_ids"] == ["apple-new"]
 
 
+def test_stale_entry_naming_non_authoritative_owner_does_not_link_workspace_login(tmp_path):
+    # #3790: an entry left by an earlier sign-in must not hand a Workspace
+    # login to an account whose own address and provider do not cover it.
+    seed = {
+        "_email_index": {"alice@corp.example": "apple-owner"},
+        "apple-owner": {"provider": "apple", "email": "alice@icloud.com"},
+    }
+    login, load, _ = _make_login(tmp_path, seed)
+
+    assert login("google-ws", "google", "alice@corp.example", hd="corp.example") == "google-ws"
+
+    users = load()
+    assert "_linked_to" not in users["google-ws"]
+    assert users["apple-owner"].get("linked_ids", []) == []
+    assert _index(load) == {"alice@corp.example": "google-ws"}
+
+
+def test_entry_pointing_at_link_pointer_with_missing_target_is_not_an_owner(tmp_path):
+    # #3790: a pointer whose canonical is gone is not an account; it must not
+    # be returned as the address owner.
+    seed = {
+        "_email_index": {"alice@corp.example": "dangling-pointer"},
+        "dangling-pointer": {"_linked_to": "gone-account"},
+    }
+    login, load, _ = _make_login(tmp_path, seed)
+
+    assert login("google-ws", "google", "alice@corp.example", hd="corp.example") == "google-ws"
+
+    users = load()
+    assert "_linked_to" not in users["google-ws"]
+    assert "linked_ids" not in users["dangling-pointer"]
+    assert _index(load) == {"alice@corp.example": "google-ws"}
+
+
 # ---------------------------------------------------------------------------
 # Account deletion removes the account's index entries
 # ---------------------------------------------------------------------------

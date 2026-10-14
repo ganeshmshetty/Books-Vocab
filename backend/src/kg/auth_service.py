@@ -74,23 +74,46 @@ def _is_independent_account(record: object) -> bool:
     return isinstance(record, dict) and any(key != "_linked_to" for key in record)
 
 
-def _indexed_owner(users: UsersPayload, email: str | None) -> str | None:
+def _owns_address(record: dict, email: str, hd: str | None) -> bool:
+    """Whether an account may hold ``email``'s index entry.
+
+    The account's own profile email is that address, or its provider is the
+    authority for it. A stale entry naming an account that is neither (an Apple
+    account for a Workspace address, say) is not an owner (#3790).
+    """
+    stored = record.get("email")
+    if isinstance(stored, str) and stored.lower() == email.lower():
+        return True
+    provider = record.get("provider")
+    return isinstance(provider, str) and _email_is_authoritative(provider, email, hd)
+
+
+def _indexed_owner(users: UsersPayload, email: str | None, hd: str | None = None) -> str | None:
     """Account an address is indexed to, ignoring entries whose account no longer exists.
 
     An entry naming a link pointer (``_linked_to``) resolves to that pointer's
-    canonical account, so an address is never owned by a pointer record.
+    canonical account, so an address is never owned by a pointer record; a
+    pointer whose canonical is missing owns nothing. A direct account owns the
+    entry only if it covers the address (see ``_owns_address``).
     """
-    owner = users["_email_index"].get(email) if email else None
+    if not email:
+        return None
+    owner = users["_email_index"].get(email)
     if not (isinstance(owner, str) and not owner.startswith("_") and isinstance(users.get(owner), dict)):
         return None
-    canonical = users[owner].get("_linked_to")
-    if (
-        isinstance(canonical, str)
-        and canonical != owner
-        and not canonical.startswith("_")
-        and isinstance(users.get(canonical), dict)
-    ):
-        return canonical
+    record = users[owner]
+    if "_linked_to" in record:
+        canonical = record["_linked_to"]
+        if (
+            isinstance(canonical, str)
+            and canonical != owner
+            and not canonical.startswith("_")
+            and isinstance(users.get(canonical), dict)
+        ):
+            return canonical
+        return None
+    if not _owns_address(record, email, hd):
+        return None
     return owner
 
 
@@ -126,7 +149,7 @@ def resolve_and_link_user(
         # Only an address this provider is the authority for takes part in
         # linking: it is the only kind that is indexed or looked up.
         link_email = email if email and _email_is_authoritative(provider, email, hd) else None
-        email_owner = _indexed_owner(users, link_email)
+        email_owner = _indexed_owner(users, link_email, hd)
 
         if has_valid_link:
             # A linked provider id always resolves to its canonical, whatever
@@ -187,7 +210,7 @@ def resolve_and_link_user(
             users[canonical_id].pop("_linked_to", None)
 
         # Never copy an address indexed to another account onto this record.
-        if profile_email and _indexed_owner(users, profile_email) not in (None, canonical_id, provider_user_id):
+        if profile_email and _indexed_owner(users, profile_email, hd) not in (None, canonical_id, provider_user_id):
             profile_email = None
 
         users[canonical_id]["provider"] = provider
