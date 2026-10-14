@@ -144,6 +144,17 @@ struct SyncView: View {
     }
 }
 
+/// 同步面板的連線探活（#3905）。`KGService.isConnected` 只由 `healthCheck()` 寫入；
+/// 面板開啟與裝置網路由斷轉通時都要重探，否則離線開過清單後「開始同步」會一直停用。
+@MainActor
+enum SyncReconnectProbe {
+    static func onPresent(_ service: any HealthChecking) async {
+    }
+
+    static func onConnectivityChange(from wasConnected: Bool, to isConnected: Bool, _ service: any HealthChecking) async {
+    }
+}
+
 #Preview("SyncView / Ready") {
     AppThemeContainer {
         SyncView()
