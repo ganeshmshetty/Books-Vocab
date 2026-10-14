@@ -428,3 +428,21 @@ class TestNonStringReason:
         result = _parse_batch_response(content, CANDIDATES[:1], raw_decisions=raw)
         assert result["c1"] == Judgement(link="contrasts_with", confidence=0.9, reason="")
         assert raw[0]["reason"] == ""
+
+
+# ── Non-string word must not crash the whole batch (#3893) ──
+
+
+class TestNonStringWord:
+    @pytest.mark.parametrize("bad_word", [["beta"], {"w": "beta"}])
+    def test_non_str_word_does_not_crash_batch(self, bad_word):
+        cands = [("c1", "alpha", "m1"), ("c2", "beta", "m2")]
+        content = json.dumps(
+            [
+                {"word": "alpha", "link": "contrasts_with", "confidence": 0.9, "reason": "r"},
+                {"word": bad_word, "link": "contrasts_with", "confidence": 0.9, "reason": "r"},
+            ]
+        )
+        result = _parse_batch_response(content, cands)
+        assert result["c1"] == Judgement(link="contrasts_with", confidence=0.9, reason="r")
+        assert result["c2"] is None
