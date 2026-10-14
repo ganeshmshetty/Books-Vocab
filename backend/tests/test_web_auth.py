@@ -343,3 +343,68 @@ def test_apple_callback_provider_error_log_is_length_capped(web_auth_env, caplog
     messages = [r.getMessage() for r in caplog.records if r.name == "kg.routers.web_auth"]
     assert messages
     assert all(len(m) < 400 for m in messages)
+
+
+# ── Unverified-email guard on web callbacks (#3730) ─────────────────────────
+# The web callbacks must hand _resolve_and_link_user email=None whenever the
+# provider reports email_verified=False, so an unverified address can never be
+# matched against (and link to) an existing account.
+
+
+def _google_callback_resolve_mock(client, identity):
+    state = _bootstrap_google_state(client)
+    fake_resp = httpx.Response(
+        200,
+        json={"id_token": "fake-id-token"},
+        request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+    )
+
+    async def fake_post(self, url, data=None, **kwargs):
+        return fake_resp
+
+    async def fake_verify(token, client_id):
+        return identity
+
+    with (
+        patch("httpx.AsyncClient.post", new=fake_post),
+        patch("kg.routers.web_auth.verify_google_token", new=fake_verify),
+        patch("kg.routers.web_auth._resolve_and_link_user", return_value="kg-user-1") as resolve_mock,
+    ):
+        resp = client.get(
+            f"/auth/web/google/callback?code=fake-code&state={state}",
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200, resp.text
+    resolve_mock.assert_called_once()
+    return resolve_mock
+
+
+@pytest.mark.parametrize(("verified", "expected_email"), [(False, None), (True, "victim@x.com")])
+def test_google_callback_passes_email_only_when_verified(web_auth_env, verified, expected_email):
+    resolve_mock = _google_callback_resolve_mock(web_auth_env.client, ("attacker-sub", "victim@x.com", verified))
+    assert resolve_mock.call_args.kwargs["email"] == expected_email
+
+
+def _apple_callback_resolve_mock(client, identity):
+    login_resp = client.get("/auth/web/apple/login", follow_redirects=False)
+    assert login_resp.status_code == 307
+    state = parse_qs(urlparse(login_resp.headers["location"]).query)["state"][0]
+
+    with (
+        patch("kg.routers.web_auth.verify_apple_token", return_value=identity),
+        patch("kg.routers.web_auth._resolve_and_link_user", return_value="kg-user-1") as resolve_mock,
+    ):
+        resp = client.post(
+            "/auth/web/apple/callback",
+            data={"id_token": "fake-apple-id-token", "state": state},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200, resp.text
+    resolve_mock.assert_called_once()
+    return resolve_mock
+
+
+@pytest.mark.parametrize(("verified", "expected_email"), [(False, None), (True, "victim@x.com")])
+def test_apple_callback_passes_email_only_when_verified(web_auth_env, verified, expected_email):
+    resolve_mock = _apple_callback_resolve_mock(web_auth_env.client, ("attacker-sub", "victim@x.com", verified))
+    assert resolve_mock.call_args.kwargs["email"] == expected_email
