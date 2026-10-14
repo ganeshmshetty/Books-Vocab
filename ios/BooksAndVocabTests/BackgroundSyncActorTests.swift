@@ -1195,6 +1195,63 @@ struct BackgroundSyncActorTests {
         #expect(try await actor.buildReviewStatePushPayload().count == 1)
     }
 
+    /// #3716: an edit on a row the server already holds (kgCardId set) is shown in the knowledge list,
+    /// so its SRS progress must push too. The `syncStatus == 1` filter used to drop pending and failed edits.
+    @Test func buildReviewStatePushPayload_includesEditRowsWithServerCard() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let reviewedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        for (word, status) in [("edit-pending", 0), ("edit-failed", 2)] {
+            let entry = VocabularyEntry(word: word, translation: "m", context: "c", bookTitle: "B")
+            entry.syncStatus = status
+            entry.actionType = "edit"
+            entry.kgCardId = "card-\(word)"
+            entry.lastReviewedAt = reviewedAt
+            context.insert(entry)
+        }
+        // Negative controls: an edit without a server card and a delete row must not push.
+        let noCard = VocabularyEntry(word: "edit-no-card", translation: "m", context: "c", bookTitle: "B")
+        noCard.syncStatus = 0
+        noCard.actionType = "edit"
+        context.insert(noCard)
+
+        let deleted = VocabularyEntry(word: "deleted", translation: "m", context: "c", bookTitle: "B")
+        deleted.syncStatus = 0
+        deleted.actionType = "delete"
+        deleted.kgCardId = "card-deleted"
+        context.insert(deleted)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let payload = try await actor.buildReviewStatePushPayload()
+
+        #expect(payload.compactMap { $0.body["word"] as? String }.sorted() == ["edit-failed", "edit-pending"])
+        #expect(payload.compactMap { $0.body["card_id"] as? String }.sorted() == ["card-edit-failed", "card-edit-pending"])
+
+        // The acknowledgement predicate must match the send predicate, or these rows re-send forever.
+        try await actor.markReviewStatesPushed(payload)
+        #expect(try await actor.buildReviewStatePushPayload().isEmpty)
+    }
+
+    /// #3716: a pending review-mode change on an edit row that already has a server card must reach the server.
+    @Test func buildReviewModePushPayload_includesPendingModeOnEditRowWithServerCard() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "mode-edit", translation: "m", context: "c", bookTitle: "B")
+        entry.syncStatus = 2
+        entry.actionType = "edit"
+        entry.kgCardId = "card-mode"
+        entry.pendingReviewModePush = true
+        context.insert(entry)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let payload = try await actor.buildReviewModePushPayload()
+
+        #expect(payload.map(\.word) == ["mode-edit"])
+    }
+
     /// Server-authoritative state is already on the server; accepting it must
     /// not leave the card queued to push that same state straight back.
     @Test func pullCardsToLocal_serverWinsMarksReviewStateAcknowledged() async throws {

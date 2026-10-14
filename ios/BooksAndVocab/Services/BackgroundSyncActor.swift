@@ -483,8 +483,12 @@ actor BackgroundSyncActor {
     /// which `#Predicate` does not express. The fetch is local and bounded by
     /// the library size; the payload and the round trip were the expensive part.
     func buildReviewStatePushPayload() throws -> [ReviewStatePushEntry] {
+        // Same "known to server" set as `VocabularyEntry.knowledgeListPredicate` (#3716): synced rows, plus edits
+        // on rows that already hold a server card. Archived rows keep pushing as synced rows always have.
         let descriptor = FetchDescriptor<VocabularyEntry>(
-            predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 }
+            predicate: #Predicate<VocabularyEntry> {
+                ($0.syncStatus == 1 || ($0.actionType == "edit" && $0.kgCardId != nil && $0.kgCardId != ""))
+            }
         )
         // A pending progress reset is sent even when the watermark says the server has this state: the
         // watermark may sit ahead of the device clock, and the reset must not be silently dropped (#2042).
@@ -526,8 +530,11 @@ actor BackgroundSyncActor {
         guard !sent.isEmpty else { return }
         let sentAt = Dictionary(sent.map { ($0.id, $0.sentAt) }, uniquingKeysWith: { max($0, $1) })
         let overrideIDs = Set(sent.filter(\.isOverride).map(\.id))
+        // Must select the same rows as `buildReviewStatePushPayload`, or a pushed edit row is never acknowledged (#3716).
         let descriptor = FetchDescriptor<VocabularyEntry>(
-            predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 }
+            predicate: #Predicate<VocabularyEntry> {
+                ($0.syncStatus == 1 || ($0.actionType == "edit" && $0.kgCardId != nil && $0.kgCardId != ""))
+            }
         )
         var marked = 0
         for entry in try modelContext.fetch(descriptor) {
@@ -549,7 +556,9 @@ actor BackgroundSyncActor {
     /// holds: a pending add has no card id yet, so its mode waits until that add lands.
     func buildReviewModePushPayload() throws -> [ReviewModePushEntry] {
         let descriptor = FetchDescriptor<VocabularyEntry>(
-            predicate: #Predicate<VocabularyEntry> { $0.syncStatus == 1 && $0.pendingReviewModePush }
+            predicate: #Predicate<VocabularyEntry> {
+                ($0.syncStatus == 1 || ($0.actionType == "edit" && $0.kgCardId != nil && $0.kgCardId != "")) && $0.pendingReviewModePush
+            }
         )
         return try modelContext.fetch(descriptor).filter(\.hasServerCard).map {
             ReviewModePushEntry(id: $0.persistentModelID, word: $0.word, notebookId: $0.notebookId, mode: $0.reviewMode)
