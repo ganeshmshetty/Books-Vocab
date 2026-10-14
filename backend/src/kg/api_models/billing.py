@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class SubscriptionStatusResponse(BaseModel):
@@ -87,7 +87,11 @@ class AppStoreNotificationRequest(BaseModel):
     is_trial: bool = False
     expires_at: str | None = None
     will_renew: bool | None = None
-    signed_payload: str | None = None
+    # Apple posts {"signedPayload": "<JWS>"}; internal callers and existing tests use snake_case.
+    signed_payload: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("signedPayload", "signed_payload"),
+    )
     raw_payload: dict[str, Any] | None = None
 
 
