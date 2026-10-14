@@ -304,6 +304,7 @@
 "恢復失敗：%@" = "Restore failed: %@";
 "尚未取得產品價格，請稍後再試。" = "Product pricing is not available yet. Please try again later.";
 "請先登入，再開始免費試用或訂閱。" = "Sign in before starting a free trial or subscription.";
+"請先登入，再恢復購買。" = "Sign in before restoring purchases.";
 "已取消購買。" = "Purchase cancelled.";
 "English" = "English";
 "書庫" = "Library";

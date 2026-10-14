@@ -109,6 +109,19 @@ extension SubscriptionManager {
         await refresh()
     }
 
+    /// 登入後與付費頁重新同步的共用實作（#3627）：sync 由呼叫端注入（StoreKit 無法於測試建構），
+    /// refresh 固定 `force: true`，因為對帳後必須取得最新權益，不得被 cooldown 擋下。
+    func reconcileEntitlementsAfterLogin(
+        using service: any SubscriptionServing,
+        authManager: any AuthManaging,
+        syncCurrentEntitlements: () async -> CurrentEntitlementSyncOutcome
+    ) async {
+        await Self.reconcileEntitlementsAfterLogin(
+            syncCurrentEntitlements: syncCurrentEntitlements,
+            refresh: { _ = await self.refreshEntitlements(using: service, authManager: authManager, force: true) }
+        )
+    }
+
     /// 從 Apple 訂閱管理頁返回後執行完整重新同步
     func resyncAfterManagement(using kgService: any KGServing, authManager: any AuthManaging) async {
         guard authManager.isLoggedIn else { return }

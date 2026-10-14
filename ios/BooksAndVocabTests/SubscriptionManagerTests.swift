@@ -970,6 +970,7 @@ struct SubscriptionManagerTests {
             .httpError(statusCode: 408, detail: ""),
             .httpError(statusCode: 429, detail: ""),
             .httpError(statusCode: 500, detail: ""),
+            .httpError(statusCode: 503, detail: ""),
             .networkError(underlying: URLError(.timedOut)),
         ]
         for error in transient {
@@ -1055,6 +1056,50 @@ struct SubscriptionManagerTests {
         )
         #expect(events == ["sync", "refresh"])
     }
+
+    /// 登入後／付費頁重新同步的實際 wiring（#3627）：StoreKit 同步必須先於 fetch，且 refresh 必須 force。
+    /// 測試前先讓 cooldown 生效，若未 force 則不會發出 fetch，`calls == 1` 即證明 force 生效。
+    @MainActor
+    @Test func reconcileAfterLogin_syncsBeforeForcedRefresh() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = Date()
+
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: []
+        )
+        var events: [String] = []
+        await mgr.reconcileEntitlementsAfterLogin(
+            using: service,
+            authManager: RefreshOrderAuthStub(),
+            syncCurrentEntitlements: {
+                events.append("sync fetches=\(service.calls)")
+                return .noEntitlement
+            }
+        )
+        #expect(events == ["sync fetches=0"])
+        #expect(service.calls == 1)
+    }
+
+    // MARK: - purchase/restore guard (#3667)
+
+    /// demo 模式的 `isLoggedIn` 為 true 但沒有 KG 帳號可綁定交易：只有真正登入且有 userId 的帳號才能發起 StoreKit 購買／還原。
+    @MainActor
+    @Test func canTransact_requiresLoggedInNonDemoAccountWithUserId() {
+        #expect(SubscriptionManager.canTransact(isLoggedIn: true, isDemoMode: false, userId: "user-1"))
+        #expect(!SubscriptionManager.canTransact(isLoggedIn: true, isDemoMode: true, userId: nil))
+        #expect(!SubscriptionManager.canTransact(isLoggedIn: true, isDemoMode: true, userId: "user-1"))
+        #expect(!SubscriptionManager.canTransact(isLoggedIn: true, isDemoMode: false, userId: nil))
+        #expect(!SubscriptionManager.canTransact(isLoggedIn: false, isDemoMode: false, userId: "user-1"))
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
@@ -1062,7 +1107,7 @@ struct SubscriptionManagerTests {
 private final class GatedSubscriptionService: SubscriptionServing {
     private let responses: [Int: KGEntitlements]
     private let suspended: Set<Int>
-    private var calls = 0
+    private(set) var calls = 0
     private var parked: [Int: CheckedContinuation<KGEntitlements, Error>] = [:]
 
     init(responses: [Int: KGEntitlements], suspended: Set<Int>) {

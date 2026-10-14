@@ -111,16 +111,23 @@ extension SubscriptionManager {
         lastError = L10n.string("尚未取得訂閱方案，請稍後再試。")
     }
 
+    /// 能否發起 StoreKit 購買／還原（#3667）。demo 模式的 `isLoggedIn` 為 true 但沒有 KG 帳號可綁定交易
+    /// （無 `appAccountToken`、無法同步），因此必須以 `userId` 與 `isDemoMode` 一併判斷。
+    static func canTransact(isLoggedIn: Bool, isDemoMode: Bool, userId: String?) -> Bool {
+        isLoggedIn && !isDemoMode && userId != nil
+    }
+
     func purchasePro(using kgService: any KGServing, authManager: any AuthManaging) async {
+        // 守衛須先於 loadProducts：未通過時不得觸發 StoreKit 任何呼叫（#3667）
+        guard Self.canTransact(isLoggedIn: authManager.isLoggedIn, isDemoMode: authManager.isDemoMode, userId: authManager.userId) else {
+            purchaseStatusMessage = L10n.string("請先登入，再開始免費試用或訂閱。")
+            return
+        }
         if proProduct == nil {
             await loadProducts()
         }
         guard let product = proProduct else {
             purchaseStatusMessage = L10n.string("尚未取得產品價格，請稍後再試。")
-            return
-        }
-        guard authManager.isLoggedIn else {
-            purchaseStatusMessage = L10n.string("請先登入，再開始免費試用或訂閱。")
             return
         }
 
@@ -132,23 +139,34 @@ extension SubscriptionManager {
             switch result {
             case .success(let verification):
                 let transaction = try checkVerified(verification)
-                await transaction.finish()
                 purchaseStatusMessage = L10n.string("購買成功，正在同步訂閱狀態⋯")
                 commitEntitlements(
                     optimisticEntitlements(from: product, status: inferredStatus(for: product)),
                     owner: authManager.userId
                 )
+                // finish 只能在後端同步成功後執行（#3421 不變式）。與 Transaction.updates 監聽路徑共用同一結算：
+                // 同步失敗時交易保持未完成，StoreKit 會於之後重送，不會永久遺失已付款的權益（#3666）。
+                let settlement = await Self.settleVerifiedTransaction(
+                    transaction,
+                    isLoggedIn: authManager.isLoggedIn,
+                    sync: { transaction in
+                        try await self.syncTransaction(
+                            transaction,
+                            signedTransactionInfo: verification.jwsRepresentation,
+                            product: product,
+                            using: kgService
+                        )
+                    },
+                    finish: { transaction in await transaction.finish() }
+                )
                 var syncApplied = false
-                do {
-                    try await syncTransaction(
-                        transaction,
-                        signedTransactionInfo: verification.jwsRepresentation,
-                        product: product,
-                        using: kgService
-                    )
+                switch settlement {
+                case .finished:
                     syncApplied = true
                     AppLog.subscription.info("Sync succeeded")
-                } catch {
+                case .skippedNotLoggedIn:
+                    AppLog.subscription.warning("Purchase settlement skipped: no user logged in; transaction left unfinished for StoreKit redelivery")
+                case .rejected(let error), .acceptedUnreadableResponse(let error), .syncFailed(let error):
                     AppLog.subscription.warning("Sync failed: \(error.localizedDescription)")
                     if !(error is CancellationError) {
                         AppCrashReporting.record(error, context: "subscription.purchase.sync")
@@ -185,6 +203,11 @@ extension SubscriptionManager {
     }
 
     func restorePurchases(using kgService: any KGServing, authManager: any AuthManaging) async {
+        // 同 purchasePro：無 KG 帳號時不得呼叫 AppStore.sync，否則只會得到後端同步失敗的誤導訊息（#3667）
+        guard Self.canTransact(isLoggedIn: authManager.isLoggedIn, isDemoMode: authManager.isDemoMode, userId: authManager.userId) else {
+            purchaseStatusMessage = L10n.string("請先登入，再恢復購買。")
+            return
+        }
         beginLoading()
         defer { endLoading() }
 

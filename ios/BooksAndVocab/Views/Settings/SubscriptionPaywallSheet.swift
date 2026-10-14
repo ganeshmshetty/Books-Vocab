@@ -107,9 +107,11 @@ struct SubscriptionPaywallSheet: View {
                     .disabled(subscriptionManager.isLoading)
                 }
 
+                // 重新同步必須真的推送 StoreKit 交易到後端（同步失敗時交易仍未 finish，此處是使用者的補救入口）；
+                // 僅 refresh 是 GET，不會修復後端紀錄（#3666）。
                 Button {
                     Task {
-                        await subscriptionManager.refresh(using: kgService, authManager: authManager, force: true)
+                        await subscriptionManager.resyncAfterManagement(using: kgService, authManager: authManager)
                     }
                 } label: {
                     paywallActionLabel(
