@@ -21,7 +21,7 @@ evidence 先以 Write 寫成一個 JSON object；不確定 key 先加 `--print-e
 
 工作順序：
 
-1. 讀 PR diff 與 `./ops/docs_impact.py --files ... --explain`；
+1. 讀 PR diff 與 `./ops/docs_impact.py --files ...`（要看 `!` 抑制理由加 `--explain`；查漏報引用用 `./ops/docs_impact.py --surface-scan PATTERN`）；
 2. 依 trigger 判斷真正受影響的文件；
 3. 指出需同步的 active SoT 與最小修改內容（metadata、authority、verified anchor 與 code 一致），不改 caller worktree，由 PR 作者或 IM 在同一 PR 套用；
 4. 跑 `./ops/docs_lint.sh`、`./ops/docs_lint.sh --registry` 與必要的 coverage；

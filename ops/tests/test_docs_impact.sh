@@ -10,7 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 require() {
   local pattern="$1" file="$2"
-  grep -q "$pattern" "$file" || {
+  grep -q -- "$pattern" "$file" || {
     echo "missing '$pattern' in $file" >&2
     sed -n '1,160p' "$file" >&2
     exit 1
@@ -141,5 +141,17 @@ git -C "$GR" -c user.name=t -c user.email=t@t commit -q -m rename
 gimpact >"$TMP/rename"
 require "sop.router" "$TMP/rename"
 require "src/router.py" "$TMP/rename"
+
+# #3766: missed-reference guidance must point at --surface-scan, not --explain
+# (--explain only reports !path/!glob suppressions; it cannot reveal false negatives)
+grep -F 'docs-tooling-change' docs/sop/docs_dogfood.md >"$TMP/dogfood-row"
+require "--surface-scan" "$TMP/dogfood-row"
+require "docs_dogfood" "$TMP/docs-tooling"
+grep -F -- '--surface-scan' docs/sop/docs_dogfood.md >"$TMP/dogfood-scan"
+require "surface-scan" "$TMP/dogfood-scan"
+grep -F -- '--surface-scan' .claude/agents/docs-steward.md >"$TMP/steward-scan"
+require "surface-scan" "$TMP/steward-scan"
+grep -F -- '--surface-scan' .claude/skills/kg-docs-control-plane/SKILL.md >"$TMP/skill-scan"
+require "surface-scan" "$TMP/skill-scan"
 
 echo "docs-impact tests: PASS"
