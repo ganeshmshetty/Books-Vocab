@@ -195,10 +195,11 @@ _release_cond = threading.Condition(_reservation_lock)
 
 
 def _exhausted_error(user_id: str, *, limit: float, recorded: float, reserved: float) -> QuotaExceededError:
-    """429 built from the admission snapshot that rejected the call, with the
-    same arithmetic as the pre-flight gate (`_quota_view`): fraction over
-    recorded + reserved, reset from the recorded rows. Reads SQLite, so it must
-    never be called while holding `_reservation_lock`."""
+    """429 built from the admission snapshot that rejected the call. Fraction is
+    over recorded + reserved (the budget the rejected call actually lacked),
+    which intentionally differs from the gate's recorded-only fraction in
+    `check_and_get_quota`; reset comes from the recorded rows. Reads SQLite, so
+    it must never be called while holding `_reservation_lock`."""
     remaining = max(limit - recorded - reserved, 0.0)
     fraction = round(remaining / limit, 4) if limit > 0 else 0.0
     reset = _reset_seconds(user_id, limit, recorded)
@@ -392,9 +393,10 @@ def _recorded_usd(user_id: str) -> float:
 def _used_usd(user_id: str) -> float:
     """Recorded USD cost (last 24 h) PLUS outstanding in-flight reservations.
 
-    Folding reservations in here means every quota reader — `check_quota`,
-    `check_and_get_quota`, `get_quota_state` — defends the pre-flight gap
-    without each having to know about reservations.
+    Folding reservations in here means the user-facing quota display
+    (`get_quota_state`) defends the pre-flight gap without knowing about
+    reservations. The gate (`check_and_get_quota`) reads recorded usage and
+    reserved usage separately through `_admission_usage_snapshot`.
     """
     recorded, reserved = _admission_usage_snapshot(user_id)
     return recorded + reserved
@@ -407,7 +409,10 @@ class _QuotaView(NamedTuple):
 
 
 def _quota_view(user_id: str, *, is_pro: bool) -> _QuotaView:
-    """Shared quota arithmetic for every reader: (limit, used, fraction).
+    """Quota arithmetic for `get_quota_state`: (limit, used, fraction).
+
+    Not used by the pre-flight gate (`check_and_get_quota`), which computes its
+    fraction from recorded usage only and does not call this helper.
 
     ``fraction`` = remaining / limit, guarded against a zero limit (an operator
     may set a tier limit to 0 via ``configure_limits``) so readers degrade to
@@ -586,11 +591,13 @@ def check_and_get_quota(user_id: str, call_type: str, *, is_pro: bool = False) -
     ``exceeded`` uses the admission rule (`_try_admit`): only recorded usage at
     or over the limit is real exhaustion. In-flight reservations are contention,
     which `reserve`/`areserve` wait out, so they must not trip the gate (#3809).
-    ``fraction`` still reports the budget left after in-flight reservations.
+    ``fraction`` is the recorded budget left, the same rule as ``exceeded``:
+    a gate pass must never report 0.0 just because in-flight reservations fill
+    the budget (#3857). The 429 path (`_exhausted_error`) keeps recorded+reserved.
     """
     limit = _daily_limit(is_pro)
-    recorded, reserved = _admission_usage_snapshot(user_id)
-    remaining = max(limit - recorded - reserved, 0.0)
+    recorded, _reserved = _admission_usage_snapshot(user_id)
+    remaining = max(limit - recorded, 0.0)
     fraction = round(remaining / limit, 4) if limit > 0 else 0.0
     return {
         "exceeded": recorded >= limit,

@@ -82,12 +82,13 @@ def _stable_limits_and_clean_reservations():
 
 
 def test_reservation_counts_against_quota(mock_db):
-    """A reservation alone (no recorded usage) makes the gate see usage."""
+    """A reservation alone does not trip the gate, and the reported fraction
+    stays recorded-only: in-flight spend is contention, not budget (#3809/#3857)."""
     # Free limit $0.03. Reserve $0.02 → still under, not exceeded.
     with qs.reserve("u1", 0.02):
         q = qs.check_quota("u1", "translate", is_pro=False)
         assert q["exceeded"] is False
-        assert q["fraction"] == pytest.approx(1.0 / 3.0, abs=0.01)
+        assert q["fraction"] == 1.0
 
 
 def test_reservation_released_on_context_exit(mock_db):
@@ -550,6 +551,19 @@ def test_gate_stays_open_while_own_call_holds_reservation(mock_db, monkeypatch):
     with qs.reserve("u1", qs.ESTIMATED_CALL_COST_USD, enforce=True, is_pro=False):
         assert qs.check_and_get_quota("u1", "translate_quick", is_pro=False)["exceeded"] is False
         deps_quota._check_quota({"id": "u1"}, "translate_quick", None)
+
+
+def test_gate_fraction_reports_recorded_budget_when_reservation_fills_rest(mock_db, monkeypatch):
+    """#3857: the gate passes on recorded usage, so the reported fraction must
+    follow the same rule. An in-flight reservation that fills the rest of the
+    budget must not zero X-Quota-Fraction while the call is admitted."""
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.02)
+    limit = qs._daily_limit(False)
+    with qs.reserve("u1", limit - 0.02, enforce=True, is_pro=False):
+        quota = qs.check_and_get_quota("u1", "translate_quick", is_pro=False)
+    assert quota["exceeded"] is False
+    assert quota["fraction"] == round((limit - 0.02) / limit, 4)
+    assert quota["fraction"] > 0
 
 
 def test_gate_real_exhaustion_still_raises_with_recorded_reset(mock_db, monkeypatch):
