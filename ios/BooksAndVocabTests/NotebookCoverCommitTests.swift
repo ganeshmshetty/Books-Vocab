@@ -139,6 +139,48 @@ struct NotebookCoverCommitTests {
         #expect(!NotebookCoverCommit.shouldDiscardLateWrite(committed: false, dismissed: false))
     }
 
+    // MARK: - processPhoto 寫檔收尾的處置（#3595）
+
+    /// 未 commit、未關閉、無先前 staged → 新檔收為 staged，不刪任何檔案。
+    @Test func photoWriteWhileEditingAdoptsWithoutStaleCleanup() {
+        let outcome = NotebookEditPhotoWrite.outcome(
+            previousStaged: nil, original: nil, committed: false, dismissed: false
+        )
+        #expect(outcome == .adoptStaged(staleStaged: nil))
+    }
+
+    /// 換圖時先前的 staged 新檔（非 original）必須清掉，否則成為 orphan。
+    @Test func photoWriteReplacingStagedRemovesPreviousStagedFile() {
+        let outcome = NotebookEditPhotoWrite.outcome(
+            previousStaged: "/covers/staged-1.jpg", original: "/covers/orig.jpg", committed: false, dismissed: false
+        )
+        #expect(outcome == .adoptStaged(staleStaged: "/covers/staged-1.jpg"))
+    }
+
+    /// 先前 staged 即是 original 時絕不刪原檔（原檔只在 API 成功後才由 NotebookCoverCommit 刪除）。
+    @Test func photoWriteNeverRemovesOriginalCover() {
+        let outcome = NotebookEditPhotoWrite.outcome(
+            previousStaged: "/covers/orig.jpg", original: "/covers/orig.jpg", committed: false, dismissed: false
+        )
+        #expect(outcome == .adoptStaged(staleStaged: nil))
+    }
+
+    /// Save 已把 staged 交給 onSave（committed）後才完成的寫檔 → 只丟新檔，不碰已交出的先前 staged。
+    @Test func photoWriteAfterCommitDiscardsNewFileWithoutTouchingHandedOffFile() {
+        let outcome = NotebookEditPhotoWrite.outcome(
+            previousStaged: "/covers/handed-off.jpg", original: nil, committed: true, dismissed: false
+        )
+        #expect(outcome == .discardNewFile)
+    }
+
+    /// sheet 已關閉後才完成的寫檔 → 只丟新檔；先前 staged 由 onDisappear 的 discardUncommittedStaged 收斂。
+    @Test func photoWriteAfterDismissDiscardsNewFile() {
+        let outcome = NotebookEditPhotoWrite.outcome(
+            previousStaged: "/covers/staged-1.jpg", original: nil, committed: false, dismissed: true
+        )
+        #expect(outcome == .discardNewFile)
+    }
+
     /// #3498：處理照片中禁止 Save，避免 staged 交接與 processPhoto 寫檔交錯；空白名稱同樣禁止。
     @Test func saveDisabledWhilePhotoProcessing() {
         #expect(!NotebookEditSaveGate.isSaveEnabled(name: "N", isProcessingPhoto: true))
