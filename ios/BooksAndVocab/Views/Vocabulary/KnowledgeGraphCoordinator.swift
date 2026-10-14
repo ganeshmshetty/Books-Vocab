@@ -36,6 +36,8 @@ final class KnowledgeGraphCoordinator: KnowledgeGraphCoordinating {
     var linkThickness: Double = 1.0
     var showsIsolatedNodes: Bool = false
 
+    @ObservationIgnored private var loadGeneration = 0
+
     init(links: [KGGraphLink] = []) {
         self.links = links
     }
@@ -72,13 +74,26 @@ final class KnowledgeGraphCoordinator: KnowledgeGraphCoordinating {
             return
         }
 
+        // `.task(id:)` 會取消並取代前一個 run；只有最新一次 run 可以寫入 links／errorMessage／isLoading，
+        // 被取代 run 的 CancellationError 不得蓋過最新 run 的狀態（#3818）。
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if generation == loadGeneration { isLoading = false }
+        }
 
         do {
-            links = try await kgService.pullGraphLinks(notebookIDs: notebookIDs)
+            let fetched = try await kgService.pullGraphLinks(notebookIDs: notebookIDs)
+            guard generation == loadGeneration else { return }
+            links = fetched
+            errorMessage = nil
+        } catch is CancellationError {
+            // 被取代或被取消：狀態由最新 run 決定，這裡不呈現錯誤。
+            return
         } catch {
+            guard generation == loadGeneration else { return }
             errorMessage = SyncFailurePresentation.reason(for: error)
         }
     }
