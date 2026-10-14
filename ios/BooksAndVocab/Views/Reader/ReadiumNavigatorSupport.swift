@@ -138,7 +138,7 @@ final class NavigatorHostViewController: UIViewController {
         AppLog.reader.debug("\(logPrefix): \(highlight)")
 
         Task { @MainActor in
-            ReaderJSEval.log(await navigator.evaluateJavaScript(activeSelectionWrapScript), label)
+            ReaderJSEval.log(await navigator.evaluateBridgeScript(activeSelectionWrapScript), label)
             navigator.clearSelection()
         }
 

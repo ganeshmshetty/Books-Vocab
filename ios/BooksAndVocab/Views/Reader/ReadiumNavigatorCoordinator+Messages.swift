@@ -20,8 +20,19 @@ extension ReadiumNavigatorView.Coordinator: WKScriptMessageHandler {
         // WKScriptMessage.body / .name are only valid during this synchronous
         // delegate callback. Capture them now before hopping to the MainActor;
         // reading them inside the Task would be a use-after-scope.
-        let (name, body) = MainActor.assumeIsolated {
-            (message.name, message.body)
+        let (name, body, isAccepted) = MainActor.assumeIsolated {
+            (
+                message.name,
+                message.body,
+                ReaderBridgeContentWorld.accepts(
+                    isMainFrame: message.frameInfo.isMainFrame,
+                    world: message.world
+                )
+            )
+        }
+        guard isAccepted else {
+            AppLog.reader.debug("Ignored bridge message from outside the main frame / bridge world")
+            return
         }
         Task { @MainActor in
             switch name {

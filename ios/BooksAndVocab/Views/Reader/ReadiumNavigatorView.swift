@@ -241,9 +241,7 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
         coordinator.deactivateNavigator()
         // 移除 WKUserContentController 對 Coordinator 的強引用，打斷 retain cycle
         if let controller = coordinator.registeredContentController {
-            for name in Coordinator.registeredHandlerNames {
-                controller.removeScriptMessageHandler(forName: name)
-            }
+            ReaderBridgeContentWorld.uninstall(from: controller)
             coordinator.registeredContentController = nil
         }
         coordinator.contentOffsetObserver = nil
@@ -295,7 +293,6 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
 
         /// 記住 setupUserScripts 傳入的 controller，供 dismantle 時移除 handler 打斷 retain cycle
         weak var registeredContentController: WKUserContentController?
-        static let registeredHandlerNames = ["wordTap", "wordDeselect", "selectionState", "markingProgress"]
 
         // 選取期間鎖定翻頁
         var selectionPageAnchor: CGPoint?
@@ -474,9 +471,6 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
             let callbackGeneration = navigatorLifecycleGate.generation
             guard acceptsNavigator(navigator, generation: callbackGeneration) else { return }
             registeredContentController = userContentController
-            for name in Self.registeredHandlerNames {
-                userContentController.add(self, name: name)
-            }
 
             // ── 自訂字體 @font-face：主執行緒只讀快取（#2052）──
             // TTF → base64 由 `ReaderFontFaceCSSCache.prewarm()` 在背景 `.utility` 建好；
@@ -496,8 +490,8 @@ struct ReadiumNavigatorView: UIViewControllerRepresentable {
                 isDebugMode: isDebugMode
             )
 
-            let script = WKUserScript(source: js, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-            userContentController.addUserScript(script)
+            // handler 與 script 一起裝進隔離 content world（見 ReaderBridgeContentWorld）
+            ReaderBridgeContentWorld.install(on: userContentController, handler: self, scriptSource: js)
             AppLog.reader.info("User scripts injected")
             PerfLog.reader.mark("userScriptsInjected")
             guard acceptsNavigator(navigator, generation: callbackGeneration) else { return }

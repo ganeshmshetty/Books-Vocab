@@ -53,7 +53,7 @@ struct ReaderDOMExecutor {
     ) {
         Task { @MainActor in
             guard let navigator else { return }
-            ReaderJSEval.log(await navigator.evaluateJavaScript(script), label)
+            ReaderJSEval.log(await navigator.evaluateBridgeScript(script), label)
         }
     }
 }

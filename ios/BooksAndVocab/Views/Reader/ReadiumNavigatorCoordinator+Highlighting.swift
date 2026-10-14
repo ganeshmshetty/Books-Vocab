@@ -22,7 +22,7 @@ extension ReadiumNavigatorView.Coordinator {
 
         let js = ReaderJSEval.markVocabWordsScript(words)
 
-        Task { ReaderJSEval.log(await navigator.evaluateJavaScript(js), "markVocabWords") }
+        Task { ReaderJSEval.log(await navigator.evaluateBridgeScript(js), "markVocabWords") }
         PerfLog.reader.mark("markVocabWords", "\(words.count)")
         AppLog.reader.debug("Marked \(words.count) vocab words")
     }
@@ -31,7 +31,7 @@ extension ReadiumNavigatorView.Coordinator {
         guard let navigator else { return }
         let js = ReaderJSEval.singleWordScript(function: jsFunction, word: word)
         Task { @MainActor in
-            ReaderJSEval.log(await navigator.evaluateJavaScript(js), label)
+            ReaderJSEval.log(await navigator.evaluateBridgeScript(js), label)
             AppLog.reader.debug("\(logMessage)")
         }
     }
@@ -55,7 +55,7 @@ extension ReadiumNavigatorView.Coordinator {
         });
         """
         Task { @MainActor in
-            ReaderJSEval.log(await navigator.evaluateJavaScript(js), "clearAllVocabHighlights")
+            ReaderJSEval.log(await navigator.evaluateBridgeScript(js), "clearAllVocabHighlights")
             AppLog.reader.debug("Cleared all vocab highlights")
         }
     }
@@ -80,7 +80,7 @@ extension ReadiumNavigatorView.Coordinator {
         });
         """
         Task { @MainActor in
-            ReaderJSEval.log(await navigator.evaluateJavaScript(js), "clearActiveHighlight")
+            ReaderJSEval.log(await navigator.evaluateBridgeScript(js), "clearActiveHighlight")
             navigator.clearSelection()
         }
     }
