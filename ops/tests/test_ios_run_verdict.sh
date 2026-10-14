@@ -109,7 +109,7 @@ ls "$TMP"/kg_ios_test_verdict.[0-9]*-[0-9]* >/dev/null 2>&1 \
 
 # ── 8. publish is safe under set -e with partial/missing files ────────────────
 section "publish robustness"
-in_proc 'kg_ios_verdict_init build "/wt/none"; kg_ios_verdict_publish; echo SAFE' | grep -q SAFE \
+_pub_out="$(in_proc 'kg_ios_verdict_init build "/wt/none"; kg_ios_verdict_publish; echo SAFE')" && grep -q SAFE <<< "$_pub_out" \
   && ok "publish with no files does not abort (set -e)" || fail_t "publish aborted with no files"
 in_proc '
   kg_ios_verdict_init build "/wt/textonly"

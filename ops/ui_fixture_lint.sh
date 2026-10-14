@@ -200,7 +200,7 @@ if [[ "$awk_rc" -ne 0 ]]; then
   exit 2
 fi
 
-known() { printf '%s\n' "$KNOWN_IDS" | grep -Fxq -- "$1"; }
+known() { grep -Fxq -- "$1" <<< "$KNOWN_IDS"; }
 
 sites=0
 bad=0

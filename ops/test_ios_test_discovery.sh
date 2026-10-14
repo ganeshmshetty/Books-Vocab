@@ -181,7 +181,7 @@ private extension JulietTests {
 SWIFT
 
 # helper: does the flag set contain exactly this -only-testing path?
-has_flag() { printf '%s\n' "$1" | grep -qxF -e "-only-testing:BooksAndVocabTests/$2"; }
+has_flag() { grep -qxF -e "-only-testing:BooksAndVocabTests/$2" <<< "$1"; }
 
 # ── 1. syntax ─────────────────────────────────────────────────────────────────
 section "Syntax"
@@ -193,11 +193,11 @@ FLAGS="$(discover_only_flags "$FIX" "")"
 has_flag "$FLAGS" "AlphaTests/alphaOne()" && ok "alphaOne → AlphaTests" || fail_t "alphaOne misattributed"
 has_flag "$FLAGS" "AlphaTests/alphaTwo()" && ok "alphaTwo → AlphaTests" || fail_t "alphaTwo misattributed"
 has_flag "$FLAGS" "BravoTests/bravoOne()" && ok "bravoOne → BravoTests (not AlphaTests)" || fail_t "bravoOne misattributed"
-printf '%s\n' "$FLAGS" | grep -qF "AlphaTests/bravoOne" && fail_t "bravoOne WRONGLY under AlphaTests" || ok "bravoOne not under AlphaTests"
+grep -qF "AlphaTests/bravoOne" <<< "$FLAGS" && fail_t "bravoOne WRONGLY under AlphaTests" || ok "bravoOne not under AlphaTests"
 
 # ── 3. nested helper struct is never a container ──────────────────────────────
 section "Nested helper exclusion"
-printf '%s\n' "$FLAGS" | grep -qF "NestedHelper" && fail_t "NestedHelper leaked as container" || ok "NestedHelper not a container"
+grep -qF "NestedHelper" <<< "$FLAGS" && fail_t "NestedHelper leaked as container" || ok "NestedHelper not a container"
 
 # ── 4. @Suite same-line ───────────────────────────────────────────────────────
 section "@Suite same-line"
@@ -209,7 +209,7 @@ section "@Suite split-line"
 has_flag "$FLAGS" "EchoTests/echoOne()" && ok "echoOne → EchoTests" || fail_t "@Suite split-line skipped"
 has_flag "$FLAGS" "EchoTests/echoTwo()" && ok "echoTwo → EchoTests" || fail_t "@Suite split-line skipped"
 has_flag "$FLAGS" "EchoTests/echoThree()" && ok "echoThree (@Test on prev line) → EchoTests" || fail_t "@Test-on-prev-line func skipped"
-printf '%s\n' "$FLAGS" | grep -qF "makeHelper" && fail_t "plain helper makeHelper leaked" || ok "plain helper makeHelper excluded"
+grep -qF "makeHelper" <<< "$FLAGS" && fail_t "plain helper makeHelper leaked" || ok "plain helper makeHelper excluded"
 
 # ── 6. XCTest class container ─────────────────────────────────────────────────
 section "XCTest class container"
@@ -218,8 +218,8 @@ has_flag "$FLAGS" "FoxtrotTests/testFoxtrotTwo" && ok "testFoxtrotTwo → Foxtro
 
 # ── 7. no-container file emits nothing ────────────────────────────────────────
 section "No-container file"
-printf '%s\n' "$FLAGS" | grep -qF "NoContainer" && fail_t "NoContainer leaked" || ok "NoContainer skipped"
-printf '%s\n' "$FLAGS" | grep -qF "Helpers" && fail_t "Helpers enum leaked" || ok "Helpers enum not a container"
+grep -qF "NoContainer" <<< "$FLAGS" && fail_t "NoContainer leaked" || ok "NoContainer skipped"
+grep -qF "Helpers" <<< "$FLAGS" && fail_t "Helpers enum leaked" || ok "Helpers enum not a container"
 
 # ── 7b. attributed/modifier extension declarations keep their suite owner ────
 section "Attributed and modifier extension owners"
@@ -235,8 +235,8 @@ has_flag "$EXT_FLAGS" "JulietTests/testPrivateExtensionXCTest" \
 section "Grep pattern filter"
 ONLY_ALPHA="$(discover_only_flags "$FIX" "alpha")"
 has_flag "$ONLY_ALPHA" "AlphaTests/alphaOne()" && ok "pattern 'alpha' keeps alphaOne" || fail_t "pattern dropped alphaOne"
-printf '%s\n' "$ONLY_ALPHA" | grep -qF "bravoOne" && fail_t "pattern 'alpha' leaked bravoOne" || ok "pattern 'alpha' excludes bravoOne"
-printf '%s\n' "$ONLY_ALPHA" | grep -qF "charlieOne" && fail_t "pattern 'alpha' leaked charlieOne" || ok "pattern 'alpha' excludes charlieOne"
+grep -qF "bravoOne" <<< "$ONLY_ALPHA" && fail_t "pattern 'alpha' leaked bravoOne" || ok "pattern 'alpha' excludes bravoOne"
+grep -qF "charlieOne" <<< "$ONLY_ALPHA" && fail_t "pattern 'alpha' leaked charlieOne" || ok "pattern 'alpha' excludes charlieOne"
 
 # ── 9. case-insensitive pattern (preserves -i behavior) ───────────────────────
 section "Case-insensitive pattern"
@@ -249,7 +249,7 @@ section "Suite/container-name pattern"
 ONLY_BRAVO="$(discover_only_flags "$FIX" "BravoTests")"
 has_flag "$ONLY_BRAVO" "BravoTests/bravoOne()" \
   && ok "suite-name pattern 'BravoTests' runs its tests" || fail_t "suite-name pattern dropped bravoOne"
-printf '%s\n' "$ONLY_BRAVO" | grep -qF "alphaOne" \
+grep -qF "alphaOne" <<< "$ONLY_BRAVO" \
   && fail_t "suite-name pattern 'BravoTests' leaked AlphaTests funcs" || ok "suite-name pattern excludes other suites"
 # case-insensitive container match + XCTest class container
 ONLY_FOXC="$(discover_only_flags "$FIX" "foxtrottests")"
@@ -261,7 +261,7 @@ has_flag "$ONLY_FOXC" "FoxtrotTests/testFoxtrotTwo" \
 ONLY_ECHO="$(discover_only_flags "$FIX" "EchoTests")"
 has_flag "$ONLY_ECHO" "EchoTests/echoThree()" \
   && ok "suite-name match includes @Test-on-prev-line funcs" || fail_t "suite-name match missed echoThree"
-printf '%s\n' "$ONLY_ECHO" | grep -qF "makeHelper" \
+grep -qF "makeHelper" <<< "$ONLY_ECHO" \
   && fail_t "suite-name match leaked plain helper makeHelper" || ok "suite-name match still excludes plain helpers"
 # 交叉地雷迴歸（兩 reviewer 點名）：suite 名 pattern 必須也覆蓋多行參數列的
 # suite-level fallback。fallback 分支若自帶只比對 fn 的行內判斷，
@@ -280,14 +280,14 @@ has_flag "$FLAGS" "GolfTests/golfMultiLine(_:_:)" && ok "golfMultiLine → (_:_:
 has_flag "$FLAGS" "GolfTests/golfLabeled(input:)" && ok "golfLabeled → (input:) signature" || fail_t "labeled param lost its label"
 has_flag "$FLAGS" "GolfTests/golfExtInt(for:)" && ok "golfExtInt → (for:) external label" || fail_t "external/internal label pair mishandled"
 has_flag "$FLAGS" "GolfTests/golfTuple(_:count:)" && ok "golfTuple → (_:count:) (tuple comma not split)" || fail_t "nested tuple comma split the label list"
-printf '%s\n' "$FLAGS" | grep -qF "golfSingleLine()" && fail_t "parameterized func WRONGLY emitted bare () (xcodebuild matches 0 tests = false green)" || ok "no bare () emitted for parameterized funcs"
+grep -qF "golfSingleLine()" <<< "$FLAGS" && fail_t "parameterized func WRONGLY emitted bare () (xcodebuild matches 0 tests = false green)" || ok "no bare () emitted for parameterized funcs"
 has_flag "$FLAGS" "GolfTests" && ok "golfMultiLineParams (params span lines) → suite-level fallback" || fail_t "multiline-params func did not fall back to suite-level selector"
-printf '%s\n' "$FLAGS" | grep -qF "golfMultiLineParams" && fail_t "multiline-params func emitted a guessed (wrong) func selector" || ok "no guessed selector for multiline-params func"
+grep -qF "golfMultiLineParams" <<< "$FLAGS" && fail_t "multiline-params func emitted a guessed (wrong) func selector" || ok "no guessed selector for multiline-params func"
 has_flag "$FLAGS" "GolfTests/golfDisplayName()" && ok "golfDisplayName (@Test display name) → GolfTests" || fail_t "@Test(display-name) dropped"
 has_flag "$FLAGS" "GolfTests/golfSameLine()" && ok "golfSameLine (@Test func after multiline arm) → GolfTests" || fail_t "same-line @Test regressed after multiline arm"
-printf '%s\n' "$FLAGS" | grep -qF "makeFixture" && fail_t "plain helper makeFixture leaked" || ok "plain helper makeFixture excluded"
+grep -qF "makeFixture" <<< "$FLAGS" && fail_t "plain helper makeFixture leaked" || ok "plain helper makeFixture excluded"
 has_flag "$FLAGS" "HotelTests/hotelMultiLine(_:)" && ok "hotelMultiLine → HotelTests (no cross-container bleed)" || fail_t "multiline arm dropped in HotelTests"
-printf '%s\n' "$FLAGS" | grep -qF "GolfTests/hotelMultiLine" && fail_t "hotelMultiLine WRONGLY under GolfTests (arm bled across container)" || ok "no arm bleed across struct boundary"
+grep -qF "GolfTests/hotelMultiLine" <<< "$FLAGS" && fail_t "hotelMultiLine WRONGLY under GolfTests (arm bled across container)" || ok "no arm bleed across struct boundary"
 
 # ── 11. ios_test.sh -g 旗標 E2E（--list 在碰鎖/xcodebuild 前退出，可安全跑）──
 # 多個 -g 必須累積成 OR（歷史 bug：後者無聲覆蓋前者 → 以為跑兩個實際跑一個）。

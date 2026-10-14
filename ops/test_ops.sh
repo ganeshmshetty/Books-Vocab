@@ -59,6 +59,8 @@ DEFAULT_TESTS=(
   injection-lint
   ui-fixture-lint
   ops-ci-coverage
+  # #3395：pipefail 下 echo|printf … | grep -q 的 EPIPE 競態 guard（與 ops/ 全樹 0 站點）。
+  pipefail-echo-grep
   github-workflows
   ui-quality-plane
   ui-quality-gate
@@ -267,6 +269,7 @@ run_one() {
     lint-baselines)     ./ops/tests/test_lint_baselines.sh && ./ops/tests/test_i18n_lint.sh ;;
     injection-lint)     ./ops/tests/test_injection_lint.sh ;;
     ui-fixture-lint)    ./ops/tests/test_ui_fixture_lint.sh ;;
+    pipefail-echo-grep) ./ops/tests/test_pipefail_echo_grep_guard.sh ;;
     ops-ci-coverage)
       ./ops/tests/test_ops_ci_coverage.sh &&
       "$UV_BIN" run --no-project --python 3.13 --with pytest pytest -q \

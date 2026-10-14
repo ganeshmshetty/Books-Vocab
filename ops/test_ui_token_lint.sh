@@ -100,34 +100,34 @@ else fail_t "--report exited non-zero"; fi
 # ── 3. --strict fails on raw findings + names the file ────────────────────────
 section "--strict fails on raw findings"
 out="$(run --strict 2>&1 || true)"
-if echo "$out" | grep -q 'Dirty.swift'; then ok "--strict reports Dirty.swift"
+if grep -q 'Dirty.swift' <<< "$out"; then ok "--strict reports Dirty.swift"
 else fail_t "--strict did not name Dirty.swift"; fi
 if run --strict >/dev/null 2>&1; then fail_t "--strict exited 0 despite findings"
 else ok "--strict exits non-zero with findings"; fi
 
 # Each pattern category fires.
 for pat in 'padding' 'shadow' 'cornerRadius|RoundedRectangle' 'hex|Color' 'system'; do
-  echo "$out" | grep -qiE "$pat" && ok "strict detects category /$pat/" || fail_t "missing category /$pat/"
+  grep -qiE "$pat" <<< "$out" && ok "strict detects category /$pat/" || fail_t "missing category /$pat/"
 done
 
 # Directional raw padding must be caught (each edge variant + negative).
-echo "$out" | grep -q '.padding(.vertical, 13)'   && ok "padding caught .vertical raw"   || fail_t "missed directional .vertical raw padding"
-echo "$out" | grep -q '.padding(.horizontal, 6)'  && ok "padding caught .horizontal raw" || fail_t "missed directional .horizontal raw padding"
-echo "$out" | grep -q '.padding(.top, 9)'         && ok "padding caught .top raw"        || fail_t "missed directional .top raw padding"
-echo "$out" | grep -q '.padding(.leading, -4)'    && ok "padding caught negative raw"    || fail_t "missed directional negative raw padding"
+grep -q '.padding(.vertical, 13)' <<< "$out"   && ok "padding caught .vertical raw"   || fail_t "missed directional .vertical raw padding"
+grep -q '.padding(.horizontal, 6)' <<< "$out"  && ok "padding caught .horizontal raw" || fail_t "missed directional .horizontal raw padding"
+grep -q '.padding(.top, 9)' <<< "$out"         && ok "padding caught .top raw"        || fail_t "missed directional .top raw padding"
+grep -q '.padding(.leading, -4)' <<< "$out"    && ok "padding caught negative raw"    || fail_t "missed directional negative raw padding"
 
 # ── 4. Exclusions & exemptions produce no Clean/excluded findings ─────────────
-echo "$out" | grep -q 'raw-rounded-shape' && ok "raw RoundedRectangle/Capsule flagged" || fail_t "raw-rounded-shape rule never fired"
-echo "$out" | grep -q 'Capsule(style: .continuous)' && ok "Capsule(style:) caught (not just bare Capsule())" || fail_t "Capsule(style:) slipped through"
-echo "$out" | grep -q 'roundness: 0.15' && ok "bare t literal flagged" || fail_t "bare roundness literal missed"
-echo "$out" | grep -q 'topRoundness: 8' && ok "pt smuggled into topRoundness flagged" || fail_t "per-corner roundness label not covered"
+grep -q 'raw-rounded-shape' <<< "$out" && ok "raw RoundedRectangle/Capsule flagged" || fail_t "raw-rounded-shape rule never fired"
+grep -q 'Capsule(style: .continuous)' <<< "$out" && ok "Capsule(style:) caught (not just bare Capsule())" || fail_t "Capsule(style:) slipped through"
+grep -q 'roundness: 0.15' <<< "$out" && ok "bare t literal flagged" || fail_t "bare roundness literal missed"
+grep -q 'topRoundness: 8' <<< "$out" && ok "pt smuggled into topRoundness flagged" || fail_t "per-corner roundness label not covered"
 
 section "Exclusions & inline exemption"
-echo "$out" | grep -q 'Clean.swift'        && fail_t "Clean.swift wrongly flagged (token-form directional padding false-positive?)" || ok "Clean.swift not flagged"
-echo "$out" | grep -q 'DebugScratch.swift' && fail_t "Debug/ wrongly flagged"      || ok "Debug/ excluded"
-echo "$out" | grep -q 'Thing_Preview.swift' && fail_t "*Preview* wrongly flagged"  || ok "*Preview* excluded"
-echo "$out" | grep -q 'ThingTests.swift'   && fail_t "*Tests* wrongly flagged"     || ok "*Tests* excluded"
-echo "$out" | grep -q 'AppColors.swift'    && fail_t "AppColors.swift wrongly flagged" || ok "AppColors.swift excluded"
+grep -q 'Clean.swift' <<< "$out"        && fail_t "Clean.swift wrongly flagged (token-form directional padding false-positive?)" || ok "Clean.swift not flagged"
+grep -q 'DebugScratch.swift' <<< "$out" && fail_t "Debug/ wrongly flagged"      || ok "Debug/ excluded"
+grep -q 'Thing_Preview.swift' <<< "$out" && fail_t "*Preview* wrongly flagged"  || ok "*Preview* excluded"
+grep -q 'ThingTests.swift' <<< "$out"   && fail_t "*Tests* wrongly flagged"     || ok "*Tests* excluded"
+grep -q 'AppColors.swift' <<< "$out"    && fail_t "AppColors.swift wrongly flagged" || ok "AppColors.swift excluded"
 
 # ── 5. baseline write + baseline-check on unchanged src exits 0 ───────────────
 section "Baseline set-difference"

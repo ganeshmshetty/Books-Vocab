@@ -51,7 +51,7 @@ else
   VERSION="${POS[1]:?請提供版本號，例如 1.3.0}"
   [[ ${#POS[@]} -le 2 ]] || { echo "✗ 多餘參數：${POS[*]:2}（用法: ops/release_bump.sh <api|ios> <version> [--yes]）" >&2; exit 1; }
   # 驗證版本號格式
-  if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  if ! grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$VERSION"; then
     echo "✗ 版本號格式錯誤：${VERSION}（需要 x.y.z）" >&2
     exit 1
   fi

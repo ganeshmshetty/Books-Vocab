@@ -224,21 +224,21 @@ dirty_count="$(echo "$out" | grep -c 'Dirty.swift' || true)"
 if [[ "$dirty_count" -eq 8 ]]; then ok "all 8 dirty buttons flagged"
 else fail_t "expected 8 Dirty.swift findings, got $dirty_count"; echo "$out" | sed 's/^/    /'; fi
 
-echo "$out" | grep -q 'Spacer()'                 && ok "trailing-closure Spacer gap caught"  || fail_t "missed trailing-closure Spacer gap"
-echo "$out" | grep -q 'Spacer(minLength: 0'      && ok "label:-closure Spacer gap caught"    || fail_t "missed label:-closure Spacer gap"
-echo "$out" | grep -q 'maxWidth: .infinity'      && ok "maxWidth-infinity gap caught"        || fail_t "missed maxWidth-infinity gap"
-echo "$out" | grep -q 'PlainButtonStyle()'       && ok "PlainButtonStyle() spelling caught"  || fail_t "missed PlainButtonStyle() spelling"
-echo "$out" | grep -q 'confirmTap'               && ok "chain survives multi-trailing-closure modifier" || fail_t "chain walk stopped at message: closure"
-echo "$out" | grep -q 'Spacer(minLength: 2'      && ok "marker inside string literal does not exempt"   || fail_t "string-literal marker falsely exempted"
-echo "$out" | grep -q 'Spacer(minLength: 3'      && ok "full comment-form marker in string does not exempt" || fail_t "string spelling // deadzone-allow: falsely exempted"
-echo "$out" | grep -q 'Spacer(minLength: 4'      && ok "contentShape inside alert message does not exempt"  || fail_t "closure-buried contentShape falsely exempted"
+grep -q 'Spacer()' <<< "$out"                 && ok "trailing-closure Spacer gap caught"  || fail_t "missed trailing-closure Spacer gap"
+grep -q 'Spacer(minLength: 0' <<< "$out"      && ok "label:-closure Spacer gap caught"    || fail_t "missed label:-closure Spacer gap"
+grep -q 'maxWidth: .infinity' <<< "$out"      && ok "maxWidth-infinity gap caught"        || fail_t "missed maxWidth-infinity gap"
+grep -q 'PlainButtonStyle()' <<< "$out"       && ok "PlainButtonStyle() spelling caught"  || fail_t "missed PlainButtonStyle() spelling"
+grep -q 'confirmTap' <<< "$out"               && ok "chain survives multi-trailing-closure modifier" || fail_t "chain walk stopped at message: closure"
+grep -q 'Spacer(minLength: 2' <<< "$out"      && ok "marker inside string literal does not exempt"   || fail_t "string-literal marker falsely exempted"
+grep -q 'Spacer(minLength: 3' <<< "$out"      && ok "full comment-form marker in string does not exempt" || fail_t "string spelling // deadzone-allow: falsely exempted"
+grep -q 'Spacer(minLength: 4' <<< "$out"      && ok "contentShape inside alert message does not exempt"  || fail_t "closure-buried contentShape falsely exempted"
 
 # ── 4. Clean shapes, exemption, exclusions produce no findings ────────────────
 section "Clean / exemption / exclusions"
-echo "$out" | grep -q 'Clean.swift'         && { fail_t "Clean.swift wrongly flagged"; echo "$out" | grep 'Clean.swift' | sed 's/^/    /'; } || ok "Clean.swift not flagged"
-echo "$out" | grep -q 'DebugScratch.swift'  && fail_t "Debug/ wrongly flagged"     || ok "Debug/ excluded"
-echo "$out" | grep -q 'Thing_Preview.swift' && fail_t "*Preview* wrongly flagged"  || ok "*Preview* excluded"
-echo "$out" | grep -q 'ThingTests.swift'    && fail_t "*Tests* wrongly flagged"    || ok "*Tests* excluded"
+grep -q 'Clean.swift' <<< "$out"         && { fail_t "Clean.swift wrongly flagged"; echo "$out" | grep 'Clean.swift' | sed 's/^/    /'; } || ok "Clean.swift not flagged"
+grep -q 'DebugScratch.swift' <<< "$out"  && fail_t "Debug/ wrongly flagged"     || ok "Debug/ excluded"
+grep -q 'Thing_Preview.swift' <<< "$out" && fail_t "*Preview* wrongly flagged"  || ok "*Preview* excluded"
+grep -q 'ThingTests.swift' <<< "$out"    && fail_t "*Tests* wrongly flagged"    || ok "*Tests* excluded"
 
 # ── 5. baseline write + baseline-check on unchanged src exits 0 ───────────────
 section "Baseline set-difference"

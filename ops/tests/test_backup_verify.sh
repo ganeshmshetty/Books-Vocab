@@ -54,15 +54,15 @@ build_backup() {
   mkdir -p "$root/users/u1"
 
   # users.json
-  if ! printf '%s\n' "${opts[@]}" | grep -qx skip_users_json; then
+  if ! grep -qx skip_users_json <<< "$(printf '%s\n' "${opts[@]}")"; then
     echo '[{"id":"u1","email":"a@b"}]' > "$root/users.json"
   fi
 
   # pipeline_runs.db
-  if ! printf '%s\n' "${opts[@]}" | grep -qx skip_pipeline_table; then
+  if ! grep -qx skip_pipeline_table <<< "$(printf '%s\n' "${opts[@]}")"; then
     sqlite3 "$root/pipeline_runs.db" \
       "CREATE TABLE pipeline_runs (id INTEGER PRIMARY KEY, run_id TEXT);"
-    if ! printf '%s\n' "${opts[@]}" | grep -qx empty_logs; then
+    if ! grep -qx empty_logs <<< "$(printf '%s\n' "${opts[@]}")"; then
       sqlite3 "$root/pipeline_runs.db" "INSERT INTO pipeline_runs (run_id) VALUES ('r1'),('r2');"
     fi
   else
@@ -70,10 +70,10 @@ build_backup() {
   fi
 
   # judge_log.db
-  if ! printf '%s\n' "${opts[@]}" | grep -qx skip_judge_table; then
+  if ! grep -qx skip_judge_table <<< "$(printf '%s\n' "${opts[@]}")"; then
     sqlite3 "$root/judge_log.db" \
       "CREATE TABLE judge_log (id INTEGER PRIMARY KEY, verdict TEXT);"
-    if ! printf '%s\n' "${opts[@]}" | grep -qx empty_logs; then
+    if ! grep -qx empty_logs <<< "$(printf '%s\n' "${opts[@]}")"; then
       sqlite3 "$root/judge_log.db" "INSERT INTO judge_log (verdict) VALUES ('accept');"
     fi
   else
@@ -81,7 +81,7 @@ build_backup() {
   fi
 
   # users/u1/cards.db
-  if ! printf '%s\n' "${opts[@]}" | grep -qx skip_cards; then
+  if ! grep -qx skip_cards <<< "$(printf '%s\n' "${opts[@]}")"; then
     sqlite3 "$root/users/u1/cards.db" \
       "CREATE TABLE card (id TEXT PRIMARY KEY, content TEXT);"
     sqlite3 "$root/users/u1/cards.db" \
@@ -92,7 +92,7 @@ build_backup() {
   tar -czf "$tarball" -C "$stage" "$root_name"
 
   # corrupt_cards：解壓後將 cards.db 改成亂碼 → 重新打包
-  if printf '%s\n' "${opts[@]}" | grep -qx corrupt_cards; then
+  if grep -qx corrupt_cards <<< "$(printf '%s\n' "${opts[@]}")"; then
     # 直接寫一份亂掉的 .db 重打
     printf 'CORRUPTED\x00BADDATA' > "$root/users/u1/cards.db"
     tar -czf "$tarball" -C "$stage" "$root_name"

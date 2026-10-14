@@ -23,9 +23,9 @@ grep -qE '\-h\|--help\)' "$IR" \
   && ok "has -h/--help case"               || fail_t "no -h/--help guard"
 # 在 set -e 下，substitution 失敗會中止腳本，故 rc 另用 if 捕捉（避免 help_rc=$? 成死碼）
 if help_out="$(bash "$IR" --help 2>&1)"; then ok "--help exits 0 (no xcodebuild)"; else fail_t "--help non-zero exit"; fi
-echo "$help_out" | grep -q 'Usage' \
+grep -q 'Usage' <<< "$help_out" \
   && ok "--help prints Usage"              || fail_t "--help missing Usage text"
-echo "$help_out" | grep -qE 'set -euo pipefail|^SCHEME=|^TEAM_ID=' \
+grep -qE 'set -euo pipefail|^SCHEME=|^TEAM_ID=' <<< "$help_out" \
   && fail_t "help leaks shell code"        || ok "help is comment-only (no shell code leak)"
 
 # ── 3. 取值型選項守衛（dogfood C：--key/--timeout 後無值不該 set -u unbound） ──
@@ -33,9 +33,9 @@ section "Value-taking options guarded"
 grep -q 'need_val' "$IR" \
   && ok "has need_val guard"               || fail_t "missing need_val guard"
 kv_out="$(bash "$IR" --key 2>&1 || true)"
-echo "$kv_out" | grep -q '需要一個值' \
+grep -q '需要一個值' <<< "$kv_out" \
   && ok "--key with no value → friendly error" || fail_t "--key no-value not friendly (got: $kv_out)"
-echo "$kv_out" | grep -qi 'unbound variable' \
+grep -qi 'unbound variable' <<< "$kv_out" \
   && fail_t "--key no-value still hits set -u unbound" \
   || ok "no set -u unbound crash on missing value"
 
@@ -81,7 +81,7 @@ tick_probe="$(
     wait "$pid" 2>/dev/null || true
   ' 2>/dev/null
 )"
-echo "$tick_probe" | grep -qE '^pid=[0-9]+$' \
+grep -qE '^pid=[0-9]+$' <<< "$tick_probe" \
   && ok "upload tick monitor returns PID from command substitution" || fail_t "upload tick monitor command substitution hung/failed: $tick_probe"
 
 # ── Verdict must be derived from stage evidence, never asserted beside it ────

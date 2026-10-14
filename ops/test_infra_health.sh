@@ -217,9 +217,9 @@ bash -n "$SCRIPT" && ok "infra_health syntax" || fail_t "infra_health syntax"
 
 section "Text mode：健康全綠"
 out="$(run_health 2>&1 || true)"
-echo "$out" | grep -q "OK" && ok "text 含整體 OK" || fail_t "text 無整體 OK"
-echo "$out" | grep -q "27%" && ok "text 顯示磁碟 27%" || fail_t "text 無磁碟值"
-echo "$out" | grep -q "HTTPS 端點" && ok "text 含 HTTPS 探針" || fail_t "text 無 HTTPS 探針"
+grep -q "OK" <<< "$out" && ok "text 含整體 OK" || fail_t "text 無整體 OK"
+grep -q "27%" <<< "$out" && ok "text 顯示磁碟 27%" || fail_t "text 無磁碟值"
+grep -q "HTTPS 端點" <<< "$out" && ok "text 含 HTTPS 探針" || fail_t "text 無 HTTPS 探針"
 
 section "JSON mode：結構契約 + overall=ok"
 js="$(run_health --json 2>/dev/null || true)"
@@ -303,8 +303,8 @@ UPSNIP="$(sed -n "${UPLINE_NO}p" "$SCRIPT")"
 # 會變成下游那幾條值斷言，而那不是守衛存在的理由。
 # 日期解析認 `date -j -f` 與 `date -u -j -f` 兩種寫法：輸入計畫兩種都認可，只綁
 # 其中一種會讓「另一個正確實作」變成一條指著錯誤原因的假紅。
-if printf '%s' "$UPSNIP" | grep -qE 'date (-u )?-j -f' \
-   && printf '%s' "$UPSNIP" | grep -qF 'printf "container_uptime_s'; then
+if grep -qE 'date (-u )?-j -f' <<< "$UPSNIP" \
+   && grep -qF 'printf "container_uptime_s' <<< "$UPSNIP"; then
   ok "抽到的是 uptime 計算行（provenance 守衛，行號 ${UPLINE_NO}）"
 else
   fail_t "抽到的不是 uptime 計算行（行號 ${UPLINE_NO}）：$UPSNIP"
@@ -370,7 +370,7 @@ section "REMOTE_BUNDLE 結構：五個部署漂移 key 真的在遠端 bundle �
 bundle_src="$(sed -n "/^REMOTE_BUNDLE='/,/^'$/p" "$SCRIPT")"
 miss=""
 for k in deployed_sha origin_prod_sha reconciler_tick_epoch reconciler_poison_epoch host_now_epoch; do
-  printf '%s' "$bundle_src" | grep -qF "$k" || miss="$miss $k"
+  grep -qF "$k" <<< "$bundle_src" || miss="$miss $k"
 done
 [[ -z "$miss" ]] && ok "REMOTE_BUNDLE 含五個漂移 key" || fail_t "REMOTE_BUNDLE 缺:$miss"
 
