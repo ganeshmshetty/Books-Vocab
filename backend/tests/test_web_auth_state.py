@@ -15,6 +15,7 @@ import kg.api as api_mod
 import kg.deps as deps_mod
 from conftest import TEST_GOOGLE_REDIRECT_URI, TEST_JWT_SECRET, _swap_settings
 from kg.api import app
+from kg.routers import web_auth
 from kg.settings import KGSettings
 
 
@@ -243,6 +244,67 @@ def test_google_callback_retries_transient_token_exchange_error(web_auth_env):
 
     assert resp.status_code == 200, resp.text
     assert len(attempts) == 2
+
+
+def test_google_callback_pins_token_exchange_payload_and_url(web_auth_env):
+    """Pins the server-side proof of code ownership: every token-exchange attempt
+    must POST the exact authorization_code payload built from the live settings.
+    """
+    settings = app.state.kg_settings
+    values = {
+        settings.google_client_id,
+        settings.google_client_secret,
+        settings.google_redirect_uri,
+    }
+    # Distinct non-empty values so a field swap or blanking cannot pass by accident.
+    assert all(values) and len(values) == 3
+
+    login_resp = web_auth_env.client.get("/auth/web/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_resp.headers["location"])
+    fake_token_resp = httpx.Response(
+        200,
+        json={"id_token": "fake-id-token"},
+        request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+    )
+    calls = []
+
+    async def fake_post(self, url, data=None, **kwargs):
+        calls.append((url, dict(data)))
+        if len(calls) == 1:
+            raise httpx.ConnectError(
+                "connection reset",
+                request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+            )
+        return fake_token_resp
+
+    async def fake_verify(token, client_id):
+        return "google-user-123", "test@example.com", True
+
+    async def no_sleep(_seconds):
+        return None
+
+    with (
+        patch("httpx.AsyncClient.post", new=fake_post),
+        patch("kg.routers.web_auth.verify_google_token", new=fake_verify),
+        patch("kg.routers.web_auth.asyncio.sleep", new=no_sleep),
+    ):
+        resp = web_auth_env.client.get(
+            f"/auth/web/google/callback?code=known-auth-code&state={state}",
+            follow_redirects=False,
+        )
+
+    expected_payload = {
+        "code": "known-auth-code",
+        "client_id": settings.google_client_id,
+        "client_secret": settings.google_client_secret,
+        "redirect_uri": settings.google_redirect_uri,
+        "grant_type": "authorization_code",
+    }
+    assert resp.status_code == 200, resp.text
+    assert calls == [
+        (web_auth.GOOGLE_TOKEN_URL, expected_payload),
+        (web_auth.GOOGLE_TOKEN_URL, expected_payload),
+    ]
 
 
 # ---------- Apple ----------

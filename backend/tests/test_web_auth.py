@@ -343,3 +343,157 @@ def test_apple_callback_provider_error_log_is_length_capped(web_auth_env, caplog
     messages = [r.getMessage() for r in caplog.records if r.name == "kg.routers.web_auth"]
     assert messages
     assert all(len(m) < 400 for m in messages)
+
+
+# ── Unverified-email guard on web callbacks (#3730) ─────────────────────────
+# The web callbacks must hand _resolve_and_link_user email=None whenever the
+# provider reports email_verified=False, so an unverified address can never be
+# matched against (and link to) an existing account.
+
+
+def _google_callback_resolve_mock(client, identity):
+    state = _bootstrap_google_state(client)
+    fake_resp = httpx.Response(
+        200,
+        json={"id_token": "fake-id-token"},
+        request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+    )
+
+    async def fake_post(self, url, data=None, **kwargs):
+        return fake_resp
+
+    async def fake_verify(token, client_id):
+        return identity
+
+    with (
+        patch("httpx.AsyncClient.post", new=fake_post),
+        patch("kg.routers.web_auth.verify_google_token", new=fake_verify),
+        patch("kg.routers.web_auth._resolve_and_link_user", return_value="kg-user-1") as resolve_mock,
+    ):
+        resp = client.get(
+            f"/auth/web/google/callback?code=fake-code&state={state}",
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200, resp.text
+    resolve_mock.assert_called_once()
+    return resolve_mock
+
+
+@pytest.mark.parametrize(("verified", "expected_email"), [(False, None), (True, "victim@x.com")])
+def test_google_callback_passes_email_only_when_verified(web_auth_env, verified, expected_email):
+    resolve_mock = _google_callback_resolve_mock(web_auth_env.client, ("attacker-sub", "victim@x.com", verified))
+    assert resolve_mock.call_args.kwargs["email"] == expected_email
+
+
+def _apple_callback_resolve_mock(client, identity):
+    login_resp = client.get("/auth/web/apple/login", follow_redirects=False)
+    assert login_resp.status_code == 307
+    state = parse_qs(urlparse(login_resp.headers["location"]).query)["state"][0]
+
+    with (
+        patch("kg.routers.web_auth.verify_apple_token", return_value=identity),
+        patch("kg.routers.web_auth._resolve_and_link_user", return_value="kg-user-1") as resolve_mock,
+    ):
+        resp = client.post(
+            "/auth/web/apple/callback",
+            data={"id_token": "fake-apple-id-token", "state": state},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200, resp.text
+    resolve_mock.assert_called_once()
+    return resolve_mock
+
+
+@pytest.mark.parametrize(("verified", "expected_email"), [(False, None), (True, "victim@x.com")])
+def test_apple_callback_passes_email_only_when_verified(web_auth_env, verified, expected_email):
+    resolve_mock = _apple_callback_resolve_mock(web_auth_env.client, ("attacker-sub", "victim@x.com", verified))
+    assert resolve_mock.call_args.kwargs["email"] == expected_email
+
+
+# ── OAuth audience pinning on web success paths (#3731) ──────────────────────
+# The id_token must be verified against the *web* audience: the Google web
+# client ID and the Apple Services ID, never the Google client secret or the
+# native bundle ID. Capture the audience argument to pin it.
+
+
+def test_google_callback_verifies_id_token_against_web_client_id(web_auth_env):
+    client = web_auth_env.client
+    settings = app.state.kg_settings
+    assert settings.google_client_id != settings.google_client_secret
+    state = _bootstrap_google_state(client)
+    fake_resp = httpx.Response(
+        200,
+        json={"id_token": "fake-id-token"},
+        request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+    )
+    audiences = []
+
+    async def fake_post(self, url, data=None, **kwargs):
+        return fake_resp
+
+    async def fake_verify(token, client_id):
+        audiences.append(client_id)
+        return "google-user-123", "google@example.com", True
+
+    with (
+        patch("httpx.AsyncClient.post", new=fake_post),
+        patch("kg.routers.web_auth.verify_google_token", new=fake_verify),
+    ):
+        resp = client.get(
+            f"/auth/web/google/callback?code=fake-code&state={state}",
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert audiences == [settings.google_client_id]
+    assert audiences != [settings.google_client_secret]
+
+
+def test_apple_callback_verifies_id_token_against_service_id(web_auth_env):
+    client = web_auth_env.client
+    settings = app.state.kg_settings
+    assert settings.apple_service_id != settings.apple_bundle_id
+    login_resp = client.get("/auth/web/apple/login", follow_redirects=False)
+    assert login_resp.status_code == 307
+    state = parse_qs(urlparse(login_resp.headers["location"]).query)["state"][0]
+    audiences = []
+
+    def fake_verify_apple(token, audience):
+        audiences.append(audience)
+        return "apple-user-123", "apple@example.com", True
+
+    with patch("kg.routers.web_auth.verify_apple_token", new=fake_verify_apple):
+        resp = client.post(
+            "/auth/web/apple/callback",
+            data={"id_token": "fake-apple-id-token", "state": state},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert audiences == [settings.apple_service_id]
+    assert audiences != [settings.apple_bundle_id]
+
+
+# ── Apple login authorize redirect (#3733) ───────────────────────────────────
+# Pin the Location query the browser is sent to Apple with: client_id, the
+# code+id_token response type, form_post response mode, and the state nonce
+# that must match the oauth_state cookie.
+
+
+def test_apple_login_redirect_pins_authorize_params(web_auth_env):
+    settings = app.state.kg_settings
+    resp = web_auth_env.client.get("/auth/web/apple/login", follow_redirects=False)
+    assert resp.status_code == 307, resp.text
+    location = urlparse(resp.headers["location"])
+    assert location.scheme == "https"
+    assert location.netloc == "appleid.apple.com"
+    assert location.path == "/auth/authorize"
+
+    params = parse_qs(location.query)
+    assert params["client_id"] == [settings.apple_service_id]
+    assert params["response_type"] == ["code id_token"]
+    assert params["response_mode"] == ["form_post"]
+    assert params["scope"] == ["email"]
+    assert params["redirect_uri"] == [settings.apple_redirect_uri]
+    assert params["state"][0]
+    assert f"oauth_state={params['state'][0]}" in resp.headers.get("set-cookie", "")
