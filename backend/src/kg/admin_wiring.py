@@ -325,11 +325,15 @@ def create_admin_handlers_from_dependencies(
           - ``op``: exact operation filter (``translate_quick`` /
             ``translate_phrase`` / ``translate_explain``).
         """
-        from .translate_log import get_log
+        from .translate_log import count_log, get_log
 
+        history = get_log(user_id, limit=_clamp_limit(limit, TRANSLATE_HISTORY_MAX), q=q, op=op)
+        total = count_log(user_id, q=q, op=op)
         return {
             "user_id": user_id,
-            "history": get_log(user_id, limit=_clamp_limit(limit, TRANSLATE_HISTORY_MAX), q=q, op=op),
+            "history": history,
+            "total": total,
+            "truncated": total > len(history),
             "q": q or "",
             "op": op or "",
         }

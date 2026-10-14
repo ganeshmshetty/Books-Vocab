@@ -211,6 +211,39 @@ def record_cache_hit(
         conn.commit()
 
 
+def _filter_clause(user_id: str, *, op: str | None, q: str | None) -> tuple[str, list]:
+    """WHERE clause and params shared by ``get_log`` (page) and ``count_log`` (total)."""
+    where = ["user_id = ?"]
+    params: list = [user_id]
+
+    if op:
+        where.append("operation = ?")
+        params.append(op)
+
+    q_clean = (q or "").strip()
+    if q_clean:
+        escaped = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
+        where.append("(LOWER(word) LIKE LOWER(?) ESCAPE '\\' OR LOWER(IFNULL(context,'')) LIKE LOWER(?) ESCAPE '\\')")
+        params.extend([like, like])
+
+    return " AND ".join(where), params
+
+
+def count_log(
+    user_id: str,
+    *,
+    q: str | None = None,
+    op: str | None = None,
+) -> int:
+    """Count every translate log entry ``get_log`` would match, ignoring the page limit."""
+    where_sql, params = _filter_clause(user_id, op=op, q=q)
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(f"SELECT COUNT(*) FROM translate_log WHERE {where_sql}", tuple(params)).fetchone()
+    return int(row[0])
+
+
 def get_log(
     user_id: str,
     *,
@@ -227,19 +260,7 @@ def get_log(
         explicit ``ESCAPE`` clause so admin search input can't accidentally
         match everything.
     """
-    where = ["user_id = ?"]
-    params: list = [user_id]
-
-    if op:
-        where.append("operation = ?")
-        params.append(op)
-
-    q_clean = (q or "").strip()
-    if q_clean:
-        escaped = q_clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        like = f"%{escaped}%"
-        where.append("(LOWER(word) LIKE LOWER(?) ESCAPE '\\' OR LOWER(IFNULL(context,'')) LIKE LOWER(?) ESCAPE '\\')")
-        params.extend([like, like])
+    where_sql, params = _filter_clause(user_id, op=op, q=q)
 
     # One list drives both the SELECT and the zip below, so a schema drift
     # surfaces as an explicit SQL error (missing column) rather than zip()
@@ -260,7 +281,7 @@ def get_log(
         "created_at",
         "model",
     ]
-    sql = f"SELECT {', '.join(cols)} FROM translate_log WHERE " + " AND ".join(where) + " ORDER BY id DESC LIMIT ?"
+    sql = f"SELECT {', '.join(cols)} FROM translate_log WHERE {where_sql} ORDER BY id DESC LIMIT ?"
     params.append(limit)
 
     with _lock:

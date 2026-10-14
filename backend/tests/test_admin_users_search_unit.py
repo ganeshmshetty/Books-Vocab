@@ -78,6 +78,28 @@ def test_display_name_field_fallback():
     assert rows["uid-4"] is None
 
 
+def test_matched_total_and_truncated_report_real_match_count():
+    # 3 users match "a"; the page only returns 2, so the UI must not present 2 as the match count.
+    data = {
+        "uid-1": {"email": "a1@x.com"},
+        "uid-2": {"email": "a2@x.com"},
+        "uid-3": {"email": "a3@x.com"},
+        "uid-4": {"email": "zz@x.com"},
+    }
+    res = search_users(data, q="a", limit=2)
+    assert res["matched_total"] == 3
+    assert res["truncated"] is True
+    assert len(res["users"]) == 2
+    assert res["total"] == 4
+
+
+def test_matched_total_not_truncated_when_page_holds_all_matches():
+    data = {"uid-1": {"email": "a1@x.com"}, "uid-2": {"email": "zz@x.com"}}
+    res = search_users(data, q="a", limit=2)
+    assert res["matched_total"] == 1
+    assert res["truncated"] is False
+
+
 def test_link_pointer_rows_excluded_from_search():
     # A bare ``{"_linked_to": canonical}`` pointer is not an account; listing it
     # shows a row with no email/provider and double-counts the user.
