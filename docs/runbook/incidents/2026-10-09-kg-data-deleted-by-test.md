@@ -100,8 +100,8 @@ reconcile 的健康探測拿到的是 **429 或 401**（不是能反映資料狀
    `cmd_migrate_run`，guard 排在 `cmd_backup` 之前）共用，safe wrapper 不再是唯一防線；直接呼叫
    `devops.sh run …` 或把 wrapper 指到別的 base 都會撞上同一個檢查。
 6. **Lint（`ops/tests/test_ops_hermetic_lint.sh`）**：掃描 `ops/**/test_*.sh` 與 `ops/tests/*`，任何提到
-   `devops.sh`／`devops_kg_safe.sh` 的測試檔必須自己初始化 hermetic harness、或明確注入 stub seam
-   （`KG_DEVOPS_BASE=`／`KG_SSH_CMD=`／`KG_BASE=`）、或列入「只當文字讀」的 allowlist（並重新驗證沒有直接執行）；
+   `devops.sh`／`devops_kg_safe.sh` 的測試檔必須自己呼叫 `hermetic_ops_test_init`（.py 則引用 `KG_OPS_TEST`）、或列入「只當文字讀」的 TEXT_ONLY allowlist（並重新驗證沒有直接執行）；
+   stub seam（`KG_DEVOPS_BASE=`／`KG_SSH_CMD=`）已於 #2922 移出合法替代方案，只能作為 init 之後的補充設定，不能單獨滿足 lint；
    另驗證 `test_ops.sh` 先初始化再跑 group、`test_devops.sh` 先封住 base 再碰 wrapper。scanner 本身有正反控制。
 
 ## 寫 ops 測試時的規則
