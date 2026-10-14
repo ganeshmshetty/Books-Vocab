@@ -920,6 +920,52 @@ struct SubscriptionManagerTests {
         }
     }
 
+    /// 後端以終局 403 拒絕（例如交易綁定其他帳號）：重送結果不會改變，必須 finish 以停止 StoreKit 重送（#3542）。
+    @MainActor
+    @Test func settle_backendRejected403_finishesAndReportsRejected() async {
+        var events: [String] = []
+        let outcome = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-4",
+            isLoggedIn: true,
+            sync: { _ in
+                events.append("sync")
+                throw KGError.httpError(statusCode: 403, detail: "")
+            },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync", "finish"])
+        guard case .rejected = outcome else {
+            Issue.record("expected rejected, got \(outcome)")
+            return
+        }
+    }
+
+    /// 暫時錯誤（5xx、網路）必須維持未完成，交由 StoreKit 於之後重送。
+    @MainActor
+    @Test func settle_transientSyncFailure_staysUnfinished() async {
+        let transient: [KGError] = [
+            .httpError(statusCode: 500, detail: ""),
+            .networkError(underlying: URLError(.timedOut)),
+        ]
+        for error in transient {
+            var events: [String] = []
+            let outcome = await SubscriptionManager.settleVerifiedTransaction(
+                "tx-5",
+                isLoggedIn: true,
+                sync: { _ in
+                    events.append("sync")
+                    throw error
+                },
+                finish: { _ in events.append("finish") }
+            )
+            #expect(events == ["sync"])
+            guard case .syncFailed = outcome else {
+                Issue.record("expected syncFailed, got \(outcome)")
+                return
+            }
+        }
+    }
+
     /// 成功路徑的順序必須是「同步成功後才 finish」。
     @MainActor
     @Test func settle_successfulSync_finishesOnlyAfterSync() async {
