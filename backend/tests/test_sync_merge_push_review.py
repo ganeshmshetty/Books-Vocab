@@ -340,6 +340,28 @@ class TestPushReviewStatesConcurrentWriter:
 
         assert store.get(card.id).review_count == 10
 
+    def test_cas_conflict_on_first_attempt_is_remerged_on_real_store(self, tmp_path):
+        """A CAS rejection (not just a read race) must re-merge; the write must not be silently lost."""
+        store = _RacingStore(tmp_path / "cards.db")
+        card = store.add("evoke", "喚起")
+        store.race = lambda: store.update(card.id, review_count=1)
+
+        entry = _entry("evoke", _iso(_now()), card_id=card.id, review_count=3)
+        result = push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert result == {"updated": 1, "skipped": 0}
+        assert store.get(card.id).review_count == 3
+
+    def test_batch_update_if_unchanged_rejects_stale_guard_and_keeps_row(self, tmp_path):
+        store = _make_store(tmp_path)
+        card = store.add("evoke", "喚起")
+        store.update(card.id, review_count=1)
+
+        rejected = store.batch_update_if_unchanged([(card.id, {"review_count": 9}, {"review_count": 0})])
+
+        assert rejected == [card.id]
+        assert store.get(card.id).review_count == 1
+
 
 class TestPushReviewCrossKeyAndStaged:
     def test_card_id_and_word_entries_for_same_card_coalesce_to_newest(self, tmp_path):

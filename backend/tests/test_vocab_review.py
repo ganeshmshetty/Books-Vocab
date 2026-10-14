@@ -634,6 +634,68 @@ class TestPushReviewStatesFakes:
         assert c1.review_count == 0
         assert c1.lapse_count == 0
 
+    def test_client_newer_non_override_keeps_counts_monotonic(self):
+        """Non-override client-newer push must not lower lapse_count (max on the lapse side)."""
+        now = datetime.now(UTC)
+        c1 = _ReviewCard(
+            id="c1", content="run", last_reviewed_at=now - timedelta(days=2), review_count=9, lapse_count=5
+        )
+        store = _FakeCardsStore([c1])
+        entry = _entry(
+            word="run",
+            card_id="c1",
+            last_reviewed_at=_iso(now),
+            review_count=10,
+            lapse_count=2,
+        )
+
+        result = push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert result == {"updated": 1, "skipped": 0}
+        assert c1.review_count == 10
+        assert c1.lapse_count == 5
+
+    def test_client_newer_non_override_keeps_review_count_monotonic(self):
+        """Non-override client-newer push with lower review_count keeps the server's count."""
+        now = datetime.now(UTC)
+        c1 = _ReviewCard(
+            id="c1", content="run", last_reviewed_at=now - timedelta(days=2), review_count=9, lapse_count=5
+        )
+        store = _FakeCardsStore([c1])
+        entry = _entry(
+            word="run",
+            card_id="c1",
+            last_reviewed_at=_iso(now),
+            review_count=3,
+            lapse_count=2,
+        )
+
+        push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert c1.review_count == 9
+        assert c1.lapse_count == 5
+
+    def test_client_newer_override_writes_exact_lower_lapse_count(self):
+        """Override twin: the exact (lower) lapse_count is written, the max path is not taken."""
+        now = datetime.now(UTC)
+        c1 = _ReviewCard(
+            id="c1", content="run", last_reviewed_at=now - timedelta(days=2), review_count=9, lapse_count=5
+        )
+        store = _FakeCardsStore([c1])
+        entry = _entry(
+            word="run",
+            card_id="c1",
+            last_reviewed_at=_iso(now),
+            review_count=10,
+            lapse_count=2,
+            override=True,
+        )
+
+        push_review_states([entry], cards_store=store, logger=logging.getLogger())
+
+        assert c1.review_count == 10
+        assert c1.lapse_count == 2
+
     def test_override_newest_entry_wins_over_older_regular_counts(self):
         """Coalescing: a newer override keeps its zero counts instead of max() with older entries."""
         base = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
@@ -814,3 +876,26 @@ class TestPushReviewStatesEdgeCases:
             )
         assert result == {"updated": 0, "skipped": 1}
         assert "kept conflicting" in caplog.text
+
+    def test_cas_conflict_on_first_attempt_is_remerged_not_dropped(self):
+        """A single concurrent write must make the client re-merge, not drop its review."""
+        card = _ReviewCard(id="c1", content="run")
+        store = _FakeCardsStore([card])
+        real = store.batch_update_if_unchanged
+        calls: list[object] = []
+
+        def racing_once(updates):
+            if not calls:
+                card.review_count += 1  # a concurrent writer wins only the first CAS
+            calls.append(updates)
+            return real(updates)
+
+        store.batch_update_if_unchanged = racing_once
+        result = push_review_states(
+            [_entry(word="run", card_id="c1", last_reviewed_at=_iso(datetime.now(UTC)), review_count=3)],
+            cards_store=store,
+            logger=logging.getLogger("t"),
+        )
+        assert result == {"updated": 1, "skipped": 0}
+        assert len(calls) == 2
+        assert card.review_count == 3

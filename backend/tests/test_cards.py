@@ -102,6 +102,15 @@ class TestRestore:
         assert store.restore(card.id, notebook_id="nb_a") is True
         assert store.get(card.id).is_deleted is False
 
+    def test_restore_bumps_updated_at_so_incremental_pull_sees_revival(self, store):
+        """A device that already pulled the tombstone must receive the revived card."""
+        card = store.add(content="revive", meaning="x", notebook_id="nb1")
+        store.delete(card.id)
+        tombstone_at = store.get(card.id).updated_at
+        assert store.restore(card.id, notebook_id="nb1") is True
+        pulled = store.get_modified_since(tombstone_at, notebook_id="nb1")
+        assert [(c.id, c.is_deleted) for c in pulled] == [(card.id, False)]
+
 
 class TestUpdate:
     def test_normal_field_update(self, store):
@@ -531,6 +540,17 @@ class TestSoftDeleteByNotebook:
         with closing(CardStore(tmp_path / "cards.db")) as store:
             count = store.soft_delete_by_notebook("nonexistent")
             assert count == 0
+
+    def test_soft_delete_bumps_updated_at_so_incremental_pull_sees_tombstones(self, tmp_path):
+        """Devices that already hold the cards learn of the delete only via updated_at."""
+        with closing(CardStore(tmp_path / "cards.db")) as store:
+            card = store.add(content="apple", meaning="蘋果", notebook_id="nb1")
+            store.add(content="cherry", meaning="櫻桃", notebook_id="nb2")
+            since = datetime.now(UTC)
+            store.soft_delete_by_notebook("nb1")
+            pulled = store.get_modified_since(since, notebook_id="nb1")
+            assert [(c.id, c.is_deleted) for c in pulled] == [(card.id, True)]
+            assert store.get_modified_since(since, notebook_id="nb2") == []
 
 
 class TestFindByContent:
