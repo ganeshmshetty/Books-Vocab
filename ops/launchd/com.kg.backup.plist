@@ -4,7 +4,8 @@
   Replaces the old Lightsail /etc/cron.d/kg-backup (see ops/cron/kg-backup.cron)
   after the 2026-06-15 migration to the home standby box.
 
-  Runs ops/kg_backup.sh daily at 11:00 Taipei (= UTC 03:00, matching the old cron).
+  Runs ~/kg-prod/ops/kg_backup.sh (prod clone, not dev-only ~/project/kg; #3689)
+  daily at 11:00 Taipei (= UTC 03:00, matching the old cron).
   launchd StartCalendarInterval uses LOCAL time; standby is Asia/Taipei (UTC+8).
 
   Deploy: copy to ~/Library/LaunchAgents/com.kg.backup.plist (mode 644), then
@@ -23,7 +24,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/chenliangyu/project/kg/ops/kg_backup.sh</string>
+        <string>/Users/chenliangyu/kg-prod/ops/kg_backup.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>

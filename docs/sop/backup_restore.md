@@ -12,7 +12,7 @@ verified_against: f69f5e53d6b2ac6e3b6f96febb8456a7ed58b477
 
 > 「沒做過 restore 演練 = 薛丁格的 backup」。本文是 KG 生產 SQLite 資料從 AWS S3 異地 backup **完整還原**的 step-by-step。事故當下下一個 agent 直接讀這份即能恢復服務,**不需問人**。
 >
-> **過渡狀態（2026-06-15 起）**：正式站遷到家用常駐機 `standby`（macOS / OrbStack docker）。**現役 data 目錄 = `~/kg-data/`（standby；2026-06-16 移出 git worktree，原 `~/project/kg/backend/data/`）**，不再是 Lightsail `/home/ubuntu/knowledge_graph_api/data/`。S3 backup 由 standby launchd（`ops/launchd/com.kg.backup.plist`）跑同一支 `ops/kg_backup.sh`，bucket / IAM / 物件格式不變。**§2 標準流程下方已給 standby 指令**。
+> **過渡狀態（2026-06-15 起）**：正式站遷到家用常駐機 `standby`（macOS / OrbStack docker）。**現役 data 目錄 = `~/kg-data/`（standby；2026-06-16 移出 git worktree，原 `~/project/kg/backend/data/`）**，不再是 Lightsail `/home/ubuntu/knowledge_graph_api/data/`。S3 backup 由 standby launchd（`ops/launchd/com.kg.backup.plist`）跑 `~/kg-prod/ops/kg_backup.sh`（prod clone，與 `com.kg.reconcile` 同源；不跑 dev-only `~/project/kg`，#3689），bucket / IAM / 物件格式不變。**§2 標準流程下方已給 standby 指令**。
 >
 > **⚠ Lightsail instance 已於 2026-06-19 terminate**：原「快速回滾到 Lightsail」路徑**不再可用**（無 instance、無 elastic IP、無 STOP 容器可 `up`）。§3 的 Lightsail 內容**僅供「從零重建」參考**，不再是現成回滾目標。現役唯一防線 = AWS S3 異地 backup（§2），host 故障時於可達 host（standby 或新建機）上重建 + 拉 S3。
 
