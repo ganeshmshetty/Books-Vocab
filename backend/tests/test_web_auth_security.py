@@ -195,7 +195,7 @@ def test_oauth_callback_with_unissued_state_never_calls_google(web_auth_env):
 def test_issued_google_states_expire_and_are_bounded():
     from kg.routers import web_auth
 
-    store = web_auth._GoogleStateStore(ttl_seconds=10, max_entries=3)
+    store = web_auth._OAuthStateStore(ttl_seconds=10, max_entries=3)
     store.issue("a", now=0)
     assert store.consume("a", now=5) is True
     assert store.consume("a", now=5) is False
@@ -210,7 +210,7 @@ def test_issued_google_states_expire_and_are_bounded():
 def test_issue_prunes_expired_entries():
     from kg.routers import web_auth
 
-    store = web_auth._GoogleStateStore(ttl_seconds=10, max_entries=100)
+    store = web_auth._OAuthStateStore(ttl_seconds=10, max_entries=100)
     store.issue("old1", now=0)
     store.issue("old2", now=1)
     store.issue("fresh", now=50)

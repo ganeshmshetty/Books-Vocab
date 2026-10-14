@@ -473,7 +473,7 @@ ssh chenliangyu@100.118.39.104 'tar czf ~/kg_data_$(date +%Y%m%d).tgz -C ~ kg-da
 原因：部分狀態是 **process-local**，不跨 worker 共享：
 
 - `quota_service._reservations` — in-flight 額度預留（PR #538）。多 worker 時每個 worker 各有一份，同用戶請求落在不同 worker 時預留互不可見，額度 over-spend 上限變成 `N_workers × 真實限額`，直接繞過額度防線。
-- `routers/web_auth.py:_google_states` — Google OAuth 單次使用 state 簽發表（#2804）。多 worker 時 callback 落在與 login 不同的 worker 會因查無 nonce 回 400，scale-out 前必須改為共享儲存。部署／重啟會遺失進行中的登入 state（600s 視窗，用戶重試登入即可）。
+- `routers/web_auth.py:_google_states`／`_apple_states` — Google／Apple web OAuth 單次使用 state 簽發表（#2804）。多 worker 時 callback 落在與 login 不同的 worker 會因查無 nonce 回 400，scale-out 前必須改為共享儲存。部署／重啟會遺失進行中的登入 state（600s 視窗，用戶重試登入即可）。
 - 同類 process-local state：`translate_service` 的 singleflight dedup、in-memory log capture、rate-limit 計數等。
 
 未來若要 scale-out（多 worker / 多容器），**必須先**把上述狀態改為共享儲存（Redis / DB），才能解除單 worker 限制。

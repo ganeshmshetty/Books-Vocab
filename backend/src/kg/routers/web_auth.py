@@ -9,9 +9,10 @@ TTL) and includes it in the upstream provider redirect / form. SameSite is
 (`response_mode=form_post` → cross-site top-level POST, which a Lax cookie would
 not accompany). The matching callback compares the cookie against the value
 returned by the provider; mismatches return HTTP 400 and the cookie is cleared
-on success. The Google nonce is additionally recorded server-side
-(`_GoogleStateStore`) and consumed on first callback use, so replays and forged
-equal cookie/state pairs are rejected before any outbound token exchange.
+on success. Both nonces are additionally recorded server-side
+(`_OAuthStateStore`, one instance per provider) and consumed on first callback
+use, so replays and forged equal cookie/state pairs are rejected before any
+outbound token exchange or users.json write.
 """
 
 from __future__ import annotations
@@ -51,13 +52,13 @@ _OAUTH_STATE_PATH = "/auth/web/"
 _GOOGLE_TOKEN_RETRY_BACKOFF_SECONDS = (0.2, 0.5)
 
 
-class _GoogleStateStore:
-    """Server-side record of Google OAuth nonces: single-use, TTL-bound, size-capped.
+class _OAuthStateStore:
+    """Server-side record of OAuth nonces: single-use, TTL-bound, size-capped.
 
-    The cookie/query comparison alone only proves the two values are equal, so an
-    attacker could mint any equal pair and drive unlimited outbound token
-    exchanges (#2804). A nonce is now valid only if /auth/web/google/login issued
-    it, and is consumed on first use.
+    The cookie/query comparison alone only proves the two values are equal, so a
+    caller could mint any equal pair and drive unlimited outbound token
+    exchanges (#2804) or users.json writes. A nonce is valid only if the
+    provider's login endpoint issued it, and is consumed on first use.
 
     Deployment assumption: production runs a single uvicorn worker, so process
     memory is the shared store. With multiple workers a callback landing on a
@@ -88,11 +89,16 @@ class _GoogleStateStore:
         return expires is not None and now < expires
 
 
-_google_states = _GoogleStateStore(ttl_seconds=_OAUTH_STATE_TTL_SECONDS, max_entries=10_000)
+_google_states = _OAuthStateStore(ttl_seconds=_OAUTH_STATE_TTL_SECONDS, max_entries=10_000)
+_apple_states = _OAuthStateStore(ttl_seconds=_OAUTH_STATE_TTL_SECONDS, max_entries=10_000)
 
 
 def _issue_google_state(nonce: str) -> None:
     _google_states.issue(nonce)
+
+
+def _issue_apple_state(nonce: str) -> None:
+    _apple_states.issue(nonce)
 
 
 def _is_transient_status(status_code: int) -> bool:
@@ -188,6 +194,7 @@ async def login_page(request: Request):
             "oauth_state": nonce,
         },
     )
+    _issue_apple_state(nonce)
     _set_state_cookie(response, nonce, samesite="none")
     return response
 
@@ -238,6 +245,7 @@ async def apple_login(request: Request):
         }
     )
     response = RedirectResponse(url=f"https://appleid.apple.com/auth/authorize?{params}", status_code=307)
+    _issue_apple_state(nonce)
     _set_state_cookie(response, nonce, samesite="none")
     return response
 
@@ -331,6 +339,10 @@ async def apple_callback(
         raise HTTPException(status_code=400, detail="Missing Apple identity token")
 
     _verify_state(request, state)
+    # Single-use: consumed before token verification and the users.json write so
+    # a replay (or a forged equal cookie/state pair) never reaches either.
+    if not state or not _apple_states.consume(state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     settings = request.app.state.kg_settings
 

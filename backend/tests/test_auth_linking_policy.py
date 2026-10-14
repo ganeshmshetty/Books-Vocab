@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -22,7 +23,7 @@ from kg import google_auth
 from kg.api_models import AuthVerifyRequest
 from kg.auth_handlers import auth_verify_response
 from kg.auth_service import resolve_and_link_user
-from kg.auth_types import GoogleIdentity
+from kg.auth_types import GoogleIdentity, VerifiedIdentity
 from test_web_auth_state import web_auth_env  # noqa: F401  (shared fixture)
 
 CLIENT_ID = "test-client-id.apps.googleusercontent.com"
@@ -224,3 +225,67 @@ def test_fresh_provider_id_still_links_by_authoritative_email(tmp_path):
 
     assert login("fresh", "apple", "e@x.com") == "c"
     assert load()["c"]["linked_ids"] == ["fresh"]
+
+
+# ---------------------------------------------------------------------------
+# Apple web sign-in state
+# ---------------------------------------------------------------------------
+
+_FORGED = "forged-equal-state-value"
+
+
+def _state_from_login(resp) -> str:
+    return parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
+
+
+def test_apple_callback_rejects_state_never_issued(web_auth_env):  # noqa: F811
+    with (
+        patch("kg.routers.web_auth.verify_apple_token") as verify_mock,
+        patch("kg.routers.web_auth._resolve_and_link_user") as resolve_mock,
+    ):
+        resp = web_auth_env.client.post(
+            "/auth/web/apple/callback",
+            data={"id_token": "tok", "state": _FORGED},
+            headers={"cookie": f"oauth_state={_FORGED}"},
+        )
+
+    assert resp.status_code == 400
+    verify_mock.assert_not_called()
+    resolve_mock.assert_not_called()
+
+
+def test_apple_callback_state_is_single_use(web_auth_env):  # noqa: F811
+    client = web_auth_env.client
+    state = _state_from_login(client.get("/auth/web/apple/login", follow_redirects=False))
+    form = {"id_token": "tok", "state": state}
+    cookie = {"cookie": f"oauth_state={state}"}
+
+    with patch(
+        "kg.routers.web_auth.verify_apple_token",
+        return_value=VerifiedIdentity("apple-user-1", None, False),
+    ) as verify_mock:
+        first = client.post("/auth/web/apple/callback", data=form, headers=cookie)
+        replay = client.post("/auth/web/apple/callback", data=form, headers=cookie)
+
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 400
+    assert verify_mock.call_count == 1
+
+
+def test_apple_callback_accepts_state_minted_by_login_page(web_auth_env):  # noqa: F811
+    client = web_auth_env.client
+    page = client.get("/login")
+    state = page.cookies.get("oauth_state")
+    assert state
+
+    with patch(
+        "kg.routers.web_auth.verify_apple_token",
+        return_value=VerifiedIdentity("apple-user-2", None, False),
+    ):
+        resp = client.post(
+            "/auth/web/apple/callback",
+            data={"id_token": "tok", "state": state},
+            headers={"cookie": f"oauth_state={state}"},
+        )
+
+    assert resp.status_code == 200, resp.text

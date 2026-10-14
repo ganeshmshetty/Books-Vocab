@@ -30,7 +30,7 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 | 1 | 額度 in-flight reservation | `backend/src/kg/quota_service.py:138`（`_reservations`） | 每個 worker 各持一份 `_reservations`，有效超支天花板變成 `N × 真實 per-user 上限` |
 | 2 | translate singleflight 去重表 | `backend/src/kg/translate_service.py:31`（`_INFLIGHT`） | dedup 只在單 process 內生效；N worker → 同一 (word, context) 最多被重複翻譯 N 次，浪費成本且競態 |
 | 3 | pipeline 孤兒 reap | `backend/src/kg/pipeline_log.py:71`（`reap_orphaned_runs(data_root)`，API startup 取得 worker 鎖後對 `settings.data_dir` 觸發） | 每個 worker 啟動都跑一次 reap；多 worker 同時 reap 會互相把對方仍在跑的 `running` row 誤判成 `interrupted` |
-| 4 | Google OAuth 單次使用 state 簽發表 | `backend/src/kg/routers/web_auth.py`（`_google_states`） | login 與 callback 落在不同 worker → 查無 nonce 回 400；需共享儲存才能 scale-out。重啟會遺失進行中的 state（600s 視窗） |
+| 4 | Google／Apple web OAuth 單次使用 state 簽發表 | `backend/src/kg/routers/web_auth.py`（`_google_states`、`_apple_states`） | login 與 callback 落在不同 worker → 查無 nonce 回 400；需共享儲存才能 scale-out。重啟會遺失進行中的 state（600s 視窗） |
 
 ### 不變量如何被釘死
 
@@ -81,9 +81,9 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
   殘留」成立；多 worker 下某 row 的 running 可能屬於**另一個活著的 worker**，必須改用
   心跳 / lease 過期判定，不能單看狀態。
 
-### 4. Google state → shared store
+### 4. Google／Apple state → shared store
 
-- `_GoogleStateStore` 的語義（簽發、單次消耗、600s TTL、容量上限）原樣搬到共享儲存即可：
+- `_OAuthStateStore`（Google、Apple 各一個實例）的語義（簽發、單次消耗、600s TTL、容量上限）原樣搬到共享儲存即可：
   Redis `SET nonce 1 EX 600`（簽發）＋ `GETDEL nonce`（消耗，原子單次），或 DB 表加
   `expires_at` 並以 `DELETE ... RETURNING` 消耗。
 - 搬遷前 login 與 callback 必須落在同一 worker，否則 callback 因查無 nonce 回 400。
