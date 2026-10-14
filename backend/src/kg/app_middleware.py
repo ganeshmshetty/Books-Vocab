@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+import logging
 import re
 import uuid as _uuid
 from collections.abc import Callable
@@ -15,6 +17,8 @@ from fastapi.responses import JSONResponse
 from kg.settings import DEFAULT_PUBLIC_WEB_BASE_URL
 
 RateLimiter = Any
+
+logger = logging.getLogger(__name__)
 
 
 # Inbound X-Request-ID reaches logs and the admin dashboard; accept only a safe charset.
@@ -51,12 +55,30 @@ def _anon_rate_limit_key(xff: str, client_host: str | None, hops: int) -> str:
 
     Safe fallbacks: empty XFF -> client_host (or "unknown"); hops exceeding the
     available segment count -> the frontmost segment (never raises IndexError).
+    The selected address is passed through `_normalize_client_address`.
     """
     if xff:
         segments = [s.strip() for s in xff.split(",")]
         idx = max(0, len(segments) - max(1, hops))
-        return segments[idx]
-    return client_host if client_host else "unknown"
+        return _normalize_client_address(segments[idx])
+    return _normalize_client_address(client_host) if client_host else "unknown"
+
+
+def _normalize_client_address(address: str) -> str:
+    """Collapse a client address to the unit a single host is allocated.
+
+    IPv6 aggregates to its /64 network, IPv4-mapped IPv6 resolves to IPv4, and
+    IPv4 is returned verbatim. Non-IP strings are returned unchanged.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 4:
+        return address
+    if ip.ipv4_mapped is not None:
+        return str(ip.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{address}/64", strict=False))
 
 
 # Generic api/translate limiter buckets are namespaced by trust class so a
@@ -190,12 +212,17 @@ def install_app_middlewares_from_dependencies(
             client_host = request.client.host if request.client else None
             login_key = _anon_rate_limit_key(xff, client_host, rate_limit_trusted_hops)
             if not await login_limiter.is_allowed(login_key):
+                logger.warning("Admin login rejected: status=429 key=%s", login_key)
                 return JSONResponse(
                     {"detail": "Too many login attempts"},
                     status_code=429,
                     headers={"Retry-After": str(login_limiter.window_seconds)},
                 )
-            return await call_next(request)
+            response = await call_next(request)
+            # Success is the 302 redirect; any other outcome is a rejected attempt.
+            if response.status_code != 302:
+                logger.warning("Admin login rejected: status=%s key=%s", response.status_code, login_key)
+            return response
         if path in rate_limit_exempt_paths or any(path.startswith(prefix) for prefix in rate_limit_exempt_prefixes):
             return await call_next(request)
         # Only a server-signed JWT earns a per-user bucket. Anything else —
