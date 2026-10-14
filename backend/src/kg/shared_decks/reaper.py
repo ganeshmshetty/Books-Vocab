@@ -9,8 +9,9 @@ A notebook whose cleanup failed stays staged (cards still hidden) and is retried
 by the next sweep; it is not counted as reaped.
 
 A staged notebook WITH a copy_log row is a committed copy awaiting reveal; the
-retry's ``_replay`` self-heals it, so it is left alone, as is anything younger
-than ``older_than`` (a live copy may still be running).
+retry's ``_replay`` or the reveal sweep (``copy.reveal_uncounted_copies``, #3897)
+self-heals it, so it is left alone, as is anything younger than ``older_than``
+(a live copy may still be running).
 """
 
 from __future__ import annotations

@@ -26,7 +26,7 @@ from sqlmodel import Session
 from kg.cards import CardStore
 from kg.exceptions import ConflictError, NotFoundError
 from kg.notebook import NotebookStore
-from kg.shared_decks.copy import copy_shared_deck
+from kg.shared_decks.copy import copy_shared_deck, reveal_uncounted_copies
 from kg.shared_decks.store import SharedDeck, SharedDeckCopyLog, SharedDeckStore
 from ops_helpers import run_ops_cli as _cli
 
@@ -754,3 +754,165 @@ def test_user_copy_lock_not_evicted_while_held(tmp_path, monkeypatch):
     # Released locks are evictable again, so the cache returns to its cap.
     copy_mod._user_copy_lock(tmp_path / "u9")
     assert len(copy_mod._USER_COPY_LOCKS) <= 2
+
+
+# ── 10. reveal sweep (#3897): a committed copy whose reveal raised ──
+
+
+def _sweep(tmp_path) -> int:
+    return reveal_uncounted_copies(tmp_path, shared_decks_path=tmp_path / "shared_decks.db")
+
+
+def test_reveal_sweep_completes_copy_whose_materialize_raised(tmp_path, monkeypatch):
+    """The copy is durable (copy_log committed) when materialize raises. No
+    client retry happens, so only the sweep can finish the reveal."""
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+
+    real_materialize = nbs.materialize
+    calls = {"n": 0}
+
+    def fail_once(nid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_materialize(nid)
+
+    monkeypatch.setattr(nbs, "materialize", fail_once)
+    with pytest.raises(sqlite3.OperationalError):
+        _copy(shared, cards, nbs, user_dir, key="k1")
+
+    log = shared.get_copy_log("u1", "k1")
+    assert log is not None and log.download_counted is False
+    nb_id = log.result_notebook_id
+    assert nbs.get(nb_id).is_staged is True
+    before = {c.id: c.updated_at for c in cards.all(notebook_id=nb_id)}
+
+    assert _sweep(tmp_path) == 1
+
+    assert nbs.get(nb_id).is_staged is False
+    after = {c.id: c.updated_at for c in cards.all(notebook_id=nb_id)}
+    assert after.keys() == before.keys()
+    assert all(after[cid] > before[cid] for cid in before)  # restamped after the flip
+    assert shared.get_copy_log("u1", "k1").download_counted is True
+    assert shared.get("deck_a").download_count == 1
+    assert _sweep(tmp_path) == 0  # a settled copy is never touched again
+    assert shared.get("deck_a").download_count == 1
+
+
+def test_reveal_sweep_completes_copy_whose_restamp_raised(tmp_path, monkeypatch):
+    """Flip committed, restamp raised: the sweep redoes the whole reveal (the
+    marker is still unset), so the restamp and the counter both land once."""
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+
+    real_restamp = CardStore.restamp_by_notebook
+    calls = {"n": 0}
+
+    def fail_once(self, notebook_id, start):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_restamp(self, notebook_id, start)
+
+    monkeypatch.setattr(CardStore, "restamp_by_notebook", fail_once)
+    with pytest.raises(sqlite3.OperationalError):
+        _copy(shared, cards, nbs, user_dir, key="k1")
+
+    log = shared.get_copy_log("u1", "k1")
+    assert nbs.get(log.result_notebook_id).is_staged is False  # flip already landed
+    assert log.download_counted is False
+
+    assert _sweep(tmp_path) == 1
+
+    assert shared.get_copy_log("u1", "k1").download_counted is True
+    assert shared.get("deck_a").download_count == 1
+
+
+def test_reveal_sweep_waits_for_inflight_copy_under_user_lock(tmp_path):
+    """Sync semantics: a sweep must not reveal while a request still holds the
+    per-user copy lock (the request's own _reveal is inside that critical
+    section). Held lock → the sweep thread cannot finish."""
+    import threading
+
+    from kg.shared_decks import copy as copy_mod
+
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+    _copy(shared, cards, nbs, user_dir, key="k1")
+    nb_id = shared.get_copy_log("u1", "k1").result_notebook_id
+    # Simulate a committed-but-unrevealed copy.
+    with sqlite3.connect(user_dir / "notebooks.db") as conn:
+        conn.execute("UPDATE notebook SET is_staged = 1 WHERE id = ?", (nb_id,))
+    with sqlite3.connect(shared.path) as conn:
+        conn.execute("UPDATE shared_deck_copy_log SET download_counted = 0 WHERE idempotency_key = 'k1'")
+        conn.execute("UPDATE shared_deck SET download_count = 0 WHERE id = 'deck_a'")
+
+    result: dict[str, int] = {}
+    with copy_mod._user_copy_lock(user_dir):
+        worker = threading.Thread(target=lambda: result.setdefault("n", _sweep(tmp_path)))
+        worker.start()
+        worker.join(timeout=0.5)
+        assert worker.is_alive()  # blocked behind the in-flight copy
+        assert nbs.get(nb_id).is_staged is True
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert result["n"] == 1
+    assert nbs.get(nb_id).is_staged is False
+
+
+def test_reveal_sweep_timer_settles_copy_without_restart(tmp_path, monkeypatch):
+    """The periodic loop (not only the startup pass) settles a stranded copy."""
+    import asyncio
+
+    from kg.shared_decks.copy import run_reveal_sweep_forever
+
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+    real_materialize = nbs.materialize
+    calls = {"n": 0}
+
+    def fail_once(nid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_materialize(nid)
+
+    monkeypatch.setattr(nbs, "materialize", fail_once)
+    with pytest.raises(sqlite3.OperationalError):
+        _copy(shared, cards, nbs, user_dir, key="k1")
+    nb_id = shared.get_copy_log("u1", "k1").result_notebook_id
+
+    async def run_loop():
+        task = asyncio.create_task(
+            run_reveal_sweep_forever(
+                tmp_path,
+                shared_decks_path=tmp_path / "shared_decks.db",
+                interval=timedelta(milliseconds=10),
+            )
+        )
+        for _ in range(500):
+            if shared.get_copy_log("u1", "k1").download_counted:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_loop())
+
+    assert nbs.get(nb_id).is_staged is False
+    assert shared.get("deck_a").download_count == 1
+
+
+def test_reveal_sweep_keeps_copy_staged_when_source_deck_row_is_gone(tmp_path):
+    """Never flip a notebook visible when its counter cannot commit: a missing
+    source deck leaves the copy staged (hidden) instead of half-revealing it."""
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    shared.record_copy("u1", "orphan-log", "deck_gone", 1, nbs.create(name="x", is_staged=True).id)
+    nb_id = shared.get_copy_log("u1", "orphan-log").result_notebook_id
+
+    assert _sweep(tmp_path) == 0
+
+    assert nbs.get(nb_id).is_staged is True
+    assert shared.get_copy_log("u1", "orphan-log").download_counted is False

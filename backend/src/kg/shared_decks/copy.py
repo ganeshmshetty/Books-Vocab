@@ -28,6 +28,10 @@ here so the router stays a thin adapter:
   them), then ``download_counted`` is committed. The marker is the durable
   "reveal complete" bit, so a crash at any point inside the reveal is redone
   whole by the retry, and a settled deck is never touched again.
+* **reveal sweep (#3897)**: a reveal that raises after the point of no return
+  leaves a durable copy with its marker unset, and the client may never retry
+  the key. :func:`reveal_uncounted_copies` settles those rows at startup and
+  every 5 minutes, under the same per-user lock as the request path.
 * **count-equality**: copied distinct cards == source snapshot, else fail-loud
   (a NOCASE/NFC collapse under the card table's per-notebook uniqueness — e.g. a
   homograph pair distinct only by pos/meaning — must not silently drop a card).
@@ -41,6 +45,7 @@ here so the router stays a thin adapter:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -434,4 +439,83 @@ def _copy_locked(
     )
 
 
-__all__ = ["CopyOutcome", "copy_shared_deck"]
+def reveal_uncounted_copies(data_root: Path, *, shared_decks_path: Path) -> int:
+    """Finish committed copies whose reveal raised (#3897).
+
+    The request path raises after the point of no return when materialize,
+    restamp or the counter fails. The copy is durable, but the client may never
+    retry the same key, so nothing else would reveal the notebook. This sweep
+    drives every copy_log row with ``download_counted`` unset through
+    :func:`_reveal`, the same idempotent finisher ``_replay`` uses.
+
+    Each row is settled under the copier's per-user copy lock, which the request
+    holds across its own ``_reveal``: an in-flight copy is never raced, and the
+    marker is re-read under the lock so a settled copy is skipped. A row that
+    still fails is logged and retried by the next pass. Returns the number of
+    copies settled in this pass.
+    """
+    users_dir = data_root / "users"
+    if not users_dir.is_dir():
+        return 0
+    shared = SharedDeckStore(shared_decks_path)
+    settled = 0
+    try:
+        for row in shared.list_uncounted_copies():
+            user_dir = users_dir / row.copier_id
+            if not (user_dir / "notebooks.db").is_file():
+                continue
+            try:
+                with _user_copy_lock(user_dir):
+                    current = shared.get_copy_log(row.copier_id, row.idempotency_key)
+                    if current is None or current.download_counted:
+                        continue
+                    if shared.get_any(current.source_shared_deck_id) is None:
+                        # _reveal would flip the notebook visible and then fail to
+                        # count it. Keep it staged (hidden) until the deck exists.
+                        _LOGGER.warning("reveal sweep: source deck missing for copy %s", row.copier_id)
+                        continue
+                    notebooks = NotebookStore(user_dir / "notebooks.db")
+                    cards = CardStore(user_dir / "cards.db")
+                    try:
+                        _reveal(
+                            shared,
+                            cards,
+                            notebooks,
+                            copier_id=current.copier_id,
+                            idempotency_key=current.idempotency_key,
+                            notebook_id=current.result_notebook_id,
+                            deck_id=current.source_shared_deck_id,
+                        )
+                    finally:
+                        notebooks.close()
+                        cards.close()
+                settled += 1
+            except Exception:  # noqa: BLE001 — one stuck copy must not block the others
+                _LOGGER.warning("reveal sweep failed for copy %s", row.copier_id, exc_info=True)
+    finally:
+        shared.close()
+    return settled
+
+
+REVEAL_SWEEP_INTERVAL = timedelta(minutes=5)
+
+
+async def run_reveal_sweep_forever(
+    data_root: Path,
+    *,
+    shared_decks_path: Path,
+    interval: timedelta = REVEAL_SWEEP_INTERVAL,
+) -> None:
+    """Run :func:`reveal_uncounted_copies` every ``interval`` for the process
+    lifetime. Blocking SQLite work runs in a worker thread. Cancellation is safe
+    at any point: a pass interrupted by shutdown leaves the marker unset, and
+    the next startup sweep redoes that copy whole."""
+    while True:
+        await asyncio.sleep(interval.total_seconds())
+        try:
+            await asyncio.to_thread(reveal_uncounted_copies, data_root, shared_decks_path=shared_decks_path)
+        except Exception:  # noqa: BLE001 — keep the loop alive; the next pass retries
+            _LOGGER.warning("reveal sweep pass failed", exc_info=True)
+
+
+__all__ = ["CopyOutcome", "copy_shared_deck", "reveal_uncounted_copies", "run_reveal_sweep_forever"]
