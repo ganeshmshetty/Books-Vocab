@@ -26,6 +26,7 @@ from ..api_models.library import (
 )
 from ..exceptions import ConflictError
 from ..sqlite_utils import make_sqlite_engine
+from ..utc_instant import parse_utc_instant
 from ..vocab_shared import _dt_to_iso
 
 # A claimed key is held for this long while its S3 delete runs outside the DB
@@ -43,11 +44,8 @@ class PendingClaim(NamedTuple):
 
 
 def _parse_utc_instant(value: str) -> datetime:
-    """Parse an ISO timestamp as an absolute UTC instant."""
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    """Parse an ISO timestamp as an absolute UTC instant; invalid client input raises ValueError (#3890)."""
+    return parse_utc_instant(value)
 
 
 class LibraryBook(SQLModel, table=True):
