@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from ._fsutil import fsync_dir
 from .types import UsersPayload
 from .users_lock import bounded_users_filelock
 
@@ -102,10 +104,20 @@ def save_users_to(
     users: dict[str, dict[str, object]],
     normalize_users_payload: NormalizeUsersPayload,
 ) -> None:
+    """Atomically replace ``users_file``; durable against a crash mid-write.
+
+    The tmp payload is fsynced before the rename so a crash can never expose a
+    0-byte or torn ``users.json`` (no .bak exists for this file). The parent
+    directory is fsynced after the rename so the swap itself survives a crash.
+    """
     normalized, _ = normalize_users_payload(users)
     tmp_path = users_file.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(normalized, indent=2, ensure_ascii=False))
-    tmp_path.replace(users_file)
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(normalized, indent=2, ensure_ascii=False))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, users_file)
+    fsync_dir(users_file.parent)
 
 
 def migrate_users_file(
