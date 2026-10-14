@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 0,
+  "raise": {
+    "ops": 3000
+  },
+  "note": "2026-10-14 audit campaign: dozens of ops regression tests pinned unguarded behaviour (test-gap issues #3742–#3749, #3837–#3846); merge groups combining several ops PRs exceeded the ceiling by 27 lines (run 38545505139)."
+}
