@@ -8,8 +8,27 @@ the tmp payload was already durably on disk.
 
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
+
+
+def fsync_file(fd: int) -> None:
+    """Flush ``fd`` to stable storage, bypassing the drive cache where possible.
+
+    On macOS ``os.fsync`` only pushes data to the drive, not through its
+    volatile write cache; ``F_FULLFSYNC`` does. The constant exists only on
+    Darwin, so other platforms (and an ``F_FULLFSYNC`` failure, e.g. on an
+    unsupported filesystem) fall back to plain ``os.fsync``.
+    """
+    full_fsync = getattr(fcntl, "F_FULLFSYNC", None)
+    if full_fsync is not None:
+        try:
+            fcntl.fcntl(fd, full_fsync)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
 
 
 def fsync_dir(directory: Path) -> None:

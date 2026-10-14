@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ._fsutil import fsync_dir
+from ._fsutil import fsync_dir, fsync_file
 from .types import UsersPayload
 from .users_lock import bounded_users_filelock
 
@@ -115,7 +115,7 @@ def save_users_to(
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(json.dumps(normalized, indent=2, ensure_ascii=False))
         f.flush()
-        os.fsync(f.fileno())
+        fsync_file(f.fileno())
     os.replace(tmp_path, users_file)
     fsync_dir(users_file.parent)
 
