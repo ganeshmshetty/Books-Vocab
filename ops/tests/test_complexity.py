@@ -881,12 +881,16 @@ def test_two_lanes_each_adding_a_fragment_merge_in_either_order_without_a_confli
     )  # 62 measured (30 + 20 + 12) <= 62 effective (40 + 15 + 7): each raise covers exactly its own growth
 
 
-def test_the_repository_headroom_fragment_raises_no_more_than_its_measured_overage_plus_margin() -> None:
+def test_the_repository_headroom_fragment_raises_no_more_than_its_measured_overage_plus_margin() -> (
+    None
+):
     """#3882: a hand-written ops raise of 3000 lines loosened the ceiling by ~3000 lines, not the
     overage plus LIFT_MARGIN the lane needed.  Judged against the ceiling without this fragment."""
     path = REPO / complexity.BUDGET_FILE
     fragments = complexity.load_fragments(complexity.fragment_dir(path))
-    mine = next((f for f in fragments if f["name"] == "debug-complexity-headroom-1014"), None)
+    mine = next(
+        (f for f in fragments if f["name"] == "debug-complexity-headroom-1014"), None
+    )
     if mine is None:
         pytest.skip("fragment folded into the base")
     others = [f for f in fragments if f is not mine]
