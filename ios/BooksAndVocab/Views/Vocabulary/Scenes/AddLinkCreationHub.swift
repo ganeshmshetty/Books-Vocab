@@ -42,8 +42,9 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
     /// Warning jobs whose `retry(jobKey:)` is still running. The publish that settles
     /// such a retry is a new outcome; a plain re-publish of the same phase is not (#3393).
     @ObservationIgnored private var warningRetriesInFlight: Set<String> = []
-    /// Pending-link detail sheets on screen, counted per job. Such a sheet shows its job's
-    /// outcome itself, whichever coordinator runs the job, so the hub posts no notice (#3512).
+    /// Pending-link detail sheets on screen, counted per job. Such a sheet shows a failed or
+    /// partial outcome itself, so the hub does not post a notice for that outcome (#3512).
+    /// A success still posts a notice, because the sheet closes with its job (#3603).
     @ObservationIgnored private var presentedDetailJobCounts: [String: Int] = [:]
 
     init(
