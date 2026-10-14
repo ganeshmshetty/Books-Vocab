@@ -19,6 +19,23 @@ from .types import UserRecord, UsersPayload
 # `..` is rejected separately since `.` is now an allowed character.
 _USER_ID_ALLOWED = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
+# #3813: machine-readable marker on the revoked-account 401 only. Expired or
+# invalid-token 401s omit it, so the iOS client can tell "account was deleted"
+# (erase is safe) from a plain session failure (must not erase).
+ACCOUNT_DELETED_AUTH_HEADER = "X-KG-Auth-Error"
+ACCOUNT_DELETED_AUTH_CODE = "account_deleted"
+
+
+def _account_deleted_401() -> HTTPException:
+    return HTTPException(
+        status_code=401,
+        detail="Account was deleted. Please sign in again.",
+        headers={
+            "WWW-Authenticate": "Bearer",
+            ACCOUNT_DELETED_AUTH_HEADER: ACCOUNT_DELETED_AUTH_CODE,
+        },
+    )
+
 
 def resolve_current_user(
     token: str,
@@ -47,11 +64,7 @@ def resolve_current_user(
         # a deletion and a legitimate re-login within the same second would
         # collide. `iat_us` (microsecond-precise ISO string) is preferred when
         # present; older tokens without it fall back to the floored `iat`.
-        token_iat = (
-            parse_datetime(decoded.get("iat_us"))
-            or parse_datetime(decoded.get("iat"))
-            or datetime.now(tz=UTC)
-        )
+        token_iat = parse_datetime(decoded.get("iat_us")) or parse_datetime(decoded.get("iat")) or datetime.now(tz=UTC)
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=401,
@@ -89,11 +102,7 @@ def resolve_current_user(
     if isinstance(revoked_before, dict):
         revoked_at = parse_datetime(revoked_before.get(user_id))
         if revoked_at and (token_iat is None or token_iat <= revoked_at):
-            raise HTTPException(
-                status_code=401,
-                detail="Account was deleted. Please sign in again.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise _account_deleted_401()
 
     record = users.get(user_id, {})
     if isinstance(record, dict):
@@ -101,11 +110,7 @@ def resolve_current_user(
         if linked_to and isinstance(revoked_before, dict):
             revoked_at = parse_datetime(revoked_before.get(linked_to))
             if revoked_at and (token_iat is None or token_iat <= revoked_at):
-                raise HTTPException(
-                    status_code=401,
-                    detail="Account was deleted. Please sign in again.",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
+                raise _account_deleted_401()
 
     user_dir = settings.data_dir / "users" / user_id
     user_dir.mkdir(parents=True, exist_ok=True)
