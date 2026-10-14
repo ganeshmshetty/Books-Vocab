@@ -940,10 +940,35 @@ struct SubscriptionManagerTests {
         }
     }
 
-    /// 暫時錯誤（5xx、網路）必須維持未完成，交由 StoreKit 於之後重送。
+    /// 永久 4xx（非 401／408／429）同樣是終局拒絕，必須 finish，否則每次啟動重送、重 POST 並重報 Sentry（#3596）。
+    @MainActor
+    @Test func settle_permanentClientError_finishesAndReportsRejected() async {
+        for status in [400, 404, 409, 422] {
+            var events: [String] = []
+            let outcome = await SubscriptionManager.settleVerifiedTransaction(
+                "tx-6",
+                isLoggedIn: true,
+                sync: { _ in
+                    events.append("sync")
+                    throw KGError.httpError(statusCode: status, detail: "")
+                },
+                finish: { _ in events.append("finish") }
+            )
+            #expect(events == ["sync", "finish"], "status \(status)")
+            guard case .rejected = outcome else {
+                Issue.record("status \(status): expected rejected, got \(outcome)")
+                return
+            }
+        }
+    }
+
+    /// 暫時錯誤（5xx、網路、401、408、429）必須維持未完成，交由 StoreKit 於之後重送。
     @MainActor
     @Test func settle_transientSyncFailure_staysUnfinished() async {
         let transient: [KGError] = [
+            .httpError(statusCode: 401, detail: ""),
+            .httpError(statusCode: 408, detail: ""),
+            .httpError(statusCode: 429, detail: ""),
             .httpError(statusCode: 500, detail: ""),
             .networkError(underlying: URLError(.timedOut)),
         ]
