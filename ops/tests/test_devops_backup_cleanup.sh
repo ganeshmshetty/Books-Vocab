@@ -73,3 +73,50 @@ for i in 01 02 03 04 05 06 07 08 09 10; do
 done
 [[ ! -e "$B4/data_20260199_000000" ]] || fail "INCOMPLETE dir not swept"
 pass "INCOMPLETE dirs neither evict good runs nor linger"
+
+# #3688：cmd_backup 成功路徑必須清掉 .INCOMPLETE 標記，cleanup_old_backups 才不會刪掉剛驗證過的好備份；
+# 同分鐘重試遇到上次殘留標記時亦然。全程以替身 rsync／遠端（無 ssh、無 felix），只在 scratch BACKUP_DIR 寫入。
+D=data_20260101_0000
+RSYNC_STUB_DIR="$TMP/rsync-stub"; mkdir -p "$RSYNC_STUB_DIR"
+# #! 腳本 rsync 替身（過得了 devops tripwire）：--version 回 openrsync；其餘模擬成功拉回，行為由 RSYNC_BODY 注入。
+cat >"$RSYNC_STUB_DIR/rsync" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == --version ]]; then echo "openrsync: protocol version 29"; exit 0; fi
+dst="${*: -1}"; mkdir -p "$dst"; : >"$dst/users.json"
+eval "$RSYNC_BODY"
+STUB
+chmod 755 "$RSYNC_STUB_DIR/rsync"
+
+run_backup() { # <backup_dir> <rsync_body>：凍結分鐘為 20260101_0000
+  ROOT="$ROOT" TARGET="$1" RSYNC_BODY="$2" RSYNC_STUB_DIR="$RSYNC_STUB_DIR" TMP_STAGE_ROOT="$TMP" \
+    DEVOPS_SOURCE_ONLY=1 KG_SSH_CMD=/usr/bin/true PATH="$RSYNC_STUB_DIR:$PATH" bash -c '
+    source "$ROOT/devops.sh"
+    BACKUP_DIR="$TARGET"
+    date() { if [[ "${1:-}" == +%Y%m%d_%H%M ]]; then echo 20260101_0000; else command date "$@"; fi; }
+    run_remote() {
+      case "$1" in
+        mktemp*) mktemp -d "$TMP_STAGE_ROOT/kg-db-snapshot.XXXXXX" ;;
+        "tar -C "*) eval "$1" ;;
+        "bash -s"*) cat >/dev/null ;;
+        *) : ;;
+      esac
+    }
+    cmd_backup
+  ' >/dev/null 2>&1
+}
+
+# 殘留標記 + 同分鐘重試成功 → 好備份存活、標記已清
+B5="$TMP/b5"; mkdir -p "$B5/$D"; : >"$B5/$D/.INCOMPLETE"
+run_backup "$B5" ':' || fail "successful backup run exited non-zero"
+[[ -d "$B5/$D" && -f "$B5/$D.tar.gz" && -f "$B5/$D.tar.gz.sha256" ]] \
+  || fail "successful retry was deleted by cleanup_old_backups"
+[[ ! -e "$B5/$D/.INCOMPLETE" ]] || fail "successful run left a stale .INCOMPLETE marker"
+if tar -tzf "$B5/$D.tar.gz" | grep -q 'INCOMPLETE'; then fail "INCOMPLETE marker leaked into tarball"; fi
+pass "same-minute retry succeeds: backup survives cleanup, marker cleared"
+
+# 訊號中斷（INT 於 rsync 途中）→ 標記必須留下，且不得產生 tarball
+B6="$TMP/b6"; mkdir -p "$B6"
+run_backup "$B6" 'kill -INT $PPID; sleep 1' || true
+[[ -d "$B6/$D" && -e "$B6/$D/.INCOMPLETE" ]] || fail "interrupted run must leave .INCOMPLETE on its dir"
+[[ ! -e "$B6/$D.tar.gz" ]] || fail "interrupted run must not produce a tarball"
+pass "signal-interrupted run keeps .INCOMPLETE"

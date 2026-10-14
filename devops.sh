@@ -758,6 +758,9 @@ cmd_backup() {
     break
   done < <(ls -1dt "$BACKUP_DIR"/data_*/ 2>/dev/null | grep -vF "/data_${date_str}/" || true)  # grep 無匹配 exit 1，避免 set -e 在首次（無既有備份）誤殺
   mkdir -p "$dest"
+  # #3688：進行中即標記 .INCOMPLETE，成功尾端才移除。中斷（INT／失敗）會留下標記，
+  # 同分鐘重試不會讓殘留標記跟著好備份一起被 cleanup_old_backups 刪掉。
+  touch "$dest/.INCOMPLETE" || err "無法在 ${dest} 建立 .INCOMPLETE 標記，拒絕開始冷快照。"
   # 空輸出的防呆帶。下面的陣列若是空的，bash 3.2 對 ${a[*]} 在 set -u 下會直接噴
   # `progress_flags[*]: unbound variable`——又一次拿難懂訊號當失敗訊號。
   # 注意實測結果（2026-08-08，別憑推理改掉這段）：rsync **不在 PATH** 時走不到這裡，
@@ -915,9 +918,12 @@ cmd_backup() {
   # ── 完整性驗證：sha256 checksum ─────────────────────────────────────────
   local tar_file="$BACKUP_DIR/data_${date_str}.tar.gz"
   info "計算備份 checksum → ${tar_file}.sha256"
-  tar -czf "$tar_file" -C "$BACKUP_DIR" "data_$date_str"
+  # 標記不進 tarball（否則還原出來的目錄會帶著 .INCOMPLETE 被下次 cleanup 刪掉）。
+  tar -czf "$tar_file" --exclude='.INCOMPLETE' -C "$BACKUP_DIR" "data_$date_str"
   sha256sum "$tar_file" > "${tar_file}.sha256"
   ok "checksum: $(cat "${tar_file}.sha256")"
+  # 唯有 tar 與 sha256 都寫成功才移除標記（#3688）；之後才可被 cleanup_old_backups 視為好備份。
+  rm -f "$dest/.INCOMPLETE"
 
   ok "備份完成且驗證通過: $dest"
   ls -lh "$BACKUP_DIR" | tail -5
