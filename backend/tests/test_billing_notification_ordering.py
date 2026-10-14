@@ -21,7 +21,7 @@ from kg.billing.notifications import (
     status_from_transaction_payload,
     verified_transaction_snapshot,
 )
-from kg.billing.snapshots import write_subscription_snapshot
+from kg.billing.snapshots import is_superseded_terminal_snapshot, write_subscription_snapshot
 from kg.billing_handlers import (
     app_store_notifications_response,
     reconcile_app_store_subscription_response,
@@ -186,6 +186,71 @@ def test_refund_of_superseded_transaction_cannot_expire_current_period(tmp_path)
     assert len(events) == 2
 
 
+def test_refund_without_expires_at_of_superseded_transaction_cannot_expire_current_period(tmp_path):
+    users = {}
+    events = []
+    _send_notification(
+        tmp_path,
+        users,
+        events,
+        _transaction_snapshot(
+            status="active",
+            signed_date="2026-10-01T00:00:00+00:00",
+            uuid="renew-t2",
+            transaction_id="txn-T2",
+            expires_at="2099-11-01T00:00:00+00:00",
+        ),
+        "DID_RENEW",
+    )
+    result = _send_notification(
+        tmp_path,
+        users,
+        events,
+        _transaction_snapshot(
+            status="expired",
+            signed_date="2026-10-10T00:00:00+00:00",
+            uuid="refund-t1",
+            transaction_id="txn-T1",
+            expires_at=None,
+        ),
+        "REFUND",
+    )
+
+    subscription = users["u1"]["subscription"]
+    assert subscription["status"] == "active"
+    assert subscription["is_active"] is True
+    assert subscription["transaction_id"] == "txn-T2"
+    assert result["updated"] is False
+    assert result["reason"] == "superseded_transaction"
+
+
+def test_terminal_for_superseded_transaction_refused_when_incoming_expires_at_missing():
+    existing = {"transaction_id": "txn-T2", "expires_at": "2099-11-01T00:00:00+00:00"}
+    incoming = _transaction_snapshot(
+        status="expired",
+        signed_date="2026-10-10T00:00:00+00:00",
+        uuid="refund-t1",
+        transaction_id="txn-T1",
+        expires_at=None,
+    )
+    incoming["expires_at"] = None
+
+    assert is_superseded_terminal_snapshot(existing, incoming) is True
+
+
+def test_terminal_for_superseded_transaction_refused_when_stored_expires_at_missing():
+    existing = {"transaction_id": "txn-T2", "expires_at": None}
+    incoming = _transaction_snapshot(
+        status="expired",
+        signed_date="2026-10-10T00:00:00+00:00",
+        uuid="refund-t1",
+        transaction_id="txn-T1",
+        expires_at="2026-10-01T00:00:00+00:00",
+    )
+
+    assert is_superseded_terminal_snapshot(existing, incoming) is True
+
+
 def test_refund_of_current_transaction_still_expires_subscription(tmp_path):
     users = {}
     events = []
@@ -251,7 +316,10 @@ def test_forward_order_applies_latest_watermark_and_preserves_event_metadata(tmp
         tmp_path,
         users,
         events,
-        _snapshot(status="expired", signed_date="2026-08-02T00:00:00+00:00", notification_uuid="expired"),
+        {
+            **_snapshot(status="expired", signed_date="2026-08-02T00:00:00+00:00", notification_uuid="expired"),
+            "transaction_id": "txn-renew",
+        },
         "EXPIRED",
     )
 
@@ -379,7 +447,10 @@ def test_same_signed_date_terminal_replaces_active_with_lower_uuid(tmp_path):
         tmp_path,
         users,
         events,
-        _snapshot(status="expired", signed_date="2026-08-01T00:00:00+00:00", notification_uuid="aaa"),
+        {
+            **_snapshot(status="expired", signed_date="2026-08-01T00:00:00+00:00", notification_uuid="aaa"),
+            "transaction_id": "txn-zzz",
+        },
         "EXPIRED",
     )
 

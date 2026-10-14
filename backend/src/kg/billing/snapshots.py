@@ -94,7 +94,7 @@ def is_superseded_terminal_snapshot(existing: object, incoming: dict[str, Any]) 
     period's transaction (T1) can carry a later ``signedDate`` than the
     DID_RENEW that started the current transaction (T2). It may apply only when it
     is for the stored current transaction or when it does not end before the
-    stored ``expires_at``.
+    stored ``expires_at``; if either expiry is unknown it is refused.
     """
     existing_subscription = existing if isinstance(existing, dict) else {}
     if incoming.get("status") not in _TERMINAL_STATUSES:
@@ -107,7 +107,9 @@ def is_superseded_terminal_snapshot(existing: object, incoming: dict[str, Any]) 
     current_expires_at = _parse_signed_date(existing_subscription.get("expires_at"))
     incoming_expires_at = _parse_signed_date(incoming.get("expires_at"))
     if current_expires_at is None or incoming_expires_at is None:
-        return False
+        # Without both expiries the period ordering is unknown; fail closed so a
+        # non-current terminal cannot end the stored current period.
+        return True
     return incoming_expires_at < current_expires_at
 
 
