@@ -55,6 +55,11 @@ struct WordDetailSheet: View {
         }
     }
 
+    /// 封存卡不提供「+」：後端對封存來源一律 404，入口只會產生無法重試的錯誤（#3671）。
+    static func addLinkAction(isArchived: Bool, open: @escaping () -> Void) -> (() -> Void)? {
+        isArchived ? nil : open
+    }
+
     var body: some View {
         Group {
             if let presenterState = state.presenterState {
@@ -74,7 +79,7 @@ struct WordDetailSheet: View {
                     onDelete: offersLifecycleActions ? { isConfirmingDelete = true } : nil,
                     onToggleReaderHidden: offersLifecycleActions ? { handleToggleReaderHidden() } : nil,
                     onToggleReviewExcluded: offersLifecycleActions ? { handleToggleReviewExcluded() } : nil,
-                    onAddLink: { showAddLink = true },
+                    onAddLink: Self.addLinkAction(isArchived: entry.isArchived) { showAddLink = true },
                     onDeleteLink: { link in
                         state.deleteLink(link, from: entry, allEntries: allEntries, kgService: kgService)
                     },
