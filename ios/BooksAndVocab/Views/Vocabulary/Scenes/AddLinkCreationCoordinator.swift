@@ -564,8 +564,9 @@ final class AddLinkCreationCoordinator {
             var failure = AddLinkCreationFailure(error: error)
             if failure.kind == .operationNotFound {
                 if operationId == nil {
-                    // A 404 on the POST is not "the operation vanished".
-                    failure = AddLinkCreationFailure(reason: nil)
+                    // A 404 on the POST is not "the operation vanished". The enqueue route answers 404 only
+                    // when the source card is missing, deleted or archived: retrying the same key cannot succeed.
+                    failure = AddLinkCreationFailure(reason: AddLinkCreationFailure.sourceUnavailableReason)
                 } else {
                     // The server forgot the operation; only a new one can proceed.
                     operationTerminal = true
