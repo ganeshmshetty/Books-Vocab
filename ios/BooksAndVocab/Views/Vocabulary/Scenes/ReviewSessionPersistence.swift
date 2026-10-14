@@ -175,7 +175,12 @@ enum ReviewSessionPersistence {
         let appendedEntries = uniqueEntries.filter { !restoredEntryIDs.contains($0.id) }
         let queue = restoredQueue + appendedEntries
         let persistenceIDs = restoredQueue.map(persistenceID(for:)) + appendedEntries.map(persistenceID(for:))
-        let baselines = kept.map { snapshot.queue[$0.oldIndex].baseline } + appendedEntries.map(makeBaseline(from:))
+        // 未作答的保留卡沒有快照中的 SRS 推進紀錄，須以即時列為基準；已作答者保留快照基準以維持 flush 冪等（#3670）。
+        let baselines = kept.map { item in
+            snapshot.submissions[item.oldIndex] == nil
+                ? makeBaseline(from: item.entry)
+                : snapshot.queue[item.oldIndex].baseline
+        } + appendedEntries.map(makeBaseline(from:))
 
         var submittedAnswers: [Int: TodayReviewState.SubmittedAnswer] = [:]
         var rememberedCount = 0
