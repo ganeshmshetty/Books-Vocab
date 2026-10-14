@@ -253,6 +253,25 @@ struct AddLinkCreationP1CoordinatorTests {
         #expect(service.startKeys[0] != service.startKeys[1])
     }
 
+    @Test("#3671: a POST 404 (source archived or deleted) ends non-retryable as sourceUnavailable")
+    func sourceRejectedAtPostIsNotRetryable() async throws {
+        // 後端 enqueue 只會在來源卡不存在／已刪除／已封存時於 POST 回 404（routers/vocab.py），
+        // 同一 Idempotency-Key 重送必然再 404，因此不得歸為可重試的一般錯誤。
+        let service = ScriptedCreationService(
+            onStart: { _, _ in throw KGError.httpError(statusCode: 404, detail: "Card not found") },
+            onFetch: { _, id in CreationFixtures.status(id, "succeeded", sequence: 2) }
+        )
+        let container = try CreationFixtures.container()
+        let source = CreationFixtures.entry("source", cardID: "src")
+        let coordinator = AddLinkCreationCoordinator(environment: P1Fixtures.environment())
+
+        P1Fixtures.start(coordinator, source: source, service: service, container: container)
+        #expect(await CreationFixtures.eventually { coordinator.phase == .failed })
+        #expect(coordinator.failure?.kind == .sourceUnavailable)
+        #expect(coordinator.failure?.isRetryable == false)
+        #expect(service.fetchedOperationIds.isEmpty)
+    }
+
     @Test("C11: full success ends in succeeded with no warnings")
     func fullSuccess() async throws {
         let service = ScriptedCreationService(
