@@ -907,6 +907,54 @@ struct ReaderTOCNavigationTests {
         return Locator(href: url, mediaType: mediaType)
     }
 
+    private static func anchoredLocator(href: String, fragments: [String]) throws -> Locator {
+        let mediaType = try #require(MediaType("application/xhtml+xml"))
+        let url = try #require(AnyURL(path: href))
+        return Locator(href: url, mediaType: mediaType, locations: .init(fragments: fragments))
+    }
+
+    /// #3719: an anchored jump on the same resource must not count as arrived
+    /// while `currentLocation` still reports no anchor (stale or idle), or the
+    /// navigation completes before the scroll lands.
+    @Test @MainActor
+    func anchoredJumpIsNotArrivedWhileCurrentLocationHasEmptyFragments() throws {
+        let requested = try Self.anchoredLocator(
+            href: "OEBPS/chapter-b.xhtml",
+            fragments: ["section-2"]
+        )
+        let stale = try Self.anchoredLocator(href: "OEBPS/chapter-b.xhtml", fragments: [])
+
+        #expect(!ReaderTOCNavigationBridge.isAtDestination(stale, requested: requested))
+        #expect(!ReaderTOCNavigationBridge.isAtDestination(nil, requested: requested))
+    }
+
+    @Test @MainActor
+    func anchoredJumpArrivesOnlyOnIntersectingFragment() throws {
+        let requested = try Self.anchoredLocator(
+            href: "OEBPS/chapter-b.xhtml",
+            fragments: ["section-2"]
+        )
+        let matching = try Self.anchoredLocator(
+            href: "OEBPS/chapter-b.xhtml",
+            fragments: ["section-2"]
+        )
+        let other = try Self.anchoredLocator(
+            href: "OEBPS/chapter-b.xhtml",
+            fragments: ["section-1"]
+        )
+
+        #expect(ReaderTOCNavigationBridge.isAtDestination(matching, requested: requested))
+        #expect(!ReaderTOCNavigationBridge.isAtDestination(other, requested: requested))
+    }
+
+    @Test @MainActor
+    func resourceLevelJumpStillArrivesOnEmptyFragmentLocation() throws {
+        let requested = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+        let current = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+
+        #expect(ReaderTOCNavigationBridge.isAtDestination(current, requested: requested))
+    }
+
     private static func evidenceEntry(
         label: String,
         partition: String,

@@ -207,15 +207,25 @@ final class ReaderTOCNavigationBridge {
         self.beforeContinuationInstall = beforeContinuationInstall
     }
 
-    /// Same resource and fragment rules as the locationDidChange path
-    /// (`ReaderTOCNavigationRequestGate`), applied to `currentLocation`.
+    /// Same resource rule as the locationDidChange path. An anchored request
+    /// only counts as arrived on a location that names one of its anchors: an
+    /// empty `currentLocation` may be stale or idle and must not complete the
+    /// jump before the scroll lands (#3719). A resource-level request keeps the
+    /// `fragmentsAccept` rule.
     static func isAtDestination(_ current: Locator?, requested locator: Locator) -> Bool {
         guard let current else { return false }
-        return current.href.string == locator.href.string
-            && ReaderTOCNavigationRequestGate.fragmentsAccept(
-                expected: locator.locations.fragments,
+        guard current.href.string == locator.href.string else { return false }
+        let expected = locator.locations.fragments
+        guard !expected.isEmpty else {
+            return ReaderTOCNavigationRequestGate.fragmentsAccept(
+                expected: expected,
                 reported: current.locations.fragments
             )
+        }
+        let normalized: (String) -> String = { $0.removingPercentEncoding ?? $0 }
+        let expectedAnchors = Set(expected.map(normalized))
+        let reportedAnchors = Set(current.locations.fragments.map(normalized))
+        return !expectedAnchors.isDisjoint(with: reportedAnchors)
     }
 
     /// `onAccepted` runs in the same main-actor turn that Readium's `go(to:)`
