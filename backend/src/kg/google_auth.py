@@ -5,7 +5,7 @@ import logging
 
 import requests as _requests
 from fastapi import HTTPException
-from google.auth.exceptions import GoogleAuthError
+from google.auth.exceptions import GoogleAuthError, TransportError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
@@ -94,8 +94,13 @@ async def verify_google_token(token: str, client_id: str) -> GoogleIdentity:
         # Log the type only: google-auth messages can embed the raw token (#2712).
         logger.warning("Google token validation failed: %s", type(e).__name__)
         raise HTTPException(status_code=401, detail="Invalid token") from e
-    except (GoogleAuthError, OSError) as e:
-        # Client-side token issue (expired / malformed / network during verify).
+    except (TransportError, _requests.RequestException, OSError) as e:
+        # Upstream outage (certs endpoint unreachable, timed out, or non-200).
+        # Not a bad credential: report 503 so clients/monitoring see it.
+        logger.error("Google cert fetch failed: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Authentication service unavailable") from e
+    except GoogleAuthError as e:
+        # Client-side token issue (expired / malformed / other google-auth error).
         # Mirrors the JWT validation branch above — not a server error.
         logger.warning("Google token verification error: %s", type(e).__name__)
         raise HTTPException(status_code=401, detail="Google authentication failed") from e
