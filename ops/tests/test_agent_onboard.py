@@ -267,6 +267,19 @@ def test_ios_worker_loads_delivery_dependency_and_ios_specialist():
     ]
 
 
+def test_ios_simulator_skill_trigger_excludes_non_ui_model_service_changes():
+    # #3769: Worker ios routes to this skill by intent alone; the skill must itself
+    # say that non-UI iOS model/service changes do not need Simulator evidence.
+    text = (ROOT / ".claude/skills/ios-simulator-verification/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    trigger = text.split("## 觸發與前置", 1)[1].split("## 固定執行路徑", 1)[0]
+
+    assert "非 UI" in trigger
+    assert "delivery-worktree" in trigger
+    assert "unit tests" in trigger
+
+
 def test_backend_worker_can_select_an_explicit_debug_specialist():
     payload = mod.build_onboarding(
         ROOT,
