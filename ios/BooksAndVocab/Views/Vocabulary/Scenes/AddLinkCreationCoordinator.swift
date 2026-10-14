@@ -42,6 +42,9 @@ struct AddLinkCreationEnvironment: Sendable {
     /// Monotonic nanoseconds.
     var now: @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
 
+    /// Upper bound of the poll backoff. Polls double from `pollIntervalNanoseconds` up to this.
+    static let pollBackoffCeilingNanoseconds: UInt64 = 8_000_000_000
+
     static let live = AddLinkCreationEnvironment()
 }
 
@@ -486,6 +489,20 @@ final class AddLinkCreationCoordinator {
         case poll(operationId: String)
     }
 
+    /// A poll failure that says nothing about the operation itself: rate limiting (429),
+    /// server-side 5xx, or no connectivity. The poll keeps going until the deadline.
+    static func isTransientPollError(_ error: Error) -> Bool {
+        guard let kgError = error as? KGError else { return false }
+        switch kgError {
+        case .offline, .networkError:
+            return true
+        case .httpError(let statusCode, _):
+            return statusCode == 429 || (500...599).contains(statusCode)
+        default:
+            return false
+        }
+    }
+
     private func run(
         request: KGAddLinkOperationRequest,
         notebookId: String,
@@ -515,8 +532,17 @@ final class AddLinkCreationCoordinator {
             apply(first, generation: generation)
 
             var current = first
+            // Exponential backoff from the base interval up to a ceiling: a long operation costs
+            // a handful of GETs, not one every 500 ms, which keeps us clear of `/api/operations`'
+            // shared rate limit (#3811).
+            var pollDelay = environment.pollIntervalNanoseconds
+            let pollCeiling = max(
+                environment.pollIntervalNanoseconds,
+                AddLinkCreationEnvironment.pollBackoffCeilingNanoseconds
+            )
             while !current.isTerminal {
-                try await environment.sleep(environment.pollIntervalNanoseconds)
+                try await environment.sleep(pollDelay)
+                pollDelay = min(pollDelay &* 2, pollCeiling)
                 try Task.checkCancellation()
                 guard isCurrent(generation) else { return }
                 if environment.now() >= deadline {
@@ -528,7 +554,13 @@ final class AddLinkCreationCoordinator {
                     )
                     return
                 }
-                current = try await operationService.fetchAddLinkOperation(operationId: first.operationId)
+                do {
+                    current = try await operationService.fetchAddLinkOperation(operationId: first.operationId)
+                } catch let error where Self.isTransientPollError(error) {
+                    // Rate-limited or transient: the operation is still running server-side, so the
+                    // next tick retries within the same deadline instead of failing the job (#3811).
+                    continue
+                }
                 guard isCurrent(generation) else { return }
                 apply(current, generation: generation)
             }
