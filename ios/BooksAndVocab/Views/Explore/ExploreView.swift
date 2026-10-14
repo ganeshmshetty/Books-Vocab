@@ -130,6 +130,10 @@ struct ExploreView: View {
 
     @State private var navigationPath = NavigationPath()
     @State private var syncState = ExploreSyncState()
+    // 唯讀投影：狀態只經 ExploreSyncState 寫入；保留 isSyncing／syncFailed 名稱，
+    // ExploreFixtureContractTests 以原始碼契約斷言 noResultsState 含 `if syncFailed`。
+    private var isSyncing: Bool { syncState.isSyncing }
+    private var syncFailed: Bool { syncState.syncFailed }
     @State private var filter = ExploreFilter()
 #if DEBUG && targetEnvironment(simulator)
     init(
@@ -171,7 +175,7 @@ struct ExploreView: View {
 
     private var phase: ExplorePhase {
         return ExplorePhase.resolve(
-            isSyncing: syncState.isSyncing, syncFailed: syncState.syncFailed,
+            isSyncing: isSyncing, syncFailed: syncFailed,
             totalDeckCount: decks.count, filteredCount: filteredDecks.count,
             isFilteringOrSearching: filter.isSearching || filter.hasActiveFilters
         )
@@ -227,7 +231,7 @@ struct ExploreView: View {
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppSpacing.s3) {
-                if syncState.syncFailed {
+                if syncFailed {
                     syncFailurePanel
                         .padding(.horizontal, AppShellMetrics.pageHorizontalPadding)
                         .transition(.statusRowReveal)
@@ -237,7 +241,7 @@ struct ExploreView: View {
             }
             .padding(.top, AppSpacing.s2)
             // 失敗面板進出要順滑，不得跳變。
-            .animation(AppMotion.phaseChange, value: syncState.syncFailed)
+            .animation(AppMotion.phaseChange, value: syncFailed)
             .animateContentFade(filteredDecks.count)
         }
         #if !targetEnvironment(macCatalyst)
@@ -348,7 +352,7 @@ struct ExploreView: View {
     private var noResultsState: some View {
         stateScroll {
             VStack(spacing: AppSpacing.s2) {
-                if syncState.syncFailed {
+                if syncFailed {
                     syncFailurePanel
                         .transition(.statusRowReveal)
                 }
@@ -364,7 +368,7 @@ struct ExploreView: View {
                     style: .bookshelf(appTheme)
                 )
             }
-            .animation(AppMotion.phaseChange, value: syncState.syncFailed)
+            .animation(AppMotion.phaseChange, value: syncFailed)
         }
     }
 
