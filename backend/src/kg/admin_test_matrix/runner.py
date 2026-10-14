@@ -12,9 +12,7 @@ from typing import Any, NamedTuple
 from .catalog import UnknownTestMatrixItemError, selected_nodeids
 from .results import bucket_status, item_results
 
-CASE_LINE_RE = re.compile(
-    r"^(?P<case>tests/\S+::\S+)\s+(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAILED|XPASSED)\b"
-)
+CASE_LINE_RE = re.compile(r"^(?P<case>tests/\S+::\S+)\s+(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAILED|XPASSED)\b")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +45,16 @@ def _error_run(
     }
 
 
+def _decode_output(data: bytes | str | None) -> str:
+    """TimeoutExpired.stdout/stderr may be raw bytes, str, or None depending on
+    how the child was spawned and flushed; normalize to str."""
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data
+
+
 class MatrixReport(NamedTuple):
     cases: list[dict[str, str]]
     matrix_rows: list[dict[str, Any]]
@@ -69,12 +77,14 @@ def _parse_matrix(stdout: str, stderr: str) -> MatrixReport:
         status = match.group("status")
         module = case_id.split("::", 1)[0]
         bucket = bucket_status(status)
-        cases.append({
-            "id": case_id,
-            "module": module,
-            "status": status,
-            "bucket": bucket,
-        })
+        cases.append(
+            {
+                "id": case_id,
+                "module": module,
+                "status": status,
+                "bucket": bucket,
+            }
+        )
         if module not in matrix:
             matrix[module] = {
                 "module": module,
@@ -118,7 +128,9 @@ def run_pytest_matrix(selected_items: list[str] | None = None) -> dict[str, Any]
 
     if not tests_dir.exists():
         return _error_run(
-            run_id, started, selected_items,
+            run_id,
+            started,
+            selected_items,
             stderr_tail=[f"tests directory not found at {tests_dir}"],
         )
 
@@ -141,8 +153,10 @@ def run_pytest_matrix(selected_items: list[str] | None = None) -> dict[str, Any]
         stderr = proc.stderr or ""
         return_code = proc.returncode
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
+        stdout = _decode_output(exc.stdout)
+        stderr = _decode_output(exc.stderr)
+        timeout_note = f"pytest timed out after {exc.timeout} seconds"
+        stderr = f"{stderr}\n{timeout_note}" if stderr else timeout_note
         return_code = 124
         _LOGGER.warning(
             "admin test matrix timed out (run_id=%s, return_code=%s)",
@@ -152,7 +166,9 @@ def run_pytest_matrix(selected_items: list[str] | None = None) -> dict[str, Any]
         )
     except OSError as exc:
         return _error_run(
-            run_id, started, selected_items,
+            run_id,
+            started,
+            selected_items,
             stderr_tail=[f"{type(exc).__name__}: {exc}"],
         )
 
