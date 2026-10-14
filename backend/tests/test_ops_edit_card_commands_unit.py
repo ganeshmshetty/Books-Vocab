@@ -507,6 +507,31 @@ class TestCmdCardImport:
         assert out["data_mutated"] is True
         assert out["recovery_path"] is not None
 
+    # ── #3914: UTF-8 BOM ──
+
+    def test_bom_csv_first_column_optional_field_is_parsed(self, tmp_path, monkeypatch):
+        _setup_user(tmp_path)
+        p = tmp_path / "import.csv"
+        p.write_bytes(b"\xef\xbb\xbfpos,content,meaning\r\nn,hello,world\r\n")
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
+        assert rc == 0
+        store = CardStore(tmp_path / "users" / "u1" / "cards.db")
+        try:
+            c = store.find_by_content("hello", notebook_id="default")
+            assert c is not None
+            assert c.pos == "n"
+        finally:
+            store.close()
+
+    def test_bom_csv_with_content_first_header_imports(self, tmp_path, monkeypatch):
+        _setup_user(tmp_path)
+        p = tmp_path / "import.csv"
+        p.write_bytes(b"\xef\xbb\xbfcontent,meaning\r\nhello,world\r\n")
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
+        assert rc == 0
+
 
 # ── cmd_card_move ────────────────────────────────────────────────────────
 

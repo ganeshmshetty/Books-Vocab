@@ -246,7 +246,8 @@ def cmd_card_import(args: argparse.Namespace) -> int:
     if not csv_path.exists():
         raise EditError(f"CSV not found: {csv_path}")
     nb_id = _resolve_notebook_id_for_command(ctx.user_dir, args.notebook)
-    with open(csv_path, encoding="utf-8") as f:
+    # utf-8-sig:Excel/Numbers 匯出的 CSV 常帶 BOM,否則首欄名會變 "﻿pos" 被靜默丟棄(#3914)。
+    with open(csv_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         # header 正規化成小寫:CSV 用 `Content`/`CONTENT` 不該靜默跳過全批。
         fieldnames = [h.strip().lower() for h in (reader.fieldnames or [])]
