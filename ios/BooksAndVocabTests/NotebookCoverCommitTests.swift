@@ -181,6 +181,55 @@ struct NotebookCoverCommitTests {
         #expect(outcome == .discardNewFile)
     }
 
+    // MARK: - sheet 寫檔收尾的 @State 映射（#3595）
+
+    /// 控制組：新開編輯、未 commit 未關閉 → 新檔收為 staged，不清任何檔。
+    @Test func sheetStateFreshEditAdoptsWithoutCleanup() {
+        let state = NotebookEditPhotoState(staged: nil, original: nil)
+        #expect(state.outcomeForLateWrite() == .adoptStaged(staleStaged: nil))
+    }
+
+    /// Save 只設 committed：必須不設 dismissed，且寫檔收尾丟新檔（不可 adopt 已交給 onSave 的檔）。
+    @Test func markCommittedSetsOnlyCommittedAndDiscardsLateWrite() {
+        var state = NotebookEditPhotoState(staged: "/covers/new.jpg", original: nil)
+        state.markCommitted()
+        #expect(state.isCommitted)
+        #expect(!state.isDismissed)
+        #expect(state.outcomeForLateWrite() == .discardNewFile)
+    }
+
+    /// onDisappear 只設 dismissed：必須不設 committed，寫檔收尾丟新檔（無 owner）。
+    @Test func markDismissedSetsOnlyDismissedAndDiscardsLateWrite() {
+        var state = NotebookEditPhotoState(staged: nil, original: nil)
+        state.markDismissed()
+        #expect(state.isDismissed)
+        #expect(!state.isCommitted)
+        #expect(state.outcomeForLateWrite() == .discardNewFile)
+    }
+
+    // MARK: - 編輯模式 init 與 staged 替換（#3641）
+
+    /// 編輯模式 init（staged == original）換圖：原檔絕不列為 stale，只能由 API 成功後的 coordinator 刪。
+    @Test func editInitReplacingCoverNeverMarksOriginalStale() {
+        let state = NotebookEditPhotoState(staged: "/covers/orig.jpg", original: "/covers/orig.jpg")
+        #expect(state.outcomeForLateWrite() == .adoptStaged(staleStaged: nil))
+    }
+
+    /// 已換過一次的 staged（≠ original）在下一次寫檔收尾列為 stale，由呼叫端清掉，避免 orphan。
+    @Test func replacedStagedIsReturnedAsStale() {
+        var state = NotebookEditPhotoState(staged: "/covers/orig.jpg", original: "/covers/orig.jpg")
+        state.staged = "/covers/staged-1.jpg"
+        #expect(state.outcomeForLateWrite() == .adoptStaged(staleStaged: "/covers/staged-1.jpg"))
+    }
+
+    /// 同一 state 先 commit 後的寫檔收尾：不碰已交給 onSave 的先前 staged，只丟新檔。
+    @Test func committedStateDiscardsLateWriteWithoutTouchingHandedOffStaged() {
+        var state = NotebookEditPhotoState(staged: "/covers/handed-off.jpg", original: nil)
+        state.markCommitted()
+        #expect(state.outcomeForLateWrite() == .discardNewFile)
+        #expect(state.staged == "/covers/handed-off.jpg")
+    }
+
     /// #3498：處理照片中禁止 Save，避免 staged 交接與 processPhoto 寫檔交錯；空白名稱同樣禁止。
     @Test func saveDisabledWhilePhotoProcessing() {
         #expect(!NotebookEditSaveGate.isSaveEnabled(name: "N", isProcessingPhoto: true))
@@ -260,6 +309,27 @@ struct NotebookCoverCommitTests {
         let notebooks = try ctx.fetch(FetchDescriptor<Notebook>())
         #expect(notebooks.count == 1)
         #expect(notebooks.first?.coverImagePath == nil)
+    }
+
+    /// #3675：reconcile 先於 POST 回應插入同 remoteId 的列 → create 必須 upsert，不得再插第二列。
+    @MainActor
+    @Test func createUpsertsExistingRemoteIdWithoutDuplicate() async throws {
+        let ctx = try makeContext()
+        let existing = Notebook(remoteId: "nb-1", name: "N", color: nil)
+        existing.syncStatus = 1
+        ctx.insert(existing)
+        let staged = try writeTempJPEG()
+        let service = NotebookServiceFake(result: .success(remote(id: "nb-1")))
+
+        await NotebookListCoordinator().createNotebook(
+            name: "N", color: nil, coverPattern: nil, coverImagePath: staged,
+            modelContext: ctx, kgService: service, toastCoordinator: AppToastCoordinator()
+        )
+
+        let rows = try ctx.fetch(FetchDescriptor<Notebook>()).filter { $0.remoteId == "nb-1" }
+        #expect(rows.count == 1, "同 remoteId 只能有一列")
+        #expect(rows.first?.coverImagePath == staged, "既有列接收本次建立的封面")
+        try? FileManager.default.removeItem(atPath: staged)
     }
 
     /// #2731：更新 API 失敗 → staged 新圖被清掉，原圖與 model 路徑不動。

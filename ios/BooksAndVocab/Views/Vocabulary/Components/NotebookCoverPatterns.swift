@@ -55,10 +55,11 @@ enum NotebookCoverImageCache {
         path: String,
         displaySize: CGSize,
         scale: CGFloat,
-        loadData: (String) -> Data? = { path in try? Data(contentsOf: URL(fileURLWithPath: path)) }
+        loadData: (String) -> Data? = { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
     ) -> UIImage? {
+        // 持久化的 localFile 值（檔名或舊版絕對路徑）先解析成目前 container 內的檔案（#3676）。
         image(
-            path: path,
+            path: NotebookCoverStore.resolvePath(path) ?? path,
             displaySize: displaySize,
             scale: scale,
             cacheDiscriminator: nil,

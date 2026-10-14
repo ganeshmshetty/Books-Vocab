@@ -5,6 +5,7 @@
 //  單字本書架排序選項 — 預設 manual（sortOrder asc）
 
 import Foundation
+import SwiftData
 
 enum NotebookSortOption: String, CaseIterable, Identifiable {
     case manual          // 手動排序（沿用 sortOrder，含 isDefault 優先）
@@ -64,6 +65,18 @@ enum NotebookSortOption: String, CaseIterable, Identifiable {
 }
 
 extension NotebookSortOption {
+    /// `@Query` 的手動排序次序，與 `.manual` 的 comparator 一致（sortOrder → createdAt → remoteId）。
+    /// 計算屬性而非 stored static：`Notebook` 非 Sendable，避免 Swift 6 global-state 檢查。
+    static var manualOrderDescriptors: [SortDescriptor<Notebook>] {
+        [
+            SortDescriptor(\Notebook.sortOrder),
+            SortDescriptor(\Notebook.createdAt),
+            SortDescriptor(\Notebook.remoteId),
+        ]
+    }
+}
+
+extension NotebookSortOption {
     /// 依排序選項對 notebooks 排序。預設 notebook (`isDefault == true`) 永遠放最前面。
     /// 需要 caller 提供 `NotebookStatsCalculator.compute(...)` 算好的 stats（避免重算 O(n)）。
     func sort(
@@ -73,7 +86,8 @@ extension NotebookSortOption {
         let comparator: (Notebook, Notebook) -> Bool
         switch self {
         case .manual:
-            comparator = { $0.sortOrder < $1.sortOrder }
+            // 與 server `(sort_order, created_at, id)` 次序一致；created_at 為 server 建立時間（#3677）。
+            comparator = { ($0.sortOrder, $0.createdAt) < ($1.sortOrder, $1.createdAt) }
         case .nameAsc:
             comparator = { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         case .nameDesc:

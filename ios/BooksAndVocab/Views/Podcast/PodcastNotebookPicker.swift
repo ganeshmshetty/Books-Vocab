@@ -13,9 +13,11 @@ struct PodcastNotebookPicker: View {
 
     @Query(
         filter: #Predicate<Notebook> { !$0.isSoftDeleted },
-        sort: \Notebook.sortOrder
+        sort: NotebookSortOption.manualOrderDescriptors
     )
     private var notebooks: [Notebook]
+    // 含 tombstone：stale 綁定判定需分辨「已刪除」與「尚未 reconcile 的遠端新建」（#3674）
+    @Query private var allNotebookRows: [Notebook]
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -49,12 +51,16 @@ struct PodcastNotebookPicker: View {
         .enableInjection()
     }
 
-    /// 綁定的 notebook 已刪除 → 清除綁定（下次播放器開啟會 re-seed）。
-    /// 只在清單已 settle 時清除；只有 clear 分支才寫入（keep 不寫）。
+    /// 綁定的 notebook 有本機刪除證據（tombstone／已回收的 local-*）→ 清除綁定（下次播放器開啟會 re-seed）。
+    /// 只有 clear 分支才寫入（keep 不寫）。
     private func sanitizeStaleBoundNotebook() {
         guard let boundId = series.preferredNotebookId else { return }
-        let liveIds = Set(notebooks.map(\.remoteId))
-        guard PodcastSeries.sanitizeAction(bound: boundId, liveNotebookIds: liveIds) == .clear else { return }
+        let action = PodcastSeries.sanitizeAction(
+            bound: boundId,
+            localNotebookIds: Set(allNotebookRows.map(\.remoteId)),
+            tombstonedNotebookIds: Set(allNotebookRows.filter(\.isSoftDeleted).map(\.remoteId))
+        )
+        guard action == .clear else { return }
         series.preferredNotebookId = nil
         _ = modelContext.safeSave()
     }

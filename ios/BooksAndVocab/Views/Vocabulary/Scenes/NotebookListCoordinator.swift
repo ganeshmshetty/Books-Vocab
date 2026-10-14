@@ -88,6 +88,8 @@ final class NotebookListCoordinator: NotebookListCoordinating {
         defer { hasLoadedOnce = true }
 
         let remoteNotebooks: [KGNotebook]
+        // 快照時點：之後才本地建立的列（create 與本次 GET 交錯）不可被這份結果 tombstone（#3675）。
+        let fetchStartedAt = Date()
         do {
             remoteNotebooks = try await kgService.fetchNotebooks()
         } catch {
@@ -119,7 +121,8 @@ final class NotebookListCoordinator: NotebookListCoordinating {
             remote: remoteNotebooks,
             local: allLocal,
             allEntries: allEntries,
-            modelContext: modelContext
+            modelContext: modelContext,
+            fetchStartedAt: fetchStartedAt
         )
 
         // 若全域 active notebook 指向剛轉不可見的本子（跨裝置刪除 / 孤兒回收），清掉
@@ -252,23 +255,42 @@ final class NotebookListCoordinator: NotebookListCoordinating {
     ) async {
         do {
             let remote = try await kgService.createNotebook(name: name, color: color, coverPattern: coverPattern)
-            let nb = Notebook(remoteId: remote.id, name: remote.name, color: remote.color)
+            // 並行 reconcile 可能已先為同一 remoteId 插入列（GET 回應早於 POST 回應）→ upsert，不重複插入（#3675）。
+            let remoteId = remote.id
+            let existing = (try? modelContext.fetch(
+                FetchDescriptor<Notebook>(predicate: #Predicate { $0.remoteId == remoteId })
+            ))?.first
+            let nb = existing ?? Notebook(remoteId: remote.id, name: remote.name, color: remote.color)
+            let previousCover = nb.coverImagePath
+            nb.name = remote.name
+            nb.color = remote.color
             nb.coverPattern = remote.coverPattern
+            nb.isSoftDeleted = false
             nb.coverImagePath = coverImagePath
             nb.syncStatus = 1
-            modelContext.insert(nb)
+            if let created = NotebookReconciler.serverCreatedAt(remote) {
+                nb.createdAt = created
+            }
+            if existing == nil {
+                modelContext.insert(nb)
+            }
             if let settings = remote.settings {
-                let projection = NotebookSettingsProjection(notebookId: remote.id)
+                let existingProjection = (try? modelContext.fetch(
+                    FetchDescriptor<NotebookSettingsProjection>(predicate: #Predicate { $0.notebookId == remoteId })
+                ))?.first
+                let projection = existingProjection ?? NotebookSettingsProjection(notebookId: remote.id)
                 projection.applyRemote(settings)
-                modelContext.insert(projection)
+                if existingProjection == nil {
+                    modelContext.insert(projection)
+                }
             }
             if persist(modelContext, toastCoordinator) {
                 toastCoordinator.success("已建立".localized)
             } else {
-                // remote 已建立但本地存檔失敗：model 已 insert，先退回無封面再清 staged 檔，
+                // remote 已建立但本地存檔失敗：model 已 insert／更新，退回原封面再清 staged 檔，
                 // 避免之後任一次成功 save 持久化指向已刪檔的 dangling 路徑（#2428）。
-                nb.coverImagePath = nil
-                NotebookCoverCommit.discardStagedFile(staged: coverImagePath, original: nil)
+                nb.coverImagePath = previousCover
+                NotebookCoverCommit.discardStagedFile(staged: coverImagePath, original: previousCover)
             }
         } catch {
             // API 失敗：staged 封面沒有任何 owner，立即清掉避免孤兒檔（#2428）。

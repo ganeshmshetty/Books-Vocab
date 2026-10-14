@@ -6,7 +6,8 @@ import Foundation
 /// 單字本）固化綁定，之後 highlight / 查詢 / autoSave scope 一律認綁定本，不再隨
 /// 全域 active 中途漂移。Book 與 PodcastSeries 共用此語意。
 protocol NotebookBindable: AnyObject {
-    /// 綁定的單字本 remoteId（nil = 尚未綁定，待 seed 固化）。本機偏好，server 不下發。
+    /// 綁定的單字本 remoteId（nil = 尚未綁定，待 seed 固化）。server 不下發；但 `Book` 經 CloudKit
+    /// 鏡射，寫入會同步到使用者所有裝置，因此清除必須有正面刪除證據（見 `sanitizeAction`）。
     var preferredNotebookId: String? { get set }
 }
 
@@ -35,13 +36,23 @@ extension NotebookBindable {
         liveNotebookIds.contains(seed)
     }
 
-    /// onAppear / onChange 的 stale 綁定清理決策（純函式，ReaderView 與 ReaderNotebookPicker 共用）。
-    /// 未綁定、live 清單空（尚未 settle）、或清單包含綁定 id → keep；僅「已 settle 且不含綁定 id」
-    /// 才 clear。呼叫端只在 clear 時才清綁定並寫 manifest，keep 時不寫（避免把未 settle 的 nil 同步出去）。
-    static func sanitizeAction(bound: String?, liveNotebookIds: Set<String>) -> NotebookBindingSanitizeAction {
+    /// stale 綁定清理決策（純函式，ReaderView、ReaderNotebookPicker、PodcastNotebookPicker 共用）。
+    ///
+    /// 只有正面證據才 clear：
+    /// - `tombstonedNotebookIds`：本機列 `isSoftDeleted`（reconcile 或刪除寫入）→ 確定已刪除。
+    /// - `local-*` 離線占位已不在本機（reconcile 回收）：server 永遠不會回報此 id，無法再解析 → clear。
+    ///
+    /// 「不在本機 live 清單」本身不是刪除證據（另一裝置新建、尚未 reconcile 的 notebook 也會缺席，#3674）。
+    /// 呼叫端只在 clear 時才清綁定並寫 manifest，keep 時不寫。
+    static func sanitizeAction(
+        bound: String?,
+        localNotebookIds: Set<String>,
+        tombstonedNotebookIds: Set<String>
+    ) -> NotebookBindingSanitizeAction {
         guard let bound else { return .keep }
-        guard !liveNotebookIds.isEmpty else { return .keep }
-        return liveNotebookIds.contains(bound) ? .keep : .clear
+        if tombstonedNotebookIds.contains(bound) { return .clear }
+        if bound.hasPrefix("local-"), !localNotebookIds.contains(bound) { return .clear }
+        return .keep
     }
 }
 
@@ -49,6 +60,6 @@ extension NotebookBindable {
 enum NotebookBindingSanitizeAction: Equatable {
     /// 保留綁定，不寫 manifest。
     case keep
-    /// notebook 列表已 settle 且不含綁定 id，清除綁定。
+    /// 綁定的 notebook 有本機刪除證據（tombstone 或已回收的 local-* 占位），清除綁定。
     case clear
 }

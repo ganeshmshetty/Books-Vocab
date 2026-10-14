@@ -69,6 +69,19 @@ struct NotebookSortOptionTests {
         #expect(sorted.map(\.remoteId) == ["b", "c", "a"])
     }
 
+    @Test func manualSortBreaksSortOrderTiesByCreationTimeBeforeRemoteId() {
+        // #3677：server sort_order 恆為 0。remoteId 為隨機 hex，不得決定手動排序；應依建立時間（同 server created_at）。
+        let t1 = Date(timeIntervalSince1970: 1_000)
+        let t2 = Date(timeIntervalSince1970: 2_000)
+        let t3 = Date(timeIntervalSince1970: 3_000)
+        let first = makeNotebook(remoteId: "zz", name: "First", createdAt: t1)
+        let second = makeNotebook(remoteId: "aa", name: "Second", createdAt: t2)
+        let third = makeNotebook(remoteId: "mm", name: "Third", createdAt: t3)
+
+        let sorted = NotebookSortOption.manual.sort([third, first, second], stats: [:])
+        #expect(sorted.map(\.name) == ["First", "Second", "Third"])
+    }
+
     // MARK: - nameAsc / nameDesc
 
     @Test func nameAscSortsAZ() {

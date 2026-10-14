@@ -34,7 +34,7 @@ enum NotebookCoverCommit {
     /// - Returns: 新路徑 + 待刪舊檔。僅在 `staged != original` 時才有舊檔要刪。
     static func plan(staged: String?, original: String?) -> NotebookCoverCommitPlan {
         // 封面未變更 → 不動 model、不刪檔（保險：避免誤刪仍在使用的圖）。
-        guard staged != original else {
+        guard !NotebookCoverStore.isSameCover(staged, original) else {
             return NotebookCoverCommitPlan(resolvedPath: original, fileToRemove: nil)
         }
         return NotebookCoverCommitPlan(resolvedPath: staged, fileToRemove: original)
@@ -43,9 +43,7 @@ enum NotebookCoverCommit {
     /// 套用提交計畫：刪除舊檔（best-effort，失敗不影響 model 一致性）。
     /// 呼叫端負責把 `plan.resolvedPath` 寫進 `Notebook.coverImagePath`。
     static func removeStaleFile(_ plan: NotebookCoverCommitPlan) {
-        if let stale = plan.fileToRemove {
-            try? FileManager.default.removeItem(atPath: stale)
-        }
+        NotebookCoverStore.remove(plan.fileToRemove)
     }
 }
 
@@ -53,8 +51,8 @@ extension NotebookCoverCommit {
     /// 放棄 staged 新圖：提交失敗（API / 存檔）且 sheet 已 dismiss 時，staged 檔沒有任何
     /// owner，必須由 coordinator 清掉。`staged == original`（使用者沒換圖）時絕不動檔案。
     static func discardStagedFile(staged: String?, original: String?) {
-        guard let staged, staged != original else { return }
-        try? FileManager.default.removeItem(atPath: staged)
+        guard let staged, !NotebookCoverStore.isSameCover(staged, original) else { return }
+        NotebookCoverStore.remove(staged)
     }
 
     /// sheet 關閉（取消、下滑或 API / save 之外的任何 dismiss）時的 staged 清理（#3414）。

@@ -131,6 +131,7 @@ class NotebookResponse(BaseModel):
     isDeleted: bool = False
     cardCount: int = 0
     updatedAt: str | None = None
+    createdAt: str | None = None
     # Provenance (v1 inert): where this notebook was copied from (Phase 2 copy).
     sourceSharedDeckId: str | None = None
     sourceVersion: int | None = None

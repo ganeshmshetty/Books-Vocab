@@ -27,9 +27,11 @@ struct ReaderView: View {
     )
     var allVocabulary: [VocabularyEntry]  // 全域生詞（跨書）
 
-    // 用於驗證 book.preferredNotebookId 是否指向仍存在的 notebook
+    // 用於 seed 與 onChange：目前可用的 notebook
     @Query(filter: #Predicate<Notebook> { !$0.isSoftDeleted })
     private var liveNotebooks: [Notebook]
+    // 用於 stale 綁定判定：含 tombstone，才能分辨「已刪除」與「尚未 reconcile 的遠端新建」（#3674）
+    @Query private var allNotebookRows: [Notebook]
 
     @State var publication: Publication?
     @State var readerState: ReaderViewState
@@ -293,12 +295,13 @@ struct ReaderView: View {
         }
     }
 
-    /// 若 book.preferredNotebookId 指向已刪除或不存在的 notebook，清除綁定以避免新單字存入孤兒 notebook。
-    /// 空列表代表 @Query 尚未 settle（首次啟動 / 剛登入）— 不清 bound，避免誤清仍合法的遠端 notebook。
+    /// 若 book.preferredNotebookId 有本機刪除證據（tombstone 或已回收的 local-* 占位）才清除綁定，
+    /// 避免新單字存入孤兒 notebook。僅「不在本機列表」不構成刪除證據，不清（見 `Book.sanitizeAction`）。
     private func sanitizeStaleBoundNotebook() {
         let action = Book.sanitizeAction(
             bound: book.preferredNotebookId,
-            liveNotebookIds: Set(liveNotebooks.map(\.remoteId))
+            localNotebookIds: Set(allNotebookRows.map(\.remoteId)),
+            tombstonedNotebookIds: Set(allNotebookRows.filter(\.isSoftDeleted).map(\.remoteId))
         )
         guard action == .clear else { return }
         book.preferredNotebookId = nil

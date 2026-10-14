@@ -26,13 +26,18 @@ enum NotebookReconciler {
     /// - Returns: 本回合轉為不可見的 remoteId 集合（tombstoned ∪ reaped），
     ///   供 caller 清掉指向它們的 stale `activeNotebookId`。
     /// - Note: **不**呼叫 `modelContext.save()`；由 caller 統一 save。
+    /// - Parameter fetchStartedAt: 發出 `remote` 那次 GET 的開始時間（本機時鐘）。tombstone 只對
+    ///   `localInsertedAt < fetchStartedAt` 的列生效：之後才本地建立的列（例如 create 與 reconcile 交錯）
+    ///   不可能在這份快照裡，不是遠端刪除的證據（#3675）。
     @discardableResult
     static func reconcile(
         remote: [KGNotebook],
-        local: [Notebook],
+        local localRows: [Notebook],
         allEntries: [VocabularyEntry],
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        fetchStartedAt: Date
     ) -> Set<String> {
+        let local = collapseDuplicates(localRows, modelContext: modelContext)
         let localByRemoteId = Dictionary(
             local.map { ($0.remoteId, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -56,6 +61,7 @@ enum NotebookReconciler {
                 l.coverPattern = r.coverPattern
                 l.isDefault = r.isDefault
                 l.sortOrder = r.sortOrder
+                if let created = serverCreatedAt(r) { l.createdAt = created }
                 l.isSoftDeleted = r.isDeleted
                 l.syncStatus = 1
                 // Explore copy provenance（v1 inert；跨裝置 round-trip）。
@@ -81,6 +87,7 @@ enum NotebookReconciler {
                 )
                 nb.coverPattern = r.coverPattern
                 nb.sortOrder = r.sortOrder
+                if let created = serverCreatedAt(r) { nb.createdAt = created }
                 nb.syncStatus = 1
                 nb.sourceSharedDeckId = r.sourceSharedDeckId
                 nb.sourceVersion = r.sourceVersion
@@ -97,8 +104,10 @@ enum NotebookReconciler {
             }
         }
 
-        // 曾同步但 server 不再回報 → tombstone（跨裝置刪除）
-        for l in local where l.syncStatus == 1 && !remoteIds.contains(l.remoteId) && !l.isSoftDeleted {
+        // 曾同步但 server 不再回報 → tombstone（跨裝置刪除）。
+        // 快照開始後才建立的列不在這份回應裡，不可據此 tombstone（#3675）。
+        for l in local where l.syncStatus == 1 && !remoteIds.contains(l.remoteId) && !l.isSoftDeleted
+            && l.localInsertedAt < fetchStartedAt {
             l.isSoftDeleted = true
             l.updatedAt = Date()
             tombstoned.insert(l.remoteId)
@@ -128,6 +137,57 @@ enum NotebookReconciler {
         }
 
         return tombstoned.union(reaped)
+    }
+
+    /// 收斂同 remoteId 的重複列（舊 create/reconcile race 的殘留，#3675）。保留一列：
+    /// 優先未刪除、其次已同步；保留列沒有封面時接收其他列的封面，兩者封面不同則丟棄其他列的檔。
+    /// Notebook 不持有 entry（entry 以 notebookId 字串關聯），刪重複列不影響卡片。
+    private static func collapseDuplicates(
+        _ rows: [Notebook],
+        modelContext: ModelContext
+    ) -> [Notebook] {
+        var keeperByRemoteId: [String: Notebook] = [:]
+        var extras: [Notebook] = []
+        for row in rows {
+            guard let current = keeperByRemoteId[row.remoteId] else {
+                keeperByRemoteId[row.remoteId] = row
+                continue
+            }
+            if isPreferredKeeper(row, over: current) {
+                keeperByRemoteId[row.remoteId] = row
+                extras.append(current)
+            } else {
+                extras.append(row)
+            }
+        }
+        for extra in extras {
+            guard let keeper = keeperByRemoteId[extra.remoteId] else { continue }
+            if keeper.coverImagePath == nil {
+                keeper.coverImagePath = extra.coverImagePath
+            } else {
+                NotebookCoverCommit.discardStagedFile(
+                    staged: extra.coverImagePath,
+                    original: keeper.coverImagePath
+                )
+            }
+            modelContext.delete(extra)
+        }
+        return Array(keeperByRemoteId.values)
+    }
+
+    private static func isPreferredKeeper(_ candidate: Notebook, over current: Notebook) -> Bool {
+        if candidate.isSoftDeleted != current.isSoftDeleted {
+            return !candidate.isSoftDeleted
+        }
+        if (candidate.syncStatus == 1) != (current.syncStatus == 1) {
+            return candidate.syncStatus == 1
+        }
+        return false
+    }
+
+    /// server 建立時間；舊後端不回傳 → nil，呼叫端保留本機值（#3677）。
+    static func serverCreatedAt(_ remote: KGNotebook) -> Date? {
+        remote.createdAt.flatMap(AppDateFormatters.parseISO8601)
     }
 
     /// 離線 / `fetchNotebooks` 失敗且本地無可見本子時，建立 canonical default 占位本。
