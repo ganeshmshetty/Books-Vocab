@@ -92,6 +92,24 @@ struct PodcastDownloadManagerStaticTests {
         #expect(!FileManager.default.fileExists(atPath: ghost.path))
     }
 
+    // MARK: - keptPrevious restore (#3602)
+
+    /// A failed restore of the kept previous file must not be swallowed by
+    /// `try?`: the episode record would then point at an absent file with no
+    /// trace in the log. Source-level pin, since the failure path needs a
+    /// filesystem fault that cannot be forced deterministically from a test.
+    @Test func keptPreviousRestoreFailuresAreLogged() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // BooksAndVocabTests
+            .deletingLastPathComponent() // ios
+            .appendingPathComponent("BooksAndVocab/Services/PodcastDownloadManager.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        #expect(!source.contains("try? fm.moveItem(at: aside"))
+        #expect(source.contains("restoreKeptPrevious("))
+        #expect(source.contains("AppLog.sync.error(\"restore kept previous podcast file failed"))
+    }
+
     @Test func purgeDownloadsLeavesSiblingDirectoriesAlone() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
