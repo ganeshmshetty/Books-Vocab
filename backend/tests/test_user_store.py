@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from datetime import UTC, datetime
@@ -215,7 +216,16 @@ def test_save_users_to_fsyncs_tmp_before_replace_then_fsyncs_parent_dir(tmp_path
     def recording_fsync_dir(directory):
         events.append(("fsync_dir", directory))
 
+    def recording_fullfsync(fd, cmd, arg=0):
+        # On darwin the tmp flush is F_FULLFSYNC via fcntl; elsewhere os.fsync.
+        # Record either path as the "fsync" event so the ordering contract is
+        # platform-independent.
+        events.append(("fsync", os.fstat(fd).st_ino))
+        return 0
+
     monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(fcntl, "F_FULLFSYNC", 51, raising=False)
+    monkeypatch.setattr(fcntl, "fcntl", recording_fullfsync)
     monkeypatch.setattr(os, "replace", recording_replace)
     monkeypatch.setattr(user_store_mod, "fsync_dir", recording_fsync_dir, raising=False)
 
@@ -229,3 +239,87 @@ def test_save_users_to_fsyncs_tmp_before_replace_then_fsyncs_parent_dir(tmp_path
     assert fsynced_ino == replaced_ino, "the fsync must target the tmp file that is renamed"
     assert events[2][1] == tmp_path
     assert json.loads(users_file.read_text()) == users
+
+
+# ===========================================================================
+# save_users_to macOS F_FULLFSYNC durability (#3865)
+# ===========================================================================
+
+_FAKE_F_FULLFSYNC = 51
+
+
+def _save_with_fsync_patches(tmp_path, monkeypatch, fcntl_impl=None):
+    import fcntl
+
+    fsync_calls: list[int] = []
+    fcntl_calls: list[tuple[int, int, object]] = []
+    real_replace = os.replace
+    events: list[str] = []
+
+    def recording_fcntl(fd, cmd, arg=0):
+        fcntl_calls.append((fd, cmd, arg))
+        events.append("fcntl")
+        if fcntl_impl is not None:
+            return fcntl_impl(fd, cmd, arg)
+        return 0
+
+    def recording_fsync(fd):
+        fsync_calls.append(fd)
+        events.append("fsync")
+
+    def recording_replace(src, dst, *args, **kwargs):
+        events.append("replace")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(fcntl, "F_FULLFSYNC", _FAKE_F_FULLFSYNC, raising=False)
+    monkeypatch.setattr(fcntl, "fcntl", recording_fcntl)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    monkeypatch.setattr(user_store_mod, "fsync_dir", lambda directory: None)
+
+    users_file = tmp_path / "users.json"
+    users = {"u1": {"email": "a@example.com"}}
+    user_store_mod.save_users_to(users_file, users, lambda payload: (payload, False))
+    return events, fcntl_calls, fsync_calls, users_file, users
+
+
+def test_save_users_to_flushes_tmp_with_fullfsync_before_replace(tmp_path, monkeypatch):
+    events, fcntl_calls, fsync_calls, users_file, users = _save_with_fsync_patches(tmp_path, monkeypatch)
+
+    assert events == ["fcntl", "replace"], events
+    assert len(fcntl_calls) == 1
+    _fd, cmd, arg = fcntl_calls[0]
+    assert cmd == _FAKE_F_FULLFSYNC
+    assert arg == 0
+    assert fsync_calls == [], "F_FULLFSYNC replaces os.fsync on darwin"
+    assert json.loads(users_file.read_text()) == users
+
+
+def test_save_users_to_falls_back_to_os_fsync_when_fullfsync_raises(tmp_path, monkeypatch):
+    import errno
+
+    def unsupported(fd, cmd, arg):
+        raise OSError(errno.ENOTTY, "F_FULLFSYNC unsupported")
+
+    events, _, fsync_calls, users_file, users = _save_with_fsync_patches(tmp_path, monkeypatch, fcntl_impl=unsupported)
+
+    assert events == ["fcntl", "fsync", "replace"], events
+    assert len(fsync_calls) == 1
+    assert json.loads(users_file.read_text()) == users
+
+
+def test_save_users_to_uses_os_fsync_when_fullfsync_absent(tmp_path, monkeypatch):
+    import fcntl
+
+    monkeypatch.delattr(fcntl, "F_FULLFSYNC", raising=False)
+    fsync_calls: list[int] = []
+    fcntl_calls: list[object] = []
+    monkeypatch.setattr(fcntl, "fcntl", lambda fd, cmd, arg=0: fcntl_calls.append(cmd) or 0)
+    monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
+    monkeypatch.setattr(user_store_mod, "fsync_dir", lambda directory: None)
+
+    users_file = tmp_path / "users.json"
+    user_store_mod.save_users_to(users_file, {"u1": {}}, lambda payload: (payload, False))
+
+    assert fcntl_calls == []
+    assert len(fsync_calls) == 1
