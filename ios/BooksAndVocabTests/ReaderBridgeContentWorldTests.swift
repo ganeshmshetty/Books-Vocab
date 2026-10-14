@@ -3,12 +3,15 @@
 //  Books & Vocab Tests
 //
 //  Spec: the reader bridge (message handlers + injected user script) lives in a
-//  dedicated WKContentWorld, never `.page`, and only main-frame messages from
-//  that world are accepted. Configuration-level tests; no web view is started.
+//  dedicated WKContentWorld, never `.page`. Its script runs in every frame of
+//  that world (FXL pages are iframes) and only messages from that world are
+//  accepted. Configuration-level tests; no web view is started. The eval body is
+//  run as real JavaScript in JavaScriptCore against a mocked DOM.
 //
 
 #if os(iOS)
 import Foundation
+import JavaScriptCore
 import Testing
 import WebKit
 @testable import BooksAndVocab
@@ -54,14 +57,15 @@ struct ReaderBridgeContentWorldTests {
         #expect(registrar.handlers.allSatisfy { $0.world != WKContentWorld.page })
     }
 
-    @Test func installInjectsTheScriptIntoTheBridgeWorldForTheMainFrameOnly() {
+    @Test func installInjectsTheScriptIntoTheBridgeWorldForEveryFrame() {
         let registrar = RecordingRegistrar()
         ReaderBridgeContentWorld.install(on: registrar, handler: NoopHandler(), scriptSource: "/* bridge */")
 
         #expect(registrar.scripts.count == 1)
         #expect(registrar.scripts.first?.source == "/* bridge */")
         #expect(registrar.scripts.first?.world == ReaderBridgeContentWorld.world)
-        #expect(registrar.scripts.first?.mainFrameOnly == true)
+        // FXL 書文在 wrapper 的子 iframe 裡；只注入主 frame 會讓那些頁面收不到橋接。
+        #expect(registrar.scripts.first?.mainFrameOnly == false)
     }
 
     @Test func uninstallRemovesHandlersFromTheSameWorld() {
@@ -79,12 +83,54 @@ struct ReaderBridgeContentWorldTests {
         ReaderBridgeContentWorld.uninstall(from: controller)
     }
 
-    @Test func onlyMainFrameMessagesFromTheBridgeWorldAreAccepted() {
+    @Test func messagesFromTheBridgeWorldAreAcceptedFromAnyFrameAndPageWorldIsRejected() {
         let world = ReaderBridgeContentWorld.world
-        #expect(ReaderBridgeContentWorld.accepts(isMainFrame: true, world: world))
-        #expect(!ReaderBridgeContentWorld.accepts(isMainFrame: false, world: world))
-        #expect(!ReaderBridgeContentWorld.accepts(isMainFrame: true, world: .page))
-        #expect(!ReaderBridgeContentWorld.accepts(isMainFrame: false, world: .page))
+        #expect(ReaderBridgeContentWorld.accepts(world: world))
+        #expect(!ReaderBridgeContentWorld.accepts(world: .page))
+        #expect(!ReaderBridgeContentWorld.accepts(world: .defaultClient))
+    }
+
+    /// 以 JavaScriptCore 執行 `ReaderBridgeEvalScript.callBody`，DOM 以 mock 模擬（不啟動 web view）。
+    /// `frames` 為 (iframe src, 標籤)；空陣列代表 reflowable（沒有頁面 iframe）。回傳「查詢與求值紀錄 => 回傳值」。
+    private func runCallBody(frames: [(src: String, tag: String)]) -> String? {
+        let frameLiterals = frames.map { frame in
+            "{ src: '\(frame.src)', contentWindow: { eval: function (s) { log.push('\(frame.tag):' + s); return '\(frame.tag)'; } } }"
+        }.joined(separator: ", ")
+        let harness = """
+        var log = [];
+        var tap = function () { log.push('main:tap'); return 'main'; };
+        var pageFrames = [\(frameLiterals)];
+        var document = {
+          querySelectorAll: function (selector) {
+            log.push('query:' + selector);
+            return selector === '\(ReaderBridgeEvalScript.pageFrameSelector)' ? pageFrames : [];
+          }
+        };
+        var returned = (function (script) {
+        \(ReaderBridgeEvalScript.callBody)
+        })('tap()');
+        log.join('|') + ' => ' + String(returned);
+        """
+        let context: JSContext? = JSContext()
+        return context?.evaluateScript(harness)?.toString()
+    }
+
+    @Test func fixedLayoutBridgeEvalRunsInEveryLoadedPageFrameFromTheBridgeWorld() {
+        #expect(
+            runCallBody(frames: [("https://book/p1.xhtml", "left"), ("https://book/p2.xhtml", "right")])
+                == "query:iframe[id^=page]|left:tap()|right:tap() => right"
+        )
+    }
+
+    @Test func fixedLayoutBridgeEvalSkipsEmptyPagesAndStillReachesTheLoadedOne() {
+        #expect(
+            runCallBody(frames: [("about:blank", "left"), ("https://book/p2.xhtml", "right")])
+                == "query:iframe[id^=page]|right:tap() => right"
+        )
+    }
+
+    @Test func reflowableBridgeEvalRunsInTheMainFrameWhenThereAreNoPageFrames() {
+        #expect(runCallBody(frames: []) == "query:iframe[id^=page]|main:tap => main")
     }
 }
 #endif

@@ -24,14 +24,11 @@ extension ReadiumNavigatorView.Coordinator: WKScriptMessageHandler {
             (
                 message.name,
                 message.body,
-                ReaderBridgeContentWorld.accepts(
-                    isMainFrame: message.frameInfo.isMainFrame,
-                    world: message.world
-                )
+                ReaderBridgeContentWorld.accepts(world: message.world)
             )
         }
         guard isAccepted else {
-            AppLog.reader.debug("Ignored bridge message from outside the main frame / bridge world")
+            AppLog.reader.debug("Ignored bridge message from outside the bridge world")
             return
         }
         Task { @MainActor in
