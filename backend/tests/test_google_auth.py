@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from google.auth.exceptions import GoogleAuthError
+from google.auth.exceptions import GoogleAuthError, TransportError
 
 from kg import google_auth
 
@@ -60,6 +60,15 @@ class TestVerifyGoogleToken:
             with pytest.raises(HTTPException) as exc_info:
                 await google_auth.verify_google_token("err.token", CLIENT_ID)
             assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_google_certs_transport_error_raises_503(self):
+        """Certs fetch failure (TransportError) is an upstream outage, not a bad credential."""
+        with patch("kg.google_auth.id_token.verify_oauth2_token") as mock_verify:
+            mock_verify.side_effect = TransportError("Could not fetch certificates")
+            with pytest.raises(HTTPException) as exc_info:
+                await google_auth.verify_google_token("certs.token", CLIENT_ID)
+            assert exc_info.value.status_code == 503
 
     # --- Malformed claims / clock-skew regression tests ---
 
@@ -264,7 +273,7 @@ class TestTokenNotLogged:
     SECRET = "eyJSECRET-token-bytes.payload.signature"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("exc_type", [ValueError, GoogleAuthError, OSError])
+    @pytest.mark.parametrize("exc_type", [ValueError, GoogleAuthError, OSError, TransportError])
     async def test_failure_log_omits_token(self, caplog, exc_type):
         caplog.set_level("DEBUG")
         with patch("kg.google_auth.id_token.verify_oauth2_token") as mock_verify:
