@@ -325,6 +325,13 @@ def _copy_locked(
     # copy passes the discoverability gate below.
     prior = shared_store.get_copy_log(copier_id, idempotency_key)
     if prior is not None:
+        if prior.source_shared_deck_id != deck_id:
+            # Cross-deck key reuse. Only a discoverable deck may learn that the key
+            # is taken (409); a hidden or unknown deck answers 404 exactly like a
+            # nonexistent one, so the reply cannot probe for hidden decks (#3898).
+            if shared_store.get(deck_id) is None:
+                raise NotFoundError("Deck", deck_id)
+            raise ConflictError("idempotency key already belongs to another deck")
         source = shared_store.get_any(deck_id)
         if source is None or source.source != "official":
             raise NotFoundError("Deck", deck_id)

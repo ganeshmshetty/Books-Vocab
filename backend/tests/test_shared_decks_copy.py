@@ -981,3 +981,23 @@ def test_new_key_on_hidden_source_still_returns_notfound(tmp_path):
     assert shared.get_copy_log("u1", "k2") is None
     assert list(nbs.all(include_staged=True)) == []
     assert _download_count(shared) == 0
+
+
+def test_cross_deck_replay_onto_hidden_deck_is_notfound_not_conflict(tmp_path):
+    """A key bound to deck X, replayed against a HIDDEN deck Y, must answer 404
+    exactly like a nonexistent deck. A 409 would confirm Y exists to any caller
+    holding a key: an existence oracle for hidden decks (#3898 review)."""
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared, deck_id="deck_a")
+    _publish_deck(shared, deck_id="deck_b", title="Official Follow-up")
+    _copy(shared, cards, nbs, user_dir, deck_id="deck_a", key="k1")
+    _hide_deck(shared, deck_id="deck_b")
+
+    with pytest.raises(NotFoundError):
+        _copy(shared, cards, nbs, user_dir, deck_id="deck_b", key="k1")
+    with pytest.raises(NotFoundError):
+        _copy(shared, cards, nbs, user_dir, deck_id="deck_nonexistent", key="k1")
+
+    assert _download_count(shared, "deck_a") == 1
+    assert _download_count(shared, "deck_b") == 0
+    assert len([n for n in nbs.all() if not n.is_default]) == 1
