@@ -15,7 +15,7 @@ import SwiftData
 /// 綁定經 CloudKit 抵達，「不在本機列表」可能是另一裝置新建、尚未進 snapshot 的合法缺席。
 /// 因此只有**觀察到綁定之後才開始**、且 server 回報不含該 id 的 reconcile 才是刪除證據：
 /// - `observeBinding`：caller 評估綁定時記下首次觀察時刻（必 ≥ 綁定實際抵達，故偏保守）。
-/// - `recordReconcile`：reconcile 完成時以「開始時刻 + server 回報 id 集合」入帳（僅保留近期 N 筆）。
+/// - `recordReconcile`：reconcile 完成時以「開始時刻 + server 仍存活的 id 集合（tombstone 不計入）」入帳（僅保留近期 N 筆）。
 /// 不持久化：重啟後由新的觀察重新累積，只會偏向 keep。
 final class NotebookReconcileLedger {
     static let shared = NotebookReconcileLedger()
@@ -96,7 +96,9 @@ enum NotebookReconciler {
             localSettings.map { ($0.notebookId, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let remoteIds = Set(remote.map(\.id))
+        // server 仍視為存活的 id。tombstone（isDeleted）不計入：對從未同步到本機的綁定而言，
+        // 它就是「server 已不可解析」的缺席證據（#3799）；計入會讓 ledger 永遠看不見這筆缺席。
+        let liveRemoteIds = Set(remote.filter { !$0.isDeleted }.map(\.id))
         var tombstoned: Set<String> = []
 
         // Upsert remote → local
@@ -153,7 +155,7 @@ enum NotebookReconciler {
 
         // 曾同步但 server 不再回報 → tombstone（跨裝置刪除）。
         // 快照開始後才建立的列不在這份回應裡，不可據此 tombstone（#3675）。
-        for l in local where l.syncStatus == 1 && !remoteIds.contains(l.remoteId) && !l.isSoftDeleted
+        for l in local where l.syncStatus == 1 && !liveRemoteIds.contains(l.remoteId) && !l.isSoftDeleted
             && l.localInsertedAt < fetchStartedAt {
             l.isSoftDeleted = true
             l.updatedAt = Date()
@@ -183,7 +185,7 @@ enum NotebookReconciler {
             cascadeDeleteEntries(matching: tombstoned, allEntries: allEntries, modelContext: modelContext)
         }
 
-        ledger.recordReconcile(startedAt: fetchStartedAt, remoteIds: remoteIds)
+        ledger.recordReconcile(startedAt: fetchStartedAt, remoteIds: liveRemoteIds)
         return tombstoned.union(reaped)
     }
 
