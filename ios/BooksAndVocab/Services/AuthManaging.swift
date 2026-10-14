@@ -43,6 +43,10 @@ protocol LocalDataClearing: AnyObject {
     func retryPendingLocalWipe(container: ModelContainer, signedInUserId: String?) async -> Bool
     /// Drops the pending wipe of a refused account switch. The failed wipe committed nothing.
     func discardPendingLocalWipe()
+    /// Records `owner` as the pending-wipe owner before a logout tears the session down (#3668). A process
+    /// killed mid-wipe never reaches the failure path, so only this marker tells the next sign-in that the
+    /// rows still belong to `owner`. Writes no failure, so the store-rebuild cap (#3229) keeps counting real failures.
+    func markPendingLocalWipe(owner: String)
     /// Owner recorded by the outstanding failed wipe; nil when none is pending.
     var pendingLocalWipeOwner: String? { get }
     /// The failed wipe reached its retry cap: the store rebuild is offered as the recovery (#3229). Retries continue (#3289).
@@ -65,6 +69,8 @@ extension LocalDataClearing {
     func retryPendingLocalWipe(container: ModelContainer, signedInUserId: String?) async -> Bool { true }
 
     func discardPendingLocalWipe() {}
+
+    func markPendingLocalWipe(owner: String) {}
 
     var pendingLocalWipeOwner: String? { nil }
 

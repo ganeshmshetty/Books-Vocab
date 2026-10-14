@@ -373,6 +373,12 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
         if reason == LocalDataCleanerService.deleteAccountReason, deletedAccountID == nil {
             AppLog.auth.warning("logout(delete_account): no account captured; account-preference purge skipped (#2434)")
         }
+        // #3668: record the owner before the teardown below. A process killed mid-wipe never reaches the
+        // failure path, so without this the next sign-in would admit another account beside A's rows.
+        // Skipped without a container: no wipe runs then, and a marker would only block sign-in.
+        if container != nil, !previousUserId.isEmpty {
+            localDataCleaner.markPendingLocalWipe(owner: previousUserId)
+        }
         accountPreferenceLifecycle.suspend()
         localDataCleanupGeneration += 1
         pendingLocalDataCleanup = Task { [previousCleanup = pendingLocalDataCleanup, previousUserId] in

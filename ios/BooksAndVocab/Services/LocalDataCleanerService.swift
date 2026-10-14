@@ -15,8 +15,9 @@ final class LocalDataCleanerService: LocalDataClearing {
     /// is offered as the recovery (#3229). Sign-in keeps retrying the wipe regardless (#3289).
     static let pendingWipeFailureCountKey = "kg_pending_local_wipe_failures"
     static let pendingWipeFailureLimit = 5
-    /// Set when a failed account-switch wipe deferred the derived-state purge (#3229). Cleared by the wipe
-    /// that succeeds or by a refused switch, whose previous account keeps its derived state.
+    /// Set when a failed account-switch wipe deferred the derived-state purge (#3229), and when a logout was
+    /// interrupted mid-wipe (#3668). Cleared by the wipe that succeeds or by a refused switch, whose previous
+    /// account keeps its derived state.
     static let pendingDerivedPurgeKey = "kg_pending_local_wipe_derived_purge"
 
     private let wipeRows: RowWipe
@@ -50,6 +51,13 @@ final class LocalDataCleanerService: LocalDataClearing {
     }
 
     var pendingLocalWipeOwner: String? { Self.persistedPendingWipeOwner(defaults: defaults) }
+
+    /// #3668: written before the logout teardown. The derived-state flag makes the retry that finishes an
+    /// interrupted logout purge the owner's downloads and snapshots too, as a failed logout already does.
+    func markPendingLocalWipe(owner: String) {
+        defaults.set(owner, forKey: Self.pendingWipeOwnerKey)
+        defaults.set(true, forKey: Self.pendingDerivedPurgeKey)
+    }
 
     func clearLocalData(container: ModelContainer, reason: String, deletedAccountID: String?) async {
         _ = await clearLocalDataReportingFailure(
