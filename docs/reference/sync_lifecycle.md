@@ -194,6 +194,7 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 - **水位欄位（不變式）**：`ReviewRecord.pushedAt: Date?`。`nil` = 尚欠伺服器。`buildReviewEventsPushPayload` 只取 `pushedAt == nil`，並依 `reviewedAt` 遞增排序。
 - **為何需要**：後端以 `event_id` 去重，client 端若無水位就無法區分「已上傳」與「新事件」，只能整份重送。2026-08-05 生產實測（帳號 000287）：9,542 筆事件、約 3.4MB、10 次序列 PATCH，佔一次同步 17s 中的 15.4s，伺服器每次皆回 `inserted=0, skipped=9542`。
 - **逐批確認（不變式）**：`pushReviewEvents` 在**每個 batch 回應後**立即 `markReviewEventsPushed`，不是整輪結束才記。batch 才是伺服器實際接受的單位；後續 batch 失敗（離線 / 401 / 此突發自身觸發的 429）不可回退已落地的批次——這正是大量歷史事件能**跨多次同步分批排空**而非每次從頭的原因。
+- **飛行中請求合併（不變式，#3907）**：推送已在進行時，後來的呼叫立即回 `(0, 0)` 並設 pending 旗標；持有 claim 者每輪重建 payload，輪末與釋放在同一臨界區判斷旗標，有請求就再跑一輪。因此在快照之後寫入的 `ReviewRecord` 不會滯留到下次同步。出錯時 claim 直接釋放，未送事件留到下次同步。
 - **拉回即已確認（不變式）**：`mergeReviewEvents` 對插入的遠端事件直接寫 `pushedAt`。它來自伺服器就已在伺服器上；不標記會讓下一次推送把整份拉回的歷史原樣送回，水位永遠排不空。
 - **遷移策略（刻意不 backfill）**：欄位為 optional，既有列一律以 `nil` 進場、在升級後第一次同步完整排空一次——成本恰等於舊行為，且不可能把「其實從未上傳成功」的事件誤標為已上傳。之後穩態為 ~0。
 - **輸入契約（不變式）**：`event_id` 必須是非空白字串。空字串或全空白值在 API model boundary 以 HTTP `422` 拒絕，store 不會被呼叫，也不會寫入事件；非空 legacy ID 原樣保留，既有 `event_id` duplicate 行為（`inserted=0, skipped=1`）不變。
