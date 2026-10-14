@@ -56,6 +56,34 @@ def test_manifest_is_documented_elsewhere(manifest):
     )
 
 
+# ── Production-job paths: prod clone only (#3689) ──
+#
+# Standby jobs that run repo scripts must execute the prod clone (~/kg-prod,
+# tracks origin/prod), not the dev-only ~/project/kg clone that silently rots.
+# com.kg.reconcile already does this; com.kg.backup pointed at ~/project/kg.
+
+_PROD_JOB_MANIFESTS = ["com.kg.backup.plist", "com.kg.reconcile.plist"]
+_PROGRAM_ARGS_RE = re.compile(
+    r"<key>ProgramArguments</key>\s*<array>(.*?)</array>", re.DOTALL
+)
+_STRING_RE = re.compile(r"<string>([^<]*)</string>")
+
+
+@pytest.mark.parametrize("name", _PROD_JOB_MANIFESTS)
+def test_prod_job_runs_from_prod_clone(name):
+    text = (_ROOT / "ops" / "launchd" / name).read_text(encoding="utf-8")
+    block = _PROGRAM_ARGS_RE.search(text)
+    assert block, f"{name}: no ProgramArguments array (positive control)"
+    args = _STRING_RE.findall(block.group(1))
+    assert args, f"{name}: ProgramArguments is empty"
+    user_paths = [a for a in args if a.startswith("/Users/chenliangyu/")]
+    assert user_paths, f"{name}: no /Users/chenliangyu/ path to check"
+    for path in user_paths:
+        assert path.startswith("/Users/chenliangyu/kg-prod/"), (
+            f"{name}: ProgramArguments {path!r} is not under ~/kg-prod"
+        )
+
+
 # ── com.kg.log-retention: retired (#2091) ──
 #
 # Log retention is triggered only by the backend process's in-process scheduler
