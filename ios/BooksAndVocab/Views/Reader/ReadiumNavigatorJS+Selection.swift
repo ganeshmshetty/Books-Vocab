@@ -228,8 +228,9 @@ extension ReadiumNavigatorJS {
             } catch (err) {}
         }
 
-        // 單字點擊偵測
+        // 單字點擊偵測（只回應使用者產生的 click；腳本合成的事件不觸發）
         document.addEventListener('click', function(e) {
+            if (!e.isTrusted) return;
             if (e.target.closest('a')) return;
 
             var isDebug = \(isDebugMode);
