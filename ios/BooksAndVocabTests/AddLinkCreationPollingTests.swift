@@ -100,4 +100,38 @@ struct AddLinkCreationPollingTests {
         #expect(coordinator.failure == nil)
         #expect(service.fetchedOperationIds.count >= 3)
     }
+
+    @Test("a resumed poll whose first GET is rate-limited keeps polling the same operation")
+    func rateLimitedFirstResumePollKeepsPolling() async throws {
+        let clock = ManualClock()
+        let recorder = SleepRecorder()
+        let service = ScriptedCreationService(
+            onStart: { _, _ in CreationFixtures.status("op-1", "running", sequence: 1) },
+            onFetch: { ordinal, id in
+                if ordinal == 1 {
+                    throw KGError.httpError(statusCode: 429, detail: "rate limited")
+                }
+                return CreationFixtures.status(id, ordinal < 3 ? "running" : "succeeded", sequence: ordinal + 1)
+            }
+        )
+        let coordinator = AddLinkCreationCoordinator(
+            environment: PollingFixtures.environment(clock: clock, recorder: recorder)
+        )
+
+        // Resume after a lost transport: no POST, the first GET is the rate-limited one.
+        coordinator.relaunch(
+            word: "luminous",
+            sourceEntry: CreationFixtures.entry("source", cardID: "src"),
+            services: AddLinkCreationServices(
+                operationService: service,
+                syncService: service,
+                container: try CreationFixtures.container()
+            ),
+            plan: .resumePolling(operationId: "op-1")
+        )
+        #expect(await CreationFixtures.eventually { coordinator.phase == .succeeded })
+        #expect(coordinator.failure == nil)
+        #expect(service.startKeys.isEmpty)
+        #expect(service.fetchedOperationIds == ["op-1", "op-1", "op-1"])
+    }
 }
