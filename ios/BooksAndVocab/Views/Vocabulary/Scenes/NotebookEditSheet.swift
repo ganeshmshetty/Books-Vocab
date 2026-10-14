@@ -347,11 +347,10 @@ struct NotebookEditSheet: View {
         }
 
         let filename = "notebook_cover_\(UUID().uuidString).jpg"
-        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+        guard let dir = NotebookCoverStore.directoryURL() else {
             photoError = NotebookEditCopy.photoErrorMessage(.saveFailed)
             return
         }
-        let dir = documentsURL.appendingPathComponent("NotebookCovers", isDirectory: true)
         let fileURL = dir.appendingPathComponent(filename)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -366,16 +365,17 @@ struct NotebookEditSheet: View {
             try? FileManager.default.removeItem(at: fileURL)
             return
         case .adoptStaged(let staleStaged):
-            if let staleStaged { try? FileManager.default.removeItem(atPath: staleStaged) }
-            photo.staged = fileURL.path
+            NotebookCoverStore.remove(staleStaged)
+            // 持久化只存檔名；絕對路徑含 container UUID，還原後失效（#3676）。
+            photo.staged = filename
             selectedPattern = nil
         }
     }
 
     private func removeCoverImage() {
         // 只清掉 staged 新檔；original 延遲到 save 再刪
-        if let path = photo.staged, path != photo.original {
-            try? FileManager.default.removeItem(atPath: path)
+        if let path = photo.staged, !NotebookCoverStore.isSameCover(path, photo.original) {
+            NotebookCoverStore.remove(path)
         }
         photo.staged = nil
     }
