@@ -200,6 +200,7 @@ class FakeGit:
         self.park_calls = 0
         self.fail_park_readback = False
         self.race_on_park = False
+        self.ancestry_ok = True
 
     def inspect_worktree(self, path: Path, base_sha: str) -> WorktreeSnapshot:
         if path == Path("/repo"):
@@ -267,7 +268,7 @@ class FakeGit:
         return self.main_origin
 
     def is_ancestor(self, ancestor_sha: str, descendant_sha: str) -> bool:
-        return ancestor_sha == BASE and descendant_sha == HEAD
+        return self.ancestry_ok and ancestor_sha == BASE and descendant_sha == HEAD
 
     def first_parent_landings(
         self, *, before_sha: str, after_sha: str
@@ -621,6 +622,45 @@ def test_reconcile_main_rejects_registry_duplicate_and_remote_collision() -> Non
         application.reconcile_main(**_preserve_request())
 
     assert git.park_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("case", "error", "message"),
+    (
+        ("owner", PolicyViolation, "owner differs"),
+        ("external_id", PolicyViolation, "external id differs"),
+        ("base", PolicyViolation, "base differs"),
+        ("status", PolicyViolation, "not active"),
+        ("handback_sha", CompareAndSwapConflict, "handback differs"),
+        ("handback_invalid", PolicyViolation, "handback is not exact"),
+        ("ancestry", PolicyViolation, "not based on expected origin/main"),
+    ),
+)
+def test_reconcile_main_rejects_registry_claim_that_does_not_bind_request(
+    case: str, error: type[Exception], message: str
+) -> None:
+    registry, git, application = _divergent_preservation_fixture()
+    request = _preserve_request()
+    if case == "owner":
+        request["owner_thread_id"] = "someone-else"
+    elif case == "external_id":
+        request["external_id"] = "OTHER"
+    elif case == "base":
+        registry.record = replace(registry.record, base_sha="f" * 40)
+    elif case == "status":
+        registry.record = replace(registry.record, status="published")
+    elif case == "handback_sha":
+        registry.record = replace(registry.record, handed_back_sha="f" * 40)
+    elif case == "handback_invalid":
+        registry.record = replace(registry.record, handback_valid=False)
+    else:
+        git.ancestry_ok = False
+
+    with pytest.raises(error, match=message):
+        application.reconcile_main(**request)
+
+    assert git.park_calls == 0
+    assert git.main_local == HEAD
 
 
 def test_reconcile_main_fails_closed_on_cas_race_and_readback_failure() -> None:
