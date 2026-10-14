@@ -63,7 +63,7 @@ struct NotebookListView: View {
 /// （見 body 內 `covered` gate）——這些值的消費者此刻全不可見、不可互動（Cost A）。
 struct NotebookListContent: View {
     @ObserveInjection private var inject
-    @Query(filter: #Predicate<Notebook> { !$0.isSoftDeleted }, sort: \Notebook.sortOrder)
+    @Query(filter: #Predicate<Notebook> { !$0.isSoftDeleted }, sort: NotebookSortOption.manualOrderDescriptors)
     private var notebooks: [Notebook]
     @Query private var allEntries: [VocabularyEntry]
     @Query private var pendingEntries: [VocabularyEntry]

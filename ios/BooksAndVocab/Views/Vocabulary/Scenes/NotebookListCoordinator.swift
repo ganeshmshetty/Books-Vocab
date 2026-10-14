@@ -268,6 +268,9 @@ final class NotebookListCoordinator: NotebookListCoordinating {
             nb.isSoftDeleted = false
             nb.coverImagePath = coverImagePath
             nb.syncStatus = 1
+            if let created = NotebookReconciler.serverCreatedAt(remote) {
+                nb.createdAt = created
+            }
             if existing == nil {
                 modelContext.insert(nb)
             }

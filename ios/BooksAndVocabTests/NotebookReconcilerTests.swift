@@ -236,6 +236,59 @@ struct NotebookReconcilerTests {
         #expect(rows.count == 1, "同 remoteId 的重複列應收斂為一列")
     }
 
+    // MARK: - #3677：server 建立時間
+
+    @Test func reconcile_adopts_server_createdAt_on_insert_and_update() throws {
+        let ctx = try makeContext()
+        let existing = localNB("nb-old", syncStatus: 1)
+        ctx.insert(existing)
+        try ctx.save()
+        let serverCreated = "2026-01-02T03:04:05Z"
+        let expected = try #require(AppDateFormatters.parseISO8601(serverCreated))
+
+        let updated = KGNotebook(
+            id: "nb-old", name: "本", color: nil, coverPattern: nil,
+            sortOrder: 0, isDefault: false, isDeleted: false,
+            cardCount: 0, updatedAt: nil,
+            sourceSharedDeckId: nil, sourceVersion: nil,
+            createdAt: serverCreated
+        )
+        let inserted = KGNotebook(
+            id: "nb-new", name: "本", color: nil, coverPattern: nil,
+            sortOrder: 0, isDefault: false, isDeleted: false,
+            cardCount: 0, updatedAt: nil,
+            sourceSharedDeckId: nil, sourceVersion: nil,
+            createdAt: serverCreated
+        )
+        _ = NotebookReconciler.reconcile(
+            remote: [updated, inserted], local: [existing], allEntries: [],
+            modelContext: ctx, fetchStartedAt: .distantFuture
+        )
+        try ctx.save()
+
+        let rows = try ctx.fetch(FetchDescriptor<Notebook>())
+        #expect(rows.first { $0.remoteId == "nb-old" }?.createdAt == expected, "既有列採用 server 建立時間")
+        #expect(rows.first { $0.remoteId == "nb-new" }?.createdAt == expected, "新列採用 server 建立時間")
+    }
+
+    @Test func reconcile_keeps_local_createdAt_when_server_omits_it() throws {
+        // 舊後端不回傳 createdAt：保留本機值，不可被 nil 清掉。
+        let ctx = try makeContext()
+        let local = localNB("nb-old", syncStatus: 1)
+        let localCreated = Date(timeIntervalSince1970: 500)
+        local.createdAt = localCreated
+        ctx.insert(local)
+        try ctx.save()
+
+        _ = NotebookReconciler.reconcile(
+            remote: [remote("nb-old")], local: [local], allEntries: [],
+            modelContext: ctx, fetchStartedAt: .distantFuture
+        )
+        try ctx.save()
+
+        #expect(local.createdAt == localCreated)
+    }
+
     // MARK: - 既有行為回歸（behavior-preserving）
 
     @Test func reconcile_tombstones_synced_notebook_missing_from_server() throws {

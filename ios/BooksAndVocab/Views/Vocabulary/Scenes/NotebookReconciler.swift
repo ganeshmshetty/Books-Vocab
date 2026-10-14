@@ -61,6 +61,7 @@ enum NotebookReconciler {
                 l.coverPattern = r.coverPattern
                 l.isDefault = r.isDefault
                 l.sortOrder = r.sortOrder
+                if let created = serverCreatedAt(r) { l.createdAt = created }
                 l.isSoftDeleted = r.isDeleted
                 l.syncStatus = 1
                 // Explore copy provenance（v1 inert；跨裝置 round-trip）。
@@ -86,6 +87,7 @@ enum NotebookReconciler {
                 )
                 nb.coverPattern = r.coverPattern
                 nb.sortOrder = r.sortOrder
+                if let created = serverCreatedAt(r) { nb.createdAt = created }
                 nb.syncStatus = 1
                 nb.sourceSharedDeckId = r.sourceSharedDeckId
                 nb.sourceVersion = r.sourceVersion
@@ -181,6 +183,11 @@ enum NotebookReconciler {
             return candidate.syncStatus == 1
         }
         return false
+    }
+
+    /// server 建立時間；舊後端不回傳 → nil，呼叫端保留本機值（#3677）。
+    static func serverCreatedAt(_ remote: KGNotebook) -> Date? {
+        remote.createdAt.flatMap(AppDateFormatters.parseISO8601)
     }
 
     /// 離線 / `fetchNotebooks` 失敗且本地無可見本子時，建立 canonical default 占位本。

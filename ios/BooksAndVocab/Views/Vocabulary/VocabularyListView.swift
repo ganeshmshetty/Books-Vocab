@@ -55,7 +55,7 @@ struct VocabularyListView: View {
             sort: \.dateAdded,
             order: .reverse
         )
-        _notebooks = Query(sort: \Notebook.sortOrder)
+        _notebooks = Query(sort: NotebookSortOption.manualOrderDescriptors)
     }
 
     var body: some View {

@@ -13,7 +13,7 @@ struct PodcastNotebookPicker: View {
 
     @Query(
         filter: #Predicate<Notebook> { !$0.isSoftDeleted },
-        sort: \Notebook.sortOrder
+        sort: NotebookSortOption.manualOrderDescriptors
     )
     private var notebooks: [Notebook]
     // 含 tombstone：stale 綁定判定需分辨「已刪除」與「尚未 reconcile 的遠端新建」（#3674）

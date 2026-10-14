@@ -137,6 +137,8 @@ struct KGNotebook: Codable, Identifiable {
     let isDeleted: Bool
     let cardCount: Int
     let updatedAt: String?
+    /// server 建立時間（ISO 8601；舊後端無此欄位 → nil）。跨裝置「手動排序」與建立時間排序的依據（#3677）。
+    let createdAt: String?
     /// Explore 複製 provenance（backend NotebookResponse camelCase；舊後端無 → nil）。
     /// 純 optional → synthesized Codable 走 decodeIfPresent（present→值 / absent→nil），行為可預測。
     let sourceSharedDeckId: String?
@@ -158,7 +160,8 @@ struct KGNotebook: Codable, Identifiable {
         updatedAt: String?,
         sourceSharedDeckId: String?,
         sourceVersion: Int?,
-        settings: KGNotebookSettings? = nil
+        settings: KGNotebookSettings? = nil,
+        createdAt: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -172,11 +175,12 @@ struct KGNotebook: Codable, Identifiable {
         self.sourceSharedDeckId = sourceSharedDeckId
         self.sourceVersion = sourceVersion
         self.settings = settings
+        self.createdAt = createdAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, color, coverPattern, sortOrder, isDefault, isDeleted
-        case cardCount, updatedAt, sourceSharedDeckId, sourceVersion, settings
+        case cardCount, updatedAt, createdAt, sourceSharedDeckId, sourceVersion, settings
     }
 
     init(from decoder: Decoder) throws {
@@ -193,6 +197,7 @@ struct KGNotebook: Codable, Identifiable {
         sourceSharedDeckId = try values.decodeIfPresent(String.self, forKey: .sourceSharedDeckId)
         sourceVersion = try values.decodeIfPresent(Int.self, forKey: .sourceVersion)
         settings = try values.decodeIfPresent(KGNotebookSettings.self, forKey: .settings)
+        createdAt = try values.decodeIfPresent(String.self, forKey: .createdAt)
     }
 }
 

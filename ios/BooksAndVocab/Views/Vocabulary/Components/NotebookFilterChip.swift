@@ -10,7 +10,7 @@ import SwiftData
 struct NotebookFilterChip: View {
     @ObserveInjection private var inject
     @Binding var filter: NotebookFilter
-    @Query(sort: \Notebook.sortOrder) private var notebooks: [Notebook]
+    @Query(sort: NotebookSortOption.manualOrderDescriptors) private var notebooks: [Notebook]
     @Environment(\.appSkin) private var skin
 
     @State private var showPicker = false
