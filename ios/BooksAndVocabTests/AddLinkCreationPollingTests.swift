@@ -30,6 +30,7 @@ private enum PollingFixtures {
     }
 }
 
+@MainActor
 @Suite("Add Link polling backoff and rate limiting (#3811)")
 struct AddLinkCreationPollingTests {
     @Test("an 85 s operation is polled with a growing backoff, not every 500 ms")
