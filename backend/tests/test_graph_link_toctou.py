@@ -294,6 +294,74 @@ def test_losing_snapshot_cannot_restore_duplicate_after_reconciliation(tmp_path:
     assert loser_store.find_link_between("card_a", "card_b").id == winner.id
 
 
+def test_add_link_does_not_return_pending_batch_link(store, monkeypatch):
+    """add_link must not return a batch link that is not yet on disk (#3617).
+
+    batch_add_links inserts provisional links under _lock and only afterwards
+    takes the pair locks. A same-pair add_link landing in that gap finds the
+    uncommitted row via _find_link_between_unlocked and returns it. The probe
+    runs at the batch's first pair-lock acquisition: with the defect that is
+    after the provisional insert; with the pair locks taken up front it is
+    before any insert, and the add simply persists its own link.
+    """
+    links_path = store.links_path
+    batch_idents: list[int] = []
+    gated = threading.Event()
+    add_results: list[tuple[str, bool]] = []
+    errors: list[Exception] = []
+
+    def persisted_ids() -> set[str]:
+        if not links_path.exists():
+            return set()
+        rows = json.loads(links_path.read_text(encoding="utf-8"))
+        return {
+            row["id"] for row in rows if isinstance(row, dict) and row.get("status", "active") in ("active", "hidden")
+        }
+
+    def probe_add() -> None:
+        try:
+            link = store.add_link("card_a", "card_b", LinkKind.SHARES_USAGE, 0.9, "single")
+            add_results.append((link.id, link.id in persisted_ids()))
+        except Exception as exc:  # pragma: no cover - assertion below reports it
+            errors.append(exc)
+
+    original_pair_lock = store._pair_thread_lock
+
+    def probing_pair_lock(pair):
+        if batch_idents and threading.get_ident() == batch_idents[0] and not gated.is_set():
+            gated.set()
+            probe = threading.Thread(target=probe_add)
+            probe.start()
+            probe.join(timeout=5)
+        return original_pair_lock(pair)
+
+    monkeypatch.setattr(store, "_pair_thread_lock", probing_pair_lock)
+
+    def run_batch() -> None:
+        batch_idents.append(threading.get_ident())
+        try:
+            store.batch_add_links([("card_a", "card_b", LinkKind.CONTRASTS_WITH, 1.0, "batch")])
+        except Exception as exc:  # pragma: no cover - assertion below reports it
+            errors.append(exc)
+
+    batch_thread = threading.Thread(target=run_batch)
+    batch_thread.start()
+    batch_thread.join(timeout=10)
+
+    assert not errors
+    assert not batch_thread.is_alive()
+    assert gated.is_set()
+    assert add_results, "concurrent add_link did not complete"
+    returned_id, persisted_at_return = add_results[0]
+    assert persisted_at_return, "add_link returned a link that was not yet persisted"
+    reloaded = GraphStore(
+        links_path=links_path,
+        candidates_path=store.candidates_path,
+        blocked_path=store.blocked_path,
+    )
+    assert [link.id for link in _active_links_for_pair(reloaded, "card_a", "card_b")] == [returned_id]
+
+
 class _LiveCard:
     def __init__(self, card_id: str):
         self.id = card_id
