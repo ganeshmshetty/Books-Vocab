@@ -84,7 +84,7 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 | `ReaderSettingsPresenter+Vocab.swift` | 設定詞彙呈現；依 `ReaderPanelChromeStyle` 切換手機 handle 與桌面 inspector 上緣內距；「生字標記」區控制 highlight 顏色與濃度 |
 | `VocabHighlightColorPresetPicker.swift` | Reader / Podcast 共用 highlight 顏色 swatch picker；寫回 `ReaderSettings.vocabHighlightColorPreset` |
 | `TOCView.swift` | `struct TOCView: View`，目錄；regular / Catalyst 收斂內容寬度，compact 維持 full-width sheet |
-| `ReaderNotebookPicker.swift` | Reader 內為**本書綁定**單字本（`book.preferredNotebookId`，`Book: NotebookBindable`）；每本書綁定恰好一本真實單字本，**已移除「跟隨全域設定」**列、改用共用 presentational `NotebookBindingList`（Vocabulary/，不標示「預設」）；選詞 / highlight / cache scope 認 `book.resolvedNotebookId` 綁定本、**不隨全域 active 漂移**；綁定本有本機刪除證據（tombstone，或已回收的 `local-*` 占位）→ `sanitizeStaleBoundNotebook` 清 nil（下次開啟由 `ReaderView` re-seed）；僅「不在本機列表」（另一裝置新建、尚未 reconcile）**不清**（#3674，`Book` 經 CloudKit 鏡射）。regular / Catalyst 收斂短選單寬度，compact 維持 full-width sheet |
+| `ReaderNotebookPicker.swift` | Reader 內為**本書綁定**單字本（`book.preferredNotebookId`，`Book: NotebookBindable`）；每本書綁定恰好一本真實單字本，**已移除「跟隨全域設定」**列、改用共用 presentational `NotebookBindingList`（Vocabulary/，不標示「預設」）；選詞 / highlight / cache scope 認 `book.resolvedNotebookId` 綁定本、**不隨全域 active 漂移**；綁定本有本機刪除證據（tombstone，或已回收的 `local-*` 占位）→ `sanitizeStaleBoundNotebook` 清 nil（下次開啟由 `ReaderView` re-seed）；僅「不在本機列表」（另一裝置新建、尚未 reconcile）**不清**（#3674，`Book` 經 CloudKit 鏡射）；例外：綁定之後才開始的 reconcile 回報 server 不含該 id 且本機無列 → 清（#3799，證據見 `NotebookReconcileLedger`）。regular / Catalyst 收斂短選單寬度，compact 維持 full-width sheet |
 
 ### PDF Reader（原生 PDFKit 路徑）
 
