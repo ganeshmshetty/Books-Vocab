@@ -200,8 +200,32 @@ def decode_notification_payload(
 
     signed_transaction_info = data.get("signedTransactionInfo")
     signed_renewal_info = data.get("signedRenewalInfo")
+    notification_uuid = notification_payload.get("notificationUUID")
+    if not isinstance(notification_uuid, str) or not notification_uuid.strip():
+        notification_uuid = None
+    signed_date = normalize_ms_timestamp(notification_payload.get("signedDate"), parse_datetime_fn)
+
     if not isinstance(signed_transaction_info, str) or not signed_transaction_info:
-        raise BadRequestError("App Store notification missing signedTransactionInfo")
+        # Apple TEST notifications (and some types) carry no transaction. The envelope is
+        # verified, so acknowledge it as an indeterminate no-op: status=None makes the
+        # caller audit it and skip every billing write, and a 400 would make Apple retry (#3705).
+        return (
+            {
+                "product_id": None,
+                "transaction_id": None,
+                "original_transaction_id": None,
+                "environment": str(data.get("environment") or "production").lower(),
+                "status": None,
+                "is_trial": False,
+                "expires_at": None,
+                "grace_period_expires_at": None,
+                "will_renew": False,
+                "price_display": None,
+                "signed_date": signed_date,
+                "notification_uuid": notification_uuid,
+            },
+            notification_payload,
+        )
 
     transaction_verified = verify_signed_jws(signed_transaction_info, bundle_id=bundle_id)
     renewal_payload = None
@@ -213,11 +237,6 @@ def decode_notification_payload(
         parse_datetime_fn=parse_datetime_fn,
         renewal_payload=renewal_payload,
     )
-
-    notification_uuid = notification_payload.get("notificationUUID")
-    if not isinstance(notification_uuid, str) or not notification_uuid.strip():
-        notification_uuid = None
-    signed_date = normalize_ms_timestamp(notification_payload.get("signedDate"), parse_datetime_fn)
     snapshot = {
         **snapshot,
         "signed_date": signed_date,
