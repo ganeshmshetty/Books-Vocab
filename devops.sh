@@ -328,12 +328,23 @@ validate_uid() {
 # 與 felix 上的 kg_reconcile.sh（本機 mkdir 同一路徑）才是同一把；DEPLOY_LOCK_DIR 是遠端路徑。
 DEPLOY_LOCK_DIR="${KG_DEPLOY_LOCK_DIR:-/tmp/kg-deploy.lock}"
 DEPLOY_LOCK_HELD=0
-release_deploy_lock() { run_remote "rmdir $DEPLOY_LOCK_DIR" 2>/dev/null || true; }
+# release 失敗不中止（EXIT trap 中不可拋錯），但不可無聲：殘留鎖會讓 kg_reconcile 持續讓路（#3690）。
+release_deploy_lock() {
+  run_remote "rmdir $DEPLOY_LOCK_DIR" >/dev/null 2>&1 \
+    || echo "⚠ 無法釋放 deploy 鎖 ${DEPLOY_LOCK_DIR}（遠端 rmdir 失敗）；鎖殘留會讓 kg_reconcile 讓路（超過 KG_LOCK_STALE_S 後告警 locked_stale），請於 deploy host 確認後手動 rmdir。" >&2
+  return 0
+}
 acquire_deploy_lock() {
   # 同 process 內已持有則略過（cmd_deploy → cmd_migrate 遞迴呼叫場景）
   [[ "$DEPLOY_LOCK_HELD" == "1" ]] && return 0
-  if ! run_remote "mkdir $DEPLOY_LOCK_DIR" 2>/dev/null; then
-    err "另一個 deploy/restart/migrate 正在進行中（deploy host 上 $DEPLOY_LOCK_DIR 已存在）。若確認無進行中操作，請在 deploy host 手動 rmdir $DEPLOY_LOCK_DIR"
+  local mk_rc=0
+  run_remote "mkdir $DEPLOY_LOCK_DIR" >/dev/null 2>&1 || mk_rc=$?
+  if (( mk_rc == 255 )); then
+    # ssh 連線層失敗（非遠端 mkdir 結果）：鎖狀態未知，不可誤報為「他人持有」（#3690）。
+    err "無法連到 deploy host 取得鎖（ssh exit 255）；鎖狀態未知，請確認連線後重試。"
+  fi
+  if (( mk_rc != 0 )); then
+    err "另一個 deploy/restart/migrate 正在進行中（deploy host 上 $DEPLOY_LOCK_DIR 已存在，遠端 mkdir exit ${mk_rc}）。若確認無進行中操作，請在 deploy host 手動 rmdir $DEPLOY_LOCK_DIR"
   fi
   DEPLOY_LOCK_HELD=1
   kg_install_signal_traps release_deploy_lock devops
@@ -600,7 +611,8 @@ cleanup_old_backups() {
     echo "  刪除殘缺: $(basename "$dir")"
     rm -rf "$dir" "$dir.tar.gz" "$dir.tar.gz.sha256"
   done
-  count=$(ls -1d "$backup_dir"/data_*/ 2>/dev/null | wc -l | tr -d ' ')
+  # 無任何 data_*/ 時 ls 回非零；pipefail 下會讓 set -e 殺掉腳本（#3688：殘缺目錄全被清掉時即觸發），故 `|| true`。
+  count=$(ls -1d "$backup_dir"/data_*/ 2>/dev/null | wc -l | tr -d ' ') || true
   if [ "$count" -gt "$keep" ]; then
     local to_delete=$(( count - keep ))
     echo "清理舊備份：刪除最舊的 $to_delete 份..."
@@ -758,6 +770,9 @@ cmd_backup() {
     break
   done < <(ls -1dt "$BACKUP_DIR"/data_*/ 2>/dev/null | grep -vF "/data_${date_str}/" || true)  # grep 無匹配 exit 1，避免 set -e 在首次（無既有備份）誤殺
   mkdir -p "$dest"
+  # #3688：進行中即標記 .INCOMPLETE，成功尾端才移除。中斷（INT／失敗）會留下標記，
+  # 同分鐘重試不會讓殘留標記跟著好備份一起被 cleanup_old_backups 刪掉。
+  touch "$dest/.INCOMPLETE" || err "無法在 ${dest} 建立 .INCOMPLETE 標記，拒絕開始冷快照。"
   # 空輸出的防呆帶。下面的陣列若是空的，bash 3.2 對 ${a[*]} 在 set -u 下會直接噴
   # `progress_flags[*]: unbound variable`——又一次拿難懂訊號當失敗訊號。
   # 注意實測結果（2026-08-08，別憑推理改掉這段）：rsync **不在 PATH** 時走不到這裡，
@@ -915,9 +930,12 @@ cmd_backup() {
   # ── 完整性驗證：sha256 checksum ─────────────────────────────────────────
   local tar_file="$BACKUP_DIR/data_${date_str}.tar.gz"
   info "計算備份 checksum → ${tar_file}.sha256"
-  tar -czf "$tar_file" -C "$BACKUP_DIR" "data_$date_str"
+  # 標記不進 tarball（否則還原出來的目錄會帶著 .INCOMPLETE 被下次 cleanup 刪掉）。
+  tar -czf "$tar_file" --exclude='.INCOMPLETE' -C "$BACKUP_DIR" "data_$date_str"
   sha256sum "$tar_file" > "${tar_file}.sha256"
   ok "checksum: $(cat "${tar_file}.sha256")"
+  # 唯有 tar 與 sha256 都寫成功才移除標記（#3688）；之後才可被 cleanup_old_backups 視為好備份。
+  rm -f "$dest/.INCOMPLETE"
 
   ok "備份完成且驗證通過: $dest"
   ls -lh "$BACKUP_DIR" | tail -5

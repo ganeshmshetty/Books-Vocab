@@ -98,10 +98,10 @@ DEPLOY 前捕捉 `ROLLBACK_SHA=deployed_sha`。健康 gate = localhost `/api/sys
 **兩個健康探針都會重試**，共用 `KG_RECON_HEALTH_ATTEMPTS`（預設 5）與 `KG_RECON_HEALTH_DELAY`（預設 5s）。預算算法看**失敗是快是慢**：`--max-time 10` 只在「連得上但回應慢」時吃滿；DNS `no such host` 之類是瞬間返回，所以快失敗的總預算只有 `(attempts-1) × delay` = 20s。這個區別是 2026-08-04 事故的核心（IMP-0060）：external 探針當時**完全沒有重試**，一發打在 felix 主機 DNS 中斷的窗口上就回滾了一個健康的部署。20s 仍蓋不住觀測到上界 ~90s 的主機端連通性中斷，但自 IMP-0061 起**那不再是風險，只是延遲**：預算用盡後的結論已從「回滾」改成「落地 + `smoke=unverified` + 告警」（見上方三分類表）。所以這兩個 knob 現在買的是「多等一下也許就驗到了」，不是「賭中斷有多長」。
 
 ### 與人工 deploy 共鎖
-鎖是 **deploy host（felix）上的 `/tmp/kg-deploy.lock`**：reconciler 在 felix 本機 `mkdir`，`devops.sh` 的 `acquire_deploy_lock` / `release_deploy_lock` 經 SSH 在 felix 執行 `mkdir` / `rmdir`（本機不留任何鎖，所以是同一把）。鎖被持有時 reconciler 一律 `verdict=locked` exit 0 讓路、下一 tick 再收斂：DEPLOY 取不到鎖，且 step 2b 的 VERSION 自癒在鎖存在時直接略過（人工 deploy 持鎖期間 VERSION 先於容器更新，不是 crash drift，不可改寫）。反之 reconciler 持鎖時，人工 `devops.sh deploy/restart/migrate` 會被同一把鎖擋住。
+鎖是 **deploy host（felix）上的 `/tmp/kg-deploy.lock`**：reconciler 在 felix 本機 `mkdir`，`devops.sh` 的 `acquire_deploy_lock` / `release_deploy_lock` 經 SSH 在 felix 執行 `mkdir` / `rmdir`（本機不留任何鎖，所以是同一把）。鎖被持有時 reconciler 一律 `verdict=locked` exit 0 讓路、下一 tick 再收斂：DEPLOY 取不到鎖，且 step 2b 的 VERSION 自癒在鎖存在時直接略過（人工 deploy 持鎖期間 VERSION 先於容器更新，不是 crash drift，不可改寫）。鎖持有超過 `KG_LOCK_STALE_S`（預設 3600s，以鎖目錄 mtime 計）即視為疑似遺留鎖：仍讓路、**不自動搶鎖**，改為 stderr ALERT + `verdict=locked_stale` exit 0，並照跑資料守衛與 readiness 探針；人工確認無部署後 `rmdir`。反之 reconciler 持鎖時，人工 `devops.sh deploy/restart/migrate` 會被同一把鎖擋住。
 
 ### verdict（stdout 單行 JSON，schema `kg.deploy.reconcile.v1`）
-`verdict ∈ {noop, ff-only, deployed, rolled-back, rollback-failed, poisoned-skip, locked, dry-run}`；欄位 `deployed_sha/origin_sha/backend_changed/smoke/ts`。人類進度/告警走 stderr。
+`verdict ∈ {noop, ff-only, deployed, rolled-back, rollback-failed, poisoned-skip, locked, locked_stale, dry-run}`；欄位 `deployed_sha/origin_sha/backend_changed/smoke/ts`。人類進度/告警走 stderr。
 
 `rollback-failed` 表示部署健康 gate 失敗後，rollback compose 也以非零退出；此時仍寫 poison 以避免立即重試，`backups/deploy.log` 寫 `ROLLBACK_FAILED from=<new> to=<old> reason=<reason> compose_rc=<rc>`，git tree/VERSION 已回到舊版但容器可能仍跑新版，不能寫 `ROLLED_BACK`。只有 rollback compose 成功的分支才輸出 `rolled-back` 並寫 `ROLLED_BACK`。
 

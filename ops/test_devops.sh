@@ -1190,6 +1190,9 @@ cat > "$LOCK_STUB" <<'STUBEOF'
 # 記下每次遠端指令（最後一個 argv）；STUB_LOCK_HELD=1 時 mkdir 失敗＝遠端鎖已存在。
 printf '%s\n' "${@: -1}" >> "$STUB_LOG"
 if [[ "${@: -1}" == mkdir\ * && "${STUB_LOCK_HELD:-0}" == "1" ]]; then exit 1; fi
+if [[ "${@: -1}" == rmdir\ * && "${STUB_RMDIR_FAIL:-0}" == "1" ]]; then exit 1; fi
+# STUB_SSH_DOWN=1：模擬 ssh 連線層失敗（ssh 自身回 255，與遠端命令結果無關）。
+if [[ "${STUB_SSH_DOWN:-0}" == "1" ]]; then exit 255; fi
 exit 0
 STUBEOF
 chmod +x "$LOCK_STUB"
@@ -1222,6 +1225,23 @@ STUB_LOG="$LOCK_LOG" KG_SSH_CMD="$LOCK_STUB" KG_DEPLOY_LOCK_DIR="$LOCK_LOCAL" DE
   && ok "acquire is re-entrant (one remote mkdir) and release runs remote rmdir" \
   || fail_t "acquire/release remote sequence wrong (rc=$lock_rc): $(tr '\n' '|' < "$LOCK_LOG")"
 [[ ! -e "$LOCK_LOCAL" ]] && ok "acquire/release left no local lock dir" || fail_t "acquire created a LOCAL lock dir"
+
+# #3690：ssh 連線層失敗（255）不可誤報為「他人持有」；遠端 rmdir 失敗必須可見（不中止）。
+: > "$LOCK_LOG"
+lock_rc=0
+lock_out=$(STUB_LOG="$LOCK_LOG" STUB_SSH_DOWN=1 KG_SSH_CMD="$LOCK_STUB" KG_DEPLOY_LOCK_DIR="$LOCK_LOCAL" bash "$KG" deploy 2>&1) || lock_rc=$?
+if [[ "$lock_rc" != 0 ]] && grep -q '無法連到 deploy host' <<< "$lock_out" && ! grep -q '正在進行中' <<< "$lock_out"; then
+  ok "ssh-down (255) on lock acquire is reported as unreachable, not as a held lock"
+else
+  fail_t "ssh-down mis-reported as held lock (rc=$lock_rc): $lock_out"
+fi
+rel_err="$(STUB_LOG="$LOCK_LOG" STUB_RMDIR_FAIL=1 KG_SSH_CMD="$LOCK_STUB" KG_DEPLOY_LOCK_DIR="$LOCK_LOCAL" DEVOPS_SOURCE_ONLY=1 bash -c \
+  'source "$1"; release_deploy_lock' _ "$KG" 2>&1 >/dev/null)"; rel_rc=$?
+if [[ "$rel_rc" == 0 ]] && grep -q '無法釋放 deploy 鎖' <<< "$rel_err"; then
+  ok "failed remote rmdir on release warns on stderr and does not abort"
+else
+  fail_t "release rmdir failure was silent or aborted (rc=$rel_rc): $rel_err"
+fi
 rm -rf "$LOCK_FIX"
 
 # ── 結果 ──────────────────────────────────────────────────────────────────
