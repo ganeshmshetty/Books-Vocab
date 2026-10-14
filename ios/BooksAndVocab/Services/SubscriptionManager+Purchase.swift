@@ -139,23 +139,34 @@ extension SubscriptionManager {
             switch result {
             case .success(let verification):
                 let transaction = try checkVerified(verification)
-                await transaction.finish()
                 purchaseStatusMessage = L10n.string("購買成功，正在同步訂閱狀態⋯")
                 commitEntitlements(
                     optimisticEntitlements(from: product, status: inferredStatus(for: product)),
                     owner: authManager.userId
                 )
+                // finish 只能在後端同步成功後執行（#3421 不變式）。與 Transaction.updates 監聽路徑共用同一結算：
+                // 同步失敗時交易保持未完成，StoreKit 會於之後重送，不會永久遺失已付款的權益（#3666）。
+                let settlement = await Self.settleVerifiedTransaction(
+                    transaction,
+                    isLoggedIn: authManager.isLoggedIn,
+                    sync: { transaction in
+                        try await self.syncTransaction(
+                            transaction,
+                            signedTransactionInfo: verification.jwsRepresentation,
+                            product: product,
+                            using: kgService
+                        )
+                    },
+                    finish: { transaction in await transaction.finish() }
+                )
                 var syncApplied = false
-                do {
-                    try await syncTransaction(
-                        transaction,
-                        signedTransactionInfo: verification.jwsRepresentation,
-                        product: product,
-                        using: kgService
-                    )
+                switch settlement {
+                case .finished:
                     syncApplied = true
                     AppLog.subscription.info("Sync succeeded")
-                } catch {
+                case .skippedNotLoggedIn:
+                    AppLog.subscription.warning("Purchase settlement skipped: no user logged in; transaction left unfinished for StoreKit redelivery")
+                case .rejected(let error), .acceptedUnreadableResponse(let error), .syncFailed(let error):
                     AppLog.subscription.warning("Sync failed: \(error.localizedDescription)")
                     if !(error is CancellationError) {
                         AppCrashReporting.record(error, context: "subscription.purchase.sync")

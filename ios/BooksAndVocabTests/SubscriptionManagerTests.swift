@@ -970,6 +970,7 @@ struct SubscriptionManagerTests {
             .httpError(statusCode: 408, detail: ""),
             .httpError(statusCode: 429, detail: ""),
             .httpError(statusCode: 500, detail: ""),
+            .httpError(statusCode: 503, detail: ""),
             .networkError(underlying: URLError(.timedOut)),
         ]
         for error in transient {
