@@ -287,6 +287,7 @@ struct VocabularyEntryStateTests {
     }
 
     @Test("#3812 Settings 卡數、重置快照與 stats 都與知識列表同判準：待同步／失敗的 edit 不被丟掉，pending add 仍排除")
+    @MainActor
     func settingsCountStatsAndExportKeepEditedServerCards() throws {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(
