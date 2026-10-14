@@ -303,9 +303,10 @@ struct BooksAndVocabApp: App {
                         )
                         await kgService.fetchQuota()
                         // 登入後立即以新帳號重新取得權益，不等待下一次 scenePhase／啟動 refresh（#2592）。
-                        await SubscriptionManager.reconcileEntitlementsAfterLogin(
-                            syncCurrentEntitlements: { await subscriptionManager.syncCurrentEntitlements(using: kgService) },
-                            refresh: { await subscriptionManager.refresh(using: kgService, authManager: authManager, force: true) }
+                        await subscriptionManager.reconcileEntitlementsAfterLogin(
+                            using: kgService,
+                            authManager: authManager,
+                            syncCurrentEntitlements: { await subscriptionManager.syncCurrentEntitlements(using: kgService) }
                         )
                         // Rebuild the Apple-ID-scoped book library on login. Books
                         // bind to the Apple ID (CloudStore/CloudKit + per-Apple-ID

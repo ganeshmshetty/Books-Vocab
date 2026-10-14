@@ -1055,6 +1055,38 @@ struct SubscriptionManagerTests {
         )
         #expect(events == ["sync", "refresh"])
     }
+
+    /// 登入後／付費頁重新同步的實際 wiring（#3627）：StoreKit 同步必須先於 fetch，且 refresh 必須 force。
+    /// 測試前先讓 cooldown 生效，若未 force 則不會發出 fetch，`calls == 1` 即證明 force 生效。
+    @MainActor
+    @Test func reconcileAfterLogin_syncsBeforeForcedRefresh() async {
+        let mgr = SubscriptionManager.shared
+        let savedEntitlements = mgr.entitlements
+        let savedRefreshTime = mgr.lastRefreshTime
+        let savedError = mgr.lastError
+        defer {
+            mgr.entitlements = savedEntitlements
+            mgr.lastRefreshTime = savedRefreshTime
+            mgr.lastError = savedError
+        }
+        mgr.lastRefreshTime = Date()
+
+        let service = GatedSubscriptionService(
+            responses: [1: KGEntitlements(pro: status(status: "inactive"))],
+            suspended: []
+        )
+        var events: [String] = []
+        await mgr.reconcileEntitlementsAfterLogin(
+            using: service,
+            authManager: RefreshOrderAuthStub(),
+            syncCurrentEntitlements: {
+                events.append("sync fetches=\(service.calls)")
+                return .noEntitlement
+            }
+        )
+        #expect(events == ["sync fetches=0"])
+        #expect(service.calls == 1)
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
@@ -1062,7 +1094,7 @@ struct SubscriptionManagerTests {
 private final class GatedSubscriptionService: SubscriptionServing {
     private let responses: [Int: KGEntitlements]
     private let suspended: Set<Int>
-    private var calls = 0
+    private(set) var calls = 0
     private var parked: [Int: CheckedContinuation<KGEntitlements, Error>] = [:]
 
     init(responses: [Int: KGEntitlements], suspended: Set<Int>) {

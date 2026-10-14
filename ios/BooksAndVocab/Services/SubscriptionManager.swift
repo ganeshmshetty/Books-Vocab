@@ -43,6 +43,12 @@ protocol SubscriptionManaging: AnyObject {
     func purchasePro(using kgService: any KGServing, authManager: any AuthManaging) async
     func restorePurchases(using kgService: any KGServing, authManager: any AuthManaging) async
     func listenForTransactionUpdates(using kgService: any KGServing, authManager: any AuthManaging)
+    /// 登入後與付費頁重新同步共用的步驟：StoreKit 同步先於強制 refresh（#3627）。
+    func reconcileEntitlementsAfterLogin(
+        using service: any SubscriptionServing,
+        authManager: any AuthManaging,
+        syncCurrentEntitlements: () async -> CurrentEntitlementSyncOutcome
+    ) async
 }
 
 extension SubscriptionManaging {
@@ -54,6 +60,15 @@ extension SubscriptionManaging {
     /// 真實 `SubscriptionManager` 以 `SubscriptionManager+StoreKit.swift` 的實作覆寫此需求。
     func syncCurrentEntitlements(using kgService: any KGServing) async -> CurrentEntitlementSyncOutcome {
         .noEntitlement
+    }
+
+    /// 預設值供預覽／UI 測試替身使用：只執行同步步驟；替身不持有 `SubscriptionServing` 的網路能力，故不 refresh。
+    func reconcileEntitlementsAfterLogin(
+        using service: any SubscriptionServing,
+        authManager: any AuthManaging,
+        syncCurrentEntitlements: () async -> CurrentEntitlementSyncOutcome
+    ) async {
+        _ = await syncCurrentEntitlements()
     }
 }
 
