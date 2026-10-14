@@ -53,6 +53,9 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 | `failed + add` | 上次新增同步失敗，可重試 | 是 | 是 | 否 |
 | `failed + add` + `rejectedReason` | 後端確定性拒收（終態，不重試；`SyncView` 列出供使用者取消，取消即硬刪；`addCount` 與上傳不含此列，`pendingCount` 含之） | 是 | 是（僅列表可見、可移除，不上傳） | 否 |
 | `failed + delete` | 上次刪除同步失敗，可重試 | 否 | 是 | 否 |
+| `pending + edit`（已有 `kgCardId`） | 已同步卡的編輯待上傳；server 仍持卡（#3673） | 是 | 是 | 是 |
+| `failed + edit`（已有 `kgCardId`） | 編輯同步失敗，可重試 | 是 | 是 | 是 |
+| `failed + edit` + `rejectedReason`（已有 `kgCardId`） | 後端拒收編輯（終態；卡仍在 server 上，不取消即保留） | 是 | 是（列表可見，不重送） | 是 |
 
 ## 主要轉移
 
@@ -248,5 +251,5 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 ## Phase 2 之後的建議
 
 - 若未來真的用到 `failed`，要補明確 retry 規則
-- 若未來支援編輯詞卡內容，`edit` 需要獨立轉移表
+- 編輯詞卡內容已支援（`edit`）：只要列仍有 `kgCardId`，無論 pending／failed／rejected 皆留在知識庫、複習與統計可見（`VocabularyEntry.isKnownToServer`，#3673）；`edit` 的獨立轉移表仍未建立
 - 若同步流程再變複雜，優先擴充這份文件與測試，而不是把邏輯散回各個 View

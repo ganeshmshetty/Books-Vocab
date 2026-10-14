@@ -159,8 +159,11 @@ final class VocabularyEntry {
     }
     var shouldAppearInReader: Bool { syncAction != .delete && !isArchived && !isReaderHidden }
     var shouldAppearInReview: Bool { shouldAppearInKnowledgeList && !isReviewExcluded }
-    var shouldAppearInKnowledgeList: Bool { isSynced && syncAction != .delete && !isArchived }
-    var shouldAppearInArchiveList: Bool { isSynced && syncAction != .delete && isArchived }
+    /// 後端已持有此卡：已同步，或已同步卡的 edit（pending／failed／rejected）。編輯不應讓卡片從列表與複習消失（#3673）。
+    /// 必須與 `knowledgeListPredicate` 的 `#Predicate` 條件保持一致。
+    var isKnownToServer: Bool { isSynced || (syncAction == .edit && hasServerCard) }
+    var shouldAppearInKnowledgeList: Bool { isKnownToServer && syncAction != .delete && !isArchived }
+    var shouldAppearInArchiveList: Bool { isKnownToServer && syncAction != .delete && isArchived }
     var effectiveDateAdded: Date { dateAdded }
 
     /// Shared `#Predicate` for SwiftData `@Query` knowledge-list call sites.
@@ -169,13 +172,14 @@ final class VocabularyEntry {
     /// here — keeping KGVocabView / NotebookListView from drifting. Pass
     /// `notebookId` to additionally scope to one notebook.
     static func knowledgeListPredicate(notebookId: String? = nil) -> Predicate<VocabularyEntry> {
+        // Mirrors `isKnownToServer`: synced, or an edit on a row that already has a server card (#3673).
         if let notebookId {
             return #Predicate {
-                $0.syncStatus == 1 && $0.actionType != "delete" && $0.isArchived == false && $0.notebookId == notebookId
+                ($0.syncStatus == 1 || ($0.actionType == "edit" && $0.kgCardId != nil && $0.kgCardId != "")) && $0.actionType != "delete" && $0.isArchived == false && $0.notebookId == notebookId
             }
         }
         return #Predicate {
-            $0.syncStatus == 1 && $0.actionType != "delete" && $0.isArchived == false
+            ($0.syncStatus == 1 || ($0.actionType == "edit" && $0.kgCardId != nil && $0.kgCardId != "")) && $0.actionType != "delete" && $0.isArchived == false
         }
     }
 

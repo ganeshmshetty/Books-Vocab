@@ -297,8 +297,9 @@ actor BackgroundSyncActor {
         // means it was deleted remotely before soft-deletes were implemented.
         var orphanCleanupBlocked = false
         if !isIncremental {
+            // Orphan detection stays synced-only: a pending edit may carry a word the server has not seen yet.
             let localSyncedCount = localEntries.filter {
-                $0.shouldAppearInKnowledgeList
+                $0.isSynced && $0.shouldAppearInKnowledgeList
             }.count
             let serverReturnedCount = fetchedCards.count
 
@@ -317,7 +318,7 @@ actor BackgroundSyncActor {
                 var orphanedWords: [String] = []
                 for entry in localEntries {
                     guard !deletedEntries.contains(ObjectIdentifier(entry)) else { continue }
-                    guard entry.shouldAppearInKnowledgeList else { continue }
+                    guard entry.isSynced, entry.shouldAppearInKnowledgeList else { continue }
                     let orphanKey = mergeKey(entry.word, notebookId: entry.notebookId)
                     guard !fetchedCardKeys.contains(orphanKey) else { continue }
                     orphanedWords.append(entry.word)
