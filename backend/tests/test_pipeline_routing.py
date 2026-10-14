@@ -91,6 +91,10 @@ class _EnrichCards:
     def all(self, include_deleted=False, notebook_id=None):
         return list(self._cards)
 
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
+
     def batch_update(self, updates):
         return len(updates)
 

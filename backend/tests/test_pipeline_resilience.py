@@ -68,6 +68,10 @@ class _CardsBothFields:
     def update(self, card_id, **kwargs):
         return None
 
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
+
     def batch_update(self, updates):
         return 0
 
@@ -98,6 +102,10 @@ class _CardsNeedEnrich:
 
     def update(self, card_id, **kwargs):
         return None
+
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
 
     def batch_update(self, updates):
         return 0
@@ -289,6 +297,10 @@ class _CardsForJudge:
 
     def update(self, card_id, **kwargs):
         return None
+
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
 
     def batch_update(self, updates):
         self.batch_update_calls.append(list(updates))
@@ -897,6 +909,10 @@ def test_embed_step_failure_after_judge_commit_does_not_revert_judge():
             super().__init__(count)
             self._raise_on_difficulty = False
 
+        def batch_update_if_unchanged(self, updates):
+            self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+            return []
+
         def batch_update(self, updates):
             self.batch_update_calls.append(list(updates))
             if self._raise_on_difficulty:
@@ -990,6 +1006,10 @@ class _CardsRecordingUpdates:
 
     def all(self, include_deleted: bool = False, notebook_id: str | None = None):
         return [SimpleNamespace(id="c1", content="evoke", pos=None, note=None, enrich_attempts=0)]
+
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
 
     def batch_update(self, updates):
         if self._fail is not None:

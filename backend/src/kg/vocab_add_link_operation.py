@@ -545,8 +545,14 @@ async def _default_enrich(
         if result.get("meaning_fix"):
             updates["meaning"] = result["meaning_fix"]
             meaning_changed = updates["meaning"] != card.meaning
+        # Keep only effective changes, then compare-and-set on the snapshot this decision read (#3661).
+        updates = {key: value for key, value in updates.items() if getattr(card, key, None) != value}
         if updates:
-            cards.batch_update([(card.id, updates)])
+            # Guard each written column on the value its own decision read (#3661).
+            expected = {column: getattr(card, column) for column in ("pos", "note", "meaning") if column in updates}
+            if cards.batch_update_if_unchanged([(card.id, updates, expected)]):
+                logger.info("[%s] Skipped enrich write for card %s: edited during run", user.get("id"), card.id)
+                continue
             if meaning_changed and open_embeddings is not None:
                 from .vocab_crud import reembed_meaning_edits_best_effort
 
