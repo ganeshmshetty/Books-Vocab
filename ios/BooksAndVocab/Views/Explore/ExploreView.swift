@@ -43,6 +43,29 @@ enum ExplorePhase: Equatable {
     }
 }
 
+/// 目錄同步的狀態機（#3682）。每次 run 以 `begin()` 取得遞增的 generation；只有**最新** run 的結果
+/// 才能寫入 `isSyncing`／`syncFailed`，較舊的 overlapping run 結束時不得改寫（否則會關掉仍在跑的新 run 的 loading）。
+/// 取消（`.cancelled`）代表沒有成功也沒有失敗，保留既有失敗態，不得把它清成「無失敗」。
+struct ExploreSyncState: Equatable {
+    private(set) var isSyncing = false
+    private(set) var syncFailed = false
+    private var latestGeneration = 0
+
+    /// 開始一次 run，回傳該 run 的 generation。
+    mutating func begin() -> Int {
+        latestGeneration += 1
+        isSyncing = true
+        return latestGeneration
+    }
+
+    mutating func apply(outcome: SharedDeckCatalogService.SyncOutcome, generation: Int) {
+        guard generation == latestGeneration else { return }
+        isSyncing = false
+        guard outcome != .cancelled else { return }
+        syncFailed = outcome.failure != nil
+    }
+}
+
 #if DEBUG && targetEnvironment(simulator)
 /// Deterministic UI World evidence node. Once a fixture is selected, every
 /// asset lookup/decode failure is a fixture contract failure, never an empty
@@ -106,8 +129,11 @@ struct ExploreView: View {
     private var decks: [SharedDeck]
 
     @State private var navigationPath = NavigationPath()
-    @State private var isSyncing = false
-    @State private var syncFailed = false
+    @State private var syncState = ExploreSyncState()
+    // 唯讀投影：狀態只經 ExploreSyncState 寫入；保留 isSyncing／syncFailed 名稱，
+    // ExploreFixtureContractTests 以原始碼契約斷言 noResultsState 含 `if syncFailed`。
+    private var isSyncing: Bool { syncState.isSyncing }
+    private var syncFailed: Bool { syncState.syncFailed }
     @State private var filter = ExploreFilter()
 #if DEBUG && targetEnvironment(simulator)
     init(
@@ -445,8 +471,7 @@ struct ExploreView: View {
 
     @MainActor
     private func syncCatalog(showToastOnFailure: Bool) async {
-        isSyncing = true
-        defer { isSyncing = false }
+        let generation = syncState.begin()
         let service: any SharedDeckCatalogServicing
 #if DEBUG && targetEnvironment(simulator)
         service = catalogServiceOverride ?? SharedDeckCatalogService(kgService: kgService)
@@ -454,8 +479,8 @@ struct ExploreView: View {
         service = SharedDeckCatalogService(kgService: kgService)
 #endif
         let outcome = await service.syncAll(context: modelContext)
-        syncFailed = outcome.failure != nil
-        if syncFailed && showToastOnFailure {
+        syncState.apply(outcome: outcome, generation: generation)
+        if outcome.failure != nil && showToastOnFailure {
             toastCoordinator.warning(L10n.string("explore.error.title"))
         }
         // 取消 = 畫面被換掉或登入態切換，使用者沒看到目錄 → 不計入漏斗分母。browse 是
