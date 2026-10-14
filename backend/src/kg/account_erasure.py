@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 from .library.store import LibraryBook, LibraryPendingObjectDelete
 from .sqlite_utils import make_sqlite_engine
+from .user_store import is_real_user
 
 # S3 DeleteObjects accepts at most 1000 keys per request.
 _DELETE_BATCH = 1000
@@ -100,14 +101,18 @@ def library_prefix(user_id: str) -> str:
 
 
 def ensure_account_not_erased(users: Mapping[str, Any], user_id: str) -> None:
-    """Raise 401 when ``user_id`` was permanently erased (#2702).
+    """Raise 401 when ``user_id`` was erased and has no live record since (#2702, #3652).
+
+    ``_terminated`` is permanent, so a re-registered account (same provider sub)
+    has a live record again and must pass; its pre-erasure tokens are still
+    rejected by the revocation watermark.
 
     Call under the users lock: erasure scans the key ledger and commits its
     tombstone inside one lock hold, so a write that passes this check under the
     lock is either seen by that scan or (after the tombstone) rejected here.
     """
     terminated = users.get("_terminated")
-    if isinstance(terminated, list) and user_id in terminated:
+    if isinstance(terminated, list) and user_id in terminated and not is_real_user(user_id, users.get(user_id)):
         raise HTTPException(
             status_code=401,
             detail="Account was deleted. Please sign in again.",
