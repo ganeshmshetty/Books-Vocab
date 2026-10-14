@@ -904,3 +904,68 @@ def test_signed_did_change_renewal_status_updates_will_renew_keeps_status(
 def test_signed_did_change_renewal_status_does_not_resurrect_expired_transaction():
     snapshot = _decode_renewal_toggle("AUTO_RENEW_ENABLED", 1, expires_ms=1_000_000_000_000)
     assert snapshot["status"] == "expired"
+
+
+def test_verified_test_notification_without_transaction_is_accepted_noop(tmp_path):
+    """Apple's TEST notification (and other transaction-less envelopes) carry no
+    data.signedTransactionInfo. A verified envelope like that must be acknowledged
+    with 200 (no HTTP error, which would make Apple retry), audited, and must never
+    touch the subscription record (#3705)."""
+    from kg.billing import decode_notification_payload as real_decode
+
+    users_store: dict = {
+        "u1": {
+            "subscription": {
+                "is_active": True,
+                "status": "active",
+                "product_id": "pro_monthly",
+                "transaction_id": "txn-1",
+                "original_transaction_id": "orig-1",
+            }
+        },
+        "_subscription_index": {"orig-1": "u1", "txn-1": "u1"},
+    }
+    before = copy.deepcopy(users_store)
+    notification_payload = {
+        "notificationType": "TEST",
+        "notificationUUID": "uuid-test-1",
+        "signedDate": 1700000000000,
+        "data": {"environment": "Sandbox"},
+    }
+
+    req = AppStoreNotificationRequest(
+        notification_type="TEST",
+        signed_payload="SIGNED_NOTIFICATION",
+    )
+    append_event = MagicMock()
+    save_users = MagicMock()
+    write_snapshot = MagicMock()
+
+    def decode(r):
+        return real_decode(
+            r,
+            bundle_id="com.example.app",
+            allow_unsigned_notifications=False,
+            parse_datetime_fn=lambda x: None,
+            verify_signed_jws=_signed_jws_verifier(notification_payload, {}),
+        )
+
+    result = app_store_notifications_response(
+        req,
+        users_lock_file=tmp_path / "lock",
+        load_users=lambda: users_store,
+        save_users=save_users,
+        decode_notification_payload=decode,
+        append_app_store_event=append_event,
+        resolve_user_id_from_subscription_index=_real_resolver(),
+        write_subscription_snapshot=write_snapshot,
+        build_entitlements_response=_entitlements_from_record,
+    )
+
+    assert result == {"status": "accepted", "updated": False, "reason": "indeterminate_status"}
+    append_event.assert_called_once()
+    assert append_event.call_args.args[0]["notification_type"] == "TEST"
+    assert append_event.call_args.args[0]["notification_uuid"] == "uuid-test-1"
+    write_snapshot.assert_not_called()
+    save_users.assert_not_called()
+    assert users_store == before
