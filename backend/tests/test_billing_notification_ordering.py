@@ -340,6 +340,56 @@ def test_same_signed_date_uses_deterministic_uuid_tie_break(tmp_path):
     assert result["updated"] is False
 
 
+def test_same_signed_date_terminal_beats_active_with_higher_uuid(tmp_path):
+    users = {}
+    events = []
+    _send_notification(
+        tmp_path,
+        users,
+        events,
+        _snapshot(status="expired", signed_date="2026-08-01T00:00:00+00:00", notification_uuid="aaa"),
+        "EXPIRED",
+    )
+    result = _send_notification(
+        tmp_path,
+        users,
+        events,
+        _snapshot(status="active", signed_date="2026-08-01T00:00:00+00:00", notification_uuid="zzz"),
+        "DID_RENEW",
+    )
+
+    subscription = users["u1"]["subscription"]
+    assert subscription["status"] == "expired"
+    assert subscription["is_active"] is False
+    assert subscription["last_notification_uuid"] == "aaa"
+    assert result["updated"] is False
+
+
+def test_same_signed_date_terminal_replaces_active_with_lower_uuid(tmp_path):
+    users = {}
+    events = []
+    _send_notification(
+        tmp_path,
+        users,
+        events,
+        _snapshot(status="active", signed_date="2026-08-01T00:00:00+00:00", notification_uuid="zzz"),
+        "DID_RENEW",
+    )
+    result = _send_notification(
+        tmp_path,
+        users,
+        events,
+        _snapshot(status="expired", signed_date="2026-08-01T00:00:00+00:00", notification_uuid="aaa"),
+        "EXPIRED",
+    )
+
+    subscription = users["u1"]["subscription"]
+    assert subscription["status"] == "expired"
+    assert subscription["is_active"] is False
+    assert subscription["last_notification_uuid"] == "aaa"
+    assert result["updated"] is True
+
+
 # --- Verified /sync and /reconcile against a notification watermark (#2247) ---
 #
 # These exercise the real decode_signed_transaction_info and the real
