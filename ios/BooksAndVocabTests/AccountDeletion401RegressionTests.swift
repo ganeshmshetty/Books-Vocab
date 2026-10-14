@@ -50,15 +50,21 @@ struct AccountDeletion401RegressionTests {
 
     private final class FixedStatusTransport: KGHTTPTransport, @unchecked Sendable {
         let statusCode: Int
-        init(statusCode: Int) { self.statusCode = statusCode }
+        let body: Data
+        let headers: [String: String]?
+        init(statusCode: Int, body: Data = Data(), headers: [String: String]? = nil) {
+            self.statusCode = statusCode
+            self.body = body
+            self.headers = headers
+        }
         func data(for request: URLRequest) async throws -> (Data, URLResponse) {
             let response = HTTPURLResponse(
                 url: request.url ?? URL(string: "https://kg.test")!,
                 statusCode: statusCode,
                 httpVersion: nil,
-                headerFields: nil
+                headerFields: headers
             )!
-            return (Data(), response)
+            return (body, response)
         }
     }
 
@@ -70,20 +76,30 @@ struct AccountDeletion401RegressionTests {
     private static func makeService(
         auth: DeletingAuthManager,
         invalidator: RecordingSessionInvalidator,
-        statusCode: Int
+        statusCode: Int,
+        body: Data = Data(),
+        headers: [String: String]? = nil
     ) -> KGService {
         KGService(
             authSession: auth,
             sessionInvalidator: invalidator,
-            transport: FixedStatusTransport(statusCode: statusCode),
+            transport: FixedStatusTransport(statusCode: statusCode, body: body, headers: headers),
             connectivityGate: FixedConnectivityGate(isConnected: true)
         )
     }
 
-    @Test func unauthorizedAccountDeletionCompletesEraseWithTheCapturedAccount() async throws {
+    /// #3813: the revoked-account 401 carries `X-KG-Auth-Error: account_deleted`; only that
+    /// signal is delete success and may run the captured-account erase.
+    @Test func revokedAccountDeletionCompletesEraseWithTheCapturedAccount() async throws {
         let auth = DeletingAuthManager(userId: "account-b")
         let invalidator = RecordingSessionInvalidator()
-        let service = Self.makeService(auth: auth, invalidator: invalidator, statusCode: 401)
+        let service = Self.makeService(
+            auth: auth,
+            invalidator: invalidator,
+            statusCode: 401,
+            body: Data(#"{"detail":"Account was deleted. Please sign in again."}"#.utf8),
+            headers: ["X-KG-Auth-Error": "account_deleted"]
+        )
         let coordinator = SettingsCoordinator(translationLifecycle: NoopAccountPreferenceLifecycle())
         let context = ModelContext(try Self.makeContainer())
 
@@ -93,6 +109,27 @@ struct AccountDeletion401RegressionTests {
         #expect(invalidator.logoutReasons.isEmpty)
         #expect(service.sessionExpiredReason == nil)
         #expect(coordinator.deleteAccountError == nil)
+    }
+
+    /// #3813 regression: an expired token gets a plain 401 without the account-deleted code.
+    /// It must not be treated as delete success, so nothing is erased and the user sees an error.
+    @Test func expiredTokenOn401DoesNotEraseAndReportsError() async throws {
+        let auth = DeletingAuthManager(userId: "account-b")
+        let invalidator = RecordingSessionInvalidator()
+        let service = Self.makeService(
+            auth: auth,
+            invalidator: invalidator,
+            statusCode: 401,
+            body: Data(#"{"detail":"Token has expired"}"#.utf8)
+        )
+        let coordinator = SettingsCoordinator(translationLifecycle: NoopAccountPreferenceLifecycle())
+        let context = ModelContext(try Self.makeContainer())
+
+        await coordinator.deleteAccount(authManager: auth, kgService: service, modelContext: context)
+
+        #expect(auth.deletedAccountIDs.isEmpty)
+        #expect(auth.isLoggedIn)
+        #expect(coordinator.deleteAccountError != nil)
     }
 
     /// Control: a non-401 failure still surfaces as a delete error and never reaches the erase.

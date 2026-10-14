@@ -180,6 +180,10 @@ extension KGService {
     /// (`SettingsCoordinator.deleteAccount`) has already captured the account id, and
     /// `logoutAfterAccountDeletion` then erases that account's local data and namespaced
     /// preferences. A plain http_401 logout would skip the namespaced preference purge.
+    ///
+    /// #3813: only the revoked-account 401 (marked by the server with
+    /// `X-KG-Auth-Error: account_deleted`) counts as delete success. Any other 401 (expired or
+    /// invalid token) is a session failure: it throws `KGError.unauthorized` so nothing is erased.
     func deleteAccount() async throws {
         let (data, response) = try await authenticatedRequest(
             path: "api/user/account",
@@ -187,11 +191,27 @@ extension KGService {
             retryPolicy: .none,
             unauthorized: .returnResponse
         )
-        guard response.statusCode == 401 || (200...299).contains(response.statusCode) else {
+        switch response.statusCode {
+        case 200...299:
+            return
+        case 401:
+            guard response.value(forHTTPHeaderField: AccountDeletionAuthSignal.headerName)
+                == AccountDeletionAuthSignal.accountDeletedCode
+            else {
+                throw KGError.unauthorized
+            }
+        default:
             throw KGError.httpError(
                 statusCode: response.statusCode,
                 detail: String(data: data, encoding: .utf8) ?? "DELETE api/user/account failed"
             )
         }
     }
+}
+
+/// #3813: wire contract with the backend `ACCOUNT_DELETED_AUTH_HEADER` / `ACCOUNT_DELETED_AUTH_CODE`
+/// in `backend/src/kg/user_context.py`. Present only on the revoked-account 401.
+enum AccountDeletionAuthSignal {
+    static let headerName = "X-KG-Auth-Error"
+    static let accountDeletedCode = "account_deleted"
 }
