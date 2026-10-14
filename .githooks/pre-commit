@@ -17,7 +17,7 @@ UQ_TOOLING_PATTERN='^ops/(ui_quality_gate|ui_quality_plane|ui_token_lint|plain_d
 UQ_PATTERN="^ios/BooksAndVocab/.*\\.(swift|strings|stringsdict)|$UQ_TOOLING_PATTERN"
 
 run_design_system() {
-  if ! echo "$STAGED_FILES" | grep -qE "$DS_PATTERN"; then
+  if ! grep -qE "$DS_PATTERN" <<<"$STAGED_FILES"; then
     return 0
   fi
 
@@ -31,7 +31,7 @@ run_design_system() {
 }
 
 run_ui_quality_gate() {
-  if ! echo "$STAGED_FILES" | grep -qE "$UQ_PATTERN"; then
+  if ! grep -qE "$UQ_PATTERN" <<<"$STAGED_FILES"; then
     return 0
   fi
 
@@ -44,7 +44,7 @@ run_ui_quality_gate() {
   # 加未 stage 的改動）。lint 工具本身被改時沒有 plane trigger 會命中，`--files`
   # 會選到 0 個機制而假綠，所以改跑全部 fast 機制。
   local scope=()
-  if echo "$STAGED_FILES" | grep -qE "$UQ_TOOLING_PATTERN"; then
+  if grep -qE "$UQ_TOOLING_PATTERN" <<<"$STAGED_FILES"; then
     scope=(--all-mechanisms)
   else
     local f
