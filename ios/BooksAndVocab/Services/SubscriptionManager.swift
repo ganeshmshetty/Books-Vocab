@@ -38,6 +38,7 @@ protocol SubscriptionManaging: AnyObject {
 
     func refresh(using kgService: any KGServing, authManager: any AuthManaging, force: Bool) async
     func resyncAfterManagement(using kgService: any KGServing, authManager: any AuthManaging) async
+    func syncCurrentEntitlements(using kgService: any KGServing) async -> CurrentEntitlementSyncOutcome
     func loadProducts() async
     func purchasePro(using kgService: any KGServing, authManager: any AuthManaging) async
     func restorePurchases(using kgService: any KGServing, authManager: any AuthManaging) async
@@ -47,6 +48,12 @@ protocol SubscriptionManaging: AnyObject {
 extension SubscriptionManaging {
     func refresh(using kgService: any KGServing, authManager: any AuthManaging) async {
         await refresh(using: kgService, authManager: authManager, force: false)
+    }
+
+    /// 預設值供預覽／UI 測試替身使用：它們不持有 StoreKit 交易，因此沒有可同步的權益。
+    /// 真實 `SubscriptionManager` 以 `SubscriptionManager+StoreKit.swift` 的實作覆寫此需求。
+    func syncCurrentEntitlements(using kgService: any KGServing) async -> CurrentEntitlementSyncOutcome {
+        .noEntitlement
     }
 }
 
