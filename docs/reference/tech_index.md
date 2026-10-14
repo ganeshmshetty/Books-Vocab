@@ -19,6 +19,7 @@ verified_against: afe016c4ea2fcbd7306f9c4f40b4556e77865100
 | Area | Entry | Tests／verification |
 |---|---|---|
 | iOS app | `ios/BooksAndVocab/` | `./ops/ios_ops.sh build/test` |
+| iOS feature boundaries（bookshelf 的 scope 含 `Models/Book.swift` 等，registry source 須與 doc-meta scope 一致） | `docs/reference/feature_boundary/`（`bookshelf.md` 等） | `./ops/docs_impact.py --files <path> --explain` |
 | iOS observability | `ios/BooksAndVocab/Services/AppCrashReporting.swift`、`docs/reference/ios_observability.md` | `./ops/ios_ops.sh sentry --json`、`./ops/sentry_tool.py ... --json` |
 | Backend | `backend/src/kg/` | `cd backend && uv run --locked python -m pytest` |
 | Podcast／LLM lab | `lab/podcast/`、`lab/llm_eval/` | 各自 README／`uv run` entrypoint |

@@ -367,6 +367,14 @@ documents:
       - bookshelf-changed
     sources:
       - ios/BooksAndVocab/Views/Bookshelf/
+      - ios/BooksAndVocab/Models/Book.swift
+      - ios/BooksAndVocab/Models/BookManifest.swift
+      - ios/BooksAndVocab/Models/BookLibraryReconciler.swift
+      - ios/BooksAndVocab/AppOrphanBookRecovery.swift
+      - ios/BooksAndVocab/AppStartupRecovery.swift
+      - ios/BooksAndVocab/Services/BookMetadataRepairService.swift
+      - ios/BooksAndVocab/Services/BookMetadataExtracting.swift
+      - ios/BooksAndVocab/Services/CloudKitMirroringMonitor.swift
 
   - id: reference.feature_boundary.discover
     path: docs/reference/feature_boundary/discover.md

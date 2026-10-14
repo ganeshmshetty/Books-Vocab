@@ -154,4 +154,9 @@ require "surface-scan" "$TMP/steward-scan"
 grep -F -- '--surface-scan' .claude/skills/kg-docs-control-plane/SKILL.md >"$TMP/skill-scan"
 require "surface-scan" "$TMP/skill-scan"
 
+# #3770: bookshelf feature_boundary scope (doc-meta) must be covered by registry sources
+./ops/docs_impact.py --files ios/BooksAndVocab/Models/Book.swift >"$TMP/bookshelf"
+require "IMPACT reference.feature_boundary.bookshelf docs/reference/feature_boundary/bookshelf.md match_type=exact" "$TMP/bookshelf"
+require "feature_boundary" docs/reference/tech_index.md
+
 echo "docs-impact tests: PASS"
