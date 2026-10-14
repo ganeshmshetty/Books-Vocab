@@ -53,6 +53,9 @@ Swift 端應優先透過 `VocabularyEntry` 的 typed helper 使用這些狀態�
 | `failed + add` | 上次新增同步失敗，可重試 | 是 | 是 | 否 |
 | `failed + add` + `rejectedReason` | 後端確定性拒收（終態，不重試；`SyncView` 列出供使用者取消，取消即硬刪；`addCount` 與上傳不含此列，`pendingCount` 含之） | 是 | 是（僅列表可見、可移除，不上傳） | 否 |
 | `failed + delete` | 上次刪除同步失敗，可重試 | 否 | 是 | 否 |
+| `pending + edit`（已有 `kgCardId`） | 已同步卡的編輯待上傳；server 仍持卡（#3673） | 是 | 是 | 是 |
+| `failed + edit`（已有 `kgCardId`） | 編輯同步失敗，可重試 | 是 | 是 | 是 |
+| `failed + edit` + `rejectedReason`（已有 `kgCardId`） | 後端拒收編輯（終態；卡仍在 server 上，不取消即保留） | 是 | 是（列表可見，不重送） | 是 |
 
 ## 主要轉移
 
@@ -176,7 +179,7 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 
 - `ReviewStateEntry.override = true`（`PATCH /api/vocab/review`）是進度重設指令：`review_count` / `lapse_count` 原樣寫入、`next_review_at` 取 client 值（now），**不受** `last_reviewed_at` 新舊影響，server 較新時仍套用（#2042）。兩分支（server 較新／client 較新）寫入的 override 欄位一致：`review_count`、`lapse_count`、`review_interval_hours`、`review_streak`、`last_review_feedback`、`next_review_at`，排程結果與時鐘先後無關。`last_reviewed_at` 不在此一致集合內，見本節末條。
 - **推送確認（不變式，#2483）**：`pushReviewStates` 以 1000 筆分批 `PATCH`（後端單請求上限 5000，超過整請求 422）。每批成功後只確認「該批送出時」的 `lastReviewedAt ?? dateAdded`，不再以 wall-clock 邊界確認；推送途中才寫入的複習保持 dirty，下次同步重送。某批失敗時，已成功的批次保持確認、其餘保持 dirty。
-- 非 override 仍走 LWW：server 較新只取 counts 的 max；覆寫不取 max，否則 reset 無法落地。
+- 非 override 仍走 LWW：server 較新時，若本地無未推送複習（`needsReviewStatePush == false` 且無 `pendingReviewProgressReset`）則 pull 直接採用 server 的 `review_count`／`lapse_count`（#3663，使其他裝置的 reset 可落地）；僅本地有未推送複習時取 counts 的 max，保留本地增量。覆寫不取 max，否則 reset 無法落地。
 - **本地待推送意圖（不變式，#2042）**：`VocabularyEntry.pendingReviewModePush`（改複習方向，T13）與 `pendingReviewProgressReset`（重設進度，T14）為持久化旗標，預設 false。
   - mode：`pushReviewStates` 先以 `PATCH api/vocab/{word}/preferences`（僅 `{"mode": ...}`）送出，只對已有 server 卡（`kgCardId`）的列；確認後才清旗標，且僅在本地 mode 未再被改動時清除；server 回 deterministic 4xx（401／429 除外）為該卡終態，同樣清旗標，避免永久阻擋 pull（#3330）。
   - progress reset：`buildReviewStatePushPayload` 對此旗標的列一律送（即使 watermark 已超前）並帶 `override: true`；確認（`markReviewStatesPushed`）且 `lastReviewedAt` 未再變動時才清旗標。
@@ -248,5 +251,5 @@ vocab pull 有五個呼叫點：`KGVocabView.task`（進頁自動）、pull-to-r
 ## Phase 2 之後的建議
 
 - 若未來真的用到 `failed`，要補明確 retry 規則
-- 若未來支援編輯詞卡內容，`edit` 需要獨立轉移表
+- 編輯詞卡內容已支援（`edit`）：只要列仍有 `kgCardId`，無論 pending／failed／rejected 皆留在知識庫、複習與統計可見（`VocabularyEntry.isKnownToServer`，#3673）；`edit` 的獨立轉移表仍未建立
 - 若同步流程再變複雜，優先擴充這份文件與測試，而不是把邏輯散回各個 View

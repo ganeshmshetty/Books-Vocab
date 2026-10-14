@@ -297,8 +297,9 @@ actor BackgroundSyncActor {
         // means it was deleted remotely before soft-deletes were implemented.
         var orphanCleanupBlocked = false
         if !isIncremental {
+            // Orphan detection stays synced-only: a pending edit may carry a word the server has not seen yet.
             let localSyncedCount = localEntries.filter {
-                $0.shouldAppearInKnowledgeList
+                $0.isSynced && $0.shouldAppearInKnowledgeList
             }.count
             let serverReturnedCount = fetchedCards.count
 
@@ -317,7 +318,7 @@ actor BackgroundSyncActor {
                 var orphanedWords: [String] = []
                 for entry in localEntries {
                     guard !deletedEntries.contains(ObjectIdentifier(entry)) else { continue }
-                    guard entry.shouldAppearInKnowledgeList else { continue }
+                    guard entry.isSynced, entry.shouldAppearInKnowledgeList else { continue }
                     let orphanKey = mergeKey(entry.word, notebookId: entry.notebookId)
                     guard !fetchedCardKeys.contains(orphanKey) else { continue }
                     orphanedWords.append(entry.word)
@@ -619,6 +620,8 @@ actor BackgroundSyncActor {
 
         let localLast = entry.lastReviewedAt ?? .distantPast
         if serverLast >= localLast {
+            // Read before `lastReviewedAt`/`reviewStateSyncedAt` are overwritten below.
+            let hasUnpushedReview = entry.needsReviewStatePush || entry.pendingReviewProgressReset
             if localLast != .distantPast {
                 if serverLast == localLast {
                     reviewMergeEqualInstantConflicts += 1
@@ -631,8 +634,16 @@ actor BackgroundSyncActor {
                 entry.nextReviewAt = nextDate
             }
             entry.lastReviewedAt = serverLast
-            entry.reviewCount = max(entry.reviewCount, card.reviewCount ?? 0)
-            entry.lapseCount = max(entry.lapseCount, card.lapseCount ?? 0)
+            // Counts are monotonic only while a local review is unpushed (its increment must
+            // survive). Otherwise the server is authoritative: a progress reset (#2042) lowers
+            // counts there, and `max` would resurrect the stale local value.
+            if hasUnpushedReview {
+                entry.reviewCount = max(entry.reviewCount, card.reviewCount ?? 0)
+                entry.lapseCount = max(entry.lapseCount, card.lapseCount ?? 0)
+            } else {
+                entry.reviewCount = card.reviewCount ?? entry.reviewCount
+                entry.lapseCount = card.lapseCount ?? entry.lapseCount
+            }
             // Streak is state, not a counter: a newer server that forgot the card
             // (streak 0) must reset it. Only an absent field keeps the local value (#2485).
             entry.reviewStreak = card.reviewStreak ?? entry.reviewStreak

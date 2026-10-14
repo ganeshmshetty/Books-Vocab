@@ -211,4 +211,78 @@ struct VocabularyEntryStateTests {
     func upload_syncedAddSkips() {
         #expect(!entry(status: 1, action: "add").shouldUploadOnNextSync)
     }
+
+    // MARK: - #3673: editing a synced card keeps it visible while the server still holds it
+
+    private func syncedWithServerCard() -> VocabularyEntry {
+        let e = VocabularyEntry(word: "edit", translation: "翻譯", context: "ctx", bookTitle: "book")
+        e.notebookId = "notebook-a"
+        e.kgCardId = "c-edit"
+        e.markSynced()
+        return e
+    }
+
+    @Test("#3673 synced 卡編輯排入 pending edit 後仍入知識列表與複習")
+    func editQueued_syncedCardStaysVisible() {
+        let e = syncedWithServerCard()
+        e.queueEdit()
+        #expect(e.shouldAppearInKnowledgeList)
+        #expect(e.shouldAppearInReview)
+    }
+
+    @Test("#3673 編輯被拒收（failed + edit + rejectedReason）後仍入知識列表與複習")
+    func editRejected_syncedCardStaysVisible() {
+        let e = syncedWithServerCard()
+        e.queueEdit()
+        e.markEditRejected(reason: "rejected")
+        #expect(e.shouldAppearInKnowledgeList)
+        #expect(e.shouldAppearInReview)
+    }
+
+    @Test("#3673 待刪除的 synced 卡仍不入知識列表（negative control）")
+    func pendingDeleteWithServerCard_stillHidden() {
+        let e = syncedWithServerCard()
+        e.syncAction = .delete
+        e.syncState = .pending
+        #expect(!e.shouldAppearInKnowledgeList)
+    }
+
+    @Test("#3673 pending add 且無 kgCardId 仍不入知識列表（negative control）")
+    func pendingAddWithoutServerCard_stillHidden() {
+        let e = VocabularyEntry(word: "new", translation: "翻譯", context: "ctx", bookTitle: "book")
+        e.syncAction = .add
+        e.syncState = .pending
+        #expect(!e.shouldAppearInKnowledgeList)
+    }
+
+    @Test("#3673 queueEdit 後 knowledgeListPredicate 仍取回該卡，negative controls 仍排除（SwiftData）")
+    func editQueued_stillFetchedByKnowledgeListPredicate() throws {
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: VocabularyEntry.self, configurations: configuration)
+        let context = ModelContext(container)
+
+        let edited = syncedWithServerCard()
+        context.insert(edited)
+
+        let pendingAdd = VocabularyEntry(word: "new", translation: "翻譯", context: "ctx", bookTitle: "book")
+        pendingAdd.notebookId = "notebook-a"
+        pendingAdd.syncAction = .add
+        pendingAdd.syncState = .pending
+        context.insert(pendingAdd)
+
+        let pendingDelete = syncedWithServerCard()
+        pendingDelete.word = "gone"
+        pendingDelete.syncAction = .delete
+        pendingDelete.syncState = .pending
+        context.insert(pendingDelete)
+        try context.save()
+
+        edited.queueEdit()
+        try context.save()
+
+        let rows = try context.fetch(
+            FetchDescriptor<VocabularyEntry>(predicate: VocabularyEntry.knowledgeListPredicate(notebookId: "notebook-a"))
+        )
+        #expect(rows.map(\.id) == [edited.id])
+    }
 }
