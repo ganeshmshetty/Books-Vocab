@@ -15,9 +15,19 @@ from kg.admin_test_matrix import runner
 from kg.admin_test_matrix.runner import _error_run, _parse_matrix
 
 _PAYLOAD_KEYS = {
-    "runId", "startedAt", "finishedAt", "durationSeconds", "returnCode",
-    "outcome", "totals", "matrix", "cases", "selectedItems", "itemResults",
-    "stdoutTail", "stderrTail",
+    "runId",
+    "startedAt",
+    "finishedAt",
+    "durationSeconds",
+    "returnCode",
+    "outcome",
+    "totals",
+    "matrix",
+    "cases",
+    "selectedItems",
+    "itemResults",
+    "stdoutTail",
+    "stderrTail",
 }
 
 
@@ -67,7 +77,11 @@ def test_error_run_shape_and_synthetic_error():
     assert payload["returnCode"] == 127
     assert payload["outcome"] == "failed"
     assert payload["totals"] == {
-        "passed": 0, "failed": 0, "errors": 1, "skipped": 0, "total": 1,
+        "passed": 0,
+        "failed": 0,
+        "errors": 1,
+        "skipped": 0,
+        "total": 1,
     }
     assert payload["matrix"] == []
     assert payload["cases"] == []
@@ -101,9 +115,7 @@ def test_valid_item_id_runs_only_its_mapped_nodeids(monkeypatch):
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            command, 0, stdout=f"{nodeid} PASSED\n", stderr=""
-        )
+        return subprocess.CompletedProcess(command, 0, stdout=f"{nodeid} PASSED\n", stderr="")
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
 
@@ -137,9 +149,7 @@ def test_timeout_with_bytes_output_returns_failed_record(monkeypatch):
     # subprocess.TimeoutExpired carries raw bytes (or None) on POSIX; the
     # timeout branch must decode them instead of crashing in _parse_matrix.
     def timeout_run(command, **kwargs):
-        raise subprocess.TimeoutExpired(
-            command, 600, output=b"tests/a.py::t PASSED\n", stderr=b""
-        )
+        raise subprocess.TimeoutExpired(command, 600, output=b"tests/a.py::t PASSED\n", stderr=b"")
 
     monkeypatch.setattr(runner.subprocess, "run", timeout_run)
 

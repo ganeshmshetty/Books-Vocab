@@ -12,9 +12,7 @@ from typing import Any, NamedTuple
 from .catalog import UnknownTestMatrixItemError, selected_nodeids
 from .results import bucket_status, item_results
 
-CASE_LINE_RE = re.compile(
-    r"^(?P<case>tests/\S+::\S+)\s+(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAILED|XPASSED)\b"
-)
+CASE_LINE_RE = re.compile(r"^(?P<case>tests/\S+::\S+)\s+(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAILED|XPASSED)\b")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,12 +77,14 @@ def _parse_matrix(stdout: str, stderr: str) -> MatrixReport:
         status = match.group("status")
         module = case_id.split("::", 1)[0]
         bucket = bucket_status(status)
-        cases.append({
-            "id": case_id,
-            "module": module,
-            "status": status,
-            "bucket": bucket,
-        })
+        cases.append(
+            {
+                "id": case_id,
+                "module": module,
+                "status": status,
+                "bucket": bucket,
+            }
+        )
         if module not in matrix:
             matrix[module] = {
                 "module": module,
@@ -128,7 +128,9 @@ def run_pytest_matrix(selected_items: list[str] | None = None) -> dict[str, Any]
 
     if not tests_dir.exists():
         return _error_run(
-            run_id, started, selected_items,
+            run_id,
+            started,
+            selected_items,
             stderr_tail=[f"tests directory not found at {tests_dir}"],
         )
 
@@ -164,7 +166,9 @@ def run_pytest_matrix(selected_items: list[str] | None = None) -> dict[str, Any]
         )
     except OSError as exc:
         return _error_run(
-            run_id, started, selected_items,
+            run_id,
+            started,
+            selected_items,
             stderr_tail=[f"{type(exc).__name__}: {exc}"],
         )
 
