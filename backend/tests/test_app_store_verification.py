@@ -231,8 +231,11 @@ def test_signed_notification_verifies_nested_jws_and_updates_subscription(signed
     )
     assert sync_response.status_code == 200, sync_response.text
 
+    # EXPIRED for the stored current transaction. A terminal notification for a
+    # superseded transaction is refused by is_superseded_terminal_snapshot and is
+    # covered in test_billing_notification_ordering.py.
     signed_transaction_info = _sign_jws(
-        _transaction_payload(transaction_id="tx-signed-3", original_transaction_id="otx-signed-2", status="expired"),
+        _transaction_payload(transaction_id="tx-signed-2", original_transaction_id="otx-signed-2", status="expired"),
         env.chain["leaf_key"],
         [env.chain["leaf_cert"], env.chain["intermediate_cert"], env.chain["root_cert"]],
     )

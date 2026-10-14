@@ -22,6 +22,7 @@ from .api_models import (
 )
 from .app_store import AppStoreConfigurationError, AppStoreVerificationError
 from .billing.index import resolve_claim_owner
+from .billing.snapshots import is_superseded_terminal_snapshot
 from .types import StoredUserRecord, SubscriptionRecord, UsersPayload
 from .users_lock import users_file_lock
 
@@ -250,6 +251,20 @@ def app_store_notifications_response(
         )
         if not user_id:
             return {"status": "accepted", "updated": False, "reason": "unmapped_transaction"}
+        current_record = users.get(user_id)
+        if is_superseded_terminal_snapshot(current_record.get("subscription") if current_record else None, snapshot):
+            logger.info(
+                "App Store terminal notification %r for superseded transaction ignored for user %s",
+                req.notification_type,
+                user_id,
+            )
+            return {
+                "status": "accepted",
+                "updated": False,
+                "user_id": user_id,
+                "entitlements": build_entitlements_response(current_record).model_dump(),
+                "reason": "superseded_transaction",
+            }
         previous_subscription = deepcopy(users.get(user_id, {}).get("subscription"))
         record = _write_snapshot(
             write_subscription_snapshot,
