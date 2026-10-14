@@ -43,6 +43,9 @@ final class SharedDeckCopyController {
     /// 後的「重試」沿用使用者當初確認的名稱，而非退回 deck 標題（#2748）。
     private(set) var lastNotebookName: String?
 
+    /// 當前意圖的首次落盤時間；與 key 同生命週期。retry 沿用原值（不重置年齡），到期判定才有效（#3501）。
+    private var intentCreatedAt: Date?
+
     /// 擁有此意圖的帳號（登入 userId；未登入為 nil）。registry 只把同帳號的 controller
     /// 交回，避免帳號 B 看見帳號 A 的失敗卡與 notebook 名稱（#2748）。
     let owner: String?
@@ -66,6 +69,7 @@ final class SharedDeckCopyController {
         if let restored {
             idempotencyKey = restored.idempotencyKey
             lastNotebookName = restored.notebookName
+            intentCreatedAt = restored.createdAt
         }
     }
 
@@ -102,8 +106,10 @@ final class SharedDeckCopyController {
         idempotencyKey = key
         lastNotebookName = notebookName
         // 先落盤再送出：回應前行程被殺，重啟後仍以同一把 key 重試（失敗時此筆已持久化，不需另寫）。
+        let createdAt = intentCreatedAt ?? Date()
+        intentCreatedAt = createdAt
         intents.upsert(PendingDeckCopyIntent(
-            owner: owner, deckId: deckId, idempotencyKey: key, notebookName: notebookName
+            owner: owner, deckId: deckId, idempotencyKey: key, notebookName: notebookName, createdAt: createdAt
         ))
         state = .inflight
         let startedAt = Date()
@@ -119,6 +125,7 @@ final class SharedDeckCopyController {
             await afterCopy(resp)
             idempotencyKey = nil   // 意圖已達成 → 下一次複製為新意圖
             lastNotebookName = nil
+            intentCreatedAt = nil
             intents.remove(owner: owner, deckId: deckId)
             state = .success(Outcome(
                 notebookId: resp.notebookId,
@@ -227,14 +234,30 @@ final class SharedDeckCopyRegistry {
     private let intents: any SharedDeckCopyIntentStoring
     private var controllers: [Key: SharedDeckCopyController] = [:]
 
+    /// 待完成意圖在行程重啟後仍可接回的最長年齡（#3501）。server 的 idempotencyKey 永久冪等，
+    /// 超過此期限的舊 key 重放只會回傳使用者可能已刪除的舊 notebook，故不接回並清除條目。
+    static let restoredIntentMaxAge: TimeInterval = 24 * 60 * 60
+
     /// 行程啟動時接回仍待完成的複製意圖（#3423）：inflight／failure 在上次行程被殺前落盤者，
     /// 以原 key 與名稱登記，reopen 即可 retry 同一把 key，不因重啟重複複製。
-    init(intents: any SharedDeckCopyIntentStoring = EphemeralSharedDeckCopyIntentStore()) {
+    /// 無年齡證明（舊版落盤、無 `createdAt`）或已超過 `restoredIntentMaxAge` 者不接回，並自儲存移除（#3501）。
+    init(
+        intents: any SharedDeckCopyIntentStoring = EphemeralSharedDeckCopyIntentStore(),
+        now: Date = Date()
+    ) {
         self.intents = intents
-        for pending in intents.load() {
+        let pendings = intents.load()
+        let restorable = pendings.filter { Self.isRestorable($0, now: now) }
+        if restorable.count != pendings.count { intents.save(restorable) }
+        for pending in restorable {
             controllers[Key(owner: pending.owner, deckId: pending.deckId)] =
                 SharedDeckCopyController(owner: pending.owner, intents: intents, restored: pending)
         }
+    }
+
+    private static func isRestorable(_ intent: PendingDeckCopyIntent, now: Date) -> Bool {
+        guard let createdAt = intent.createdAt else { return false }
+        return now.timeIntervalSince(createdAt) <= restoredIntentMaxAge
     }
 
     /// 已登記（複製已開始）的 (帳號, deck) 數；供測試斷言不累積。

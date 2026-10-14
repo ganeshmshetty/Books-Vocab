@@ -479,6 +479,54 @@ struct SharedDeckCopyControllerTests {
         #expect(c2.isSucceeded)
     }
 
+    /// 重啟接回的意圖必須有年齡證明：無時間戳（舊版落盤）不得重放舊 key，且條目清除（#3501）。
+    /// 修前（無年齡檢查）此條目會被接回，key 非 nil → 紅。
+    @Test func restored_intent_without_age_proof_is_not_replayed() {
+        let store = EphemeralSharedDeckCopyIntentStore(intents: [
+            PendingDeckCopyIntent(owner: "A", deckId: "d1", idempotencyKey: "legacy-key", notebookName: "GRE 3000")
+        ])
+        let registry = SharedDeckCopyRegistry(intents: store)
+        #expect(registry.controller(for: "d1", owner: "A").currentIdempotencyKey == nil, "legacy intent without timestamp is not replayed")
+        #expect(store.load().isEmpty, "dropped intent is cleared from the store")
+    }
+
+    /// 超過到期期限的意圖不得重放（server 的 key 永久冪等，重放只會回已被使用者刪除的舊 notebook）（#3501）。
+    @Test func restored_intent_older_than_expiry_is_not_replayed() {
+        let now = Date()
+        let stale = now.addingTimeInterval(-(SharedDeckCopyRegistry.restoredIntentMaxAge + 60))
+        let store = EphemeralSharedDeckCopyIntentStore(intents: [
+            PendingDeckCopyIntent(owner: "A", deckId: "d1", idempotencyKey: "stale-key", notebookName: nil, createdAt: stale)
+        ])
+        let registry = SharedDeckCopyRegistry(intents: store, now: now)
+        #expect(registry.controller(for: "d1", owner: "A").currentIdempotencyKey == nil)
+        #expect(store.load().isEmpty)
+    }
+
+    /// 未到期的意圖照常接回（同一把 key）：到期只剔除陳舊意圖，不影響 #3423 的重啟續傳。
+    @Test func restored_intent_within_expiry_is_replayed() {
+        let now = Date()
+        let fresh = now.addingTimeInterval(-3600)
+        let store = EphemeralSharedDeckCopyIntentStore(intents: [
+            PendingDeckCopyIntent(owner: "A", deckId: "d1", idempotencyKey: "fresh-key", notebookName: nil, createdAt: fresh)
+        ])
+        let registry = SharedDeckCopyRegistry(intents: store, now: now)
+        #expect(registry.controller(for: "d1", owner: "A").currentIdempotencyKey == "fresh-key")
+        #expect(store.load().count == 1)
+    }
+
+    /// retry 不得重置意圖年齡：否則每次失敗重試都會把陳舊意圖續命，到期機制失效。
+    @Test func retry_keeps_original_intent_age() async {
+        let seeded = Date().addingTimeInterval(-3600)
+        let store = EphemeralSharedDeckCopyIntentStore(intents: [
+            PendingDeckCopyIntent(owner: "A", deckId: "d1", idempotencyKey: "k", notebookName: nil, createdAt: seeded)
+        ])
+        let registry = SharedDeckCopyRegistry(intents: store)
+        let c = registry.controller(for: "d1", owner: "A")
+        registry.track(c, for: "d1")
+        await c.copy(deckId: "d1", notebookName: nil, using: FakeDeckCopier([.failure(URLError(.timedOut))]))
+        #expect(store.load().first?.createdAt == seeded)
+    }
+
     /// 持久化意圖以帳號 owner 隔離（B 不得接到 A 的 key）；success 後清除（下次複製為新意圖）。
     @Test func persisted_intent_is_owner_scoped_and_cleared_on_success() async {
         let store = EphemeralSharedDeckCopyIntentStore()
