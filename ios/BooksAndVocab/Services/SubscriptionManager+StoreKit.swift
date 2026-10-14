@@ -12,6 +12,18 @@ enum CurrentEntitlementSyncOutcome: Equatable {
     case failed
 }
 
+extension CurrentEntitlementSyncOutcome {
+    /// 將 `syncTransaction` 拋出的錯誤對應為還原結果（純函式）。
+    /// 403（交易綁定其他帳號）與 409（後端已綁定其他帳號）皆為永久拒絕；其餘（401、408、429、5xx、網路）可重試。
+    init(syncError error: any Error) {
+        guard case .httpError(let status, _)? = error as? KGError else {
+            self = .failed
+            return
+        }
+        self = (status == 403 || status == 409) ? .rejected : .failed
+    }
+}
+
 extension SubscriptionManager {
     func syncTransaction(
         _ transaction: Transaction,
@@ -82,10 +94,7 @@ extension SubscriptionManager {
                 return .synced
             } catch {
                 AppLog.subscription.warning("currentEntitlements sync failed: \(error.localizedDescription)")
-                if case .httpError(statusCode: 403, _)? = error as? KGError {
-                    return .rejected
-                }
-                return .failed
+                return CurrentEntitlementSyncOutcome(syncError: error)
             }
         }
         AppLog.subscription.warning("No current entitlement found for \(Self.proProductID)")
