@@ -84,13 +84,15 @@ extension VocabularyContextStore {
             // 既有 cardId，convergeAddedEntries 會 markSynced，新譯文就永遠不會到 server（#3408 reader 路徑）。
             // uploadSubmittedAt 非 nil 的 in-doubt add（#3584）同理：markSyncFailed 保留它（T4），server 可能已建卡，
             // 尚未收到 cardId 也不可重送 add。
-            if existing.hasServerCard || existing.uploadSubmittedAt != nil {
+            let restoresAsEdit = existing.hasServerCard || existing.uploadSubmittedAt != nil
+            if restoresAsEdit {
                 existing.queueEdit()
             } else {
                 existing.restorePendingEntry()
             }
             existing.translation = translation
-            if let rootForm { existing.rootForm = rootForm }
+            // edit 路徑不送 root_form（#3543），server 持有的 rootForm 不可由本地覆寫，否則本地與 server 分歧（#3611）。
+            if !restoresAsEdit, let rootForm { existing.rootForm = rootForm }
             modelContext.safeSaveWithToast(toastCoordinator)
             return true
         }

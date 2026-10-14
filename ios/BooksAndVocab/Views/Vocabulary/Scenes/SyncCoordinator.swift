@@ -229,7 +229,8 @@ final class SyncCoordinator: SyncCoordinating {
     /// 同 notebook 同字的「待刪 + 待新增」收斂成還原待刪那筆（#2105 defense-in-depth）。
     ///
     /// 若照原樣上傳，delete 先跑會刪掉 server card（SRS 歷史、AI 內容、graph links），
-    /// add 再建一張沒有歷史的新卡。收斂規則：待刪那筆承接新擷取的 translation／rootForm，
+    /// add 再建一張沒有歷史的新卡。收斂規則：待刪那筆承接新擷取的 translation；rootForm 僅在未同步路徑
+    /// （`restorePendingEntry()`）承接新值，server 已持有卡時保留 server 值（edit 路徑不送 root_form，#3543／#3611）。
     /// 新增那筆本機刪除（它從未上過 server），其 id 回傳給呼叫端排除在上傳批次外。
     /// 待刪那筆若 server 已持有卡（`hasServerCard`）必須走 `queueEdit()`：`restorePendingEntry()`
     /// 會把它改成 pending add 經 batchAdd 重送，server 不會套用新 translation（#3408）。
