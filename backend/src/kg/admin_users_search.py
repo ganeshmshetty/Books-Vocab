@@ -2,11 +2,12 @@
 
 Pure function so it's trivially testable; the HTTP wrapper lives in admin_wiring.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
-from .user_store import is_real_user
+from .admin.entitlements import is_canonical_account
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
@@ -43,10 +44,9 @@ def search_users(
     elif limit > MAX_LIMIT:
         limit = MAX_LIMIT
 
-    # Exclude meta + underscore-prefixed keys, normalize records.
+    # Exclude meta + underscore-prefixed keys and link pointers (not accounts).
     real: list[tuple[str, dict[str, Any]]] = [
-        (uid, info) for uid, info in users_data.items()
-        if is_real_user(uid, info)
+        (uid, info) for uid, info in users_data.items() if is_canonical_account(uid, info)
     ]
     total = len(real)
 

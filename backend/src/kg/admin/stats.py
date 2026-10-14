@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from ..api_models import EntitlementsResponse
 from ..types import AdminGrantRecord, StoredUserRecord, UsersPayload
-from ..user_store import is_real_user
+from .entitlements import is_canonical_account, is_link_pointer
 
 logger = logging.getLogger("kg.admin_handlers")
 
@@ -50,12 +50,14 @@ def admin_stats_response(
 
     users_data = load_users()
     token_stats = get_all_stats()
-    is_pro_by_user = {uid: _is_pro({"record": info}) for uid, info in users_data.items() if is_real_user(uid, info)}
+    is_pro_by_user = {
+        uid: _is_pro({"record": info}) for uid, info in users_data.items() if is_canonical_account(uid, info)
+    }
     quota_usage = get_all_quota_usage(is_pro_by_user=is_pro_by_user)
 
     result = []
     for uid, info in users_data.items():
-        if uid.startswith("_"):
+        if uid.startswith("_") or is_link_pointer(uid, info):
             continue
 
         user_dir = data_dir / "users" / uid

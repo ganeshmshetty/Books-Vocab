@@ -24,7 +24,7 @@ from kg.api_models.billing import (
     EntitlementsResponse,
     SubscriptionStatusResponse,
 )
-from kg.exceptions import NotFoundError
+from kg.exceptions import ConflictError, NotFoundError
 
 
 def _build_entitlements_response(record: dict[str, Any] | None) -> EntitlementsResponse:
@@ -79,9 +79,7 @@ def test_grant_forces_server_actor_and_active_state(store, tmp_path):
     # Client tries to spoof a different actor via the request body.
     req = AdminGrantRequest(reason="  vip  ", expires_at="2030-01-01", granted_by="attacker")
     with patch("kg.admin_audit.record_audit") as rec:
-        resp = admin_grant_pro_access_response(
-            "u1", req, admin_uid="real-admin", **_di(store, tmp_path / "users.lock")
-        )
+        resp = admin_grant_pro_access_response("u1", req, admin_uid="real-admin", **_di(store, tmp_path / "users.lock"))
 
     grant = users["u1"]["admin_grant"]
     assert grant["is_active"] is True
@@ -114,9 +112,7 @@ def test_revoke_sets_inactive_and_audits(store, tmp_path):
     users = store[0]
     users["u1"]["admin_grant"] = {"is_active": True, "status": "active"}
     with patch("kg.admin_audit.record_audit") as rec:
-        resp = admin_revoke_pro_access_response(
-            "u1", admin_uid="real-admin", **_di(store, tmp_path / "users.lock")
-        )
+        resp = admin_revoke_pro_access_response("u1", admin_uid="real-admin", **_di(store, tmp_path / "users.lock"))
     grant = users["u1"]["admin_grant"]
     assert grant["is_active"] is False
     assert grant["status"] == "inactive"
@@ -134,9 +130,7 @@ def test_revoke_passes_raw_admin_uid_to_audit_asymmetry(store, tmp_path):
     actor. record_audit itself normalises None -> "admin", but the handler
     does not pre-resolve it on the revoke path."""
     with patch("kg.admin_audit.record_audit") as rec:
-        admin_revoke_pro_access_response(
-            "u1", admin_uid=None, **_di(store, tmp_path / "users.lock")
-        )
+        admin_revoke_pro_access_response("u1", admin_uid=None, **_di(store, tmp_path / "users.lock"))
     assert rec.call_args.kwargs["admin_uid"] is None
 
 
@@ -163,6 +157,62 @@ def test_user_entitlement_response_for_real_user(store):
     assert resp.user_id == "u1"
     assert resp.pro.is_active is True
     assert resp.admin_grant.is_active is True
+
+
+@pytest.fixture
+def store_with_pointer(store):
+    """Canonical account ``a1`` plus a link pointer ``p1`` -> ``a1`` (login resolves p1 to a1)."""
+    users = store[0]
+    users["a1"] = {"email": "a1@b.c"}
+    users["p1"] = {"_linked_to": "a1"}
+    return store
+
+
+@pytest.mark.parametrize("handler", ["grant", "revoke"])
+def test_mutation_on_link_pointer_is_rejected_and_writes_nothing(store_with_pointer, tmp_path, handler):
+    users = store_with_pointer[0]
+    with patch("kg.admin_audit.record_audit") as rec:
+        with pytest.raises(ConflictError):
+            if handler == "grant":
+                admin_grant_pro_access_response(
+                    "p1",
+                    AdminGrantRequest(),
+                    admin_uid="real-admin",
+                    **_di(store_with_pointer, tmp_path / "users.lock"),
+                )
+            else:
+                admin_revoke_pro_access_response(
+                    "p1", admin_uid="real-admin", **_di(store_with_pointer, tmp_path / "users.lock")
+                )
+    assert "admin_grant" not in users["p1"]
+    assert "admin_grant" not in users["a1"]
+    rec.assert_not_called()
+
+
+def test_grant_on_canonical_account_is_effective_through_pointer_login(store_with_pointer, tmp_path):
+    users = store_with_pointer[0]
+    with patch("kg.admin_audit.record_audit"):
+        admin_grant_pro_access_response(
+            "a1", AdminGrantRequest(), admin_uid="real-admin", **_di(store_with_pointer, tmp_path / "users.lock")
+        )
+    assert users["a1"]["admin_grant"]["is_active"] is True
+    resp = admin_user_entitlement_response(
+        "a1",
+        load_users=store_with_pointer[1],
+        build_entitlements_response=_build_entitlements_response,
+        current_admin_grant_record=_current_admin_grant_record,
+    )
+    assert resp.pro.is_active is True
+
+
+def test_user_entitlement_response_rejects_link_pointer(store_with_pointer):
+    with pytest.raises(NotFoundError):
+        admin_user_entitlement_response(
+            "p1",
+            load_users=store_with_pointer[1],
+            build_entitlements_response=_build_entitlements_response,
+            current_admin_grant_record=_current_admin_grant_record,
+        )
 
 
 @pytest.mark.parametrize("bad_id", ["ghost", "_schema"])
