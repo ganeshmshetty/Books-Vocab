@@ -61,7 +61,8 @@ verified_against: 51ce9228ce64c1897850b8fcab672364b17f8731
 | `ReadiumNavigatorJS+Selection.swift` | `buildSelectionScript`（`selectionchange` 監聽 + 單字 caret 點擊偵測） |
 | `ReadiumNavigatorCoordinator+Commands.swift` | `BridgeCommand` / `HostCommand` / `NavigatorCommand` / `DOMCommand` |
 | `ReadiumNavigatorCoordinator+Planner.swift` | `struct BridgePlanner`，指令排程。換綁定單字本時以 **set-diff 權威重畫** highlight（比對舊/新命中集合 add/remove 底線指令），取代舊的 count-gating |
-| `ReadiumNavigatorCoordinator+Messages.swift` | 訊息解析 extension |
+| `ReadiumNavigatorCoordinator+Messages.swift` | 訊息解析 extension；只接受主 frame、橋接 world 送出的訊息 |
+| `ReaderBridgeContentWorld.swift` | 橋接專用 `WKContentWorld`（`kg-reader-bridge`）：handler 註冊、script 注入、`EPUBNavigatorViewController.evaluateBridgeScript` 都走同一 world，出版品 script 在 `.page` 看不到橋接函式 |
 | `ReadiumNavigatorCoordinator+Highlighting.swift` | 高亮 extension |
 | `ReaderFontFaceCSSCache.swift` | 行程級 `@font-face` CSS 快取（16 TTF → base64，~4.5 MB）：`prewarm()` 由 `BookshelfView.onAppear`／`ReaderView.init` 在 detached `.utility` 建置；navigator `setupUserScripts`（主執行緒）只讀 `css()` 快取，冷路徑 fallback 為 single-flight 同步建置並 log（#2052） |
 | `ReadiumNavigatorSupport.swift` | `actor GlobalDebouncer` + `final class NavigatorHostViewController` |
