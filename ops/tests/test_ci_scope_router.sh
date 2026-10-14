@@ -161,6 +161,38 @@ audit_check ios "$ROOT/ios/BooksAndVocabTests"
 audit_check backend "$ROOT/backend/tests"
 [[ "$audit_count" -gt 0 ]] || fail 'audit: scanned no test-read paths (#3440 scan pattern broken)'
 
+# Issue #3556: the literal scan above cannot see computed joins such as
+# Path(__file__).resolve().parents[2] / "ops" / "data_inspect.py". Resolve each
+# same-line "ops" / "seg" chain to ops/<seg>/... and route it: a file target must
+# select the suite; a directory target must route every *.py it holds.
+join_count=0
+audit_joins() { # dir suite-key
+  local dir="$1" suite="$2" join_path targets target plan
+  while IFS= read -r join_path; do
+    join_count=$((join_count + 1))
+    if [[ "$join_path" == *.* ]]; then
+      targets="$join_path"
+    else
+      targets="$(cd "$ROOT" && find "$join_path" -maxdepth 1 -name '*.py' | sort)"
+      [[ -n "$targets" ]] || fail "join: $dir reads dir $join_path with no *.py (#3556)"
+    fi
+    for target in $targets; do
+      if ! plan="$(printf '%s\n' "$target" | "$ROUTER" --paths-stdin --format json)"; then
+        fail "join: router failed on $target (#3556)"
+        continue
+      fi
+      if jq -e --arg s "$suite" '.[$s] == true' <<<"$plan" >/dev/null; then
+        pass "join: $dir reads $target -> $suite (#3556)"
+      else
+        fail "join: $dir reads $target but $suite is not selected (#3556): $plan"
+      fi
+    done
+  done < <(grep -rhoE '"ops"( */ *"[A-Za-z0-9_.+-]+")+' "$dir" | tr -d ' "')
+}
+audit_joins "$ROOT/backend/tests" backend
+audit_joins "$ROOT/ios/BooksAndVocabTests" ios
+[[ "$join_count" -gt 0 ]] || fail 'join audit: found no computed ops joins (#3556 scan pattern broken)'
+
 # macOS runner scope (Issue #2641). `macos_ops` gates the macOS native ops job
 # and `ui_smoke` gates the ui-smoke leg; both fail closed (select_all and every
 # unclassified path turn them on).

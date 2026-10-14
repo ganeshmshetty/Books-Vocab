@@ -216,6 +216,7 @@ echo "── refresh from a linked worktree runs the canonical checkout's tick �
 canon="$TMP/refresh-canonical"; refresh_lane="$TMP/refresh-canonical-lane"; refresh_record="$TMP/refresh-record"
 mkdir -p "$canon/ops/lib"
 cp "$LIB" "$canon/ops/lib/ios_disk_budget.sh"
+cp "$ROOT/ops/lib/userland_compat.sh" "$canon/ops/lib/userland_compat.sh"
 cat > "$canon/ops/kg_disk_guard.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'tick=canonical workspace=%s\n' "${KG_DISK_GUARD_WORKSPACE:-}" > "$KG_TEST_REFRESH_RECORD"
@@ -249,6 +250,7 @@ echo "── refresh without a resolvable canonical checkout fails closed ──
 loose="$TMP/refresh-no-git"; loose_record="$TMP/refresh-no-git-record"
 mkdir -p "$loose/ops/lib"
 cp "$LIB" "$loose/ops/lib/ios_disk_budget.sh"
+cp "$ROOT/ops/lib/userland_compat.sh" "$loose/ops/lib/userland_compat.sh"
 cat > "$loose/ops/kg_disk_guard.sh" <<'EOF'
 #!/usr/bin/env bash
 printf 'ran\n' > "$KG_TEST_REFRESH_RECORD"
@@ -259,8 +261,13 @@ loose_rc=0
   unset KG_DISK_GUARD_WORKSPACE KG_IOS_DISK_GUARD_TICK
   GIT_CEILING_DIRECTORIES="$TMP" KG_TEST_REFRESH_RECORD="$loose_record" \
     /bin/bash -c "source '$loose/ops/lib/ios_disk_budget.sh'; kg_ios_disk_guard_refresh '$TMP/refresh-no-git-state.json' 0"
-) || loose_rc=$?
+) 2>"$TMP/refresh-no-git.err" || loose_rc=$?
 [[ "$loose_rc" -ne 0 ]] && ok "unresolvable canonical refresh fails" || bad "unresolvable canonical refresh exited 0"
+# The lib sources its sibling userland_compat.sh; a copy without it leaks a
+# "No such file" error on stderr that the guard then reports as a real failure.
+grep -q 'userland_compat.sh' "$TMP/refresh-no-git.err" \
+  && bad "fake canon copy lacks ops/lib/userland_compat.sh: $(cat "$TMP/refresh-no-git.err")" \
+  || ok "fake loose copy sources its lib dependencies without stderr noise"
 [[ ! -e "$loose_record" ]] \
   && ok "no tick publishes from a script-relative fallback root" || bad "a tick ran without a canonical root"
 
