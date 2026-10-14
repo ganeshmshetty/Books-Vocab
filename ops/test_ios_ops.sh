@@ -952,15 +952,15 @@ snapshot_logs_json="$(TMPDIR="$runs_tmp" KG_IOS_OPS_LOG_FIXTURE=1 sentry_gate_fi
 echo "$snapshot_logs_json" | jq -e '.schema=="kg.ios.snapshot.v1" and .summary.counts.runtimeLogs==1 and .sentry.schema=="kg.ios.sentry.v1" and .simulator.schema=="kg.ios.simulator.v1" and .logs.schema=="kg.ios.logs.v1" and .logs.since=="1m" and .logs.limit==1 and .logs.summary.filteredCount==1 and (.logs.entries|length)==1' >/dev/null \
   && ok "snapshot --json can include runtime logs" || fail_t "snapshot --json logs invalid: $snapshot_logs_json"
 snapshot_text="$(TMPDIR="$runs_tmp" sentry_gate_fixture snapshot --skip-xcode --skip-simulator)"
-printf '%s\n' "$snapshot_text" | sed -n '1p' | grep -q '^\[ios\]\[summary\].*verdict=warn.*readinessWarns=.*workflowManual=1.*buildWarnings=1.*sentryWarnings=0' \
+grep -q '^\[ios\]\[summary\].*verdict=warn.*readinessWarns=.*workflowManual=1.*buildWarnings=1.*sentryWarnings=0' <<<"$(sed -n '1p' <<<"$snapshot_text")" \
   && ok "snapshot text starts with summary verdict" || fail_t "snapshot text first line missing summary: $snapshot_text"
-printf '%s\n' "$snapshot_text" | sed -n '2p' | grep -q '^\[ios\]\[timing\] build cacheStatus=n/a totalMs=3120 bootMs=120 xcodebuildMs=3000' \
+grep -q '^\[ios\]\[timing\] build cacheStatus=n/a totalMs=3120 bootMs=120 xcodebuildMs=3000' <<<"$(sed -n '2p' <<<"$snapshot_text")" \
   && ok "snapshot text prints build timing line" || fail_t "snapshot text missing build timing line: $snapshot_text"
-printf '%s\n' "$snapshot_text" | sed -n '3p' | grep -q '^\[ios\]\[timing\] test cacheStatus=hit totalMs=6500 bootMs=250 buildForTestingMs=0 testInvocationMs=6000 testBodyMs=2000 xcresultSessionMs=3500 appLaunchAverageMs=1450 appLaunchSamples=5 invocationOverheadMs=2500' \
+grep -q '^\[ios\]\[timing\] test cacheStatus=hit totalMs=6500 bootMs=250 buildForTestingMs=0 testInvocationMs=6000 testBodyMs=2000 xcresultSessionMs=3500 appLaunchAverageMs=1450 appLaunchSamples=5 invocationOverheadMs=2500' <<<"$(sed -n '3p' <<<"$snapshot_text")" \
   && ok "snapshot text prints test timing line" || fail_t "snapshot text missing test timing line: $snapshot_text"
-printf '%s\n' "$snapshot_text" | sed -n '4p' | grep -q '^\[ios\]\[timing\] archive totalMs=13510 lockWaitMs=10 archiveMs=12000 exportMs=1500 uploadMs=0' \
+grep -q '^\[ios\]\[timing\] archive totalMs=13510 lockWaitMs=10 archiveMs=12000 exportMs=1500 uploadMs=0' <<<"$(sed -n '4p' <<<"$snapshot_text")" \
   && ok "snapshot text prints archive timing line" || fail_t "snapshot text missing archive timing line: $snapshot_text"
-printf '%s\n' "$snapshot_text" | sed -n '5p' | grep -q '^\[ios\]\[timing\] simulator totalMs=n/a simctlDevicesMs=n/a appContainerMs=n/a appProcessMs=n/a' \
+grep -q '^\[ios\]\[timing\] simulator totalMs=n/a simctlDevicesMs=n/a appContainerMs=n/a appProcessMs=n/a' <<<"$(sed -n '5p' <<<"$snapshot_text")" \
   && ok "snapshot text prints simulator timing line when simulator is skipped" || fail_t "snapshot text missing simulator timing line: $snapshot_text"
 grep -q '\[ios\]\[next\].*source=runs.build.diagnostics.*severity=warn.*category=storekit' <<< "$snapshot_text" \
   && ok "snapshot text lists next actions" || fail_t "snapshot text missing next action: $snapshot_text"
