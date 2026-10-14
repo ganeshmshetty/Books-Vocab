@@ -552,9 +552,9 @@ def collect_ci(repo: Path, run: Any = _run) -> list[dict[str, Any]]:
             ],
             repo,
         )
-        if done.returncode:
+        if done.returncode or not done.stdout:
             runs.append(_unreadable(workflow["name"]))
-        elif done.stdout:
+        else:
             runs.extend(json.loads(done.stdout))
     return runs
 

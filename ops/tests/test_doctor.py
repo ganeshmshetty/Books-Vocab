@@ -484,6 +484,19 @@ def test_a_workflow_whose_history_cannot_be_read_is_unknown_not_healthy(
     assert not any("agent-review" in f.summary and f.level == "ok" for f in findings)
 
 
+def test_a_workflow_with_empty_history_output_is_unknown_not_dropped(
+    tmp_path: Path,
+) -> None:
+    def fake(cmd: list[str], cwd: Path, timeout: int = 60) -> _Done:
+        if cmd[:3] == ["gh", "workflow", "list"]:
+            return _Done(json.dumps([{"name": "ops-suite", "state": "active"}]))
+        return _Done("", 0)  # rc=0 with no body must not vanish silently
+
+    runs = doctor.collect_ci(tmp_path, run=fake)
+    assert [r["workflowName"] for r in runs] == ["ops-suite"]
+    assert [f.level for f in doctor.evaluate_ci(runs, NOW)] == ["warn"]
+
+
 def test_production_probe_sends_a_user_agent_the_edge_accepts() -> None:
     request = doctor.prod_request()
     assert request.full_url.startswith("https://")
