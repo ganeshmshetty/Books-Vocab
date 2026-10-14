@@ -224,7 +224,7 @@ async def test_google_then_apple_same_email_no_duplicate_account(tmp_path):
     direction-dependent merge bugs.
     """
     users_file, lock, load, save = _make_user_store(tmp_path)
-    shared_email = "swap@example.com"
+    shared_email = "swap@gmail.com"
 
     g_kwargs = _build_handler_kwargs(
         users_file,
@@ -265,7 +265,7 @@ async def test_google_then_apple_same_email_no_duplicate_account(tmp_path):
 async def test_linked_apple_sub_only_follow_up_keeps_canonical_user(tmp_path):
     """A later Apple token with only ``sub`` must use the linked canonical id."""
     users_file, lock, load, save = _make_user_store(tmp_path)
-    shared_email = "linked@example.com"
+    shared_email = "linked@gmail.com"
 
     google_kwargs = _build_handler_kwargs(
         users_file,
@@ -352,8 +352,8 @@ async def test_linked_apple_email_change_keeps_canonical_session(tmp_path):
             **kwargs,
         )
 
-    assert (await sign_in("google", "g-sub", "first@example.com")).user_id == "g-sub"
-    assert (await sign_in("apple", "a-sub", "first@example.com")).user_id == "g-sub"
+    assert (await sign_in("google", "g-sub", "first@gmail.com")).user_id == "g-sub"
+    assert (await sign_in("apple", "a-sub", "first@gmail.com")).user_id == "g-sub"
     resp = await sign_in("apple", "a-sub", "relay@privaterelay.appleid.com")
 
     assert resp.user_id == "g-sub"
@@ -401,7 +401,7 @@ async def test_account_deletion_invalidates_old_session_token(tmp_path):
         lock,
         provider="apple",
         sub="apple-user",
-        email="alice@example.com",
+        email="alice@gmail.com",
         email_verified=True,
     )
     resp1 = await auth_verify_response(
@@ -466,9 +466,9 @@ async def test_revoked_linked_account_rejects_old_token_via_linked_to(tmp_path):
     # on canonical predating the token's iat.
     revoke_at = datetime.now(tz=UTC)
     users = {
-        "apple-X": {"provider": "apple", "email": "bob@example.com"},
+        "apple-X": {"provider": "apple", "email": "bob@gmail.com"},
         "google-Y": {"_linked_to": "apple-X"},
-        "_email_index": {"bob@example.com": "apple-X"},
+        "_email_index": {"bob@gmail.com": "apple-X"},
         "_revoked_before": {"apple-X": revoke_at.isoformat()},
     }
     users_file.write_text(json.dumps(users))
@@ -509,7 +509,7 @@ async def test_concurrent_device_login_same_user_both_valid(tmp_path):
         lock,
         provider="apple",
         sub="device-user",
-        email="multi@example.com",
+        email="multi@gmail.com",
         email_verified=True,
     )
 

@@ -55,7 +55,7 @@ def test_linked_provider_relogin_without_email_preserves_canonical_identity(tmp_
         users_lock_file=str(lock_file),
         load_users_fn=load_users,
         save_users_fn=save_users,
-        email="shared@example.com",
+        email="shared@gmail.com",
     )
     assert (
         resolve_and_link_user(
@@ -64,7 +64,7 @@ def test_linked_provider_relogin_without_email_preserves_canonical_identity(tmp_
             users_lock_file=str(lock_file),
             load_users_fn=load_users,
             save_users_fn=save_users,
-            email="shared@example.com",
+            email="shared@gmail.com",
         )
         == canonical_id
     )
@@ -84,10 +84,10 @@ def test_linked_provider_relogin_without_email_preserves_canonical_identity(tmp_
     )
 
     record = load_users()[canonical_id]
-    assert record["email"] == "shared@example.com"
+    assert record["email"] == "shared@gmail.com"
     assert record["provider"] == "apple"
     profile = get_user_profile_response({"id": canonical_id, "record": record, "config": {}})
-    assert profile.email == "shared@example.com"
+    assert profile.email == "shared@gmail.com"
 
 
 def test_linked_identity_email_change_keeps_canonical(tmp_path):
@@ -96,13 +96,13 @@ def test_linked_identity_email_change_keeps_canonical(tmp_path):
     of splitting off a new account keyed by the Apple sub."""
     login, load_users = _make_login(tmp_path)
 
-    assert login("G", "google", "e1@example.com") == "G"
-    assert login("A", "apple", "e1@example.com") == "G"
+    assert login("G", "google", "e1@gmail.com") == "G"
+    assert login("A", "apple", "e1@gmail.com") == "G"
     assert login("A", "apple", "r1@privaterelay.appleid.com") == "G"
 
     users = load_users()
     assert users["_email_index"] == {
-        "e1@example.com": "G",
+        "e1@gmail.com": "G",
         "r1@privaterelay.appleid.com": "G",
     }
     assert users["A"]["_linked_to"] == "G"
@@ -122,21 +122,21 @@ def test_linked_identity_email_owned_by_other_canonical_keeps_link(tmp_path):
     canonical's email is never copied onto the linked canonical."""
     login, load_users = _make_login(tmp_path)
 
-    assert login("X", "google", "x@example.com") == "X"
-    assert login("G", "google", "e1@example.com") == "G"
-    assert login("A", "apple", "e1@example.com") == "G"
+    assert login("X", "google", "x@gmail.com") == "X"
+    assert login("G", "google", "e1@gmail.com") == "G"
+    assert login("A", "apple", "e1@gmail.com") == "G"
     x_before = load_users()["X"]
 
-    assert login("A", "apple", "x@example.com") == "G"
+    assert login("A", "apple", "x@gmail.com") == "G"
 
     users = load_users()
-    assert users["_email_index"]["x@example.com"] == "X"
-    assert users["_email_index"]["e1@example.com"] == "G"
+    assert users["_email_index"]["x@gmail.com"] == "X"
+    assert users["_email_index"]["e1@gmail.com"] == "G"
     assert users["A"]["_linked_to"] == "G"
     assert users["G"]["linked_ids"] == ["A"]
     assert users["X"] == x_before
     assert "A" not in users["X"].get("linked_ids", [])
-    assert users["G"]["email"] == "e1@example.com"
+    assert users["G"]["email"] == "e1@gmail.com"
     assert _canonical_ids(users) == ["G", "X"]
 
 
@@ -150,19 +150,19 @@ def test_linked_identity_reclaims_email_still_indexed_to_itself(tmp_path):
     login, load_users = _make_login(
         tmp_path,
         {
-            "_email_index": {"e1@example.com": "G", "a@example.com": "A"},
-            "G": {"provider": "google", "email": "e1@example.com", "linked_ids": ["A"]},
+            "_email_index": {"e1@gmail.com": "G", "a@gmail.com": "A"},
+            "G": {"provider": "google", "email": "e1@gmail.com", "linked_ids": ["A"]},
             "A": {"_linked_to": "G"},
         },
     )
 
-    assert login("A", "apple", "a@example.com") == "G"
+    assert login("A", "apple", "a@gmail.com") == "G"
 
     users = load_users()
-    assert users["_email_index"]["a@example.com"] == "G"
+    assert users["_email_index"]["a@gmail.com"] == "G"
     assert users["A"]["_linked_to"] == "G"
     assert users["G"]["linked_ids"] == ["A"]
-    assert login("other", "apple", "a@example.com") == "G"
+    assert login("other", "apple", "a@gmail.com") == "G"
 
 
 @pytest.mark.parametrize(
@@ -181,8 +181,8 @@ def test_invalid_linked_to_is_ignored(tmp_path, bad_link, extra_seed):
     is dropped once the provider id resolves as its own canonical, so account
     deletion from that session cannot fan out through the stale pointer."""
     seed = {
-        "_email_index": {"o@example.com": "O"},
-        "O": {"provider": "google", "email": "o@example.com"},
+        "_email_index": {"o@gmail.com": "O"},
+        "O": {"provider": "google", "email": "o@gmail.com"},
         "A": {"_linked_to": bad_link},
         **extra_seed,
     }
@@ -191,21 +191,21 @@ def test_invalid_linked_to_is_ignored(tmp_path, bad_link, extra_seed):
     assert login("A", "apple", None) == "A"
 
     users = load_users()
-    assert users["_email_index"] == {"o@example.com": "O"}
+    assert users["_email_index"] == {"o@gmail.com": "O"}
     assert "_linked_to" not in users["A"]
     assert users["A"]["provider"] == "apple"
     assert collect_account_ids_for_deletion(users, "A") == ("A", ["A"])
 
-    assert login("A", "apple", "fresh@example.com") == "A"
+    assert login("A", "apple", "fresh@gmail.com") == "A"
     assert load_users()["_email_index"] == {
-        "o@example.com": "O",
-        "fresh@example.com": "A",
+        "o@gmail.com": "O",
+        "fresh@gmail.com": "A",
     }
 
     # With the bad pointer gone A is an independent account with its own
     # record: another account's email never re-links it.
-    assert login("A", "apple", "o@example.com") == "A"
+    assert login("A", "apple", "o@gmail.com") == "A"
     users = load_users()
     assert "_linked_to" not in users["A"]
     assert "linked_ids" not in users["O"]
-    assert users["_email_index"]["o@example.com"] == "O"
+    assert users["_email_index"]["o@gmail.com"] == "O"
