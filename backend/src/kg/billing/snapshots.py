@@ -12,6 +12,7 @@ from .index import upsert_subscription_index
 from .payloads import ACTIVE_BEARING_STATUSES, default_subscription_payload
 
 _TERMINAL_STATUSES = frozenset({"expired", "revoked", "refunded"})
+_VERIFIED_TRANSACTION_SOURCES = frozenset({"app_store", "app_store_server_api"})
 
 
 def _parse_signed_date(value: object) -> datetime | None:
@@ -66,6 +67,26 @@ def should_apply_subscription_snapshot(
     return incoming_uuid > existing_uuid
 
 
+def _grace_still_in_effect(existing: object, incoming: dict[str, Any], now: datetime) -> bool:
+    """A verified transaction expiry without revocation must not end a running grace period.
+
+    /sync and /reconcile carry a signed transaction JWS with no renewal info, so an
+    expired-looking transaction (``expiresDate`` past) can arrive while Apple's grace
+    period is still open. Only a revocation or the grace deadline itself may end it.
+    Notifications are exempt: their renewal info is Apple's authoritative grace state.
+    """
+    if not isinstance(existing, dict) or existing.get("status") != "grace_period":
+        return False
+    if incoming.get("source") not in _VERIFIED_TRANSACTION_SOURCES:
+        return False
+    if incoming.get("status") != "expired" or incoming.get("revoked"):
+        return False
+    if incoming.get("original_transaction_id") != existing.get("original_transaction_id"):
+        return False
+    grace_deadline = _parse_signed_date(existing.get("grace_period_expires_at"))
+    return grace_deadline is not None and grace_deadline > now
+
+
 def is_superseded_terminal_snapshot(existing: object, incoming: dict[str, Any]) -> bool:
     """A terminal notification for a non-current transaction must not end the current period.
 
@@ -113,6 +134,7 @@ def write_subscription_snapshot(
     signed_date: str | None = None,
     notification_uuid: str | None = None,
     grace_period_expires_at: str | None = None,
+    revoked: bool = False,
 ) -> StoredUserRecord:
     record = users.setdefault(user_id, {})
     existing = record.get("subscription")
@@ -122,7 +144,20 @@ def write_subscription_snapshot(
     ):
         return record
 
-    now_iso = datetime.now(tz=UTC).isoformat()
+    now = datetime.now(tz=UTC)
+    now_iso = now.isoformat()
+    if _grace_still_in_effect(
+        existing,
+        {
+            "status": status,
+            "revoked": revoked,
+            "original_transaction_id": original_transaction_id,
+            "source": source,
+        },
+        now,
+    ):
+        status = "grace_period"
+        grace_period_expires_at = existing.get("grace_period_expires_at")
     subscription = default_subscription_payload()
     if isinstance(existing, dict):
         subscription.update(existing)

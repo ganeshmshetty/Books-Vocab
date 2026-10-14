@@ -355,3 +355,89 @@ def test_sync_owner_resyncing_own_tokenless_jws_unchanged(tmp_path):
     _, run = _sync(tmp_path, users, "P", None)
     run()
     assert users["_subscription_index"]["orig-1"] == "P"
+
+
+# ── #3656: a verified expired-looking /sync must not erase an active grace period ──
+
+from datetime import UTC as _UTC  # noqa: E402
+from datetime import datetime as _datetime  # noqa: E402
+from datetime import timedelta as _timedelta  # noqa: E402
+
+
+def _grace_state(grace_delta, original="X"):
+    now = _datetime.now(tz=_UTC)
+    return {
+        "P": {
+            "id": "P",
+            "subscription": {
+                "is_active": True,
+                "status": "grace_period",
+                "product_id": "pro_monthly",
+                "transaction_id": "X-old",
+                "original_transaction_id": original,
+                "expires_at": (now - _timedelta(days=1)).isoformat(),
+                "grace_period_expires_at": (now + grace_delta).isoformat(),
+                "last_signed_date": (now - _timedelta(days=1)).isoformat(),
+                "last_notification_uuid": "uuid-0",
+            },
+        },
+        "_subscription_index": {"X": "P", "X-old": "P"},
+    }
+
+
+def _grace_sync(tmp_path, users, *, revoked=False):
+    now = _datetime.now(tz=_UTC)
+    snapshot = _make_snapshot(transaction_id="X-new", original_transaction_id="X")
+    snapshot["status"] = "expired"
+    snapshot["expires_at"] = (now - _timedelta(days=1)).isoformat()
+    snapshot["signed_date"] = (now - _timedelta(hours=1)).isoformat()
+    snapshot["revoked"] = revoked
+    saved = MagicMock()
+    req = AppStoreSyncRequest(
+        product_id="pro_monthly",
+        transaction_id="X-new",
+        original_transaction_id="X",
+        signed_transaction_info="signed.jws",
+    )
+    sync_app_store_subscription_response(
+        req,
+        {"id": "P"},
+        allow_unsigned_sync=False,
+        users_lock_file=tmp_path / "lock",
+        load_users=lambda: users,
+        save_users=saved,
+        decode_signed_transaction_info=lambda _s: snapshot,
+        write_subscription_snapshot=_real_write,
+        build_entitlements_response=lambda rec: _active_entitlements(),
+    )
+    return users["P"]["subscription"]
+
+
+def test_sync_expired_without_revocation_keeps_active_grace(tmp_path):
+    users = _grace_state(_timedelta(days=5))
+    before_deadline = users["P"]["subscription"]["grace_period_expires_at"]
+    sub = _grace_sync(tmp_path, users)
+    assert sub["status"] == "grace_period"
+    assert sub["is_active"] is True
+    assert sub["grace_period_expires_at"] == before_deadline
+
+
+def test_sync_revoked_transaction_expires_even_during_grace(tmp_path):
+    users = _grace_state(_timedelta(days=5))
+    sub = _grace_sync(tmp_path, users, revoked=True)
+    assert sub["status"] == "expired"
+    assert sub["is_active"] is False
+
+
+def test_sync_expired_after_grace_deadline_writes_expired(tmp_path):
+    users = _grace_state(-_timedelta(hours=1))
+    sub = _grace_sync(tmp_path, users)
+    assert sub["status"] == "expired"
+    assert sub["is_active"] is False
+
+
+def test_sync_expired_for_other_original_transaction_writes_expired(tmp_path):
+    users = _grace_state(_timedelta(days=5), original="OTHER")
+    sub = _grace_sync(tmp_path, users)
+    assert sub["status"] == "expired"
+    assert sub["is_active"] is False
