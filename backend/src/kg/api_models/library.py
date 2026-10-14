@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from kg.api_models.notebook import MAX_FUTURE_SKEW_SECONDS
 
 LibraryFormat = Literal["epub", "pdf", "txt", "md"]
 
@@ -51,6 +55,21 @@ class BookPositionRequest(BaseModel):
     locator: str | None = Field(default=None, max_length=500)
     progression: float | None = Field(default=None, ge=0.0, le=1.0)
     updated_at: str = Field(min_length=1, max_length=50)  # ISO8601 LWW timestamp
+
+    @field_validator("updated_at")
+    @classmethod
+    def _reject_far_future_updated_at(cls, value: str) -> str:
+        # Unparseable values pass through so the router keeps its 400 path.
+        # A far-future instant would otherwise pin position_updated_at and drop every later write.
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if parsed.timestamp() > time.time() + MAX_FUTURE_SKEW_SECONDS:
+            raise ValueError("updated_at is too far in the future")
+        return value
 
 
 class DeleteBookResponse(BaseModel):
