@@ -483,4 +483,32 @@ struct NotebookReconcilerTests {
         #expect(projection.reviewPolicyOverride == localPolicy)
         #expect(projection.reviewPolicyUpdatedAt == 50)
     }
+
+    // MARK: - #3799：tombstone 回報不是「存活」證據
+
+    /// 從未同步到本機的綁定 N（無本機列），server 以 tombstone（isDeleted）回報。綁定之後才開始的
+    /// reconcile 必須把 N 計為 omitted；若把 tombstone 當成存活 id 入帳，ledger 永遠看不見缺席，
+    /// 綁定永不清除（#3674 acceptance 2）。
+    @Test func reconcile_counts_tombstoned_unsynced_binding_as_omitted() throws {
+        let ctx = try makeContext()
+        let live = localNB("A", syncStatus: 1)
+        ctx.insert(live)
+        try ctx.save()
+
+        let ledger = NotebookReconcileLedger()
+        let observedAt = Date(timeIntervalSince1970: 1_000)
+        ledger.observeBinding("N", at: observedAt)
+        _ = NotebookReconciler.reconcile(
+            remote: [remote("A"), remote("N", isDeleted: true)],
+            local: [live], allEntries: [], modelContext: ctx,
+            fetchStartedAt: observedAt.addingTimeInterval(10), ledger: ledger
+        )
+        try ctx.save()
+
+        #expect(try aliveNotebooks(ctx).map(\.remoteId) == ["A"], "無本機列的 tombstone 不得被 upsert 成列")
+        #expect(ledger.omittedAfterBinding("N"))
+        #expect(Book.sanitizeActionWithLedger(
+            bound: "N", localNotebookIds: ["A"], tombstonedNotebookIds: [], ledger: ledger
+        ) == .clear)
+    }
 }

@@ -74,13 +74,15 @@ enum NotebookReconciler {
     /// - Parameter fetchStartedAt: 發出 `remote` 那次 GET 的開始時間（本機時鐘）。tombstone 只對
     ///   `localInsertedAt < fetchStartedAt` 的列生效：之後才本地建立的列（例如 create 與 reconcile 交錯）
     ///   不可能在這份快照裡，不是遠端刪除的證據（#3675）。
+    /// - Parameter ledger: 本回合 server 回報 id 的入帳處（正式路徑用 `.shared`；測試注入獨立實例）。
     @discardableResult
     static func reconcile(
         remote: [KGNotebook],
         local localRows: [Notebook],
         allEntries: [VocabularyEntry],
         modelContext: ModelContext,
-        fetchStartedAt: Date
+        fetchStartedAt: Date,
+        ledger: NotebookReconcileLedger = .shared
     ) -> Set<String> {
         let local = collapseDuplicates(localRows, modelContext: modelContext)
         let localByRemoteId = Dictionary(
@@ -181,7 +183,7 @@ enum NotebookReconciler {
             cascadeDeleteEntries(matching: tombstoned, allEntries: allEntries, modelContext: modelContext)
         }
 
-        NotebookReconcileLedger.shared.recordReconcile(startedAt: fetchStartedAt, remoteIds: remoteIds)
+        ledger.recordReconcile(startedAt: fetchStartedAt, remoteIds: remoteIds)
         return tombstoned.union(reaped)
     }
 
