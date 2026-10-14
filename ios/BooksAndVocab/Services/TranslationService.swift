@@ -23,14 +23,21 @@ final class TranslationService: Translating {
     private let authSession: any AuthSessionProviding
     @ObservationIgnored
     private let quotaStore: any QuotaProviding
+    @ObservationIgnored
+    private let session: URLSession
 
     init(
         authSession: any AuthSessionProviding = MainActor.assumeIsolated({ AuthManager.shared }),
-        quotaStore: any QuotaProviding = QuotaStore.shared
+        quotaStore: any QuotaProviding = QuotaStore.shared,
+        session: URLSession = sharedURLSession
     ) {
         self.authSession = authSession
         self.quotaStore = quotaStore
+        self.session = session
     }
+
+    /// 與 backend `MAX_WORD_LENGTH` 一致。
+    private static let maxWordLength = 200
 
     /// Backend Server URL
     private var backendURL: String {
@@ -242,6 +249,14 @@ final class TranslationService: Translating {
     // MARK: - Backend Translation API 呼叫
 
     private func callBackend(endpoint: String, word: String, context: String) async throws -> Data {
+        // 後端 translate schema 以 code point 計 max_length；超長仍送出只會換到 422 → .clientError，
+        // 使用者拿不到可行動的提示，故在本地擋下、不送請求。
+        guard word.unicodeScalars.count <= Self.maxWordLength else {
+            throw TranslationError.userRecoverable(
+                L10n.format("選取的文字超過 %@ 字元，請縮短後再試", "\(Self.maxWordLength)")
+            )
+        }
+
         guard NetworkMonitor.shared.isConnected else {
             throw TranslationError.userRecoverable(L10n.string("目前沒有網路連線"))
         }
@@ -281,7 +296,7 @@ final class TranslationService: Translating {
         let requestID = RequestObservation.attachRequestID(to: &request)
 
         let quotaEpoch = quotaStore.epoch
-        let (data, response) = try await sharedURLSession.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TranslationError.apiError(L10n.string("無法取得 HTTP 回應"))
