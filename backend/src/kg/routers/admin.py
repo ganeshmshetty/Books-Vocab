@@ -215,7 +215,7 @@ def _build_html_admin_router_from_handlers(
     ) -> Response:
         if not _is_authed(token, authorization, admin_session):
             return RedirectResponse("/admin/login", status_code=302)
-        return handlers.admin_ui()
+        return handlers.admin_ui(admin_session)
 
     @router.get("/admin/tests", response_class=HTMLResponse, include_in_schema=False)
     async def admin_tests_page(
@@ -226,7 +226,7 @@ def _build_html_admin_router_from_handlers(
     ) -> Response:
         if not _is_authed(token, authorization, admin_session):
             return RedirectResponse("/admin/login", status_code=302)
-        return handlers.admin_tests_ui()
+        return handlers.admin_tests_ui(admin_session)
 
     @router.get("/admin/test", response_class=HTMLResponse, include_in_schema=False)
     async def admin_test_page(
@@ -237,7 +237,7 @@ def _build_html_admin_router_from_handlers(
     ) -> Response:
         if not _is_authed(token, authorization, admin_session):
             return RedirectResponse("/admin/login", status_code=302)
-        return handlers.admin_tests_ui()
+        return handlers.admin_tests_ui(admin_session)
 
     if handlers.admin_user_detail_ui is not None:
 
@@ -251,7 +251,7 @@ def _build_html_admin_router_from_handlers(
         ) -> Response:
             if not _is_authed(token, authorization, admin_session):
                 return RedirectResponse("/admin/login", status_code=302)
-            return handlers.admin_user_detail_ui()
+            return handlers.admin_user_detail_ui(admin_session)
 
     return router
 

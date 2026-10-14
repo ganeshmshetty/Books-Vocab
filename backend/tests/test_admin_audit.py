@@ -1,10 +1,13 @@
 """Tests for admin audit log (insert / retrieve / auth boundary)."""
+
 from __future__ import annotations
+
+from http.cookies import SimpleCookie
 
 import pytest
 
 from kg import admin_audit
-from kg.admin_handlers import _sign_cookie, admin_actor_fingerprint
+from kg.admin_handlers import _sign_cookie, admin_actor_fingerprint, admin_ui_response
 
 ADMIN_TOKEN = "test-admin-token-audit"
 ADMIN_PASSWORD = "audit-pw"
@@ -107,8 +110,7 @@ def test_list_since_filter(audit_db):
 def test_list_since_compares_fixed_offsets_by_utc_instant(audit_db):
     conn = admin_audit._get_conn()
     conn.executemany(
-        "INSERT INTO admin_audit_log (admin_uid, action, target_uid, payload_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO admin_audit_log (admin_uid, action, target_uid, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
         [
             ("ops", "grant_pro", "old", "{}", "2026-05-14T12:00:00+01:00"),
             ("ops", "grant_pro", "new", "{}", "2026-05-14T12:30:00+00:00"),
@@ -174,9 +176,7 @@ def test_audit_endpoint_requires_auth(admin_app):
 
 
 def test_audit_endpoint_with_cookie_returns_rows(admin_app):
-    admin_audit.record_audit(
-        admin_uid="ops", action="grant_pro", target_uid="u-target", payload={"foo": "bar"}
-    )
+    admin_audit.record_audit(admin_uid="ops", action="grant_pro", target_uid="u-target", payload={"foo": "bar"})
     signed = _sign_cookie(ADMIN_TOKEN)
     admin_app.client.cookies.set("admin_session", signed)
     resp = admin_app.client.get("/api/admin/audit")
@@ -242,9 +242,7 @@ def test_grant_records_audit_with_token_fingerprint(admin_app):
 def test_grant_records_audit_with_cookie_fingerprint(admin_app):
     """Cookie auth derives a distinct fingerprint from token auth."""
     signed = _sign_cookie(ADMIN_TOKEN)
-    expected_fp = admin_actor_fingerprint(
-        token=None, authorization=None, cookie_token=signed, admin_token=ADMIN_TOKEN
-    )
+    expected_fp = admin_actor_fingerprint(token=None, authorization=None, cookie_token=signed, admin_token=ADMIN_TOKEN)
     token_fp = admin_actor_fingerprint(
         token=ADMIN_TOKEN, authorization=None, cookie_token=None, admin_token=ADMIN_TOKEN
     )
@@ -280,9 +278,7 @@ def test_revoke_records_audit_with_token_fingerprint(admin_app):
 
 def test_revoke_records_audit_with_cookie_fingerprint(admin_app):
     signed = _sign_cookie(ADMIN_TOKEN)
-    expected_fp = admin_actor_fingerprint(
-        token=None, authorization=None, cookie_token=signed, admin_token=ADMIN_TOKEN
-    )
+    expected_fp = admin_actor_fingerprint(token=None, authorization=None, cookie_token=signed, admin_token=ADMIN_TOKEN)
     admin_app.client.cookies.set("admin_session", signed)
     resp = admin_app.client.delete("/api/admin/users/u-target/admin-grant")
     assert resp.status_code == 200, resp.text
@@ -295,25 +291,44 @@ def test_revoke_records_audit_with_cookie_fingerprint(admin_app):
 
 
 def test_actor_fingerprint_is_stable_and_8_chars():
-    fp1 = admin_actor_fingerprint(
-        token="tok", authorization=None, cookie_token=None, admin_token="server-tok"
-    )
-    fp2 = admin_actor_fingerprint(
-        token="tok", authorization=None, cookie_token=None, admin_token="server-tok"
-    )
+    fp1 = admin_actor_fingerprint(token="tok", authorization=None, cookie_token=None, admin_token="server-tok")
+    fp2 = admin_actor_fingerprint(token="tok", authorization=None, cookie_token=None, admin_token="server-tok")
     assert fp1 == fp2
     assert len(fp1) == 8
+
+
+def _admin_session_value(resp) -> str:
+    cookie = SimpleCookie()
+    for raw in resp.headers.getlist("set-cookie"):
+        cookie.load(raw)
+    return cookie["admin_session"].value
+
+
+def test_cookie_actor_fingerprint_stable_across_admin_page_resigns():
+    """Each admin page GET re-signs the session cookie; the audit actor must not change."""
+    first = admin_ui_response(admin_token="server-tok", admin_html="<html></html>")
+    cookie1 = _admin_session_value(first)
+    second = admin_ui_response(admin_token="server-tok", admin_html="<html></html>", cookie_token=cookie1)
+    cookie2 = _admin_session_value(second)
+    fp1 = admin_actor_fingerprint(token=None, authorization=None, cookie_token=cookie1, admin_token="server-tok")
+    fp2 = admin_actor_fingerprint(token=None, authorization=None, cookie_token=cookie2, admin_token="server-tok")
+    assert fp1 == fp2
+
+
+def test_cookie_actor_fingerprint_differs_across_logins():
+    """A fresh login (no incoming session cookie) is a distinct admin session."""
+    a = _admin_session_value(admin_ui_response(admin_token="server-tok", admin_html=""))
+    b = _admin_session_value(admin_ui_response(admin_token="server-tok", admin_html=""))
+    fp_a = admin_actor_fingerprint(token=None, authorization=None, cookie_token=a, admin_token="server-tok")
+    fp_b = admin_actor_fingerprint(token=None, authorization=None, cookie_token=b, admin_token="server-tok")
+    assert fp_a != fp_b
 
 
 def test_actor_fingerprint_differs_by_source():
     """Bearer/token-query vs cookie produce distinct fingerprints even when
     the underlying credential string happens to match."""
-    fp_token = admin_actor_fingerprint(
-        token="x", authorization=None, cookie_token=None, admin_token="server-tok"
-    )
-    fp_cookie = admin_actor_fingerprint(
-        token=None, authorization=None, cookie_token="x", admin_token="server-tok"
-    )
+    fp_token = admin_actor_fingerprint(token="x", authorization=None, cookie_token=None, admin_token="server-tok")
+    fp_cookie = admin_actor_fingerprint(token=None, authorization=None, cookie_token="x", admin_token="server-tok")
     assert fp_token != fp_cookie
 
 
@@ -330,6 +345,6 @@ def test_actor_fingerprint_does_not_leak_token():
 
 
 def test_actor_fingerprint_falls_back_to_admin_with_no_material():
-    assert admin_actor_fingerprint(
-        token=None, authorization=None, cookie_token=None, admin_token="server-tok"
-    ) == "admin"
+    assert (
+        admin_actor_fingerprint(token=None, authorization=None, cookie_token=None, admin_token="server-tok") == "admin"
+    )

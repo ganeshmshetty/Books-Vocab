@@ -50,9 +50,9 @@ def _build_cookie_value(admin_token: str, *, expires_at: int, nonce_hex: str | N
     return f"{payload}.{sig}"
 
 
-def _sign_cookie(admin_token: str, *, ttl_seconds: int = ADMIN_COOKIE_TTL_SECONDS) -> str:
+def _sign_cookie(admin_token: str, *, ttl_seconds: int = ADMIN_COOKIE_TTL_SECONDS, nonce_hex: str | None = None) -> str:
     expires_at = int(time.time()) + ttl_seconds
-    return _build_cookie_value(admin_token, expires_at=expires_at)
+    return _build_cookie_value(admin_token, expires_at=expires_at, nonce_hex=nonce_hex)
 
 
 def _verify_cookie(cookie_value: str, admin_token: str) -> bool:
@@ -68,6 +68,13 @@ def _verify_cookie(cookie_value: str, admin_token: str) -> bool:
     if not _secrets_equal(sig, expected_sig):
         return False
     return time.time() <= int(expires_at_str)
+
+
+def _verified_cookie_nonce(cookie_value: str | None, admin_token: str) -> str | None:
+    """Session nonce of a valid cookie, else None. The nonce identifies the login session."""
+    if not cookie_value or not _verify_cookie(cookie_value, admin_token):
+        return None
+    return cookie_value.split(".")[1]
 
 
 def _resolve_admin_token(token: str | None, authorization: str | None) -> str | None:
@@ -98,10 +105,10 @@ def require_admin(
     raise HTTPException(403, "Forbidden")
 
 
-def _set_admin_cookie(response: HTMLResponse, admin_token: str) -> HTMLResponse:
+def _set_admin_cookie(response: HTMLResponse, admin_token: str, *, nonce_hex: str | None = None) -> HTMLResponse:
     response.set_cookie(
         key=ADMIN_COOKIE_NAME,
-        value=_sign_cookie(admin_token),
+        value=_sign_cookie(admin_token, nonce_hex=nonce_hex),
         httponly=True,
         secure=True,
         samesite="lax",
@@ -188,7 +195,9 @@ def admin_actor_fingerprint(
     source = "token"
     material: str | None = raw
     if material is None and cookie_token:
-        material = cookie_token
+        # Use the session nonce, not the whole cookie: every admin page GET re-signs
+        # the cookie with the same nonce, so the actor stays stable for the session.
+        material = _verified_cookie_nonce(cookie_token, admin_token) or cookie_token
         source = "cookie"
     if not material:
         return "admin"
@@ -218,5 +227,10 @@ def admin_ui_response(
     *,
     admin_token: str,
     admin_html: str,
+    cookie_token: str | None = None,
 ) -> HTMLResponse:
-    return _set_admin_cookie(HTMLResponse(admin_html), admin_token)
+    return _set_admin_cookie(
+        HTMLResponse(admin_html),
+        admin_token,
+        nonce_hex=_verified_cookie_nonce(cookie_token, admin_token),
+    )

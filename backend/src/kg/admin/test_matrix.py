@@ -6,27 +6,23 @@ from typing import Any, Protocol
 
 from fastapi.responses import HTMLResponse
 
-from .auth import _set_admin_cookie
+from .auth import _set_admin_cookie, _verified_cookie_nonce
 
 
 class RunPytestMatrix(Protocol):
-    def __call__(self, *, selected_items: list[str] | None = None) -> dict[str, Any]:
-        ...
+    def __call__(self, *, selected_items: list[str] | None = None) -> dict[str, Any]: ...
 
 
 class StoreLastTestRun(Protocol):
-    def __call__(self, result: dict[str, Any]) -> dict[str, Any]:
-        ...
+    def __call__(self, result: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class GetLastTestRun(Protocol):
-    def __call__(self) -> dict[str, Any] | None:
-        ...
+    def __call__(self) -> dict[str, Any] | None: ...
 
 
 class BuildTestCatalog(Protocol):
-    def __call__(self) -> dict[str, Any]:
-        ...
+    def __call__(self) -> dict[str, Any]: ...
 
 
 def admin_run_tests_response(
@@ -60,5 +56,10 @@ def admin_tests_ui_response(
     *,
     admin_token: str,
     admin_tests_html: str,
+    cookie_token: str | None = None,
 ) -> HTMLResponse:
-    return _set_admin_cookie(HTMLResponse(admin_tests_html), admin_token)
+    return _set_admin_cookie(
+        HTMLResponse(admin_tests_html),
+        admin_token,
+        nonce_hex=_verified_cookie_nonce(cookie_token, admin_token),
+    )
