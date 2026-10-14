@@ -446,6 +446,67 @@ class TestCmdCardImport:
         out = json.loads(capsys.readouterr().out)
         assert out["plan"]["dup_review_rows"] == 1
 
+    # ── #3910: 寫入前驗證、destructive 標記、dry-run 同步驗證 ──
+
+    def test_card_import_rejects_nonpositive_interval_before_any_write(self, tmp_path, monkeypatch, capsys):
+        _setup_user(tmp_path)
+        p = tmp_path / "import.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["content", "meaning", "review_state", "review_interval"])
+            w.writeheader()
+            w.writerow({"content": "hello", "meaning": "world", "review_state": "new", "review_interval": ""})
+            w.writerow({"content": "goodbye", "meaning": "再見", "review_state": "due", "review_interval": "0"})
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["committed"] is False
+        assert out["data_mutated"] is False
+        store = CardStore(tmp_path / "users" / "u1" / "cards.db")
+        try:
+            assert store.find_by_content("hello", notebook_id="default") is None
+        finally:
+            store.close()
+
+    @pytest.mark.parametrize("bad_interval", ["nan", "inf", "-1", "0"])
+    def test_card_import_rejects_bad_interval_in_dry_run(self, tmp_path, monkeypatch, bad_interval):
+        _setup_user(tmp_path)
+        p = tmp_path / "import.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["content", "meaning", "review_state", "review_interval"])
+            w.writeheader()
+            w.writerow(
+                {"content": "goodbye", "meaning": "再見", "review_state": "due", "review_interval": bad_interval}
+            )
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        with pytest.raises(EditError):
+            cards_cmd.cmd_card_import(_make_args(csv=str(p)))
+
+    def test_card_import_midloop_failure_reports_data_mutated(self, tmp_path, monkeypatch, capsys):
+        _setup_user(tmp_path)
+        p = tmp_path / "import.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["content", "meaning", "review_state", "review_interval"])
+            w.writeheader()
+            w.writerow({"content": "hello", "meaning": "world", "review_state": "due", "review_interval": "12"})
+            w.writerow({"content": "goodbye", "meaning": "再見", "review_state": "due", "review_interval": "12"})
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        calls = {"n": 0}
+        real_update = CardStore.update
+
+        def flaky_update(self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("boom")
+            return real_update(self, *args, **kwargs)
+
+        monkeypatch.setattr(CardStore, "update", flaky_update)
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
+        assert rc == 1
+        out = json.loads(capsys.readouterr().out)
+        assert out["data_mutated"] is True
+        assert out["recovery_path"] is not None
+
 
 # ── cmd_card_move ────────────────────────────────────────────────────────
 

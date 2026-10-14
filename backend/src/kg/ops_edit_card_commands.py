@@ -23,6 +23,7 @@ from .ops_edit_support import (
     _resolve_card_id,
     _review_fields,
     _split_multi,
+    validate_review_interval,
 )
 
 logger = logging.getLogger(__name__)
@@ -297,9 +298,17 @@ def cmd_card_import(args: argparse.Namespace) -> int:
             raw_iv = (r.get("review_interval") or "").strip()
             if raw_iv:
                 try:
-                    float(raw_iv)
+                    iv = float(raw_iv)
                 except ValueError as exc:
                     raise EditError(f"列 {i} review_interval 非數值:{raw_iv!r}") from exc
+                try:
+                    validate_review_interval(iv)
+                except EditError as exc:
+                    raise EditError(f"列 {i} review_interval 不合法:{exc}") from exc
+
+    if not ctx.commit:
+        # dry-run 不進 apply_fn:預演同一組格式/數值檢查,讓 preview 與 --commit 同樣失敗(#3910)。
+        _prevalidate_rows()
 
     def apply_fn() -> dict[str, Any]:
         _prevalidate_rows()
@@ -309,6 +318,8 @@ def cmd_card_import(args: argparse.Namespace) -> int:
             # 冪等回傳舊卡,無腦 +1 會把「跳過的重複」誤計為新增。
             pre_ids = {c.id for c in store.all(notebook_id=nb_id)}
             known_ids = set(pre_ids)
+            # 第一筆寫入即進入 destructive 區段:之後任一列失敗都會留下部分寫入(#3910)。
+            ctx.mark_destructive()
             for r in rows:
                 card = store.add(
                     content=r["content"].strip(),
