@@ -180,7 +180,10 @@ async def _run_llm_translate(
     ctx_hash = _compute_context_hash(ctx)
 
     # Cache lookup — model is part of the key (see translate_log.lookup docstring).
-    cached = translate_log.lookup(word_key, ctx_hash, source_lang, target_lang, operation, model)
+    # translate_log takes its lock and runs SQLite: keep it off the event loop (#3829).
+    cached = await asyncio.to_thread(
+        translate_log.lookup, word_key, ctx_hash, source_lang, target_lang, operation, model
+    )
     cached_data: dict[str, Any] | None = None
     if cached is not None:
         cached_data = _parse_json_payload(cached)
@@ -194,7 +197,8 @@ async def _run_llm_translate(
         # Record precise hit counter for admin observability. Short-circuits
         # never reach record(); without this they'd be invisible to metrics.
         try:
-            translate_log.record_cache_hit(
+            await asyncio.to_thread(
+                translate_log.record_cache_hit,
                 user_id=getattr(llm, "user_id", None),
                 operation=operation,
                 word=word_key,

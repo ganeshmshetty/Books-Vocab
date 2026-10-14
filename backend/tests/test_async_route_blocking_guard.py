@@ -35,6 +35,9 @@ GUARDED_ROUTE_MODULES: dict[str, frozenset[str]] = {
     # `_require_pro` only reads the in-memory user record, and it must reject
     # before `_admit_external` spends the caller's rate-limit budget.
     "routers/external_api.py": frozenset({"_require_pro"}),
+    # #3829: quota gates take token_tracker._lock, so they must be offloaded;
+    # `_apply_quota_headers` only sets response headers from an in-memory dict.
+    "routers/translate.py": frozenset({"_apply_quota_headers"}),
 }
 
 
