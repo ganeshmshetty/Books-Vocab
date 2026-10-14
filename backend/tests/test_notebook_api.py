@@ -822,28 +822,85 @@ def test_update_notebook_cover_pattern_preserved_when_not_sent(isolated_api):
 # ---------------------------------------------------------------------------
 
 
-def test_create_notebook_duplicate_name(isolated_api):
-    """Two notebooks with the same name for one user.
+def test_create_notebook_duplicate_name_is_suffixed(isolated_api):
+    """Active notebook names are unique per account (#3889).
 
-    Contract: the API does NOT enforce name uniqueness or dedup — each POST
-    creates a distinct notebook with its own id. Both appear in the listing.
+    Contract: a create whose name is taken by an active notebook is stored under
+    the shared-deck suffix scheme ("X (2)", "X (3)"), never verbatim, so
+    world-export never meets two same-named active notebooks.
     """
     client = isolated_api.client
     h = isolated_api.headers
 
     r1 = client.post("/api/notebooks", json={"name": "Duplicate", "color": "#111111"}, headers=h)
     r2 = client.post("/api/notebooks", json={"name": "Duplicate", "color": "#222222"}, headers=h)
+    r3 = client.post("/api/notebooks", json={"name": "Duplicate"}, headers=h)
     assert r1.status_code == 201, r1.text
     assert r2.status_code == 201, r2.text
+    assert r3.status_code == 201, r3.text
 
-    id1, id2 = r1.json()["id"], r2.json()["id"]
-    assert id1 != id2, "duplicate-named notebooks must still get distinct ids"
+    assert [r1.json()["name"], r2.json()["name"], r3.json()["name"]] == [
+        "Duplicate",
+        "Duplicate (2)",
+        "Duplicate (3)",
+    ]
+    ids = {r1.json()["id"], r2.json()["id"], r3.json()["id"]}
+    assert len(ids) == 3, "duplicate-named notebooks must still get distinct ids"
 
-    r_list = client.get("/api/notebooks", headers=h)
-    listed = r_list.json()
-    dup_named = [nb for nb in listed if nb["name"] == "Duplicate"]
-    assert len(dup_named) == 2
-    assert {id1, id2}.issubset(_nb_ids(listed))
+    listed = client.get("/api/notebooks", headers=h).json()
+    assert ids.issubset(_nb_ids(listed))
+    assert {nb["name"] for nb in listed if nb["name"].startswith("Duplicate")} == {
+        "Duplicate",
+        "Duplicate (2)",
+        "Duplicate (3)",
+    }
+
+
+def test_concurrent_creates_with_same_name_stay_unique(isolated_api):
+    """The name check and the insert form one writer transaction, so racing
+    creates cannot both observe the name as free (#3889)."""
+    client = isolated_api.client
+    h = isolated_api.headers
+
+    def _post(_: int):
+        return client.post("/api/notebooks", json={"name": "Race"}, headers=h)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(_post, range(8)))
+
+    assert all(r.status_code == 201 for r in responses), [r.text for r in responses]
+    assert len({r.json()["name"] for r in responses}) == 8
+
+
+def test_rename_to_existing_active_name_is_suffixed(isolated_api):
+    """PATCH applies the same active-name uniqueness as create (#3889)."""
+    client = isolated_api.client
+    h = isolated_api.headers
+
+    alpha_id = client.post("/api/notebooks", json={"name": "Alpha"}, headers=h).json()["id"]
+    beta_id = client.post("/api/notebooks", json={"name": "Beta"}, headers=h).json()["id"]
+
+    r = client.patch(f"/api/notebooks/{beta_id}", json={"name": "Alpha"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Alpha (2)"
+
+    # Renaming to its own current name is not a collision with itself.
+    r = client.patch(f"/api/notebooks/{alpha_id}", json={"name": "Alpha"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Alpha"
+
+
+def test_soft_deleted_notebook_releases_its_name(isolated_api):
+    """Only active (not deleted, not staged) notebooks hold a name (#3889)."""
+    client = isolated_api.client
+    h = isolated_api.headers
+
+    nb_id = client.post("/api/notebooks", json={"name": "Gone"}, headers=h).json()["id"]
+    assert client.delete(f"/api/notebooks/{nb_id}", headers=h).status_code == 200
+
+    r = client.post("/api/notebooks", json={"name": "Gone"}, headers=h)
+    assert r.status_code == 201, r.text
+    assert r.json()["name"] == "Gone"
 
 
 def test_delete_notebook_with_cards(isolated_api):

@@ -777,3 +777,19 @@ class TestForeignWriterAndSparseShapes:
         # 決定性斷言直讀世界 B 的盤。
         assert _notebook_row(dd_b, uid_b, "VersionOnly")["source_version"] == 7
         assert _notebook_row(dd_b, uid_b, "DeckOnly")["source_shared_deck_id"] == "deck-solo"
+
+
+class TestNotebookNameUniqueness:
+    """#3889: a rename onto an active name must not leave world-export unable to export the account."""
+
+    def test_rename_onto_existing_name_keeps_account_exportable(self, tmp_path):
+        uid = _mk_user(tmp_path)
+        seeded = _seed(tmp_path, uid, {"notebooks": [{"name": "Alpha"}, {"name": "Beta"}]}, "--commit", "--json")
+        assert seeded.returncode == 0, seeded.stderr
+
+        renamed = _edit(str(tmp_path), "notebook-update", uid, "Beta", "--name", "Alpha", "--commit", "--json")
+        assert renamed.returncode == 0, renamed.stderr
+
+        out = _export(tmp_path, uid)
+        names = {n["name"] for n in out["notebooks"]}
+        assert {"Alpha", "Alpha (2)"} <= names
