@@ -158,6 +158,10 @@ def progress(message: str) -> None:
 _ABSENT_COMMIT_RE = re.compile(
     r"^fatal: Not a valid (?:commit|object) name ([0-9a-f]{40})$"
 )
+# `gh pr checks` exits 1 with this until GitHub has registered the PR's first check run.
+_NO_CHECKS_YET_RE = re.compile(
+    r"no (?:required )?checks reported on the '[^'\n]+' branch"
+)
 
 
 def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> str | None:
@@ -1486,13 +1490,16 @@ class Delivery:
         )
 
     def _required(self, repo: str, number: int) -> str | None:
-        out = must(
-            self.runner,
+        done = self.runner(
             ["gh", "pr", "checks", str(number), "--repo", repo, "--json", "name,state"],
             self.home,
-            "read checks",
-        ).stdout
-        state = required_state(json.loads(out or "[]"))
+        )
+        if done.returncode != 0:
+            detail = failure_detail(done) or "no output"
+            if _NO_CHECKS_YET_RE.search(detail):
+                return None  # not an error: keep polling until the first run appears
+            raise DeliverError(f"read checks failed (rc={done.returncode}): {detail}")
+        state = required_state(json.loads(done.stdout or "[]"))
         if state in SUCCESS_STATES:
             return state
         if state in FAILURE_STATES:

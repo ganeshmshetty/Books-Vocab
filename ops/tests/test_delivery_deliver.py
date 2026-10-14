@@ -91,6 +91,8 @@ class FakeWorld:
         self.format_pending = False
         # HEAD: a format commit moves it, so a head read before format is stale.
         self.git_head = state.get("git_head", "d" * 40)
+        # Answers of the first `gh pr checks` calls, before the `checks` batches.
+        self.check_errors: list[deliver.Proc] = list(state.get("check_errors", []))
         self.fail_commands: set[str] = set(state.get("fail_commands", set()))
         self.stderr_for: dict[str, str] = state.get("stderr_for", {})
         # the merge-queue re-read fails once a queue attempt has run (#3563)
@@ -270,6 +272,8 @@ class FakeWorld:
                 )
                 return ok(json.dumps(published))
             if cmd[1:3] == ["pr", "checks"]:
+                if self.check_errors:
+                    return self.check_errors.pop(0)
                 batch = self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
                 return ok(json.dumps(batch))
             if cmd[1:3] == ["api", "graphql"]:
@@ -1005,6 +1009,23 @@ def test_it_waits_while_required_is_pending() -> None:
     code, _ = ship(world, "--check", "u=good")
     assert code == 0
     assert sum(1 for c in world.calls if c[1:3] == ["pr", "checks"]) == 3
+
+
+def test_a_pr_with_no_checks_registered_yet_is_pending_not_a_failure() -> None:
+    """#3684: gh exits 1 'no checks reported' before the first check run appears."""
+    no_checks = deliver.Proc(1, "", "no checks reported on the 'feat/thing' branch\n")
+    world = FakeWorld(check_errors=[no_checks])
+    code, result = ship(world, "--check", "u=good")
+    assert code == 0, result
+    assert sum(1 for c in world.calls if c[1:3] == ["pr", "checks"]) == 2
+
+
+def test_an_unrelated_checks_read_failure_still_fails_the_run() -> None:
+    auth = deliver.Proc(1, "", "HTTP 401: Bad credentials\n")
+    world = FakeWorld(check_errors=[auth])
+    code, result = ship(world, "--check", "u=good")
+    assert code == 1
+    assert "read checks failed (rc=1)" in result["error"]
 
 
 def test_a_stage_failure_names_the_stage() -> None:
