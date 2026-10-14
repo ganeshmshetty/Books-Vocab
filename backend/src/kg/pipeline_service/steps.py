@@ -504,8 +504,8 @@ async def _judge_pending(
     others_cache = cards.get_batch(all_other_ids) if all_other_ids else {}
 
     # Pass 2: filter candidates using the shared cache, build judge_tasks.
-    # Include current_degree in the tuple so Phase 2b can initialize
-    # from_link_counts without redundant get_links_for calls (fixes W3).
+    # Include current_degree in the tuple so Phase 2b can seed the degree ledger
+    # without redundant get_links_for calls (fixes W3).
     judge_tasks: list[tuple[str, Any, list, dict, int | None, int]] = []
     for card_id, card, current_degree, candidates in per_card_similar:
         available = MAX_DEGREE - current_degree
@@ -555,14 +555,17 @@ async def _judge_pending(
             )
         )
 
-    # Track per-card link count to enforce MAX_DEGREE on both sides.
-    # from_link_counts: from-side — seeded from current_degree computed in
-    #   Phase 2a to avoid redundant get_links_for calls (W3 fix).
-    # to_link_counts: to-side (the other_id being linked TO) — tracks
-    #   in-flight links so multiple pending cards don't exceed MAX_DEGREE
-    #   on a shared target (C1 fix).
-    from_link_counts: dict[str, int] = {cid: deg for cid, _, _, _, _, deg in judge_tasks}
-    to_link_counts: dict[str, int] = {}
+    # One degree ledger for both endpoints of every in-flight link (#3660). A pending card
+    # that is also another card's link target must count its incoming links too, so the
+    # ledger is seeded lazily from the persisted degree and bumped on both ends. seen_pairs
+    # keeps A->B and B->A from counting as two links.
+    degree: dict[str, int] = {cid: deg for cid, _, _, _, _, deg in judge_tasks}
+    seen_pairs: set[frozenset[str]] = set()
+
+    def _degree_of(cid: str) -> int:
+        if cid not in degree:
+            degree[cid] = _active_degree(cid)
+        return degree[cid]
 
     # Per-card similarity map for audit logging when degree cap forces a
     # reject — built lazily so we only pay if a cap actually fires.
@@ -615,14 +618,11 @@ async def _judge_pending(
         for other_id, judgement in results.items():
             if judgement is None:
                 continue
-            if from_link_counts[card_id] >= MAX_DEGREE:
-                _log_degree_cap(card_id, other_id, judgement)
-                continue  # from-side at cap; keep logging surplus
-            # Initialize to-side count on first access
-            if other_id not in to_link_counts:
-                to_link_counts[other_id] = _active_degree(other_id)
-            if to_link_counts[other_id] >= MAX_DEGREE:
-                _log_degree_cap(card_id, other_id, judgement)
+            pair = frozenset((card_id, other_id))
+            if pair in seen_pairs:
+                continue  # the reverse direction of a link already taken this run
+            if _degree_of(card_id) >= MAX_DEGREE or _degree_of(other_id) >= MAX_DEGREE:
+                _log_degree_cap(card_id, other_id, judgement)  # keep logging surplus
                 continue
             all_links.append(
                 (
@@ -633,8 +633,9 @@ async def _judge_pending(
                     judgement.reason,
                 )
             )
-            from_link_counts[card_id] += 1
-            to_link_counts[other_id] += 1
+            seen_pairs.add(pair)
+            degree[card_id] += 1
+            degree[other_id] += 1
 
     consumed: list[str] = []
     quota_error: QuotaExceededError | None = None

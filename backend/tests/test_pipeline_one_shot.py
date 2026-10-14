@@ -405,3 +405,85 @@ def test_to_side_max_degree_tracked_for_inflight_links():
     assert len(links_to_target) == 1, (
         f"Expected 1 link to 'target' but got {len(links_to_target)}; to-side MAX_DEGREE was violated"
     )
+
+
+# ── #3660: MAX_DEGREE counts both endpoints of an in-flight link ──────────
+
+
+def _run_judge_step_for_degree(monkeypatch, *, card_ids, judge_results, similar_map):
+    """Run _step_embed_and_judge over mutually similar pending cards; return (graph, judge_log_rejects)."""
+    from kg import judge_log
+    from kg.pipeline_service import _step_embed_and_judge
+
+    cards = _FakeCards([_make_card(cid, cid, f"meaning {cid}") for cid in card_ids])
+    embeddings = _FakeEmbeddings(has_ids=set(card_ids), similar_map=similar_map)
+    graph = _FakeGraph(pending=list(card_ids))
+    fake_judge = _FakeJudge(judge_results)
+
+    class PatchedJudge:
+        def __init__(self, llm, **kwargs):
+            pass
+
+        def evaluate_batch(self, *args, **kwargs):
+            return fake_judge.evaluate_batch(*args, **kwargs)
+
+    rejects: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(judge_log, "update_to_rejected", lambda f, t, reason: rejects.append((f, t, reason)) or 1)
+    import kg.judge as judge_mod
+
+    monkeypatch.setattr(judge_mod, "Judge", PatchedJudge)
+    asyncio.run(
+        _step_embed_and_judge(
+            "u1",
+            {"id": "u1", "dir": Path("/tmp/u1"), "config": {}},
+            card_store_factory=lambda d: cards,
+            graph_store_factory=lambda d, notebook_id="default": graph,
+            embedding_store_factory=lambda d, llm=None, notebook_id="default": embeddings,
+            client_factory=lambda provider: None,
+            logger=_FakeLogger(),
+            link_kind_enum=lambda v: v,
+        )
+    )
+    return graph, rejects
+
+
+def _distinct_neighbours(links, cid):
+    return {lk[1] if lk[0] == cid else lk[0] for lk in links if cid in (lk[0], lk[1])}
+
+
+def test_pending_card_that_is_also_a_link_target_respects_max_degree(monkeypatch):
+    """#3660: c0 accepts six pending peers (its own cap), then c7 accepts c0 as a target. c0 is pending
+    too, so its incoming count must not start from zero: the c7->c0 link must be capped."""
+    from kg.vocab_graph import MAX_DEGREE
+
+    ids = [f"c{i}" for i in range(8)]
+    similar_map = {cid: [(other, 0.9 - 0.01 * j) for j, other in enumerate(ids) if other != cid] for cid in ids}
+    judge_results = {
+        "c0": {f"c{j}": Judgement(link="shares_usage", confidence=0.9, reason="related") for j in range(1, 7)},
+        "c7": {"c0": Judgement(link="shares_usage", confidence=0.9, reason="related")},
+    }
+
+    graph, rejects = _run_judge_step_for_degree(
+        monkeypatch, card_ids=ids, judge_results=judge_results, similar_map=similar_map
+    )
+
+    for cid in ids:
+        assert len(_distinct_neighbours(graph.created_links, cid)) <= MAX_DEGREE, cid
+    assert ("c7", "c0", "degree_cap") in rejects
+
+
+def test_mutual_accepts_between_pending_cards_count_as_one_link(monkeypatch):
+    """#3660: A accepts B and B accepts A is one link, so each endpoint has degree 1 and no duplicate is created."""
+    ids = ["a", "b"]
+    similar_map = {"a": [("b", 0.9)], "b": [("a", 0.9)]}
+    judge_results = {
+        "a": {"b": Judgement(link="shares_usage", confidence=0.9, reason="related")},
+        "b": {"a": Judgement(link="shares_usage", confidence=0.9, reason="related")},
+    }
+
+    graph, rejects = _run_judge_step_for_degree(
+        monkeypatch, card_ids=ids, judge_results=judge_results, similar_map=similar_map
+    )
+
+    assert len(graph.created_links) == 1
+    assert rejects == []

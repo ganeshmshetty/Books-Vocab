@@ -959,9 +959,9 @@ def test_embed_step_failure_after_judge_commit_does_not_revert_judge():
     asyncio.run(run())
 
     # ── Invariants ──
-    # 1. Judge phase committed BOTH cards' links (one each).
-    assert len(graph.persisted_links) == 2, (
-        f"Expected 2 committed judge links before difficulty failure, got {len(graph.persisted_links)}"
+    # 1. Judge phase committed the mutual c0<->c1 accepts as ONE link (#3660: both directions are one pair).
+    assert len(graph.persisted_links) == 1, (
+        f"Expected 1 committed judge link before difficulty failure, got {len(graph.persisted_links)}"
     )
 
     # 2. Difficulty step actually attempted batch_update (and raised).
