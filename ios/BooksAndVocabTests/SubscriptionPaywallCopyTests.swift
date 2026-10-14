@@ -251,5 +251,30 @@ struct SubscriptionPaywallCopyTests {
         #expect(!detail.contains("免費試用"))
         #expect(!SubscriptionPresentation.ctaTitle(for: s).contains("免費試用"))
     }
+
+    // MARK: - Current-entitlement sync outcome mapping (#3804)
+
+    /// 403 and 409 are permanent account-binding rejections (transaction already linked to
+    /// another account). Both must map to .rejected so restore shows the rejected copy.
+    @Test func syncOutcome_accountBindingErrorsAreRejected() {
+        #expect(CurrentEntitlementSyncOutcome(syncError: KGError.httpError(statusCode: 403, detail: "")) == .rejected)
+        #expect(CurrentEntitlementSyncOutcome(syncError: KGError.httpError(statusCode: 409, detail: "")) == .rejected)
+    }
+
+    /// Transient or unrecognised failures stay retryable.
+    @Test func syncOutcome_otherErrorsAreFailed() {
+        for code in [401, 408, 429, 500, 503] {
+            #expect(CurrentEntitlementSyncOutcome(syncError: KGError.httpError(statusCode: code, detail: "")) == .failed)
+        }
+        #expect(CurrentEntitlementSyncOutcome(syncError: KGError.networkError(underlying: URLError(.notConnectedToInternet))) == .failed)
+    }
+
+    @Test func restoreOutcome_backend409ShowsRejectedCopy() {
+        let outcome = CurrentEntitlementSyncOutcome(syncError: KGError.httpError(statusCode: 409, detail: ""))
+        #expect(
+            SubscriptionPurchaseCopy.restoreOutcomeMessage(result: outcome, hasProAccess: false)
+                == SubscriptionPurchaseCopy.restoreRejectedKey
+        )
+    }
 }
 #endif
