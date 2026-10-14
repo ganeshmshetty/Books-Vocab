@@ -34,7 +34,14 @@ documents:
       - sync-behavior-changed
     sources:
       - ios/BooksAndVocab/Services/
-      - backend/src/kg/routers/
+      - backend/src/kg/api_models/vocab.py
+      - backend/src/kg/routers/vocab.py
+      - backend/src/kg/routers/user.py
+      - backend/src/kg/routers/shared_decks.py
+      - backend/src/kg/vocab_intake.py
+      - backend/src/kg/vocab_crud.py
+      - backend/src/kg/vocab_handlers/intake.py
+      - backend/src/kg/vocab_handlers/crud.py
 
   - id: contract.card_format
     path: docs/reference/card_format.md
@@ -432,7 +439,6 @@ documents:
       - vocabulary-changed
     sources:
       - ios/BooksAndVocab/Views/Vocabulary/
-      - backend/src/kg/routers/vocab.py
 
   - id: runbook.system
     path: docs/runbook/system.md
