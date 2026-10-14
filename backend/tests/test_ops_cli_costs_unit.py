@@ -236,7 +236,7 @@ class TestCmdCostBackendRetentionAuthority:
             body = {"log_db_health": {"token_usage": {"retention_days": 30}}}
             return io.BytesIO(json.dumps(body).encode())
 
-        monkeypatch.setattr(costs.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(costs._BACKEND_OPENER, "open", fake_urlopen)
         assert costs._backend_token_retention_days() == 30
         assert seen == {"url": "https://backend.test/api/admin/observability", "auth": "Bearer tok"}
 
@@ -257,7 +257,7 @@ class TestCmdCostBackendRetentionAuthority:
             def read(self):
                 raise http.client.IncompleteRead(b"{")
 
-        monkeypatch.setattr(costs.urllib.request, "urlopen", lambda req, timeout: _TruncatedResp())
+        monkeypatch.setattr(costs._BACKEND_OPENER, "open", lambda req, timeout: _TruncatedResp())
         assert costs._backend_token_retention_days() is None
 
     def test_remote_plaintext_backend_never_receives_admin_token(self, monkeypatch):
@@ -268,7 +268,7 @@ class TestCmdCostBackendRetentionAuthority:
         def boom(*a, **k):
             raise AssertionError("bearer token must not be sent to a remote plaintext base")
 
-        monkeypatch.setattr(costs.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(costs._BACKEND_OPENER, "open", boom)
         assert costs._backend_token_retention_days() is None
 
     def test_loopback_plaintext_backend_is_allowed(self, monkeypatch):
@@ -278,7 +278,7 @@ class TestCmdCostBackendRetentionAuthority:
         monkeypatch.setenv("ADMIN_TOKEN", "tok")
         monkeypatch.setenv("KG_OPS_BACKEND_URL", "http://127.0.0.1:8000")
         body = {"log_db_health": {"token_usage": {"retention_days": 7}}}
-        monkeypatch.setattr(costs.urllib.request, "urlopen", lambda req, timeout: io.BytesIO(json.dumps(body).encode()))
+        monkeypatch.setattr(costs._BACKEND_OPENER, "open", lambda req, timeout: io.BytesIO(json.dumps(body).encode()))
         assert costs._backend_token_retention_days() == 7
 
     def test_backend_fetch_without_admin_token_never_calls_network(self, monkeypatch):
@@ -288,7 +288,7 @@ class TestCmdCostBackendRetentionAuthority:
         def boom(*a, **k):
             raise AssertionError("network must not be touched without ADMIN_TOKEN")
 
-        monkeypatch.setattr(costs.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(costs._BACKEND_OPENER, "open", boom)
         assert costs._backend_token_retention_days() is None
 
     def test_backend_fetch_failure_falls_back_to_none(self, monkeypatch):
@@ -298,5 +298,84 @@ class TestCmdCostBackendRetentionAuthority:
         def refused(*a, **k):
             raise ConnectionRefusedError("down")
 
-        monkeypatch.setattr(costs.urllib.request, "urlopen", refused)
+        monkeypatch.setattr(costs._BACKEND_OPENER, "open", refused)
         assert costs._backend_token_retention_days() is None
+
+
+def _serve_loopback(handler_cls):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+class TestBackendRedirectNeverLeaksAdminToken:
+    """#3588: a 3xx from the trusted backend must not make urllib replay the bearer to another origin."""
+
+    def test_redirect_to_other_origin_never_receives_bearer(self, monkeypatch):
+        from http.server import BaseHTTPRequestHandler
+
+        leaked: list[str | None] = []
+
+        class Collector(BaseHTTPRequestHandler):
+            def do_GET(self):
+                leaked.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *args):
+                pass
+
+        class Redirecting(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{collector.server_address[1]}/collect")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        collector = _serve_loopback(Collector)
+        backend = _serve_loopback(Redirecting)
+        try:
+            monkeypatch.undo()
+            monkeypatch.setenv("ADMIN_TOKEN", "tok")
+            monkeypatch.setenv("KG_OPS_BACKEND_URL", f"http://127.0.0.1:{backend.server_address[1]}")
+            assert costs._backend_token_retention_days() is None
+            assert leaked == []
+        finally:
+            backend.shutdown()
+            collector.shutdown()
+
+    def test_same_origin_200_still_returns_retention_days(self, monkeypatch):
+        import json as _json
+        from http.server import BaseHTTPRequestHandler
+
+        seen: dict = {}
+        body = _json.dumps({"log_db_health": {"token_usage": {"retention_days": 30}}}).encode()
+
+        class Backend(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["auth"] = self.headers.get("Authorization")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        backend = _serve_loopback(Backend)
+        try:
+            monkeypatch.undo()
+            monkeypatch.setenv("ADMIN_TOKEN", "tok")
+            monkeypatch.setenv("KG_OPS_BACKEND_URL", f"http://127.0.0.1:{backend.server_address[1]}")
+            assert costs._backend_token_retention_days() == 30
+            assert seen["auth"] == "Bearer tok"
+        finally:
+            backend.shutdown()
