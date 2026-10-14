@@ -38,7 +38,7 @@ if [[ -z "$UV_BIN" ]]; then
 fi
 
 # ── 建一份「健康」mock backup tarball 到指定目錄 ────────────────────────────
-# 用法：build_backup <out_dir> <stamp> [opt:root=<name>|skip_users_json|corrupt_cards|skip_pipeline_table|skip_judge_table|empty_logs|skip_cards]
+# 用法：build_backup <out_dir> <stamp> [opt:root=<name>|skip_users_json|corrupt_cards|skip_pipeline_table|skip_judge_table|empty_logs|skip_cards|empty_cards_schema|mixed_cards_schema]
 build_backup() {
   local out_dir="$1" stamp="$2"
   shift 2
@@ -80,12 +80,21 @@ build_backup() {
     sqlite3 "$root/judge_log.db" "CREATE TABLE other (id INTEGER);"
   fi
 
-  # users/u1/cards.db
+  # users/u1/cards.db（empty_cards_schema：只有無 card 表的 schema-less 檔，integrity 仍 ok）
   if ! grep -qx skip_cards <<< "$(printf '%s\n' "${opts[@]}")"; then
-    sqlite3 "$root/users/u1/cards.db" \
-      "CREATE TABLE card (id TEXT PRIMARY KEY, content TEXT);"
-    sqlite3 "$root/users/u1/cards.db" \
-      "INSERT INTO card (id, content) VALUES ('c1','hello'),('c2','world');"
+    if grep -qx empty_cards_schema <<< "$(printf '%s\n' "${opts[@]}")"; then
+      sqlite3 "$root/users/u1/cards.db" "CREATE TABLE other (id INTEGER);"
+    else
+      sqlite3 "$root/users/u1/cards.db" \
+        "CREATE TABLE card (id TEXT PRIMARY KEY, content TEXT);"
+      sqlite3 "$root/users/u1/cards.db" \
+        "INSERT INTO card (id, content) VALUES ('c1','hello'),('c2','world');"
+    fi
+  fi
+  # mixed_cards_schema：另加一位 u2，其 cards.db 無 card 表（與健康的 u1 並存）
+  if grep -qx mixed_cards_schema <<< "$(printf '%s\n' "${opts[@]}")"; then
+    mkdir -p "$root/users/u2"
+    sqlite3 "$root/users/u2/cards.db" "CREATE TABLE other (id INTEGER);"
   fi
 
   local tarball="$out_dir/data_${stamp}.tar.gz"
@@ -401,6 +410,25 @@ build_backup "$D11" 20260109_0100 skip_cards >/dev/null
 out=$(run_verify "$D11"); rc="${out%%|*}"; log="${out##*|}"
 assert_rc "no cards.db" 0 "$rc" "$log"
 assert_log_contains "no cards.db" "未找到任何 users" "$log"
+
+# ── 12. cards.db 皆無 card 表 → fatal（#3748）─────────────────────────
+# integrity_check 對 schema-less 檔回 ok，唯一擋下的是此檢查；必須是 fatal 而非 warning，
+# 且訊息歸因於 card 表而不是 integrity 損毀。
+section "case 12: all cards.db lack card table → fatal"
+D12="$TMPDIR/c12"
+build_backup "$D12" 20260110_0100 empty_cards_schema >/dev/null
+out=$(run_verify "$D12"); rc="${out%%|*}"; log="${out##*|}"
+assert_rc "cards without card table" 1 "$rc" "$log"
+assert_log_contains "cards without card table" "cards.db 內皆無 card 表" "$log"
+assert_log_not_contains "cards without card table not integrity" "integrity 損毀" "$log"
+
+# ── 12b. 正控：一份健康、一份無 card 表 → 通過（規則是「全部皆無」而非「任一」）──
+section "case 12b: one good cards.db + one schema-less cards.db → exit 0"
+D12b="$TMPDIR/c12b"
+build_backup "$D12b" 20260111_0100 mixed_cards_schema >/dev/null
+out=$(run_verify "$D12b"); rc="${out%%|*}"; log="${out##*|}"
+assert_rc "mixed cards schema" 0 "$rc" "$log"
+assert_log_contains "mixed cards schema" "backup verify PASSED" "$log"
 
 # ── 結果 ───────────────────────────────────────────────────────────────
 echo ""
