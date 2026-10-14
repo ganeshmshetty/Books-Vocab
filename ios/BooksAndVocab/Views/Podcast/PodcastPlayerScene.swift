@@ -256,7 +256,7 @@ struct PodcastPlayerScene: View {
                 isPreviewPlayback: accessState.isPreviewPlayback
             )
         }
-        .onChange(of: VocabularyHighlightSignature.make(
+        .onChange(of: VocabularyHighlightSignature.revision(
             entries: allVocabulary,
             notebookId: loadedSeries?.resolvedNotebookId
         )) { _, _ in
