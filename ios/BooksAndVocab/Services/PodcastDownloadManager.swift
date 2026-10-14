@@ -350,7 +350,7 @@ extension PodcastDownloadManager: URLSessionDownloadDelegate {
             // moveItem failed → stash still on disk; clear it so it doesn't
             // accumulate across retries, and restore the kept previous file.
             try? fm.removeItem(at: stash)
-            if keptPrevious { try? fm.moveItem(at: aside, to: finalURL) }
+            if keptPrevious { restoreKeptPrevious(aside, to: finalURL, fm: fm, remoteId: remoteId) }
             failed[remoteId] = error.localizedDescription
             cleanup(taskId: taskId, remoteId: remoteId)
             return
@@ -365,10 +365,21 @@ extension PodcastDownloadManager: URLSessionDownloadDelegate {
             // previous one, and revert the in-memory field so disk and the
             // persisted record agree and no orphaned mp3 remains (#3427, #3502).
             try? fm.removeItem(at: finalURL)
-            if keptPrevious { try? fm.moveItem(at: aside, to: finalURL) }
+            if keptPrevious { restoreKeptPrevious(aside, to: finalURL, fm: fm, remoteId: remoteId) }
             episode.localAudioPath = previousPath == finalURL.path && !keptPrevious ? nil : previousPath
             failed[remoteId] = error.localizedDescription
             cleanup(taskId: taskId, remoteId: remoteId)
+        }
+    }
+
+    /// Puts the kept previous file back at `finalURL`. A failure is logged,
+    /// not swallowed: the episode record may still point at `finalURL`, so
+    /// the log is the only trace of the disk/record mismatch (#3602).
+    private func restoreKeptPrevious(_ aside: URL, to finalURL: URL, fm: FileManager, remoteId: String) {
+        do {
+            try fm.moveItem(at: aside, to: finalURL)
+        } catch {
+            AppLog.sync.error("restore kept previous podcast file failed remoteId=\(remoteId): \(error.localizedDescription)")
         }
     }
 
