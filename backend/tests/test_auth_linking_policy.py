@@ -61,7 +61,7 @@ def _make_login(tmp_path, seed=None):
 
 def test_google_custom_domain_email_without_hd_gets_own_account(tmp_path):
     login, load = _make_login(tmp_path)
-    owner = login("000111.apple-owner.0001", "apple", "alice@custom-domain.example")
+    owner = login("workspace-owner", "google", "alice@custom-domain.example", hd="custom-domain.example")
 
     other = login("google-sub", "google", "alice@custom-domain.example")
 
@@ -72,7 +72,7 @@ def test_google_custom_domain_email_without_hd_gets_own_account(tmp_path):
     assert "_linked_to" not in users["google-sub"]
     assert "google-sub" not in users[owner].get("linked_ids", [])
     # The existing account's profile is untouched by the other sign-in.
-    assert users[owner]["provider"] == "apple"
+    assert users[owner]["provider"] == "google"
     assert users[owner]["email"] == "alice@custom-domain.example"
 
 
@@ -95,7 +95,7 @@ def test_google_consumer_email_links_to_existing_account(tmp_path, email):
 
 def test_google_workspace_hd_matching_email_domain_links(tmp_path):
     login, _ = _make_login(tmp_path)
-    owner = login("apple-owner", "apple", "alice@corp.example")
+    owner = login("workspace-owner", "google", "alice@corp.example", hd="corp.example")
 
     assert login("google-sub", "google", "alice@corp.example", hd="corp.example") == owner
 
@@ -103,13 +103,13 @@ def test_google_workspace_hd_matching_email_domain_links(tmp_path):
 @pytest.mark.parametrize("hd", [None, "", "other.example"])
 def test_google_hd_not_matching_email_domain_does_not_link(tmp_path, hd):
     login, _ = _make_login(tmp_path)
-    owner = login("apple-owner", "apple", "alice@corp.example")
+    owner = login("workspace-owner", "google", "alice@corp.example", hd="corp.example")
 
     assert login("google-sub", "google", "alice@corp.example", hd=hd) == "google-sub"
-    assert owner == "apple-owner"
+    assert owner == "workspace-owner"
 
 
-@pytest.mark.parametrize("email", ["alice@icloud.com", "relay@privaterelay.appleid.com", "alice@custom.example"])
+@pytest.mark.parametrize("email", ["alice@icloud.com", "relay@privaterelay.appleid.com", "alice@me.com"])
 def test_apple_verified_email_links_to_existing_account(tmp_path, email):
     login, _ = _make_login(tmp_path)
     owner = login("google-owner", "google", email, hd=email.split("@")[1])
@@ -205,15 +205,15 @@ def test_google_web_callback_passes_hosted_domain_to_linking(web_auth_env):  # n
 
 def test_independent_account_is_not_relinked_by_email(tmp_path):
     login, load = _make_login(tmp_path, {"p": {"subscription": {"tier": "pro"}, "provider": "google"}})
-    assert login("c", "apple", "e@x.com") == "c"
+    assert login("c", "apple", "e@icloud.com") == "c"
     owner_before = dict(load()["c"])
 
-    assert login("p", "apple", "e@x.com") == "p"
+    assert login("p", "apple", "e@icloud.com") == "p"
 
     users = load()
     assert "_linked_to" not in users["p"]
     assert "p" not in users["c"].get("linked_ids", [])
-    assert users["_email_index"]["e@x.com"] == "c"
+    assert users["_email_index"]["e@icloud.com"] == "c"
     assert users["c"]["provider"] == owner_before["provider"]
     assert users["p"]["subscription"] == {"tier": "pro"}
     assert users["p"].get("email") is None
@@ -221,9 +221,9 @@ def test_independent_account_is_not_relinked_by_email(tmp_path):
 
 def test_fresh_provider_id_still_links_by_authoritative_email(tmp_path):
     login, load = _make_login(tmp_path)
-    assert login("c", "apple", "e@x.com") == "c"
+    assert login("c", "apple", "e@icloud.com") == "c"
 
-    assert login("fresh", "apple", "e@x.com") == "c"
+    assert login("fresh", "apple", "e@icloud.com") == "c"
     assert load()["c"]["linked_ids"] == ["fresh"]
 
 
