@@ -680,15 +680,17 @@ class TestUserDeletePrefixSweepBestEffort:
 
 class TestSweepQuarantineReportsFailure:
     def test_rmtree_failure_is_reported_and_does_not_abort(self, tmp_path, monkeypatch):
-        batch = tmp_path / ".deleting" / "stale"
-        batch.mkdir(parents=True)
+        for name in ("stale", "stale-2"):
+            (tmp_path / ".deleting" / name).mkdir(parents=True)
         reported: list[tuple[BaseException, str]] = []
+        attempted: list[Path] = []
 
         def recorder(exc, *, context, tags=None):
             reported.append((exc, context))
             return True
 
-        def failing_rmtree(*_args, **_kwargs):
+        def failing_rmtree(path, *_args, **_kwargs):
+            attempted.append(Path(path))
             raise OSError("device busy")
 
         monkeypatch.setattr(user_cmd.shutil, "rmtree", failing_rmtree)
@@ -696,5 +698,7 @@ class TestSweepQuarantineReportsFailure:
 
         user_cmd._sweep_quarantine(tmp_path)
 
-        assert [context for _exc, context in reported] == ["account_erasure.quarantine_sweep"]
-        assert isinstance(reported[0][0], OSError)
+        # Every leftover batch is attempted even after the first one fails.
+        assert sorted(attempted) == sorted([tmp_path / ".deleting" / "stale", tmp_path / ".deleting" / "stale-2"])
+        assert [context for _exc, context in reported] == ["account_erasure.quarantine_sweep"] * 2
+        assert all(isinstance(exc, OSError) for exc, _context in reported)
