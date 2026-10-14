@@ -304,14 +304,20 @@ def collect_env(repo: Path, run: Runner = _run) -> str | None:
 # --- assembly ---------------------------------------------------------------
 
 
-def build_findings(repo: Path, *, remote: bool, run: Runner = _run) -> list[Finding]:
-    findings = [doctor.evaluate_git(doctor.collect_git(repo))]
+def ci_findings(runs: list[dict[str, Any]]) -> list[Finding]:
+    """Non-ok CI findings, or the ok line only when every workflow is readable and green."""
+
     ci = [
         f
-        for f in doctor.evaluate_ci(doctor.collect_ci(repo), datetime.now(timezone.utc))
+        for f in doctor.evaluate_ci(runs, datetime.now(timezone.utc))
         if f.level != "ok"
     ]
-    findings += ci or [Finding("ci", "ok", "no workflow is known-red on main")]
+    return ci or [Finding("ci", "ok", "no workflow is known-red on main")]
+
+
+def build_findings(repo: Path, *, remote: bool, run: Runner = _run) -> list[Finding]:
+    findings = [doctor.evaluate_git(doctor.collect_git(repo))]
+    findings += ci_findings(doctor.collect_ci(repo))
 
     git_out(repo, "fetch", "-q", "origin", "main", "prod", run=run)
     done = run(

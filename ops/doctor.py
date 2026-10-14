@@ -113,7 +113,21 @@ def evaluate_ci(runs: list[dict[str, Any]], now: datetime) -> list[Finding]:
     for run in runs:
         if run.get("conclusion") in _REAL_CONCLUSIONS:
             by_workflow.setdefault(str(run.get("workflowName")), []).append(run)
-    findings = []
+    unreadable = sorted(
+        {str(r.get("workflowName")) for r in runs if r.get("conclusion") == "unknown"}
+    )
+    findings = (
+        [
+            Finding(
+                "ci",
+                "warn",
+                f"CI state unknown for: {', '.join(unreadable)}",
+                ["gh could not read these; unknown is not healthy, re-run doctor"],
+            )
+        ]
+        if unreadable
+        else []
+    )
     for name, items in sorted(by_workflow.items()):
         items.sort(key=lambda r: r["createdAt"], reverse=True)
         streak = []
@@ -501,6 +515,12 @@ def collect_registry(repo: Path) -> list[dict[str, Any]]:
     )
 
 
+def _unreadable(source: str) -> dict[str, Any]:
+    """Stands for CI history that could not be read, so missing data never reads as healthy."""
+
+    return {"workflowName": source, "conclusion": "unknown"}
+
+
 def collect_ci(repo: Path, run: Any = _run) -> list[dict[str, Any]]:
     """Recent main runs of every active workflow, each with its *own* history.
 
@@ -511,7 +531,7 @@ def collect_ci(repo: Path, run: Any = _run) -> list[dict[str, Any]]:
 
     listing = run(["gh", "workflow", "list", "--json", "name,state"], repo)
     if listing.returncode or not listing.stdout:
-        return []
+        return [_unreadable("gh workflow list")]
     runs: list[dict[str, Any]] = []
     for workflow in json.loads(listing.stdout):
         if workflow.get("state") != "active":
@@ -532,7 +552,9 @@ def collect_ci(repo: Path, run: Any = _run) -> list[dict[str, Any]]:
             ],
             repo,
         )
-        if not done.returncode and done.stdout:
+        if done.returncode:
+            runs.append(_unreadable(workflow["name"]))
+        elif done.stdout:
             runs.extend(json.loads(done.stdout))
     return runs
 
