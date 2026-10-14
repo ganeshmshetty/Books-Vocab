@@ -72,7 +72,9 @@ class TestRestoreLinksFor:
         store.deprecate_links_for("card_a")
         assert store.get_links_for("card_a") == []
 
-        cards_store = type("S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": False})()})()
+        cards_store = type(
+            "S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": False})()}
+        )()
         count = store.restore_links_for("card_a", cards_store)
         assert count == 1
         assert len(store.get_links_for("card_a")) == 1
@@ -81,7 +83,9 @@ class TestRestoreLinksFor:
         store.add_link("card_a", "card_b", LinkKind.CONTRASTS_WITH, 0.9, "r")
         store.deprecate_links_for("card_a")
 
-        cards_store = type("S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": True, "is_archived": False})()})()
+        cards_store = type(
+            "S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": True, "is_archived": False})()}
+        )()
         count = store.restore_links_for("card_a", cards_store)
         assert count == 0
         assert store.get_links_for("card_a") == []
@@ -90,7 +94,9 @@ class TestRestoreLinksFor:
         store.add_link("card_a", "card_b", LinkKind.CONTRASTS_WITH, 0.9, "r")
         store.deprecate_links_for("card_a")
 
-        cards_store = type("S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": True})()})()
+        cards_store = type(
+            "S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": True})()}
+        )()
         count = store.restore_links_for("card_a", cards_store)
         assert count == 0
 
@@ -104,9 +110,25 @@ class TestRestoreLinksFor:
 
     def test_no_deprecated_links_returns_zero(self, store):
         store.add_link("card_a", "card_b", LinkKind.CONTRASTS_WITH, 0.9, "r")
-        cards_store = type("S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": False})()})()
+        cards_store = type(
+            "S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": False})()}
+        )()
         count = store.restore_links_for("card_a", cards_store)
         assert count == 0
+
+
+class TestCleanupForCard:
+    def test_cleanup_for_card_keeps_hidden_link_hidden(self, store):
+        lk = store.add_link("card_a", "card_b", LinkKind.CONTRASTS_WITH, 0.9, "r")
+        store.hide_link(lk.id)
+        store.cleanup_for_card("card_a")
+        assert store.get_link(lk.id).status == "hidden"
+
+        cards_store = type(
+            "S", (), {"get": lambda self, cid: type("C", (), {"is_deleted": False, "is_archived": False})()}
+        )()
+        store.restore_links_for("card_a", cards_store)
+        assert store.get_link(lk.id).status == "hidden"
 
 
 class TestBatchAddLinks:
@@ -122,10 +144,12 @@ class TestBatchAddLinks:
         assert store.has_link("c", "d")
 
     def test_dedupes_bidirectional_pairs_within_batch(self, store):
-        created = store.batch_add_links([
-            ("a", "b", LinkKind.CONTRASTS_WITH, 0.9, "r1"),
-            ("b", "a", LinkKind.SHARES_USAGE, 0.8, "r2"),
-        ])
+        created = store.batch_add_links(
+            [
+                ("a", "b", LinkKind.CONTRASTS_WITH, 0.9, "r1"),
+                ("b", "a", LinkKind.SHARES_USAGE, 0.8, "r2"),
+            ]
+        )
 
         assert len(created) == 1
         assert store.link_count() == 1
