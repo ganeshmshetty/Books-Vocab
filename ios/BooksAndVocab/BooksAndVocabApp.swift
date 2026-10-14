@@ -296,8 +296,10 @@ struct BooksAndVocabApp: App {
                     Task {
                         // logout-cleanup gate 在 KGService.backgroundSync 入口單點生效
                         // （四個 sync 觸發點共用），call site 不再各自 await。
+                        // 帳號邊界必須排隊等前一輪釋放 lane，不可回 .didNotRun 丟棄（#3807）。
                         AppLog.kg.info("Post-login sync triggered")
-                        await kgService.backgroundSync(
+                        await PostLoginSync.run(
+                            on: kgService,
                             container: modelContainer,
                             progress: PodcastBackgroundSyncStatusStore.report
                         )
