@@ -69,6 +69,9 @@ KG_LOCAL_HEALTH_URL="${KG_LOCAL_HEALTH_URL:-http://localhost:8000/api/system/inf
 # 所以「info 200」不能當存活證明；readiness 非 200 一律視為 unhealthy。
 KG_LOCAL_READY_URL="${KG_LOCAL_READY_URL:-http://localhost:8000/api/system/info/ready}"
 KG_LOCK_DIR="${KG_LOCK_DIR:-/tmp/kg-deploy.lock}"          # 鎖在 deploy host（felix）本機；devops.sh acquire_deploy_lock 經 SSH 在 felix 取同一把
+# 遺留鎖門檻（#3690）：鎖持有超過此秒數 → 視為疑似遺留鎖（程序被 SIGKILL／斷電，trap 未能 rmdir）。
+# 只改變告警與 verdict（locked_stale），reconcile 從不自動搶鎖；正常部署遠短於 1 小時。
+KG_LOCK_STALE_S="${KG_LOCK_STALE_S:-3600}"
 KG_GH_TOKEN_ENV="${KG_GH_TOKEN_ENV:-$HOME/.secrets/gh-token.env}"           # GH_TOKEN（私有 repo fetch）
 KG_SENTRY_RELEASE="${KG_SENTRY_RELEASE:-$KG_RECON_REPO/ops/sentry_release.sh}"  # Sentry release recorder
 KG_RECON_SENTRY_TIMEOUT="${KG_RECON_SENTRY_TIMEOUT:-45}"   # recorder 總時間上限（秒；持鎖中，故有界）
@@ -571,6 +574,16 @@ reconcile_live_version() {
   extract_version "$body"
 }
 
+# 鎖持有秒數（#3690）：鎖目錄是空目錄、無人寫入，其 mtime = 建立時刻。讀不到時回 0（保守視為新鮮）。
+# stat 旗標依平台：macOS（felix）`-f %m`；GNU（Linux 測試環境）`-f` 印出檔案系統名而非數字，故驗證為數字再退回 `-c %Y`。
+kg_lock_age_s() {
+  local m
+  m="$(stat -f %m "$KG_LOCK_DIR" 2>/dev/null || true)"
+  [[ "$m" =~ ^[0-9]+$ ]] || m="$(stat -c %Y "$KG_LOCK_DIR" 2>/dev/null || true)"
+  [[ "$m" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+  echo $(( $(date +%s) - m ))
+}
+
 # ── verdict 輸出（stdout 唯一機讀 payload）───────────────────────────────────
 DEPLOYED_SHA="unknown"
 ORIGIN_SHA="unknown"
@@ -782,8 +795,18 @@ main() {
   #     從實際狀態重新收斂（自癒 crash-window drift；亦救 VERSION 遺失但容器健在）。
   #     2b 會寫 VERSION，而人工 deploy 持鎖期間 VERSION 先於容器更新（正是 2b 想「修」的假象），
   #     故鎖被持有時整段略過並讓路（verdict=locked），不改 VERSION。
+  #     鎖新鮮（人工 deploy 進行中）→ 整輪讓路、不探針（容器重建窗口會誤報 unhealthy）。
+  #     鎖陳舊（#3690，遺留鎖）→ 仍讓路、不自動搶鎖，但探針照跑（否則遺留鎖會讓資料守衛永久失效）、
+  #     verdict=locked_stale 並告警，等人工確認後 rmdir。
   if [[ "$dry_run" != "1" && -d "$KG_LOCK_DIR" ]]; then
-    log "deploy 鎖 $KG_LOCK_DIR 已被持有（人工 deploy 進行中？）→ 跳過 VERSION 自癒，本輪讓路。"
+    lock_age="$(kg_lock_age_s)"
+    if (( lock_age >= KG_LOCK_STALE_S )); then
+      alert "deploy 鎖 $KG_LOCK_DIR 已持有 ${lock_age}s（≥ ${KG_LOCK_STALE_S}s）：疑似遺留鎖（部署程序被 SIGKILL／斷電，未能 rmdir）。reconcile 不自動搶鎖，請人工確認無部署進行後 rmdir。"
+      probe_data_dir_or_fail
+      probe_ready_or_fail
+      emit_verdict "locked_stale"; exit 0
+    fi
+    log "deploy 鎖 $KG_LOCK_DIR 已被持有 ${lock_age}s（人工 deploy 進行中？）→ 跳過 VERSION 自癒，本輪讓路。"
     emit_verdict "locked"; exit 0
   fi
   [[ "$dry_run" == "1" ]] || probe_data_dir_or_fail

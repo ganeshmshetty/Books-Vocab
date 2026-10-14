@@ -854,6 +854,35 @@ v="$(get_verdict "$out")"
 [[ ! -s "$COMPOSELOG" ]] && ok "locked-2b: compose not called" || bad "locked-2b: compose called"
 [[ -d "$LOCK" ]] && ok "locked-2b: 未刪別人的鎖" || bad "locked-2b: 誤刪他人鎖"
 
+section "遺留鎖（陳舊）→ locked_stale：告警、不搶鎖、探針照跑（#3690）"
+new_scratch backend
+mkdir -p "$LOCK"; touch -t 202001010000 "$LOCK"      # mtime 遠早於 KG_LOCK_STALE_S → 陳舊
+MOCK_CURL="$(make_mock_curl "" "$SC")"
+out="$(run_recon --once 2>"$SC/stale.err")"; rc=$?
+v="$(get_verdict "$out")"
+[[ "$v" == "locked_stale" ]] && ok "stale-lock: verdict locked_stale" || bad "stale-lock: expected locked_stale, got '$v' (out=$out)"
+[[ "$rc" -eq 0 ]] && ok "stale-lock: exit 0" || bad "stale-lock: exit $rc"
+grep -q "疑似遺留鎖" "$SC/stale.err" && ok "stale-lock: ALERT names the stale lock" || bad "stale-lock: no stale-lock ALERT"
+[[ ! -s "$COMPOSELOG" ]] && ok "stale-lock: compose not called" || bad "stale-lock: compose called"
+[[ -d "$LOCK" ]] && ok "stale-lock: 不自動搶鎖" || bad "stale-lock: 搶了遺留鎖"
+
+section "遺留鎖 + 資料目錄遺失 → 探針仍觸發 unhealthy（不被鎖永久遮蔽，#3690）"
+new_scratch backend
+mkdir -p "$LOCK"; touch -t 202001010000 "$LOCK"
+MOCK_CURL="$(make_mock_curl "" "$SC")"
+out="$(KG_DATA_DIR_OVERRIDE="$SC/gone" run_recon --once 2>"$SC/stale-dd.err")"; rc=$?
+v="$(get_verdict "$out")"
+[[ "$v" == "unhealthy" ]] && ok "stale-lock+data-gone: verdict unhealthy" || bad "stale-lock+data-gone: expected unhealthy, got '$v'"
+[[ "$rc" -eq 1 ]] && ok "stale-lock+data-gone: exit 1" || bad "stale-lock+data-gone: exit $rc"
+
+section "新鮮鎖 + 資料目錄遺失 → 整輪讓路，不探針（部署中不誤報，#3690）"
+new_scratch backend
+mkdir -p "$LOCK"                                       # mtime = now → 新鮮
+MOCK_CURL="$(make_mock_curl "" "$SC")"
+out="$(KG_DATA_DIR_OVERRIDE="$SC/gone" run_recon --once 2>/dev/null)"; rc=$?
+v="$(get_verdict "$out")"
+[[ "$v" == "locked" && "$rc" -eq 0 ]] && ok "fresh-lock: locked exit 0, probes skipped" || bad "fresh-lock: got '$v' rc=$rc"
+
 section "鎖空閒時 2b 仍修正 stale VERSION，且 noop 不留鎖（#2266）"
 new_scratch none
 echo "$SHA_NEW" > "$VERSIONFILE"       # 宣稱 new，live=old；origin==old 時修正後同版 noop

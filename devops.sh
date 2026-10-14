@@ -328,12 +328,23 @@ validate_uid() {
 # 與 felix 上的 kg_reconcile.sh（本機 mkdir 同一路徑）才是同一把；DEPLOY_LOCK_DIR 是遠端路徑。
 DEPLOY_LOCK_DIR="${KG_DEPLOY_LOCK_DIR:-/tmp/kg-deploy.lock}"
 DEPLOY_LOCK_HELD=0
-release_deploy_lock() { run_remote "rmdir $DEPLOY_LOCK_DIR" 2>/dev/null || true; }
+# release 失敗不中止（EXIT trap 中不可拋錯），但不可無聲：殘留鎖會讓 kg_reconcile 持續讓路（#3690）。
+release_deploy_lock() {
+  run_remote "rmdir $DEPLOY_LOCK_DIR" >/dev/null 2>&1 \
+    || echo "⚠ 無法釋放 deploy 鎖 ${DEPLOY_LOCK_DIR}（遠端 rmdir 失敗）；鎖殘留會讓 kg_reconcile 讓路（超過 KG_LOCK_STALE_S 後告警 locked_stale），請於 deploy host 確認後手動 rmdir。" >&2
+  return 0
+}
 acquire_deploy_lock() {
   # 同 process 內已持有則略過（cmd_deploy → cmd_migrate 遞迴呼叫場景）
   [[ "$DEPLOY_LOCK_HELD" == "1" ]] && return 0
-  if ! run_remote "mkdir $DEPLOY_LOCK_DIR" 2>/dev/null; then
-    err "另一個 deploy/restart/migrate 正在進行中（deploy host 上 $DEPLOY_LOCK_DIR 已存在）。若確認無進行中操作，請在 deploy host 手動 rmdir $DEPLOY_LOCK_DIR"
+  local mk_rc=0
+  run_remote "mkdir $DEPLOY_LOCK_DIR" >/dev/null 2>&1 || mk_rc=$?
+  if (( mk_rc == 255 )); then
+    # ssh 連線層失敗（非遠端 mkdir 結果）：鎖狀態未知，不可誤報為「他人持有」（#3690）。
+    err "無法連到 deploy host 取得鎖（ssh exit 255）；鎖狀態未知，請確認連線後重試。"
+  fi
+  if (( mk_rc != 0 )); then
+    err "另一個 deploy/restart/migrate 正在進行中（deploy host 上 $DEPLOY_LOCK_DIR 已存在，遠端 mkdir exit ${mk_rc}）。若確認無進行中操作，請在 deploy host 手動 rmdir $DEPLOY_LOCK_DIR"
   fi
   DEPLOY_LOCK_HELD=1
   kg_install_signal_traps release_deploy_lock devops
