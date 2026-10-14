@@ -5,11 +5,13 @@
 //  Spec: the reader bridge (message handlers + injected user script) lives in a
 //  dedicated WKContentWorld, never `.page`. Its script runs in every frame of
 //  that world (FXL pages are iframes) and only messages from that world are
-//  accepted. Configuration-level tests; no web view is started.
+//  accepted. Configuration-level tests; no web view is started. The eval body is
+//  run as real JavaScript in JavaScriptCore against a mocked DOM.
 //
 
 #if os(iOS)
 import Foundation
+import JavaScriptCore
 import Testing
 import WebKit
 @testable import BooksAndVocab
@@ -88,10 +90,47 @@ struct ReaderBridgeContentWorldTests {
         #expect(!ReaderBridgeContentWorld.accepts(world: .defaultClient))
     }
 
-    @Test func fixedLayoutSpreadEvaluatesIntoItsPageFramesAndReflowableIntoTheMainFrame() {
-        #expect(ReaderBridgeEvalTarget.forSpread(pageFrameCount: 0) == .mainFrame)
-        #expect(ReaderBridgeEvalTarget.forSpread(pageFrameCount: 1) == .pageFrames)
-        #expect(ReaderBridgeEvalTarget.forSpread(pageFrameCount: 2) == .pageFrames)
+    /// 以 JavaScriptCore 執行 `ReaderBridgeEvalScript.callBody`，DOM 以 mock 模擬（不啟動 web view）。
+    /// `frames` 為 (iframe src, 標籤)；空陣列代表 reflowable（沒有頁面 iframe）。回傳「查詢與求值紀錄 => 回傳值」。
+    private func runCallBody(frames: [(src: String, tag: String)]) -> String? {
+        let frameLiterals = frames.map { frame in
+            "{ src: '\(frame.src)', contentWindow: { eval: function (s) { log.push('\(frame.tag):' + s); return '\(frame.tag)'; } } }"
+        }.joined(separator: ", ")
+        let harness = """
+        var log = [];
+        var tap = function () { log.push('main:tap'); return 'main'; };
+        var pageFrames = [\(frameLiterals)];
+        var document = {
+          querySelectorAll: function (selector) {
+            log.push('query:' + selector);
+            return selector === '\(ReaderBridgeEvalScript.pageFrameSelector)' ? pageFrames : [];
+          }
+        };
+        var returned = (function (script) {
+        \(ReaderBridgeEvalScript.callBody)
+        })('tap()');
+        log.join('|') + ' => ' + String(returned);
+        """
+        let context: JSContext? = JSContext()
+        return context?.evaluateScript(harness)?.toString()
+    }
+
+    @Test func fixedLayoutBridgeEvalRunsInEveryLoadedPageFrameFromTheBridgeWorld() {
+        #expect(
+            runCallBody(frames: [("https://book/p1.xhtml", "left"), ("https://book/p2.xhtml", "right")])
+                == "query:iframe[id^=page]|left:tap()|right:tap() => right"
+        )
+    }
+
+    @Test func fixedLayoutBridgeEvalSkipsEmptyPagesAndStillReachesTheLoadedOne() {
+        #expect(
+            runCallBody(frames: [("about:blank", "left"), ("https://book/p2.xhtml", "right")])
+                == "query:iframe[id^=page]|right:tap() => right"
+        )
+    }
+
+    @Test func reflowableBridgeEvalRunsInTheMainFrameWhenThereAreNoPageFrames() {
+        #expect(runCallBody(frames: []) == "query:iframe[id^=page]|main:tap => main")
     }
 }
 #endif

@@ -17,7 +17,7 @@ enum ReaderBridgeContentWorld {
     static let world = WKContentWorld.world(name: name)
     static let handlerNames = ["wordTap", "wordDeselect", "selectionState", "markingProgress"]
 
-    /// 橋接注入每個 frame（FXL 書文在 wrapper 的子 iframe 裡，見 `ReaderBridgeEvalTarget`）。
+    /// 橋接注入每個 frame（FXL 書文在 wrapper 的子 iframe 裡，見 `ReaderBridgeEvalScript`）。
     /// 接受與否只看 world：`.page` 的 script 碰不到這個 world，frame 本身不是邊界。
     static func accepts(world messageWorld: WKContentWorld) -> Bool {
         messageWorld == world
@@ -94,59 +94,47 @@ enum ReaderBridgeEvalError: Error {
     case webViewUnavailable
 }
 
-/// 橋接 script 的求值目標。reflowable 的書文在 wrapper 本身（主 frame）；
-/// FXL 的每一頁是 Readium wrapper 裡的 `iframe#page`（雙頁為 `page-left`／`page-right`），
-/// 書文與 `window.__markVocabWords` 等橋接函式都在那些 iframe 的 window 裡。
-enum ReaderBridgeEvalTarget: Equatable {
-    case mainFrame
-    case pageFrames
+/// 橋接 script 的求值位置。reflowable 的書文在 wrapper 本身（主 frame）；FXL 的每一頁是 Readium
+/// wrapper 裡的 iframe（`page`，雙頁為 `page-left`／`page-right`／`page-center`），書文與
+/// `window.__markVocabWords` 等橋接函式都在那些 iframe 的 window 裡。
+enum ReaderBridgeEvalScript {
+    /// Readium FXL wrapper 的頁面 iframe id 慣例。
+    static let pageFrameSelector = "iframe[id^=page]"
 
-    static func forSpread(pageFrameCount: Int) -> ReaderBridgeEvalTarget {
-        pageFrameCount > 0 ? .pageFrames : .mainFrame
+    /// `callAsyncJavaScript` 的 function body，於橋接 world 的主 frame 執行。script 以 `arguments` 的 `script` 傳入、不做字串插值。
+    ///
+    /// 選目標與求值在同一次呼叫完成：DOM 在各 world 間共用，所以這裡查得到頁面 iframe。
+    /// 不能另用 Readium 的 `evaluateJavaScript` 探測頁面數：那段 script 會經 `spread.eval` 跑進 book iframe，
+    /// 查不到 wrapper 的 iframe 而永遠選到主 frame。
+    static let callBody = """
+    const pageFrames = document.querySelectorAll('\(pageFrameSelector)');
+    if (pageFrames.length === 0) return eval(script);
+    let result;
+    for (const frame of pageFrames) {
+      // 與 Readium `FixedPage.eval` 相同：尚未載入資源（about:blank）的頁面略過。
+      if (!frame.src || frame.src === 'about:blank' || !frame.contentWindow) continue;
+      result = frame.contentWindow.eval(script);
     }
-
-    /// 頁面 iframe 數量（與 `body` 用同一組 selector）。DOM 在各 world 間共用，page world 查得到。
-    static let pageFrameCountScript = "document.querySelectorAll('iframe[id^=page]').length"
-
-    /// `callAsyncJavaScript` 的 function body。script 以 `arguments` 的 `script` 傳入、不做字串插值。
-    var body: String {
-        switch self {
-        case .mainFrame:
-            return "return eval(script);"
-        case .pageFrames:
-            return """
-            let result;
-            for (const frame of document.querySelectorAll('iframe[id^=page]')) {
-              const win = frame.contentWindow;
-              if (win) result = win.eval(script);
-            }
-            return result;
-            """
-        }
-    }
+    return result;
+    """
 }
 
 extension EPUBNavigatorViewController {
     /// 在橋接 world 求值（`window.__markVocabWords` 等函式只存在那裡）。
     ///
-    /// Readium 的 `evaluateJavaScript` 只會在 `.page` world 執行，所以這裡先用它
-    /// 當「目前 spread 已載入完成」的等待點（結果與 `.spreadNotLoaded` 語意不變），
-    /// 同時取得頁面 iframe 數量以選定求值目標，再把 script 送進可見 web view 的橋接 world。
+    /// Readium 的 `evaluateJavaScript` 只會在 `.page` world 執行，所以這裡只借它當「目前 spread 已載入完成」的
+    /// 等待點（失敗為 `.spreadNotLoaded`，`ReaderJSEval.classify` 語意不變）；求值本身在可見 web view 的橋接 world 內一次完成。
     @MainActor
     func evaluateBridgeScript(_ script: String) async -> Result<Any, Error> {
-        let pageFrameCount: Int
-        switch await evaluateJavaScript(ReaderBridgeEvalTarget.pageFrameCountScript) {
-        case .failure(let error):
+        if case .failure(let error) = await evaluateJavaScript("void 0;") {
             return .failure(error)
-        case .success(let value):
-            pageFrameCount = (value as? NSNumber)?.intValue ?? 0
         }
         guard let webView = ReaderBridgeContentWorld.visibleWebView(in: view) else {
             return .failure(ReaderBridgeEvalError.webViewUnavailable)
         }
         do {
             let value = try await webView.callAsyncJavaScript(
-                ReaderBridgeEvalTarget.forSpread(pageFrameCount: pageFrameCount).body,
+                ReaderBridgeEvalScript.callBody,
                 arguments: ["script": script],
                 in: nil,
                 contentWorld: ReaderBridgeContentWorld.world
