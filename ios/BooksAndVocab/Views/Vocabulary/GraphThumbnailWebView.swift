@@ -4,11 +4,31 @@ import WebKit
 // MARK: - Persistent holder — survives tab switches
 
 final class GraphThumbnailHolder {
-    let webView: WKWebView
-    let coordinator: GraphThumbnailCoordinator
+    #if DEBUG
+    /// Counts WKWebView creations so lifecycle tests can pin the lazy contract (#3819).
+    nonisolated(unsafe) static var webViewCreationCount = 0
+    #endif
 
+    let coordinator: GraphThumbnailCoordinator
+    private var storedWebView: WKWebView?
+
+    /// Cheap by design: `StatsPresenter` stores this in a `@State` default, which SwiftUI
+    /// evaluates on every presenter init. The web view is built on first access (#3819).
     init() {
-        let coordinator = GraphThumbnailCoordinator()
+        coordinator = GraphThumbnailCoordinator()
+    }
+
+    var webView: WKWebView {
+        if let storedWebView { return storedWebView }
+        let made = Self.makeWebView(coordinator: coordinator)
+        storedWebView = made
+        return made
+    }
+
+    private static func makeWebView(coordinator: GraphThumbnailCoordinator) -> WKWebView {
+        #if DEBUG
+        webViewCreationCount += 1
+        #endif
         let config = WKWebViewConfiguration()
         config.userContentController.add(coordinator, name: "graphBridge")
 
@@ -22,16 +42,14 @@ final class GraphThumbnailHolder {
         coordinator.webView = webView
         webView.navigationDelegate = coordinator
 
-        self.webView = webView
-        self.coordinator = coordinator
-
         if let htmlURL = Bundle.main.url(forResource: "graph", withExtension: "html") {
             webView.loadFileURL(htmlURL, allowingReadAccessTo: htmlURL.deletingLastPathComponent())
         }
+        return webView
     }
 
     deinit {
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "graphBridge")
+        storedWebView?.configuration.userContentController.removeScriptMessageHandler(forName: "graphBridge")
     }
 }
 
