@@ -120,3 +120,9 @@ run_backup "$B6" 'kill -INT $PPID; sleep 1' || true
 [[ -d "$B6/$D" && -e "$B6/$D/.INCOMPLETE" ]] || fail "interrupted run must leave .INCOMPLETE on its dir"
 [[ ! -e "$B6/$D.tar.gz" ]] || fail "interrupted run must not produce a tarball"
 pass "signal-interrupted run keeps .INCOMPLETE"
+
+# 只剩殘缺目錄、清完後已無任何 data_*/：cleanup_old_backups 不得因空 glob 的 ls 非零而中止（#3688 殘留路徑）
+B7="$TMP/b7"; mkdir -p "$B7/data_20260199_000000"; : >"$B7/data_20260199_000000/.INCOMPLETE"
+run_cleanup "$B7" || fail "cleanup aborted when no data dirs remain"
+[[ ! -e "$B7/data_20260199_000000" ]] || fail "lone INCOMPLETE dir not swept"
+pass "cleanup survives an emptied backup dir"

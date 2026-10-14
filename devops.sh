@@ -611,7 +611,8 @@ cleanup_old_backups() {
     echo "  刪除殘缺: $(basename "$dir")"
     rm -rf "$dir" "$dir.tar.gz" "$dir.tar.gz.sha256"
   done
-  count=$(ls -1d "$backup_dir"/data_*/ 2>/dev/null | wc -l | tr -d ' ')
+  # 無任何 data_*/ 時 ls 回非零；pipefail 下會讓 set -e 殺掉腳本（#3688：殘缺目錄全被清掉時即觸發），故 `|| true`。
+  count=$(ls -1d "$backup_dir"/data_*/ 2>/dev/null | wc -l | tr -d ' ') || true
   if [ "$count" -gt "$keep" ]; then
     local to_delete=$(( count - keep ))
     echo "清理舊備份：刪除最舊的 $to_delete 份..."
