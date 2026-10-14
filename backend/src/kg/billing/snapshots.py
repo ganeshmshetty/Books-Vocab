@@ -66,6 +66,30 @@ def should_apply_subscription_snapshot(
     return incoming_uuid > existing_uuid
 
 
+def is_superseded_terminal_snapshot(existing: object, incoming: dict[str, Any]) -> bool:
+    """A terminal notification for a non-current transaction must not end the current period.
+
+    Apple's ``signedDate`` only orders envelopes; a REFUND/REVOKE for an older
+    period's transaction (T1) can carry a later ``signedDate`` than the
+    DID_RENEW that started the current transaction (T2). It may apply only when it
+    is for the stored current transaction or when it does not end before the
+    stored ``expires_at``.
+    """
+    existing_subscription = existing if isinstance(existing, dict) else {}
+    if incoming.get("status") not in _TERMINAL_STATUSES:
+        return False
+    current_transaction_id = existing_subscription.get("transaction_id")
+    if not isinstance(current_transaction_id, str) or not current_transaction_id:
+        return False
+    if incoming.get("transaction_id") == current_transaction_id:
+        return False
+    current_expires_at = _parse_signed_date(existing_subscription.get("expires_at"))
+    incoming_expires_at = _parse_signed_date(incoming.get("expires_at"))
+    if current_expires_at is None or incoming_expires_at is None:
+        return False
+    return incoming_expires_at < current_expires_at
+
+
 def append_app_store_event(notifications_file: Path, payload: dict[str, Any]) -> None:
     notifications_file.parent.mkdir(parents=True, exist_ok=True)
     with notifications_file.open("a", encoding="utf-8") as fh:
