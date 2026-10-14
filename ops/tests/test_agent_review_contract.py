@@ -180,9 +180,7 @@ def _evidence_run_script() -> str:
         for i, line in enumerate(lines)
         if line.strip() == "- name: Evaluate exact-head independent review evidence"
     )
-    run_idx = next(
-        i for i in range(start, len(lines)) if lines[i].strip() == "run: |"
-    )
+    run_idx = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
     body: list[str] = []
     for line in lines[run_idx + 1 :]:
         if line.strip() and not line.startswith(" " * 10):
@@ -215,7 +213,9 @@ esac
 """
 
 
-def _run_evidence_script(tmp_path: Path, fail_reviews: str) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+def _run_evidence_script(
+    tmp_path: Path, fail_reviews: str
+) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     bin_dir = tmp_path / "bin"
     state = tmp_path / "state"
     bin_dir.mkdir()
