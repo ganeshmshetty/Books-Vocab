@@ -1,8 +1,8 @@
 {
   "schema": "kg.complexity-budget-raise.v1",
-  "issue": 0,
+  "issue": 3882,
   "raise": {
-    "ops": 3000
+    "ops": 318
   },
-  "note": "2026-10-14 audit campaign: dozens of ops regression tests pinned unguarded behaviour (test-gap issues #3742–#3749, #3837–#3846); merge groups combining several ops PRs exceeded the ceiling by 27 lines (run 38545505139)."
+  "note": "2026-10-14 audit campaign: dozens of ops regression tests pinned unguarded behaviour (test-gap issues #3742–#3749, #3837–#3846); merge groups combining several ops PRs exceeded the ceiling by 27 lines (run 38545505139). #3882: raise resized from a hand-written 3000 to the measured overage without this fragment (258 ops lines on origin/main 9cb97dd9f plus this lane's test) plus LIFT_MARGIN ops 60."
 }
