@@ -434,7 +434,7 @@ struct ReaderView: View {
 private struct ReaderPresenterHost<MainContent: View, TranslationPanelContent: View>: View {
     let readerState: ReaderViewState
     let chromeState: ReaderChromeState
-    let paperColor: Color
+    let paperColor: SwiftUI.Color
     let bookTitle: String
     let hasPublication: Bool
     let onDismiss: () -> Void
@@ -450,7 +450,7 @@ private struct ReaderPresenterHost<MainContent: View, TranslationPanelContent: V
     init(
         readerState: ReaderViewState,
         chromeState: ReaderChromeState,
-        paperColor: Color,
+        paperColor: SwiftUI.Color,
         bookTitle: String,
         hasPublication: Bool,
         onDismiss: @escaping () -> Void,
