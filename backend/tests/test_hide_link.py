@@ -52,6 +52,14 @@ class TestBlockedPairs:
         store.add_candidate("a", "b", 0.85)
         assert store.candidate_count() == 0
 
+    def test_batch_add_links_skips_blocked_pair(self, store):
+        lk = store.add_link("a", "b", LinkKind.CONTRASTS_WITH, 0.9, "r")
+        store.hard_delete_link(lk.id)
+        created = store.batch_add_links([("b", "a", LinkKind.SHARES_USAGE, 0.8, "again")])
+        assert created == []
+        assert store.find_link_between("a", "b") is None
+        assert store.is_blocked("a", "b") is True
+
     def test_blocked_persists_across_reload(self, store, tmp_path):
         lk = store.add_link("a", "b", LinkKind.CONTRASTS_WITH, 0.9, "r")
         store.hard_delete_link(lk.id)
