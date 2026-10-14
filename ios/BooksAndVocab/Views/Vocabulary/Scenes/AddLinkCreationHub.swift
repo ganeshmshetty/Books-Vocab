@@ -294,13 +294,21 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
               Self.completesUnattended(recordState: recordState, phase: state.phase, retryEnded: retryEnded),
               owns(coordinator, jobKey: state.jobKey),
               !isPresenting(coordinator),
-              presentedDetailJobCounts[state.jobKey] == nil else { return nil }
+              !isShownByDetailSheet(jobKey: state.jobKey, phase: state.phase) else { return nil }
         return AddLinkJobNotice.item(
             phase: state.phase,
             jobKey: state.jobKey,
             word: state.word,
             message: state.message
         )
+    }
+
+    /// A presented detail sheet shows a failed or partial outcome itself, because the job
+    /// stays on its card. A success removes the job and closes that sheet, so it still
+    /// needs the notice (#3603).
+    private func isShownByDetailSheet(jobKey: String, phase: AddLinkCreationPhase) -> Bool {
+        guard presentedDetailJobCounts[jobKey] != nil else { return false }
+        return phase == .failed || phase == .succeededWithWarnings
     }
 
     /// Whether a job's transition is an unattended completion worth a notice. A
@@ -325,7 +333,9 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
 
     /// Whether a warning retry for this job has settled, consuming its in-flight
     /// mark. The coordinator clears `isRetryingWarnings` before its settling publish,
-    /// so the mark is only consumed by that publish, never by the retry's start.
+    /// so the mark is only consumed by that publish, never by the retry's start. A
+    /// cancelled retry clears the flag too, but it ends without an outcome: it consumes
+    /// the mark and settles nothing (#3603).
     private func settleWarningRetry(
         for state: AddLinkCreationJobState,
         coordinator: AddLinkCreationCoordinator
@@ -334,7 +344,7 @@ final class AddLinkCreationHub: AddLinkCreationObserving {
               warningRetriesInFlight.contains(state.jobKey),
               !coordinator.isRetryingWarnings else { return false }
         warningRetriesInFlight.remove(state.jobKey)
-        return true
+        return !coordinator.warningRetryWasCancelled
     }
 
     private func upsert(
