@@ -262,6 +262,56 @@ struct SyncAddConvergenceTests {
         #expect(uploadedAdds.isEmpty, "batchAdd must never receive a word the server already holds")
     }
 
+    @Test("server 已持有卡的待刪列被重新擷取收斂 → rootForm 保留 server 值（edit 路徑不送 root_form），translation 仍取新值（#3543）")
+    func recaptured_delete_of_server_card_keeps_server_root_form() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let queuedDelete = VocabularyEntry(word: "harbor", translation: "港A", context: "ctx", bookTitle: "B")
+        queuedDelete.kgCardId = "card-harbor"
+        queuedDelete.markSynced()
+        queuedDelete.rootForm = "laid"
+        queuedDelete.queueDelete()
+        let recapture = makePendingAdd("harbor")
+        recapture.translation = "港B"
+        recapture.rootForm = "lay"
+        context.insert(queuedDelete)
+        context.insert(recapture)
+
+        let removed = SyncCoordinator.sanitizeOutbox(
+            pendingEntries: [queuedDelete, recapture],
+            modelContext: context
+        )
+
+        #expect(removed.contains(recapture.id))
+        #expect(queuedDelete.isPendingEdit)
+        #expect(queuedDelete.translation == "港B", "translation must still take the recaptured value")
+        #expect(queuedDelete.rootForm == "laid", "server-held card must keep its server rootForm; the edit path does not send root_form")
+    }
+
+    @Test("未同步的待刪列被重新擷取收斂（restorePendingEntry 路徑）→ rootForm 取新擷取值（#3543）")
+    func recaptured_delete_of_unsynced_entry_takes_new_root_form() throws {
+        let container = try makeStore()
+        let context = ModelContext(container)
+        let queuedDelete = makePendingAdd("harbor")
+        queuedDelete.rootForm = "laid"
+        queuedDelete.queueDelete()
+        let recapture = makePendingAdd("harbor")
+        recapture.translation = "港B"
+        recapture.rootForm = "lay"
+        context.insert(queuedDelete)
+        context.insert(recapture)
+
+        let removed = SyncCoordinator.sanitizeOutbox(
+            pendingEntries: [queuedDelete, recapture],
+            modelContext: context
+        )
+
+        #expect(removed.contains(recapture.id))
+        #expect(queuedDelete.isPendingAdd)
+        #expect(queuedDelete.translation == "港B")
+        #expect(queuedDelete.rootForm == "lay", "unsynced collapse has no server copy, so the new rootForm must be taken")
+    }
+
     // MARK: - 撤銷待刪（SyncView「還原」，#2484）
 
     @Test("未送出的 add 被刪除後撤銷 → 回到 pending add，絕不 markSynced（server 從未確認此卡）")

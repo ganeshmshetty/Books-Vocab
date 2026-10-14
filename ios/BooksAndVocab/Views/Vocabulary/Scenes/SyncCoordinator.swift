@@ -255,7 +255,8 @@ final class SyncCoordinator: SyncCoordinating {
                 queuedDelete.restorePendingEntry()
             }
             queuedDelete.translation = add.translation
-            if let rootForm = add.rootForm { queuedDelete.rootForm = rootForm }
+            // server 已持有卡時走 edit 路徑，PATCH 不送 root_form（#3543），本地保留 server 值避免分歧。
+            if !queuedDelete.hasServerCard, let rootForm = add.rootForm { queuedDelete.rootForm = rootForm }
             removed.insert(add.id)
             modelContext.delete(add)
         }
