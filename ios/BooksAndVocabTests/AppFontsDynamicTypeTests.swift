@@ -43,24 +43,17 @@ struct AppFontsDynamicTypeTests {
     }
 
     @Test("live Dynamic Type change clears the typography cache")
-    func contentSizeChangeClearsTypographyCache() async {
+    func contentSizeChangeClearsTypographyCache() {
         let tracker = FontAvailabilityTracker()
         // 先建立 cache，確保後續的 nil 是由通知造成，而非初始狀態。
         _ = AppSkin.baseTypography
         #expect(AppSkin.isTypographyCached)
+        let before = tracker.serifCJKVersion
         NotificationCenter.default.post(name: UIContentSizeCategory.didChangeNotification, object: nil)
-        // Observer 以 .main 佇列投遞：先排空該佇列再斷言，不以 sleep 輪詢。
-        await drainMainQueue()
+        // 在 MainActor 上 post 時，`.main` observer 同步執行：版本號先遞增，代表 observer 已跑完、cache 已清除。
+        // 斷言必須留在同一個 MainActor turn。任何 await（含排空佇列）都會讓 live AppThemeContainer 的
+        // SwiftUI 更新重建 typography 並把 cache 填回去，這正是 #3650 CI 紅燈的成因。
+        #expect(tracker.serifCJKVersion == before + 1)
         #expect(!AppSkin.isTypographyCached)
-        withExtendedLifetime(tracker) {}
-    }
-
-    /// 等待在呼叫當下之前已排入 `OperationQueue.main` 的工作全部執行完畢。
-    /// `NotificationCenter` 以 `queue: .main` 投遞時會把 observer 排入同一個序列佇列，
-    /// 因此 post 之後排入的 marker 必定晚於 observer 執行，無需輪詢。
-    private func drainMainQueue() async {
-        await withCheckedContinuation { continuation in
-            OperationQueue.main.addOperation { continuation.resume() }
-        }
     }
 }
