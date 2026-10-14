@@ -63,15 +63,37 @@ struct KGReviewEventPayload: Codable, Sendable, Equatable {
 extension KGService {
     private static let reviewEventPushBatchSize = 1000
 
+    /// Pushes until no request is pending. A caller that finds a push in flight
+    /// returns `(0, 0)` at once and leaves its saved events to the owner, which
+    /// runs one more round for them (#3907). Each round rebuilds its payload, so
+    /// a record saved after a round's snapshot is never stranded until the next sync.
     func pushReviewEvents(container: ModelContainer) async throws -> (inserted: Int, skipped: Int) {
         guard claimReviewEventPush() else {
-            AppLog.kg.info("pushReviewEvents skipped: another push already in flight")
+            AppLog.kg.info("pushReviewEvents deferred: another push in flight will run another round")
             return (0, 0)
         }
-        defer { releaseReviewEventPush() }
 
-        // Captured before the payload is built: every batch below belongs to this session only (#3806).
+        // Captured once per claim, before any round: every batch of every round belongs to this session only (#3806).
         let sessionEpoch = await authSession.sessionEpoch
+        var totalInserted = 0
+        var totalSkipped = 0
+        do {
+            repeat {
+                let round = try await pushReviewEventsRound(container: container, sessionEpoch: sessionEpoch)
+                totalInserted += round.inserted
+                totalSkipped += round.skipped
+            } while finishReviewEventPushRound()
+        } catch {
+            releaseReviewEventPush()
+            throw error
+        }
+        return (totalInserted, totalSkipped)
+    }
+
+    private func pushReviewEventsRound(
+        container: ModelContainer,
+        sessionEpoch: Int
+    ) async throws -> (inserted: Int, skipped: Int) {
         let actor = BackgroundSyncActor(modelContainer: container)
         let payload = try await actor.buildReviewEventsPushPayload()
         guard !payload.isEmpty else { return (0, 0) }
