@@ -21,7 +21,7 @@ KG 原以**三層 backup**互相補位。各層獨立,單一層失效不阻擋�
 | L2 | 本機 `devops.sh cmd_backup` + `backup_verify.sh` | standby `~/kg-data`（非 DB 檔 rsync 增量；`*.db` 先在遠端以 SQLite online backup 產生一致快照，再 tar 串流拉回，#3442）| 手動(發版前 / 事故前) | 全部歷史(本機磁碟) | 視操作時機 | 5–10 min | **ACTIVE**（2026-08-08 復役）：rsync 旗標依 flavor 分流，macOS openrsync 用 `--progress` |
 | L3 | AWS S3(本 SOP) | `data/`(tar+gz streaming) | 每日 UTC 03:00（**standby launchd**） | Versioning + **MFA Delete**,**無 lifecycle**(AWS 限制兩者互斥)→ 永久累積,需手動清(見 `backup_restore.md §7`) | 24h | ~15 min | **ACTIVE**（現役主防線） |
 
-L2 的 `*.db` 行為：遠端 `find -L` 會跟進目錄與檔案 symlink，其中的 DB 以 `mode=ro` 唯讀開啟（絕不以 rw 開 data 目錄外的檔，#3578），未變者拉回後硬連結至增量基準（#3474）；懸空的非 DB symlink 由 rsync 前置排除並具名警告，不中止快照（#3578）。
+L2 的 symlink 行為：`*.db` 由遠端 `find -L` 跟進目錄與檔案 symlink，以 `mode=ro` 唯讀開啟（不以 rw 開 data 目錄外的檔，#3561／#3578），未變者拉回後硬連結至增量基準（#3474）。非 DB 檔不交給 rsync 解參照（實測 openrsync 遇懸空 symlink 即 exit 23，排除無效）：所有 symlink 不進 rsync；可解參照者的目標一般檔改由遠端 `tar -h` 拉回為真檔，懸空者略過並具名警告（#3578）。備份內不會有 symlink。
 
 ## 為什麼三層
 
