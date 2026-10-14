@@ -278,10 +278,14 @@ class _LinksMixin:
         # Do not leave an un-persisted link visible as active in memory;
         # callers would otherwise treat a failed create as a success.
         with self._lock:
-            if self._links.get(link.id) is link:
-                self._unindex_link(link)
-                del self._links[link.id]
-            self._pending_link_ids.pop(link.id, None)
+            self._drop_provisional_link_unlocked(link)
+
+    def _drop_provisional_link_unlocked(self, link: GraphLink) -> None:
+        """Caller holds self._lock (threading.Lock is not reentrant)."""
+        if self._links.get(link.id) is link:
+            self._unindex_link(link)
+            del self._links[link.id]
+        self._pending_link_ids.pop(link.id, None)
 
     def add_link(
         self,
@@ -398,21 +402,29 @@ class _LinksMixin:
                 locks.enter_context(self._pair_thread_lock(pair))
                 locks.enter_context(path_write_lock(self._pair_lock_path(pair)))
             with self._lock:
-                for from_id, to_id, kind, confidence, reason in links:
-                    if self._has_link_unlocked(from_id, to_id):
-                        continue
-                    link = GraphLink(
-                        from_id=from_id,
-                        to_id=to_id,
-                        kind=kind,
-                        confidence=confidence,
-                        reason=reason,
-                    )
-                    self._links[link.id] = link
-                    self._index_link(link)
-                    created.append(link)
-                self._touch_links(lk.id for lk in created)
-                snapshot = self._links_to_serializable() if created else None
+                try:
+                    for from_id, to_id, kind, confidence, reason in links:
+                        if self._has_link_unlocked(from_id, to_id):
+                            continue
+                        link = GraphLink(
+                            from_id=from_id,
+                            to_id=to_id,
+                            kind=kind,
+                            confidence=confidence,
+                            reason=reason,
+                        )
+                        self._links[link.id] = link
+                        created.append(link)
+                        self._index_link(link)
+                    self._touch_links(lk.id for lk in created)
+                    snapshot = self._links_to_serializable() if created else None
+                except BaseException:
+                    # Any failure before the flush leaves provisional rows only in memory:
+                    # drop the whole batch so no same-pair add_link can return them.
+                    # self._lock is held here, so use the unlocked variant.
+                    for lk in created:
+                        self._drop_provisional_link_unlocked(lk)
+                    raise
             if snapshot is not None:
                 try:
                     self._flush_held_links_and_reconcile(
