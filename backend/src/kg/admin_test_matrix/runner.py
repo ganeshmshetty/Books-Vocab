@@ -47,6 +47,16 @@ def _error_run(
     }
 
 
+def _decode_output(data: bytes | str | None) -> str:
+    """TimeoutExpired.stdout/stderr may be raw bytes, str, or None depending on
+    how the child was spawned and flushed; normalize to str."""
+    if data is None:
+        return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")
+    return data
+
+
 class MatrixReport(NamedTuple):
     cases: list[dict[str, str]]
     matrix_rows: list[dict[str, Any]]
@@ -141,8 +151,10 @@ def run_pytest_matrix(selected_items: list[str] | None = None) -> dict[str, Any]
         stderr = proc.stderr or ""
         return_code = proc.returncode
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
+        stdout = _decode_output(exc.stdout)
+        stderr = _decode_output(exc.stderr)
+        timeout_note = f"pytest timed out after {exc.timeout} seconds"
+        stderr = f"{stderr}\n{timeout_note}" if stderr else timeout_note
         return_code = 124
         _LOGGER.warning(
             "admin test matrix timed out (run_id=%s, return_code=%s)",

@@ -131,3 +131,21 @@ def test_no_selection_still_runs_the_full_tests_suite(monkeypatch):
     assert payload["returnCode"] == 0
     assert payload["outcome"] == "passed"
     assert payload["selectedItems"] == []
+
+
+def test_timeout_with_bytes_output_returns_failed_record(monkeypatch):
+    # subprocess.TimeoutExpired carries raw bytes (or None) on POSIX; the
+    # timeout branch must decode them instead of crashing in _parse_matrix.
+    def timeout_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            command, 600, output=b"tests/a.py::t PASSED\n", stderr=b""
+        )
+
+    monkeypatch.setattr(runner.subprocess, "run", timeout_run)
+
+    payload = runner.run_pytest_matrix([])
+
+    assert payload["returnCode"] == 124
+    assert payload["outcome"] == "failed"
+    assert payload["cases"][0]["id"] == "tests/a.py::t"
+    assert any("timed out" in line for line in payload["stderrTail"])
