@@ -466,3 +466,47 @@ def test_batch_flush_failure_rolls_back_provisional_links(store, monkeypatch):
     assert link.id not in failed_ids
     persisted = json.loads((store.links_path).read_text(encoding="utf-8"))
     assert [row["id"] for row in persisted] == [link.id]
+
+
+def test_batch_snapshot_failure_rolls_back_provisional_links(store, monkeypatch):
+    """A raise while building the snapshot must not leave provisional rows visible (#3867)."""
+
+    def failing_snapshot(*_args, **_kwargs):
+        raise RuntimeError("snapshot boom")
+
+    monkeypatch.setattr(store, "_links_to_serializable", failing_snapshot)
+
+    with pytest.raises(RuntimeError, match="snapshot boom"):
+        store.batch_add_links([("card_a", "card_b", LinkKind.CONTRASTS_WITH, 1.0, "batch")])
+
+    assert store.find_link_between("card_a", "card_b") is None
+    assert _active_links_for_pair(store, "card_a", "card_b") == []
+    assert store._links == {}
+
+
+def test_batch_insert_loop_failure_rolls_back_all_provisional_links(store, monkeypatch):
+    """A raise part-way through the insert loop must roll back every row of the batch (#3867)."""
+    original_index_link = store._index_link
+    calls = {"n": 0}
+
+    def failing_index_link(link):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("index boom")
+        original_index_link(link)
+
+    monkeypatch.setattr(store, "_index_link", failing_index_link)
+
+    with pytest.raises(RuntimeError, match="index boom"):
+        store.batch_add_links(
+            [
+                ("card_a", "card_b", LinkKind.CONTRASTS_WITH, 1.0, "first"),
+                ("card_c", "card_d", LinkKind.SHARES_USAGE, 0.5, "second"),
+            ]
+        )
+
+    assert store.find_link_between("card_a", "card_b") is None
+    assert store.find_link_between("card_c", "card_d") is None
+    assert store._links == {}
+    assert not any(store._from_index.values())
+    assert not any(store._to_index.values())
