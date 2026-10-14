@@ -414,10 +414,17 @@ class _LinksMixin:
                 self._touch_links(lk.id for lk in created)
                 snapshot = self._links_to_serializable() if created else None
             if snapshot is not None:
-                self._flush_held_links_and_reconcile(
-                    snapshot,
-                    {self._normalize_pair(lk.from_id, lk.to_id) for lk in created},
-                )
+                try:
+                    self._flush_held_links_and_reconcile(
+                        snapshot,
+                        {self._normalize_pair(lk.from_id, lk.to_id) for lk in created},
+                    )
+                except BaseException:
+                    # Same contract as add_link: a row that was not durably persisted
+                    # must not stay visible in memory for a same-pair add_link to return.
+                    for lk in created:
+                        self._rollback_provisional_link(lk)
+                    raise
                 # Reconciliation can discard a provisional link when a stale
                 # GraphStore instance races with another writer for the same pair.
                 # Only links still owned by this instance after reconciliation were
