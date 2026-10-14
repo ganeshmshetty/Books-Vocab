@@ -881,20 +881,34 @@ def test_two_lanes_each_adding_a_fragment_merge_in_either_order_without_a_confli
     )  # 62 measured (30 + 20 + 12) <= 62 effective (40 + 15 + 7): each raise covers exactly its own growth
 
 
-def test_the_repository_headroom_fragment_raises_no_more_than_its_measured_overage_plus_margin() -> (
-    None
-):
-    """#3882: a hand-written ops raise of 3000 lines loosened the ceiling by ~3000 lines, not the
-    overage plus LIFT_MARGIN the lane needed.  Judged against the ceiling without this fragment."""
-    path = REPO / complexity.BUDGET_FILE
+def _covers_its_overage_within_the_margin(repo: Path, name: str) -> bool:
+    """A headroom fragment covers the ops overage that is left once every other fragment is applied,
+    and sits no more than LIFT_MARGIN above it.  Judged on ``repo``'s own tree."""
+    path = repo / complexity.BUDGET_FILE
     fragments = complexity.load_fragments(complexity.fragment_dir(path))
-    mine = next(
-        (f for f in fragments if f["name"] == "debug-complexity-headroom-1014"), None
-    )
-    if mine is None:
-        pytest.skip("fragment folded into the base")
+    mine = next(f for f in fragments if f["name"] == name)
     others = [f for f in fragments if f is not mine]
     base = complexity.load_base_budget(path)
     without = complexity.effective_ceilings(base["ceilings"], others)
-    overage = max(0, complexity.measure(REPO)["ops"] - without["ops"])
-    assert mine["raise"]["ops"] <= overage + complexity.LIFT_MARGIN["ops"]
+    overage = max(0, complexity.measure(repo)["ops"] - without["ops"])
+    return overage <= mine["raise"]["ops"] <= overage + complexity.LIFT_MARGIN["ops"]
+
+
+@pytest.mark.parametrize(
+    "raise_ops, covered",
+    [(39, False), (40, True), (100, True), (101, False), (3000, False)],
+)
+def test_a_headroom_fragment_covers_its_overage_and_no_more_than_the_margin(
+    tmp_path: Path, raise_ops: int, covered: bool
+) -> None:
+    """#3882: a hand-written ops raise of 3000 loosened the ceiling by ~3000 lines instead of the
+    overage plus LIFT_MARGIN.  Pinned on a tmp tree: the live line count moves with every lane, so a
+    repo-coupled bound turned red on any unrelated ops deletion."""
+    # 40 lines over a 1000 ceiling, so the overage without any fragment is 40
+    repo = _git_repo(tmp_path, {"ops/a.py": "1\n" * 1040})
+    _base(repo, ops=1000)
+    _fragment(repo, "debug-complexity-headroom-1014", {"ops": raise_ops})
+    assert (
+        _covers_its_overage_within_the_margin(repo, "debug-complexity-headroom-1014")
+        is covered
+    )
