@@ -141,7 +141,7 @@ async def _step_enrich(
         targets = [
             card
             for card in eligible_cards
-            if (not card.pos or not card.note) and card.enrich_attempts < ENRICH_MAX_ATTEMPTS
+            if (not card.pos or card.note is None) and card.enrich_attempts < ENRICH_MAX_ATTEMPTS
         ]
 
     if not targets:
@@ -199,11 +199,12 @@ async def _step_enrich(
 
                             kwargs["pos"] = _normalize_pos(enrichment["pos"])
                     if enrichment.get("note"):
-                        if force or not card.note:
+                        if force or card.note is None:
                             kwargs["note"] = enrichment["note"]
                     if enrichment.get("collocations"):
                         kwargs["collocations"] = enrichment["collocations"]
-                    if enrichment.get("meaning_fix"):
+                    # note == "" is the user's explicit clear: their meaning edit must not be reverted.
+                    if enrichment.get("meaning_fix") and (force or card.note != ""):
                         kwargs["meaning"] = enrichment["meaning_fix"]
                         if kwargs["meaning"] != card.meaning:
                             meaning_changed_ids.append(card.id)

@@ -754,3 +754,129 @@ def test_reembed_best_effort_evicts_even_when_graph_store_fails_to_open():
     )
 
     assert embeddings.removed == ["c1"]
+
+
+# ---------------------------------------------------------------------------
+# #3658: a user-cleared note ("" tombstone) is not regenerated, and its meaning is not reverted
+# ---------------------------------------------------------------------------
+
+
+class _NoLinksGraph:
+    def get_links_for(self, _card_id):
+        return []
+
+
+def _real_enrich_step(cards, embeddings, graph):
+    import logging
+
+    from kg.pipeline_service.steps import _step_enrich
+
+    user = {"id": "u_tombstone", "dir": "/tmp/u_tombstone", "config": {}}
+    return asyncio.run(
+        _step_enrich(
+            "u_tombstone",
+            user,
+            card_store_factory=lambda _d: cards,
+            client_factory=lambda _provider: None,
+            logger=logging.getLogger("test_enrich_tombstone"),
+            embedding_store_factory=lambda _d, **_k: embeddings,
+            graph_store_factory=lambda _d, **_k: graph,
+        )
+    )
+
+
+def test_user_cleared_note_is_not_regenerated_nor_meaning_reverted(monkeypatch, tmp_path):
+    """#3658: PATCH explanation="" on an enriched card (pos set) must survive the enrich pass."""
+    from kg.cards import CardStore
+    from kg.vocab_crud import update_vocab_word_content
+
+    cards = CardStore(tmp_path / "cards.db")
+    card = cards.add(content="evoke", meaning="唤起", pos="verb", notebook_id="default")
+    cards.update(card.id, note="x", enrich_attempts=1)
+    update_vocab_word_content(
+        "evoke",
+        meaning="用户意思",
+        note=None,
+        explanation="",
+        cards_store=cards,
+        graph=_NoLinksGraph(),
+        card_response_builder=lambda *_a, **_k: None,
+        embeddings=None,
+        notebook_id="default",
+    )
+
+    async def stream(llm, targets, **kwargs):
+        yield {"status": "running", "results": [{"word": "evoke", "note": "REGENERATED", "meaning_fix": "其他意思"}]}
+
+    _patch_enrich_llm(monkeypatch, stream)
+    embeddings, graph = _RecordingEmbeddings(), _RecordingGraph()
+
+    _real_enrich_step(cards, embeddings, graph)
+
+    after = cards.get(card.id)
+    assert after.note == ""
+    assert after.meaning == "用户意思"
+    assert embeddings.removed == []
+    assert graph.queued == []
+
+
+def test_user_cleared_note_without_pos_keeps_meaning_fix_blocked(monkeypatch, tmp_path):
+    """#3658: a tombstoned card still targeted by missing pos must not get meaning_fix over the user's edit."""
+    from kg.cards import CardStore
+
+    cards = CardStore(tmp_path / "cards.db")
+    card = cards.add(content="evoke", meaning="用户意思", pos=None, notebook_id="default")
+    cards.update(card.id, note="")
+
+    async def stream(llm, targets, **kwargs):
+        yield {"status": "running", "results": [{"word": "evoke", "note": "REGENERATED", "meaning_fix": "其他意思"}]}
+
+    _patch_enrich_llm(monkeypatch, stream)
+
+    _real_enrich_step(cards, _RecordingEmbeddings(), _RecordingGraph())
+
+    after = cards.get(card.id)
+    assert after.note == ""
+    assert after.meaning == "用户意思"
+
+
+def test_card_with_null_note_is_still_enriched(monkeypatch, tmp_path):
+    """#3658 companion: note=None means "not enriched yet" and must still be filled by the pipeline."""
+    from kg.cards import CardStore
+
+    cards = CardStore(tmp_path / "cards.db")
+    card = cards.add(content="evoke", meaning="唤起", pos="verb", notebook_id="default")
+
+    async def stream(llm, targets, **kwargs):
+        yield {"status": "running", "results": [{"word": "evoke", "note": "REGENERATED"}]}
+
+    _patch_enrich_llm(monkeypatch, stream)
+
+    _real_enrich_step(cards, _RecordingEmbeddings(), _RecordingGraph())
+
+    assert cards.get(card.id).note == "REGENERATED"
+
+
+def test_shared_copy_of_blank_note_is_stored_as_missing(tmp_path):
+    """#3658: a create path must store a missing note as None so the card is still enriched."""
+    from kg.cards import CardStore
+
+    cards = CardStore(tmp_path / "cards.db")
+    card, created = cards.add_shared_copy(
+        content="evoke",
+        meaning="唤起",
+        pos="verb",
+        examples=[],
+        collocations=[],
+        note="",
+        difficulty=None,
+        mode="recognition",
+        root_form=None,
+        inflections=[],
+        notebook_id="default",
+        updated_at=None,
+        source_shared_card_guid=None,
+    )
+
+    assert created is True
+    assert card.note is None

@@ -537,7 +537,7 @@ async def _default_enrich(
         updates: dict[str, Any] = {}
         if result.get("pos") and not card.pos:
             updates["pos"] = _normalize_pos(result["pos"])
-        if result.get("note") and not card.note:
+        if result.get("note") and card.note is None:
             updates["note"] = result["note"]
         if result.get("collocations"):
             updates["collocations"] = result["collocations"]
