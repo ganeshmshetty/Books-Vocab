@@ -56,8 +56,10 @@ def test_notification_endpoint_accepts_both_payload_keys_and_applies_entitlement
             "data": {
                 "bundleId": bundle_id,
                 "signedTransactionInfo": _sign_jws(
+                    # Target the stored current transaction: the superseded-transaction guard
+                    # (#3655) refuses a terminal notification for an older-period transaction.
                     _transaction_payload(
-                        transaction_id="tx-key-2",
+                        transaction_id="tx-key-1",
                         original_transaction_id="otx-key-1",
                         status="expired",
                     ),
