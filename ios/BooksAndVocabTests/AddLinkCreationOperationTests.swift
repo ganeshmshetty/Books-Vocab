@@ -143,7 +143,8 @@ struct AddLinkCreationOperationTests {
             throw CocoaError(.fileReadUnknown)
         }
         #expect(coordinator.phase == .succeededWithWarnings)
-        #expect(coordinator.warnings == [.localSyncIncomplete])
+        // 本機 pull 失敗時投影並未落地，`link_projection_pending` 仍為真，必須保留（不可被視為已解決）。
+        #expect(coordinator.warnings == [.linkProjectionPending, .localSyncIncomplete])
     }
 
     @Test("#3672 regression: a recognised code mixed with an unknown code keeps the warning phase")
