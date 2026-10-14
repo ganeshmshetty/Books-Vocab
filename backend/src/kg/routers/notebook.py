@@ -50,6 +50,7 @@ def _notebook_response(nb, card_count: int = 0, settings: NotebookSettings | Non
         isDeleted=nb.is_deleted,
         cardCount=card_count,
         updatedAt=_dt_to_iso(nb.updated_at),
+        createdAt=_dt_to_iso(nb.created_at),
         sourceSharedDeckId=nb.source_shared_deck_id,
         sourceVersion=nb.source_version,
         settings=_settings_response(settings),

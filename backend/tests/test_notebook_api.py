@@ -957,3 +957,16 @@ def test_patch_notebook_settings_rejects_far_future_updated_at_then_accepts_curr
         headers=h,
     )
     assert within.status_code == 200, within.text
+
+
+def test_list_notebooks_exposes_server_created_at(isolated_api):
+    """#3677：server 建立時間隨列表回傳，iOS 才能以它做「手動排序」的 tie-break，跨裝置一致。"""
+    client = isolated_api.client
+    h = isolated_api.headers
+
+    created = client.post("/api/notebooks", json={"name": "Stamped"}, headers=h).json()
+    body = client.get("/api/notebooks", headers=h).json()
+
+    nb = next(nb for nb in body if nb["id"] == created["id"])
+    assert isinstance(nb["createdAt"], str)
+    assert datetime.fromisoformat(nb["createdAt"]).tzinfo is not None
