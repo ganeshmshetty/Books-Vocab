@@ -91,6 +91,50 @@ cp "$DATA_OK/users/u1/cards.db" "$TMP/raw-main-only.db"
 raw_count="$(sqlite3 "$TMP/raw-main-only.db" 'SELECT COUNT(*) FROM card;')"
 [[ "$raw_count" == 1 ]] || fail "fixture: main file alone must lack the WAL-only row (got $raw_count)"
 
+# 真 rsync 路徑（#3578）。symlink 的契約只能以真 openrsync 驗證：替身若把「--copy-links 遇懸空 link 即
+# exit 23、--exclude-from 排除無效」改寫掉，就會假綠。替身只做兩件事：(1) rsync 包裝器（#! 腳本，過得了
+# devops tripwire）轉交本機真 rsync；(2) ssh transport 替身只放行 `rsync --server --sender … <fixture>`，改在
+# 本機以真 rsync 服務端執行，其餘遠端命令一律拒絕（exit 97）。協定、排除、退出碼全部來自真 rsync。
+real_tool() { # <name>：PATH 上第一個非 hermetic shim 的同名可執行檔
+  local d IFS=:
+  for d in $PATH; do
+    if [[ -n "$d" && "$d" != "${KG_OPS_SHIM_DIR:-}" && -x "$d/$1" && ! -d "$d/$1" ]]; then
+      printf '%s\n' "$d/$1"
+      return 0
+    fi
+  done
+  return 1
+}
+REAL_RSYNC="$(real_tool rsync)" || fail "a real rsync binary is required for the openrsync symlink contract"
+make_real_rsync_bin() { # <dir>
+  mkdir -p "$1"
+  cat >"$1/rsync" <<'STUB'
+#!/usr/bin/env bash
+# 真 rsync 包裝器（#! 腳本，通過 devops tripwire）：記錄呼叫後轉交本機真 rsync。
+printf '%s\n' "$*" >>"${SNAP_TEST_RSYNC_LOG:?}"
+exec "${SNAP_TEST_REAL_RSYNC:?}" "$@"
+STUB
+  cat >"$1/ssh" <<'STUB'
+#!/usr/bin/env bash
+# rsync 的 ssh transport 替身：只放行 `ssh [-opts] <host> rsync --server --sender … <fixture>`，改在本機執行真 rsync。
+printf '%s\n' "$*" >>"${SNAP_TEST_SSH_LOG:?}"
+while [[ "$#" -gt 0 && "$1" == -* ]]; do
+  if [[ "$1" == -o ]]; then shift 2; else shift; fi
+done
+shift # <host>
+if [[ "$1" == rsync && "$2" == --server && "$3" == --sender && "$*" == *"${SNAP_TEST_FIXTURE_ROOT:?}"* ]]; then
+  shift
+  exec "${SNAP_TEST_REAL_RSYNC:?}" "$@"
+fi
+printf 'FORBIDDEN: snapshot test refuses non-fixture rsync transport: %s\n' "$*" >&2
+[ -n "${KG_OPS_TEST_TRIPWIRE_LOG:-}" ] && printf 'rsync-transport deny: %s\n' "$*" >>"$KG_OPS_TEST_TRIPWIRE_LOG"
+exit 97
+STUB
+  chmod 755 "$1/rsync" "$1/ssh"
+}
+REAL_RSYNC_BIN="$TMP/real-rsync-bin"
+make_real_rsync_bin "$REAL_RSYNC_BIN"
+
 # ── 1. 一致快照：WAL-only 已 commit 的 row 必須出現在備份輸出 ───────────────
 # 遠端暫存根目錄（TMPDIR 指到這裡，便於斷言失敗後無殘留 kg-db-snapshot.*）。
 REMOTE_TMP="$TMP/remote-tmp"
@@ -102,7 +146,7 @@ run_backup() { # <data_dir> <backup_dir> <cmd>
     KG_OPS_TEST=1 KG_SERVER=test-host KG_REMOTE_DATA_DIR="$1" \
     KG_SSH_CMD="${SSH_STUB_OVERRIDE:-$SSH_STUB}" PATH="${RSYNC_STUB_DIR:-$RSYNC_BIN}:$PATH" TMPDIR="$REMOTE_TMP" \
     SNAP_TEST_SSH_LOG="$SSH_LOG" SNAP_TEST_RSYNC_LOG="$RSYNC_LOG" SNAP_TEST_FIXTURE_ROOT="$TMP" \
-    SNAP_TEST_MODE_LOG="$MODE_LOG" \
+    SNAP_TEST_MODE_LOG="$MODE_LOG" SNAP_TEST_REAL_RSYNC="$REAL_RSYNC" \
     bash -c 'source "$ROOT/devops.sh"; BACKUP_DIR="$TARGET"; eval "$CMD"'
 }
 
@@ -171,8 +215,8 @@ run_backup "$DATA_CORRUPT" "$OUT_CORRUPT" cmd_backup >"$TMP/corrupt.out" 2>&1
 corrupt_rc=$?
 set -e
 (( corrupt_rc != 0 )) || fail "cmd_backup must fail on a corrupt DB"
-leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
-[[ -z "$leftover" ]] || fail "failed snapshot left a remote stage behind: $leftover"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 | head -n 1)"  # 遠端 stage（kg-db-snapshot.*）與本機工作目錄（mktemp -d，TMPDIR 指到此）都不得殘留
+[[ -z "$leftover" ]] || fail "failed snapshot left a remote stage or local work dir behind: $leftover"
 pass "failed snapshot removes its remote stage"
 
 # ── 5. #3464：快照成功後、拉回前被 INT 中斷，遠端暫存目錄仍須清掉 ───────────────
@@ -201,8 +245,8 @@ RSYNC_STUB_DIR="$RSYNC_INT_BIN" run_backup "$DATA_INT" "$OUT_INT" cmd_backup >"$
 int_rc=$?
 set -e
 (( int_rc != 0 )) || fail "cmd_backup interrupted by SIGINT must not report success"
-leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
-[[ -z "$leftover" ]] || fail "interrupted cmd_backup left a remote stage behind: $leftover"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 | head -n 1)"  # 遠端 stage（kg-db-snapshot.*）與本機工作目錄（mktemp -d，TMPDIR 指到此）都不得殘留
+[[ -z "$leftover" ]] || fail "interrupted cmd_backup left a remote stage or local work dir behind: $leftover"
 pass "SIGINT during rsync removes the remote stage"
 
 # ── 6. #3464：快照階段中被 INT（bash -s 尚未完成），已建立的遠端 stage 仍須清掉 ──────
@@ -226,51 +270,51 @@ SSH_STUB_OVERRIDE="$SSH_SNAP_INT_STUB" run_backup "$DATA_SNAP_INT" "$OUT_SNAP_IN
 snap_int_rc=$?
 set -e
 (( snap_int_rc != 0 )) || fail "cmd_backup interrupted during the snapshot must not report success"
-leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 -name 'kg-db-snapshot.*' | head -n 1)"
-[[ -z "$leftover" ]] || fail "snapshot-phase interrupt left a remote stage behind: $leftover"
+leftover="$(find "$REMOTE_TMP" -mindepth 1 -maxdepth 1 | head -n 1)"  # 遠端 stage（kg-db-snapshot.*）與本機工作目錄（mktemp -d，TMPDIR 指到此）都不得殘留
+[[ -z "$leftover" ]] || fail "snapshot-phase interrupt left a remote stage or local work dir behind: $leftover"
 pass "SIGINT during the snapshot removes the pre-created remote stage"
 
-# ── 7. #3561：symlink 目錄下的 *.db 不可被靜默漏掉 ───────────────────────────
-# users/u2 是指向 data 目錄外某目錄的 symlink，該目錄內 cards.db 含 WAL-only row。
-# 遠端 find 不進入目錄 symlink 時，這顆 DB 不進快照，備份無聲缺失。
-# rsync 替身模擬真實 rsync：無 --copy-links 時複製 symlink 本身（tar 不解參照），
-# 有 --copy-links 時解參照（tar -h）。若 dest 殘留 symlink，tar 拉回會穿過它寫進外部目錄，
-# 因此下方同時斷言拉回的 users/u2 是真目錄、外部來源 DB 未被改寫。
+# ── 7. #3561：symlink 目錄下的 *.db 與一般檔不可被靜默漏掉 ─────────────────────
+# users/u2 是指向 data 目錄外某目錄的 symlink，該目錄內 cards.db 含 WAL-only row、另有一般檔 readme.txt。
+# 遠端 find 不進入目錄 symlink 時，這顆 DB 不進快照，備份無聲缺失。真 rsync 不解參照且排除 symlink，
+# u2 的一般檔改由遠端 tar -h 拉回為真目錄；DB 由一致快照覆蓋。下方斷言 dest 內無任何 symlink，
+# 且外部來源 DB 未被改寫（若 dest 殘留 symlink，tar 會穿過它寫進外部目錄）。
 OUTSIDE_ROOT="$TMP/outside-root"
 make_wal_fixture "$OUTSIDE_ROOT"
+printf 'readme-content\n' >"$OUTSIDE_ROOT/users/u1/readme.txt"
 DATA_DIRLINK="$TMP/remote-dirlink"
 mkdir -p "$DATA_DIRLINK/users"
 ln -s "$OUTSIDE_ROOT/users/u1" "$DATA_DIRLINK/users/u2"
 outside_before="$(sqlite3 "$OUTSIDE_ROOT/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')"
-RSYNC_MODEL_BIN="$TMP/rsync-model-bin"
-mkdir -p "$RSYNC_MODEL_BIN"
-cat >"$RSYNC_MODEL_BIN/rsync" <<'STUB'
+# sqlite3 spy（#3578）：記下遠端快照開 DB 的 URI，斷言 symlink 目錄下的外部 DB 以 mode=ro 開啟。
+REAL_SQLITE3="$(command -v sqlite3)"
+DIRLINK_BIN="$TMP/real-rsync-spy-bin"
+make_real_rsync_bin "$DIRLINK_BIN"
+SQLITE_LOG="$TMP/sqlite-spy.log"
+: >"$SQLITE_LOG"
+cat >"$DIRLINK_BIN/sqlite3" <<'STUB'
 #!/usr/bin/env bash
-if [[ "$#" -eq 1 && "$1" == --version ]]; then
-  echo "openrsync: protocol version 29"
-  exit 0
-fi
-printf '%s\n' "$*" >>"${SNAP_TEST_RSYNC_LOG:?}"
-deref=()
-src=""; dst=""
-for a; do
-  [[ "$a" == --copy-links ]] && deref=(-h)
-  src="$dst"; dst="$a"
-done
-src="${src#*:}"; src="${src%/}"
-mkdir -p "$dst"
-tar -C "$src" "${deref[@]}" -cf - \
-  --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' . \
-  | tar -C "$dst" -xf -
-exit 0
+printf '%s\n' "$*" >>"${SNAP_TEST_SQLITE_LOG:?}"
+exec "${SNAP_TEST_REAL_SQLITE3:?}" "$@"
 STUB
-chmod 755 "$RSYNC_MODEL_BIN/rsync"
+chmod 755 "$DIRLINK_BIN/sqlite3"
+outside_snapshot_copy="$TMP/outside-u1-before.db"
+cp "$OUTSIDE_ROOT/users/u1/cards.db" "$outside_snapshot_copy"
 OUT_DIRLINK="$TMP/backups-dirlink"; mkdir -p "$OUT_DIRLINK"
 set +e
-RSYNC_STUB_DIR="$RSYNC_MODEL_BIN" run_backup "$DATA_DIRLINK" "$OUT_DIRLINK" cmd_backup >"$TMP/dirlink.out" 2>&1
+RSYNC_STUB_DIR="$DIRLINK_BIN" SNAP_TEST_SQLITE_LOG="$SQLITE_LOG" SNAP_TEST_REAL_SQLITE3="$REAL_SQLITE3" \
+  run_backup "$DATA_DIRLINK" "$OUT_DIRLINK" cmd_backup >"$TMP/dirlink.out" 2>&1
 dirlink_rc=$?
 set -e
 (( dirlink_rc == 0 )) || { cat "$TMP/dirlink.out" >&2; fail "cmd_backup failed on a symlinked-directory fixture (rc=$dirlink_rc)"; }
+grep -Fq 'users/u2/cards.db?mode=ro' "$SQLITE_LOG" \
+  || fail "symlink-followed *.db was not opened read-only (mode=ro) by the remote snapshot"
+if grep -Fq 'users/u2/cards.db?mode=rw' "$SQLITE_LOG"; then
+  fail "symlink-followed *.db was opened read-write (mode=rw) outside the data dir"
+fi
+cmp -s "$OUTSIDE_ROOT/users/u1/cards.db" "$outside_snapshot_copy" \
+  || fail "outside source DB bytes changed during the symlinked-dir snapshot"
+pass "symlink-followed *.db is opened read-only and the outside source stays byte-identical"
 dirlink_db="$(find "$OUT_DIRLINK" -path '*/users/u2/cards.db' -type f | head -n 1)"
 [[ -n "$dirlink_db" ]] || fail "*.db under a symlinked directory was silently dropped from the backup"
 [[ ! -L "$(dirname "$dirlink_db")" ]] || fail "restored users/u2 is still a symlink; tar wrote through it"
@@ -280,6 +324,12 @@ dirlink_count="$(sqlite3 "$dirlink_db" 'SELECT COUNT(*) FROM card;')"
 [[ "$(sqlite3 "$OUTSIDE_ROOT/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')" == "$outside_before" ]] \
   || fail "backup wrote through the symlink into the source directory"
 pass "*.db under a symlinked directory is snapshotted with its WAL rows"
+dirlink_readme="$(find "$OUT_DIRLINK" -path '*/users/u2/readme.txt' -type f | head -n 1)"
+[[ -n "$dirlink_readme" && "$(cat "$dirlink_readme")" == readme-content ]] \
+  || fail "regular file under a symlinked directory was not materialized (tar -h) as a regular file"
+[[ -z "$(find "$OUT_DIRLINK" -type l)" ]] || fail "backup contains a symlink; dest must hold only regular files"
+[[ -z "$(find "$OUT_DIRLINK" -name .INCOMPLETE)" ]] || fail "symlinked-dir backup was marked .INCOMPLETE"
+pass "symlinked directory content is materialized as regular files; no symlink survives in the backup"
 
 # ── 8. #3474：未變的 *.db 必須硬連結到增量基準，變動的不可連結 ─────────────────
 # *.db 不走 rsync --link-dest（改由一致快照 tar 拉回），因此必須在拉回後以位元組比對補硬連結。
@@ -333,5 +383,101 @@ inc_second="$(find "$OUT_INC" -mindepth 1 -maxdepth 1 -type d -name 'data_*' ! -
 [[ "$(inode_of "$inc_second/users/u2/cards.db")" != "$inc_base_inode" ]] \
   || fail ".INCOMPLETE base was used as the hardlink source"
 pass ".INCOMPLETE base is never used for hardlinks"
+
+# ── 9. #3578：懸空的非 DB symlink 不可讓 rsync 整段中止（真 openrsync）─────────────
+# 實測 /usr/bin/rsync：--copy-links 遇懸空 symlink 即 exit 23，且 --exclude-from 排除無效。cmd_backup 因此
+# 不讓 rsync 看見任何 symlink：排除、具名警告，整體仍 exit 0 且無 .INCOMPLETE。懸空 *.db symlink 維持
+# #3479 的 fail-closed（不在此範圍）。
+DATA_DANGLE="$TMP/remote-dangle"
+make_wal_fixture "$DATA_DANGLE"
+ln -s "$TMP/no-such-target.txt" "$DATA_DANGLE/users/u1/notes.txt"
+OUT_DANGLE="$TMP/backups-dangle"; mkdir -p "$OUT_DANGLE"
+set +e
+RSYNC_STUB_DIR="$REAL_RSYNC_BIN" run_backup "$DATA_DANGLE" "$OUT_DANGLE" cmd_backup >"$TMP/dangle.out" 2>&1
+dangle_rc=$?
+set -e
+(( dangle_rc == 0 )) || { cat "$TMP/dangle.out" >&2; fail "dangling non-DB symlink aborted cmd_backup under real rsync (rc=$dangle_rc)"; }
+[[ -z "$(find "$OUT_DANGLE" -name .INCOMPLETE)" ]] || fail "dangling non-DB symlink left a backup marked .INCOMPLETE"
+grep -Fq 'notes.txt' "$TMP/dangle.out" \
+  || fail "skipped dangling symlink was not named in a warning"
+dangle_db="$(find "$OUT_DANGLE" -path '*/users/u1/cards.db' -type f | head -n 1)"
+[[ -n "$dangle_db" ]] || fail "dangling non-DB symlink suppressed the DB snapshot"
+[[ "$(sqlite3 "$dangle_db" 'SELECT COUNT(*) FROM card;')" == 2 ]] \
+  || fail "snapshot after dangling-link skip lost the WAL-only row"
+pass "dangling non-DB symlink is skipped with a warning and does not abort the backup"
+
+# ── 10. #3578：可解參照的 symlink 內容以一般檔拉回；其內的懸空連結具名略過、不中止 ──
+# 真 rsync 不解參照，故 symlink 的內容必須由遠端 tar -h 串流補上。三種情形同時覆蓋：
+#   users/u1/alias.txt → 外部一般檔（須以一般檔出現，內容相同）
+#   linkdir            → 外部目錄（其內 docs/ 的一般檔須拉回；sub/broken 懸空，須略過並具名）
+#   dangle.txt         → 頂層懸空連結（須略過並具名）
+MAT_EXT="$TMP/mat-ext"
+mkdir -p "$MAT_EXT/docs/sub"
+printf 'shared-content\n' >"$MAT_EXT/shared.txt"
+printf 'note-content\n' >"$MAT_EXT/docs/note.txt"
+ln -s "$TMP/no-such-inner.txt" "$MAT_EXT/docs/sub/broken"
+DATA_MAT="$TMP/remote-mat"
+make_wal_fixture "$DATA_MAT"
+ln -s "$MAT_EXT/shared.txt" "$DATA_MAT/users/u1/alias.txt"
+ln -s "$MAT_EXT/docs" "$DATA_MAT/linkdir"
+ln -s "$TMP/no-such-top.txt" "$DATA_MAT/dangle.txt"
+OUT_MAT="$TMP/backups-mat"; mkdir -p "$OUT_MAT"
+set +e
+RSYNC_STUB_DIR="$REAL_RSYNC_BIN" run_backup "$DATA_MAT" "$OUT_MAT" cmd_backup >"$TMP/mat.out" 2>&1
+mat_rc=$?
+set -e
+(( mat_rc == 0 )) || { cat "$TMP/mat.out" >&2; fail "symlink materialization aborted cmd_backup under real rsync (rc=$mat_rc)"; }
+mat_dir="$(find "$OUT_MAT" -mindepth 1 -maxdepth 1 -type d -name 'data_*' | head -n 1)"
+[[ -n "$mat_dir" ]] || fail "materialization run produced no data_* directory"
+[[ -z "$(find "$OUT_MAT" -name .INCOMPLETE)" ]] || fail "materialization run left a backup marked .INCOMPLETE"
+[[ -z "$(find "$mat_dir" -type l)" ]] || fail "backup contains a symlink; every link must be materialized or dropped"
+[[ -f "$mat_dir/users/u1/alias.txt" && "$(cat "$mat_dir/users/u1/alias.txt")" == shared-content ]] \
+  || fail "file symlink target was not materialized as a regular file with its content"
+[[ -f "$mat_dir/linkdir/note.txt" && "$(cat "$mat_dir/linkdir/note.txt")" == note-content ]] \
+  || fail "regular file under a symlinked directory was not materialized (tar -h)"
+grep -Fq 'dangle.txt' "$TMP/mat.out" || fail "top-level dangling link was not named in a warning"
+grep -Fq 'broken' "$TMP/mat.out" || fail "dangling link inside a symlinked directory was not named in a warning"
+[[ "$(sqlite3 "$mat_dir/users/u1/cards.db" 'SELECT COUNT(*) FROM card;')" == 2 ]] \
+  || fail "DB snapshot lost the WAL-only row in the materialization run"
+pass "symlink targets are materialized as regular files; dangling links are named and skipped without aborting"
+
+# ── 11. #3578：掃描後才出現的 symlink 不可讓後續 tar 穿過 dest 寫進外部目錄 ─────────
+# 包裝器在真 rsync 傳輸之後於 dest 植入指向外部目錄的 symlink（模擬掃描與 rsync 之間的競態；真 rsync 若
+# 複製到 link 即落此情形）。DB 快照要寫 users/u9/cards.db，必須先移除該 link，外部 DB 不得被改寫。
+STRAY_OUT="$TMP/stray-outside"
+make_wal_fixture "$STRAY_OUT"
+stray_before="$TMP/stray-outside-before.db"
+cp "$STRAY_OUT/users/u1/cards.db" "$stray_before"
+STRAY_SRC="$TMP/stray-u9-src"
+make_wal_fixture "$STRAY_SRC"
+DATA_STRAY="$TMP/remote-stray"
+make_wal_fixture "$DATA_STRAY"
+mv "$STRAY_SRC/users/u1" "$DATA_STRAY/users/u9"
+STRAY_BIN="$TMP/real-rsync-stray-bin"
+make_real_rsync_bin "$STRAY_BIN"
+cat >"$STRAY_BIN/rsync" <<'STUB'
+#!/usr/bin/env bash
+# 真 rsync 包裝器：傳輸後於 dest 植入指向外部目錄的 symlink（掃描後才出現的 link）。
+printf '%s\n' "$*" >>"${SNAP_TEST_RSYNC_LOG:?}"
+if [[ "$#" -eq 1 ]]; then exec "${SNAP_TEST_REAL_RSYNC:?}" "$@"; fi
+"${SNAP_TEST_REAL_RSYNC:?}" "$@" || exit $?
+for a; do dst="$a"; done
+ln -s "${SNAP_TEST_STRAY_TARGET:?}" "$dst/users/u9"
+STUB
+chmod 755 "$STRAY_BIN/rsync"
+OUT_STRAY="$TMP/backups-stray"; mkdir -p "$OUT_STRAY"
+set +e
+RSYNC_STUB_DIR="$STRAY_BIN" SNAP_TEST_STRAY_TARGET="$STRAY_OUT/users/u1" run_backup "$DATA_STRAY" "$OUT_STRAY" cmd_backup >"$TMP/stray.out" 2>&1
+stray_rc=$?
+set -e
+(( stray_rc == 0 )) || { cat "$TMP/stray.out" >&2; fail "a symlink appearing after the scan aborted cmd_backup (rc=$stray_rc)"; }
+cmp -s "$STRAY_OUT/users/u1/cards.db" "$stray_before" \
+  || fail "a symlink appearing after the scan let the snapshot write through it into the outside DB"
+[[ -z "$(find "$OUT_STRAY" -type l)" ]] || fail "backup contains a symlink planted after the scan"
+stray_db="$(find "$OUT_STRAY" -path '*/users/u9/cards.db' -type f | head -n 1)"
+[[ -n "$stray_db" && "$(sqlite3 "$stray_db" 'SELECT COUNT(*) FROM card;')" == 2 ]] \
+  || fail "DB under users/u9 was not snapshotted as a regular file with its WAL row"
+grep -Fq '掃描後才出現的 symlink' "$TMP/stray.out" || fail "post-scan symlink removal was not reported"
+pass "a symlink appearing after the scan is removed before any write, outside DB stays byte-identical"
 
 printf 'backup snapshot: all checks passed\n'

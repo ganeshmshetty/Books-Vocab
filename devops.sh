@@ -678,7 +678,7 @@ while IFS= read -r -d '' rel; do
   mkdir -p "$dir"
   rm -f "$dir/.snap.db"
   out="$(cd "$dir" && sqlite3 -cmd '.timeout 30000' -cmd '.dbconfig no_ckpt_on_close on' \
-    "file:$data_abs/$rel?mode=rw" '.backup .snap.db' </dev/null)" \
+    "file:$data_abs/$rel?mode=ro" '.backup .snap.db' </dev/null)" \
     || { echo "snapshot failed: $rel" >&2; exit 1; }
   [[ "$out" == *"no_ckpt_on_close on"* && -s "$dir/.snap.db" ]] \
     || { echo "snapshot failed (no output / empty): $rel" >&2; exit 1; }
@@ -686,19 +686,53 @@ while IFS= read -r -d '' rel; do
     || { echo "snapshot quick_check failed: $rel" >&2; exit 1; }
   mv "$dir/.snap.db" "$dir/$(basename "$rel")"
 # -L：進入目錄 symlink（#3561）；否則其下的 *.db 無聲不進快照。壞掉的 symlink 在 -L 下仍為 type l，
-# 由 sqlite3 開檔失敗 exit 1 接住。
+# 由 sqlite3 開檔失敗 exit 1 接住。mode=ro（#3578）：symlink 可指到 data 目錄外，來源 DB 一律唯讀開啟，
+# 不以 rw 開外部檔（rw 可能寫主檔或 checkpoint）。注意：WAL 模式的唯讀連線仍可能建立或更新 -shm（wal-index），
+# 那是 sqlite 協定行為，不是資料寫入；mode=ro 保證的是主檔不被寫。
 done < <(find -L . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -name '*.db' \( -type f -o -type l \) -print0)
 REMOTE
 }
 
-# 遠端快照暫存目錄的本機清理（#3464）：由 kg_install_signal_traps 掛在 EXIT／INT／TERM／HUP，
-# 因此快照中、rsync 途中、tar 途中的 Ctrl-C 都會經此清掉遠端 stage。冪等：清完即清空
-# SNAP_STAGE_REMOTE，之後的 EXIT 不再打 ssh。
+# 遠端 symlink 掃描（#3578）。stdin 餵給 `bash -s -- <data_dir>`，輸出 NUL 分隔記錄，首字元為種類：
+#   L<path>  頂層非 DB symlink（可解參照或懸空）：本機以 --exclude-from 排除於 rsync。
+#   D<path>  頂層懸空非 DB symlink：同上排除，並具名警告。懸空的 *.db 不在此列，仍由快照 fail-closed（#3479）。
+#   F<path>  可解參照 symlink（含目錄 symlink）之下的一般非 DB 檔：本機以 tar -h 串流拉回。
+#   W<path>  上述目錄 symlink 之下的懸空連結：不列入 F、不交給 tar，僅具名警告。
+# 頂層掃描用不跟隨的 find：不走進 symlink 目錄，整棵 data 只做一次 metadata 掃描；只有可解參照的 link 才
+# 以 find -L 穿過（懸空者在 -L 下為 type l，自然排除於 F 之外）。
+remote_link_scan_script() {
+  cat <<'REMOTE'
+set -euo pipefail
+cd "$1"
+find . \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -type l ! -name '*.db' -print0 \
+| while IFS= read -r -d '' link; do
+    if [ -e "$link" ]; then
+      printf 'L%s\0' "$link"
+      find -L "$link" \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -type l ! -name '*.db' -print0 \
+        | while IFS= read -r -d '' w; do printf 'W%s\0' "$w"; done
+      find -L "$link" \( -name _ops_backups -o -name _ops_world_backups \) -prune -o -type f \
+        ! -name '*.db' ! -name '*.db-wal' ! -name '*.db-shm' ! -name '*.db-journal' -print0 \
+        | while IFS= read -r -d '' f; do printf 'F%s\0' "$f"; done
+    else
+      printf 'D%s\0' "$link"
+    fi
+  done
+REMOTE
+}
+
+# 遠端快照暫存目錄與本機工作目錄的清理（#3464、#3578）：由 kg_install_signal_traps 掛在 EXIT／INT／TERM／HUP，
+# 因此快照中、rsync 途中、tar 途中的 Ctrl-C 都會經此清掉遠端 stage 與本機 rsync 排除清單等暫存檔。
+# 冪等：清完即清空 SNAP_STAGE_REMOTE／SNAP_LOCAL_WORK，之後的 EXIT 不再打 ssh 或重複刪除。
 snap_stage_cleanup() {
-  local stage="${SNAP_STAGE_REMOTE:-}"
-  [[ -n "$stage" ]] || return 0
-  SNAP_STAGE_REMOTE=""
-  run_remote "rm -rf $stage" >/dev/null 2>&1 || true
+  local stage="${SNAP_STAGE_REMOTE:-}" work="${SNAP_LOCAL_WORK:-}"
+  if [[ -n "$stage" ]]; then
+    SNAP_STAGE_REMOTE=""
+    run_remote "rm -rf $stage" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$work" ]]; then
+    SNAP_LOCAL_WORK=""
+    rm -rf -- "$work"
+  fi
 }
 
 cmd_backup() {
@@ -763,17 +797,45 @@ cmd_backup() {
     err "本地冷快照失敗：無法在遠端建立暫存目錄（mktemp -d）。此指令沒有產出可用備份；不得進行 migrate-run。"
   fi
   SNAP_STAGE_REMOTE="$snap_stage"
+  # 本機工作目錄（rsync 排除清單、symlink 掃描結果、拉回清單）與遠端 stage 同樣在安裝 signal cleanup 之前建立，
+  # 任何中斷都經 snap_stage_cleanup 清掉（#3578：原本的 excl_file 於 signal 中斷時會殘留）。
+  SNAP_LOCAL_WORK="$(mktemp -d "${TMPDIR:-/tmp}/kg-snap-local.XXXXXX")"  # 明示模板：macOS 的 mktemp -d 無參數時不循 TMPDIR
   kg_install_signal_traps snap_stage_cleanup devops
   if ! run_remote "bash -s -- $(printf '%q' "$snap_stage") $REMOTE_DATA_DIR" < <(remote_db_snapshot_script); then
     touch "$dest/.INCOMPLETE" 2>/dev/null || true
     err "本地冷快照失敗：遠端 *.db 一致快照未完成（見上方）。此指令沒有產出可用備份；不得進行 migrate-run。"
   fi
-  # --copy-links：與遠端 find -L 一致（#3561）。不解參照時 dest 會留下指向遠端路徑的 symlink，
-  # 與 tar 拉回的快照版面不一致；解參照後 dest 的 users/<x>/ 為真目錄，快照落在同一位置。
-  if ! rsync -az --delete --copy-links "${progress_flags[@]}" \
+  # symlink 處理（#3578）：實測 /usr/bin/rsync（openrsync）在 --copy-links 下遇懸空 symlink 即回 exit 23，
+  # 而 --exclude-from 排除無效。因此 rsync 完全不解參照、不接觸 symlink：遠端掃描一次取得排除清單、懸空者的
+  # 具名警告、以及可解參照 symlink 目標內的一般檔（之後以遠端 tar -h 拉回）。懸空的 *.db 不在此處理，仍由
+  # 快照的 sqlite3 開檔失敗 fail-closed（#3479）。路徑不加引號，讓 ~ 由遠端 shell 展開（與快照同一慣例）。
+  local work="$SNAP_LOCAL_WORK" scan excl_file mat_list rec tag rel pat
+  scan="$work/scan.bin"; excl_file="$work/rsync-exclude"; mat_list="$work/materialize.list"
+  : >"$excl_file"; : >"$mat_list"
+  if ! run_remote "bash -s -- $REMOTE_DATA_DIR" < <(remote_link_scan_script) >"$scan"; then
+    touch "$dest/.INCOMPLETE" 2>/dev/null || true
+    snap_stage_cleanup
+    err "本地冷快照失敗：無法列舉遠端 symlink（掃描失敗）。此指令沒有產出可用備份。"
+  fi
+  while IFS= read -r -d '' rec; do
+    tag="${rec:0:1}"; rel="${rec:1}"; rel="${rel#./}"
+    case "$tag" in
+      L|D)
+        # rsync 萬用字元以字元類別跳脫，使檔名字面比對（[[] [*] [?]）。順序必須先跳脫 [，否則會連後兩者的 [ 一起改寫。
+        pat="${rel//\[/[[]}"; pat="${pat//\*/[*]}"; pat="${pat//\?/[?]}"
+        printf '/%s\n' "$pat" >>"$excl_file"
+        if [[ "$tag" == D ]]; then echo "⚠ 略過懸空 symlink（無 referent，rsync 無法複製）：${rel}" >&2; fi ;;
+      W) echo "⚠ 略過 symlink 目錄內的懸空連結（無 referent，tar 無法讀取）：${rel}" >&2 ;;
+      F) printf '%s\0' "$rel" >>"$mat_list" ;;
+    esac
+  done <"$scan"
+  # 不帶 --copy-links（#3578）：dest 內不得留下 symlink（指向遠端路徑，且其後的 tar 穿過它會寫出 dest）。
+  # symlink 目錄的內容仍與 #3561 相同地被納入，只是改由下方的 tar -h 解參照拉回，版面一致。
+  if ! rsync -az --delete "${progress_flags[@]}" \
     --exclude='_ops_backups/' \
     --exclude='_ops_world_backups/' \
     --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
+    --exclude-from="$excl_file" \
     ${prev:+--link-dest="$prev"} \
     -e "ssh -T -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
     "$SERVER:$REMOTE_DATA_DIR/" "$dest/"; then
@@ -788,6 +850,23 @@ cmd_backup() {
     echo "  災難復原請改用 standby 的每日 S3 備份（launchd com.kg.backup →" >&2
     echo "  ops/kg_backup.sh，見 docs/sop/deploy.md）；那條路徑與本指令各自獨立。" >&2
     err "本地冷快照失敗：rsync 非零退出（上方為 rsync 自身輸出）。此指令沒有產出可用備份。"
+  fi
+  # 掃描後才出現的 symlink（競態）仍可能被 rsync 複製成 link；它指向遠端路徑，必須在任何 tar 穿過 dest 之前移除
+  # （只刪 link 本身、不跟隨），並具名計數，讓這個點狀快照的缺口可見。
+  local stray
+  stray="$(find "$dest" -type l | wc -l | tr -d ' ')"
+  if [[ "$stray" != 0 ]]; then
+    echo "⚠ 掃描後才出現的 symlink ${stray} 個，已自 dest 移除（點狀快照語意，未納入本次備份）" >&2
+    find "$dest" -type l -delete
+  fi
+  # 可解參照 symlink 的內容（#3578）：遠端 tar -h 只串流掃描列出的一般檔（懸空者已排除）。必須在 rsync 之後解到
+  # dest（否則 rsync --delete 會把這些不在來源清單中的檔刪掉），且在 DB 快照覆蓋之前。清單為空則不呼叫遠端。
+  if [[ -s "$mat_list" ]]; then
+    if ! run_remote "cd $REMOTE_DATA_DIR && tar -h --null -cf - -T -" <"$mat_list" | tar -C "$dest" -xf -; then
+      touch "$dest/.INCOMPLETE" 2>/dev/null || true
+      snap_stage_cleanup
+      err "本地冷快照失敗：symlink 目標內容拉回失敗（遠端 tar -h）。此指令沒有產出可用備份。"
+    fi
   fi
   run_remote "tar -C $snap_stage -cf - ." | tar -C "$dest" -xf - || snap_rc=$?
   snap_stage_cleanup
