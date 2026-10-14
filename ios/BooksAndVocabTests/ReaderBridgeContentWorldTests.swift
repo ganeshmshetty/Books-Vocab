@@ -3,8 +3,9 @@
 //  Books & Vocab Tests
 //
 //  Spec: the reader bridge (message handlers + injected user script) lives in a
-//  dedicated WKContentWorld, never `.page`, and only main-frame messages from
-//  that world are accepted. Configuration-level tests; no web view is started.
+//  dedicated WKContentWorld, never `.page`. Its script runs in every frame of
+//  that world (FXL pages are iframes) and only messages from that world are
+//  accepted. Configuration-level tests; no web view is started.
 //
 
 #if os(iOS)
@@ -54,14 +55,15 @@ struct ReaderBridgeContentWorldTests {
         #expect(registrar.handlers.allSatisfy { $0.world != WKContentWorld.page })
     }
 
-    @Test func installInjectsTheScriptIntoTheBridgeWorldForTheMainFrameOnly() {
+    @Test func installInjectsTheScriptIntoTheBridgeWorldForEveryFrame() {
         let registrar = RecordingRegistrar()
         ReaderBridgeContentWorld.install(on: registrar, handler: NoopHandler(), scriptSource: "/* bridge */")
 
         #expect(registrar.scripts.count == 1)
         #expect(registrar.scripts.first?.source == "/* bridge */")
         #expect(registrar.scripts.first?.world == ReaderBridgeContentWorld.world)
-        #expect(registrar.scripts.first?.mainFrameOnly == true)
+        // FXL 書文在 wrapper 的子 iframe 裡；只注入主 frame 會讓那些頁面收不到橋接。
+        #expect(registrar.scripts.first?.mainFrameOnly == false)
     }
 
     @Test func uninstallRemovesHandlersFromTheSameWorld() {
@@ -79,12 +81,17 @@ struct ReaderBridgeContentWorldTests {
         ReaderBridgeContentWorld.uninstall(from: controller)
     }
 
-    @Test func onlyMainFrameMessagesFromTheBridgeWorldAreAccepted() {
+    @Test func messagesFromTheBridgeWorldAreAcceptedFromAnyFrameAndPageWorldIsRejected() {
         let world = ReaderBridgeContentWorld.world
-        #expect(ReaderBridgeContentWorld.accepts(isMainFrame: true, world: world))
-        #expect(!ReaderBridgeContentWorld.accepts(isMainFrame: false, world: world))
-        #expect(!ReaderBridgeContentWorld.accepts(isMainFrame: true, world: .page))
-        #expect(!ReaderBridgeContentWorld.accepts(isMainFrame: false, world: .page))
+        #expect(ReaderBridgeContentWorld.accepts(world: world))
+        #expect(!ReaderBridgeContentWorld.accepts(world: .page))
+        #expect(!ReaderBridgeContentWorld.accepts(world: .defaultClient))
+    }
+
+    @Test func fixedLayoutSpreadEvaluatesIntoItsPageFramesAndReflowableIntoTheMainFrame() {
+        #expect(ReaderBridgeEvalTarget.forSpread(pageFrameCount: 0) == .mainFrame)
+        #expect(ReaderBridgeEvalTarget.forSpread(pageFrameCount: 1) == .pageFrames)
+        #expect(ReaderBridgeEvalTarget.forSpread(pageFrameCount: 2) == .pageFrames)
     }
 }
 #endif
