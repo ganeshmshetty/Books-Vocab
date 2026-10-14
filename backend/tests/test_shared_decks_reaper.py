@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
@@ -70,6 +71,27 @@ def test_reaper_compensates_only_orphaned_stale_staged(tmp_path):
 
 def test_reaper_noop_without_users_dir(tmp_path):
     assert _reap(tmp_path) == 0
+
+
+def test_reaper_survives_corrupt_user_db_and_still_reaps_other_users(tmp_path, caplog):
+    """A corrupt per-user notebooks.db must be logged and skipped like any other
+    per-user failure; it must not escape and abort lifespan startup (#3820)."""
+    user_a = tmp_path / "users" / "a"
+    user_a.mkdir(parents=True)
+    (user_a / "notebooks.db").write_bytes(b"this is not a sqlite database" * 100)
+    user_b = tmp_path / "users" / "b"
+    user_b.mkdir()
+    cards = CardStore(user_b / "cards.db")
+    nbs = NotebookStore(user_b / "notebooks.db")
+    staged = nbs.create(name="orphan", is_staged=True)
+    _add(cards, staged.id, "c-orphan", datetime.now(UTC))
+    _age(nbs, staged.id, 60)
+
+    with caplog.at_level(logging.WARNING, logger="kg.shared_decks.reaper"):
+        assert _reap(tmp_path) == 1
+
+    assert nbs.staged_ids() == []
+    assert any(r.levelno == logging.WARNING and r.getMessage().endswith("for a") for r in caplog.records)
 
 
 def test_reaper_reads_copy_log_from_the_configured_path(tmp_path):

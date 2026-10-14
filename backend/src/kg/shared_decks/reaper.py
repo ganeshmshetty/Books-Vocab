@@ -48,9 +48,10 @@ def reap_stale_staged_copies(
     reaped = 0
     try:
         for user_dir in sorted(p for p in users_dir.iterdir() if (p / "notebooks.db").is_file()):
-            notebooks = NotebookStore(user_dir / "notebooks.db")
+            notebooks = None
             cards = None
             try:
+                notebooks = NotebookStore(user_dir / "notebooks.db")
                 for notebook_id in notebooks.staged_older_than(cutoff):
                     if shared.has_copy_log_for_notebook(notebook_id):
                         continue
@@ -61,7 +62,8 @@ def reap_stale_staged_copies(
             except Exception:  # noqa: BLE001 — never block startup on one user
                 _LOGGER.warning("staged copy reaper failed for %s", user_dir.name, exc_info=True)
             finally:
-                notebooks.close()
+                if notebooks is not None:
+                    notebooks.close()
                 if cards is not None:
                     cards.close()
     finally:
