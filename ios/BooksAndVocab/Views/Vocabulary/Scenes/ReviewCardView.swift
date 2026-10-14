@@ -1095,20 +1095,26 @@ struct ReviewCardView: View {
                         .font(appSkin.typography.caption)
                         .foregroundStyle(appSkin.palette.tertiaryText)
                         .lineLimit(1)
+                        .accessibilityIdentifier("todayReview.card.link.pending.strip.creating")
                 case .failed:
+                    // Icon-only state: it needs a localized label, and its identifier carries the state (#3510).
                     Image(systemName: "exclamationmark.triangle")
                         .font(appSkin.typography.iconTiny)
                         .foregroundStyle(appSkin.palette.destructive)
+                        .accessibilityLabel(L10n.string("todayReview.link.pending.failed"))
+                        .accessibilityIdentifier("todayReview.card.link.pending.strip.failed")
                 case .warning:
                     Image(systemName: "exclamationmark.circle")
                         .font(appSkin.typography.iconTiny)
                         .foregroundStyle(appSkin.palette.warning)
+                        .accessibilityLabel(L10n.string("addLink.creation.warning.summary"))
+                        .accessibilityIdentifier("todayReview.card.link.pending.strip.warning")
                 }
             }
         }
         .buttonStyle(.plain)
+        // The item carries no accessibilityValue: a raw English state token would reach VoiceOver (#3510).
         .accessibilityIdentifier("todayReview.card.link.pending.\(item.word)")
-        .accessibilityValue(state.rawValue)
     }
 
     /// Shown by the graph-links section when the card has no links yet. It is the

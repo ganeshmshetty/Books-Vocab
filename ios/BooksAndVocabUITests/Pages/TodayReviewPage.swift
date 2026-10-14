@@ -437,10 +437,16 @@ struct TodayReviewPage {
 
     // MARK: Pending (still being created) link
 
-    /// Strip item for a link whose target card is still being created. Its
-    /// accessibility value is the creation state: `creating` or `failed`.
+    /// Strip item for a link whose target card is still being created. The item
+    /// carries no accessibility value; its creation state is encoded in the child
+    /// status identifier (`pendingLinkStripStatus`), not in a raw English token (#3510).
     func pendingLink(word: String) -> XCUIElement {
         queryElement("todayReview.card.link.pending.\(word)")
+    }
+
+    /// Status indicator inside a strip pending item. `state` is `creating`, `failed` or `warning`.
+    func pendingLinkStripStatus(_ state: String) -> XCUIElement {
+        queryElement("todayReview.card.link.pending.strip.\(state)")
     }
 
     /// Detail sheet opened by tapping a pending item.
