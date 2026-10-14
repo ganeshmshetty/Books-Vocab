@@ -657,6 +657,8 @@ def test_local_only_asset_declaration_after_tombstone_is_rejected(isolated_api, 
     book_id = created.json()["id"]
 
     users = json.loads(isolated_api.users_file.read_text())
+    # Tombstone without a live record, as erasure commits it (#3652).
+    users.pop(isolated_api.user_id)
     users["_terminated"] = [isolated_api.user_id]
     isolated_api.users_file.write_text(json.dumps(users))
 
@@ -798,3 +800,34 @@ def test_local_removal_failure_is_reported_to_sentry_with_erasure_context(tmp_pa
 
     assert [context for _, context in reported] == ["account_erasure.local_removal"]
     assert isinstance(reported[0][0], RuntimeError)
+
+
+def test_reregistered_account_can_upload_asset_after_earlier_erasure(isolated_api, monkeypatch):
+    """#3652: an account erased and then signed in again with the same provider sub
+    gets a fresh live record. The permanent `_terminated` tombstone must not keep
+    rejecting its asset uploads once that record exists."""
+    _swap_settings(KGSettings(data_dir=isolated_api.data_dir, jwt_secret=TEST_JWT_SECRET, library_bucket="b"))
+    monkeypatch.setattr(library_router, "_library_s3_client", lambda settings: _BucketFake())
+    created = isolated_api.client.post(
+        "/api/library/books",
+        json={"client_book_id": "reregistered", "title": "Book", "format": "epub"},
+        headers=isolated_api.headers,
+    )
+    assert created.status_code == 201, created.text
+    book_id = created.json()["id"]
+
+    # Erasure commit: record removed, `_terminated` and the revocation watermark written.
+    users = json.loads(isolated_api.users_file.read_text())
+    _tombstone_accounts(users, [isolated_api.user_id], purge_external_api_keys=None)
+    # Re-login with the same sub: fresh live record, and a token issued after the watermark.
+    users[isolated_api.user_id] = {"config": {}}
+    users["_revoked_before"][isolated_api.user_id] = "2000-01-01T00:00:00+00:00"
+    isolated_api.users_file.write_text(json.dumps(users))
+
+    response = isolated_api.client.post(
+        f"/api/library/books/{book_id}/asset-upload",
+        json={"format": "epub", "byte_size": 10, "local_only": True},
+        headers=isolated_api.headers,
+    )
+
+    assert response.status_code == 200, response.text
