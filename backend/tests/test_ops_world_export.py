@@ -45,9 +45,7 @@ def _card_row(dd: Path, uid: str, content: str) -> dict | None:
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     try:
-        row = conn.execute(
-            "SELECT * FROM card WHERE content = ? AND is_deleted = 0", (content,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM card WHERE content = ? AND is_deleted = 0", (content,)).fetchone()
     except sqlite3.OperationalError:
         # 預驗拒絕於任何寫入前 → card 表可能根本沒建;等同「無此卡」。
         row = None
@@ -59,9 +57,7 @@ def _notebook_row(dd: Path, uid: str, name: str) -> dict | None:
     db = dd / "users" / uid / "notebooks.db"
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM notebook WHERE name = ? AND is_deleted = 0", (name,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM notebook WHERE name = ? AND is_deleted = 0", (name,)).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -100,14 +96,21 @@ _RICH_SPEC = {
     ],
     "cards": [
         {
-            "content": "meticulous", "meaning": "一絲不苟的", "pos": "adj.",
-            "examples": ["Her **meticulous** notes."], "collocations": ["meticulous planning"],
-            "note": "note-md", "difficulty": 4.5, "mode": "recognition",
+            "content": "meticulous",
+            "meaning": "一絲不苟的",
+            "pos": "adj.",
+            "examples": ["Her **meticulous** notes."],
+            "collocations": ["meticulous planning"],
+            "note": "note-md",
+            "difficulty": 4.5,
+            "mode": "recognition",
             "notebook": "Alpha",
             "review": {"state": "reviewed", "interval": 72},
         },
         {
-            "content": "wince", "meaning": "畏縮", "pos": "v.",
+            "content": "wince",
+            "meaning": "畏縮",
+            "pos": "v.",
             "notebook": "Alpha",
             "review": {"state": "due", "interval": 24},
         },
@@ -115,8 +118,14 @@ _RICH_SPEC = {
         {"content": "defaulted", "meaning": "落在預設本"},
     ],
     "links": [
-        {"from": "meticulous", "to": "wince", "kind": "shares_usage",
-         "confidence": 0.8, "reason": "same chapter", "notebook": "Alpha"},
+        {
+            "from": "meticulous",
+            "to": "wince",
+            "kind": "shares_usage",
+            "confidence": 0.8,
+            "reason": "same chapter",
+            "notebook": "Alpha",
+        },
     ],
 }
 
@@ -158,8 +167,13 @@ class TestWorldExport:
         # review 計數器：legacy reviewed(interval=72) → count=2、feedback=1。
         rv = met["review"]
         assert set(rv) == {
-            "review_count", "review_streak", "lapse_count", "review_interval_hours",
-            "next_review_at", "last_reviewed_at", "last_review_feedback",
+            "review_count",
+            "review_streak",
+            "lapse_count",
+            "review_interval_hours",
+            "next_review_at",
+            "last_reviewed_at",
+            "last_review_feedback",
         }
         assert rv["review_count"] == 2
         assert rv["review_interval_hours"] == 72.0
@@ -171,10 +185,16 @@ class TestWorldExport:
         # 卡在 default 本 → 以 default 本的實際 name 參照。
         assert cards["defaulted"]["notebook"] == default_nb["name"]
 
-        assert out["links"] == [{
-            "from": "meticulous", "to": "wince", "kind": "shares_usage",
-            "confidence": 0.8, "reason": "same chapter", "notebook": "Alpha",
-        }]
+        assert out["links"] == [
+            {
+                "from": "meticulous",
+                "to": "wince",
+                "kind": "shares_usage",
+                "confidence": 0.8,
+                "reason": "same chapter",
+                "notebook": "Alpha",
+            }
+        ]
 
     def test_export_is_byte_stable_and_readonly(self, tmp_path):
         uid = _mk_user(tmp_path)
@@ -185,8 +205,7 @@ class TestWorldExport:
         r2 = _export_raw(tmp_path, uid)
         assert r1.returncode == 0 and r2.returncode == 0
         assert r1.stdout == r2.stdout, "重跑 export 必須 byte-stable"
-        assert hashlib.sha256(cards_db.read_bytes()).hexdigest() == before, \
-            "world-export 是唯讀面，不可改動 cards.db"
+        assert hashlib.sha256(cards_db.read_bytes()).hexdigest() == before, "world-export 是唯讀面，不可改動 cards.db"
 
     def test_export_excludes_deleted_cards(self, tmp_path):
         uid = _mk_user(tmp_path)
@@ -205,26 +224,25 @@ class TestWorldExport:
         user_dir = tmp_path / "users" / uid
         meticulous = _card_row(tmp_path, uid, "meticulous")
         wince = _card_row(tmp_path, uid, "wince")
-        (graph_path,) = [
-            p for p in user_dir.glob("graph_*.json")
-            if json.loads(p.read_text(encoding="utf-8"))
-        ]
+        (graph_path,) = [p for p in user_dir.glob("graph_*.json") if json.loads(p.read_text(encoding="utf-8"))]
         entries = json.loads(graph_path.read_text(encoding="utf-8"))
         assert isinstance(entries, list) and len(entries) == 1
-        entries.append({
-            **entries[0], "id": "legacy-reverse",
-            "from_id": wince["id"], "to_id": meticulous["id"],
-            "kind": "contrasts_with", "status": "active",
-        })
+        entries.append(
+            {
+                **entries[0],
+                "id": "legacy-reverse",
+                "from_id": wince["id"],
+                "to_id": meticulous["id"],
+                "kind": "contrasts_with",
+                "status": "active",
+            }
+        )
         graph_path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
 
         r = _export_raw(tmp_path, uid)
         assert r.returncode == 0, r.stderr
         out = json.loads(r.stdout)
-        pair_links = [
-            link for link in out["links"]
-            if {link["from"], link["to"]} == {"meticulous", "wince"}
-        ]
+        pair_links = [link for link in out["links"] if {link["from"], link["to"]} == {"meticulous", "wince"}]
         assert len(pair_links) == 1
         # 確定式：sorted (notebook, from, to, kind) 首條勝出
         assert (pair_links[0]["from"], pair_links[0]["kind"]) == ("meticulous", "shares_usage")
@@ -245,7 +263,9 @@ class TestWorldExport:
 class TestSeedReviewCounters:
     def _counters_spec(self, **overrides) -> dict:
         rv = {
-            "review_count": 5, "review_streak": 3, "lapse_count": 1,
+            "review_count": 5,
+            "review_streak": 3,
+            "lapse_count": 1,
             "review_interval_hours": 48.0,
             "next_review_at": "2026-06-13T00:00:00+00:00",
             "last_reviewed_at": "2026-06-11T00:00:00+00:00",
@@ -283,11 +303,16 @@ class TestSeedReviewCounters:
     def test_legacy_state_form_untouched(self, tmp_path):
         """既有 {state,interval} 消費者（ops/demo/demo_dataset.json）行為不變。"""
         uid = _mk_user(tmp_path)
-        r = _seed(tmp_path, uid, {
-            "review_anchor": "2026-06-11T00:00:00Z",
-            "cards": [{"content": "w", "meaning": "m",
-                       "review": {"state": "due", "interval": 24}}],
-        }, "--commit", "--json")
+        r = _seed(
+            tmp_path,
+            uid,
+            {
+                "review_anchor": "2026-06-11T00:00:00Z",
+                "cards": [{"content": "w", "meaning": "m", "review": {"state": "due", "interval": 24}}],
+            },
+            "--commit",
+            "--json",
+        )
         assert r.returncode == 0, r.stderr
         assert _card_row(tmp_path, uid, "w")["review_count"] == 1
         # legacy 形式不合成 review events（原行為）。
@@ -303,10 +328,15 @@ class TestSeedReviewCounters:
 
     def test_rejects_counters_without_last_reviewed(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _seed(tmp_path, uid, {
-            "cards": [{"content": "anchor", "meaning": "錨",
-                       "review": {"review_count": 3}}],
-        }, "--commit", "--json")
+        r = _seed(
+            tmp_path,
+            uid,
+            {
+                "cards": [{"content": "anchor", "meaning": "錨", "review": {"review_count": 3}}],
+            },
+            "--commit",
+            "--json",
+        )
         assert r.returncode != 0
         assert _card_row(tmp_path, uid, "anchor") is None
 
@@ -324,11 +354,23 @@ class TestSeedReviewCounters:
 class TestSeedFieldParity:
     def test_seed_applies_new_card_fields(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _seed(tmp_path, uid, {
-            "cards": [{"content": "laid", "meaning": "放置(過去式)",
-                       "root_form": "lay", "inflections": ["laid", "lays", "laying"],
-                       "is_archived": True}],
-        }, "--commit", "--json")
+        r = _seed(
+            tmp_path,
+            uid,
+            {
+                "cards": [
+                    {
+                        "content": "laid",
+                        "meaning": "放置(過去式)",
+                        "root_form": "lay",
+                        "inflections": ["laid", "lays", "laying"],
+                        "is_archived": True,
+                    }
+                ],
+            },
+            "--commit",
+            "--json",
+        )
         assert r.returncode == 0, r.stderr
         row = _card_row(tmp_path, uid, "laid")
         assert row["root_form"] == "lay"
@@ -337,17 +379,25 @@ class TestSeedFieldParity:
 
     def test_seed_applies_notebook_sort_order_and_default_rename(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _seed(tmp_path, uid, {
-            "notebooks": [
-                {"name": "Renamed Default", "is_default": True, "sort_order": 0},
-                {"name": "Second", "sort_order": 7},
-            ],
-        }, "--commit", "--json")
+        r = _seed(
+            tmp_path,
+            uid,
+            {
+                "notebooks": [
+                    {"name": "Renamed Default", "is_default": True, "sort_order": 0},
+                    {"name": "Second", "sort_order": 7},
+                ],
+            },
+            "--commit",
+            "--json",
+        )
         assert r.returncode == 0, r.stderr
         conn = sqlite3.connect(str(tmp_path / "users" / uid / "notebooks.db"))
         conn.row_factory = sqlite3.Row
-        rows = {r["name"]: dict(r) for r in conn.execute(
-            "SELECT id, name, sort_order, is_default FROM notebook WHERE is_deleted = 0")}
+        rows = {
+            r["name"]: dict(r)
+            for r in conn.execute("SELECT id, name, sort_order, is_default FROM notebook WHERE is_deleted = 0")
+        }
         conn.close()
         # is_default: true → 映射到既存 default 本（改名，不增殖新本）。
         assert rows["Renamed Default"]["id"] == "default"
@@ -356,10 +406,15 @@ class TestSeedFieldParity:
 
     def test_rejects_two_defaults(self, tmp_path):
         uid = _mk_user(tmp_path)
-        r = _seed(tmp_path, uid, {
-            "notebooks": [{"name": "A", "is_default": True},
-                          {"name": "B", "is_default": True}],
-        }, "--commit", "--json")
+        r = _seed(
+            tmp_path,
+            uid,
+            {
+                "notebooks": [{"name": "A", "is_default": True}, {"name": "B", "is_default": True}],
+            },
+            "--commit",
+            "--json",
+        )
         assert r.returncode != 0
 
 
@@ -379,10 +434,16 @@ class TestRoundtrip:
 
         # 世界 A：rich spec + 追加 archived / root_form 卡 + default 本卡。
         spec = json.loads(json.dumps(_RICH_SPEC))
-        spec["cards"].append({
-            "content": "laid", "meaning": "放置(過去式)", "root_form": "lay",
-            "inflections": ["laid", "lays"], "is_archived": True, "notebook": "Beta",
-        })
+        spec["cards"].append(
+            {
+                "content": "laid",
+                "meaning": "放置(過去式)",
+                "root_form": "lay",
+                "inflections": ["laid", "lays"],
+                "is_archived": True,
+                "notebook": "Beta",
+            }
+        )
         assert _seed(dd_a, uid_a, spec, "--commit", "--json").returncode == 0
 
         r_a = _export_raw(dd_a, uid_a)
@@ -431,8 +492,7 @@ def _expected_payload_shape(declared: dict) -> tuple[set[str], dict[str, set[str
     top: set[str] = set()
     nested: dict[str, set[str]] = {}
     for col, path in declared.items():
-        assert isinstance(path, tuple) and 1 <= len(path) <= 2, \
-            f"{col} 的 payload 路徑深度未支援：{path!r}"
+        assert isinstance(path, tuple) and 1 <= len(path) <= 2, f"{col} 的 payload 路徑深度未支援：{path!r}"
         top.add(path[0])
         if len(path) == 2:
             nested.setdefault(path[0], set()).add(path[1])
@@ -443,26 +503,43 @@ def _expected_payload_shape(declared: dict) -> tuple[set[str], dict[str, set[str
 # （source / source_shared_card_guid / notebook provenance）唯有如此才會現身，
 # payload 才可能與宣告集完全對齊。
 _MAX_SPEC = {
-    "notebooks": [{
-        "name": "Full", "color": "#abcdef", "cover_pattern": "grid", "sort_order": 3,
-        "source_shared_deck_id": "deck-xyz", "source_version": 7,
-    }],
-    "cards": [{
-        "content": "exhaustive", "meaning": "詳盡的", "pos": "adj.",
-        "examples": ["An **exhaustive** list."], "collocations": ["exhaustive search"],
-        "note": "note-md", "difficulty": 3.25, "mode": "production",
-        "root_form": "exhaust", "inflections": ["exhaustive", "exhaustively"],
-        "is_archived": True, "notebook": "Full",
-        "source": {"type": "book", "title": "Demo Book", "chapter": "Chapter 1"},
-        "source_shared_card_guid": "guid-abc",
-        "review": {
-            "review_count": 5, "review_streak": 3, "lapse_count": 1,
-            "review_interval_hours": 48.0,
-            "next_review_at": "2026-06-13T00:00:00+00:00",
-            "last_reviewed_at": "2026-06-11T00:00:00+00:00",
-            "last_review_feedback": 1,
-        },
-    }],
+    "notebooks": [
+        {
+            "name": "Full",
+            "color": "#abcdef",
+            "cover_pattern": "grid",
+            "sort_order": 3,
+            "source_shared_deck_id": "deck-xyz",
+            "source_version": 7,
+        }
+    ],
+    "cards": [
+        {
+            "content": "exhaustive",
+            "meaning": "詳盡的",
+            "pos": "adj.",
+            "examples": ["An **exhaustive** list."],
+            "collocations": ["exhaustive search"],
+            "note": "note-md",
+            "difficulty": 3.25,
+            "mode": "production",
+            "root_form": "exhaust",
+            "inflections": ["exhaustive", "exhaustively"],
+            "is_archived": True,
+            "notebook": "Full",
+            "source": {"type": "book", "title": "Demo Book", "chapter": "Chapter 1"},
+            "source_shared_card_guid": "guid-abc",
+            "review": {
+                "review_count": 5,
+                "review_streak": 3,
+                "lapse_count": 1,
+                "review_interval_hours": 48.0,
+                "next_review_at": "2026-06-13T00:00:00+00:00",
+                "last_reviewed_at": "2026-06-11T00:00:00+00:00",
+                "last_review_feedback": 1,
+            },
+        }
+    ],
 }
 
 
@@ -481,8 +558,7 @@ class TestFieldSymmetry:
         model_cols = set(Card.__table__.columns.keys())
         exported = set(EXPORTED_CARD_COLUMNS)
         ignored = set(EXPORT_IGNORED_CARD_COLUMNS)
-        assert exported & ignored == set(), \
-            f"同時宣告導出與忽略：{sorted(exported & ignored)}"
+        assert exported & ignored == set(), f"同時宣告導出與忽略：{sorted(exported & ignored)}"
         assert model_cols == exported | ignored, (
             f"未分類欄位={sorted(model_cols - (exported | ignored))} / "
             f"幽靈宣告={sorted((exported | ignored) - model_cols)}"
@@ -501,8 +577,7 @@ class TestFieldSymmetry:
         model_cols = set(Notebook.__table__.columns.keys())
         exported = set(EXPORTED_NOTEBOOK_COLUMNS)
         ignored = set(EXPORT_IGNORED_NOTEBOOK_COLUMNS)
-        assert exported & ignored == set(), \
-            f"同時宣告導出與忽略：{sorted(exported & ignored)}"
+        assert exported & ignored == set(), f"同時宣告導出與忽略：{sorted(exported & ignored)}"
         assert model_cols == exported | ignored, (
             f"未分類欄位={sorted(model_cols - (exported | ignored))} / "
             f"幽靈宣告={sorted((exported | ignored) - model_cols)}"
@@ -563,14 +638,15 @@ class TestFieldSymmetry:
 
         # 欄位填滿的那筆必須恰好吐出全部宣告鍵（沒有死宣告）。
         card = {c["content"]: c for c in out["cards"]}["exhaustive"]
-        assert set(card) == card_top, \
+        assert set(card) == card_top, (
             f"宣告有導但沒導={sorted(card_top - set(card))} / 多導={sorted(set(card) - card_top)}"
+        )
         for group, keys in card_nested.items():
-            assert set(card[group]) == keys, \
+            assert set(card[group]) == keys, (
                 f"{group} block：缺={sorted(keys - set(card[group]))} / 多={sorted(set(card[group]) - keys)}"
+            )
         nb = {n["name"]: n for n in out["notebooks"]}["Full"]
-        assert set(nb) == nb_top, \
-            f"宣告有導但沒導={sorted(nb_top - set(nb))} / 多導={sorted(set(nb) - nb_top)}"
+        assert set(nb) == nb_top, f"宣告有導但沒導={sorted(nb_top - set(nb))} / 多導={sorted(set(nb) - nb_top)}"
 
     def test_card_source_survives_roundtrip(self, tmp_path):
         """IMP-0016 已經在發生的那筆損失：reader 來源脈絡（VocabSource）。
@@ -601,8 +677,9 @@ class TestFieldSymmetry:
         r_b = _export_raw(dd_b, uid_b)
         assert r_b.returncode == 0, r_b.stderr
         assert r_b.stdout == r_a.stdout, "byte-equal fixpoint 破了"
-        assert json.loads(_card_row(dd_b, uid_b, "w")["source"]) == src, \
+        assert json.loads(_card_row(dd_b, uid_b, "w")["source"]) == src, (
             "重放後的世界 B 盤上沒有 source —— snapshot/restore 有損"
+        )
 
     def test_omit_if_null_keeps_sparse_cards_lean(self, tmp_path):
         """反向護欄：沒有 source 的卡不得多出 null 鍵。
@@ -654,9 +731,9 @@ class TestForeignWriterAndSparseShapes:
         assert production_raw != canonical_raw
         # 第二種「非 seed 形」：鍵序被打亂（舊資料 / 人工修過）。
         scrambled_raw = '{"chapter":"Chapter 2","title":"Other Book","type":"book"}'
-        scrambled_canonical = VocabSource(
-            type="book", title="Other Book", chapter="Chapter 2"
-        ).model_dump_json(exclude_none=True)
+        scrambled_canonical = VocabSource(type="book", title="Other Book", chapter="Chapter 2").model_dump_json(
+            exclude_none=True
+        )
 
         dd_a = tmp_path / "a"
         dd_b = tmp_path / "b"
@@ -664,10 +741,12 @@ class TestForeignWriterAndSparseShapes:
         dd_b.mkdir()
         uid_a = _mk_user(dd_a, "prod-a")
         uid_b = _mk_user(dd_b, "prod-b")
-        spec = {"cards": [
-            {"content": "w", "meaning": "m"},
-            {"content": "s", "meaning": "m2"},
-        ]}
+        spec = {
+            "cards": [
+                {"content": "w", "meaning": "m"},
+                {"content": "s", "meaning": "m2"},
+            ]
+        }
         assert _seed(dd_a, uid_a, spec, "--commit", "--json").returncode == 0
         _write_card_source(dd_a, uid_a, "w", production_raw)
         _write_card_source(dd_a, uid_a, "s", scrambled_raw)
@@ -748,10 +827,12 @@ class TestForeignWriterAndSparseShapes:
         dd_b.mkdir()
         uid_a = _mk_user(dd_a, "sparse-a")
         uid_b = _mk_user(dd_b, "sparse-b")
-        spec = {"notebooks": [
-            {"name": "VersionOnly", "sort_order": 1, "source_version": 7},
-            {"name": "DeckOnly", "sort_order": 2, "source_shared_deck_id": "deck-solo"},
-        ]}
+        spec = {
+            "notebooks": [
+                {"name": "VersionOnly", "sort_order": 1, "source_version": 7},
+                {"name": "DeckOnly", "sort_order": 2, "source_shared_deck_id": "deck-solo"},
+            ]
+        }
         assert _seed(dd_a, uid_a, spec, "--commit", "--json").returncode == 0
         # 前提直讀盤：世界 A 真的是「只有一欄」的形狀。
         row_v = _notebook_row(dd_a, uid_a, "VersionOnly")
@@ -762,8 +843,7 @@ class TestForeignWriterAndSparseShapes:
         r_a = _export_raw(dd_a, uid_a)
         assert r_a.returncode == 0, r_a.stderr
         nbs = {n["name"]: n for n in json.loads(r_a.stdout)["notebooks"]}
-        assert nbs["VersionOnly"].get("source_version") == 7, \
-            "宣告有導 source_version，稀疏本卻沒導出（靜默有損）"
+        assert nbs["VersionOnly"].get("source_version") == 7, "宣告有導 source_version，稀疏本卻沒導出（靜默有損）"
         assert "source_shared_deck_id" not in nbs["VersionOnly"]
         assert nbs["DeckOnly"].get("source_shared_deck_id") == "deck-solo"
         assert "source_version" not in nbs["DeckOnly"]
