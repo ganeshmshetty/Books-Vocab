@@ -146,8 +146,9 @@ extension KGService {
                 try await markPushed(actor, item)
             } catch let error as CancellationError {
                 throw error
-            } catch KGError.httpError(let status, _) where (400..<500).contains(status) && status != 401 && status != 429 {
-                AppLog.kg.warning("pushPendingReviewModes rejected '\(item.word)' with HTTP \(status), clearing pending mode")
+            } catch let error as KGError where SubscriptionManager.isTerminalRejection(error) {
+                // 與訂閱結算共用同一判定（#3614）：408 為暫時性，不得清除待推送狀態
+                AppLog.kg.warning("pushPendingReviewModes rejected '\(item.word)' (\(error.localizedDescription)), clearing pending mode")
                 do {
                     try await markPushed(actor, item)
                 } catch let error as CancellationError {

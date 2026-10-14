@@ -190,6 +190,8 @@ final class SubscriptionManager: SubscriptionManaging {
         case skippedNotLoggedIn
         /// 後端以永久 4xx 拒絕（重送結果不變）：已 finish 以停止 StoreKit 重送（#3542、#3596）。
         case rejected(Error)
+        /// 後端已以 2xx 接受，僅回應無法解碼：已 finish，重送只會重複 POST（#3614）。
+        case acceptedUnreadableResponse(Error)
         /// 後端同步失敗：未 finish，交由 StoreKit 於之後重送。
         case syncFailed(Error)
     }
@@ -210,6 +212,9 @@ final class SubscriptionManager: SubscriptionManaging {
         } catch let error as KGError where Self.isTerminalRejection(error) {
             await finish(transaction)
             return .rejected(error)
+        } catch KGError.decodingError(let underlying) {
+            await finish(transaction)
+            return .acceptedUnreadableResponse(underlying)
         } catch {
             return .syncFailed(error)
         }
@@ -219,7 +224,7 @@ final class SubscriptionManager: SubscriptionManaging {
 
     /// 後端的永久 4xx（例如 403：交易綁定其他帳號）：同一筆交易重送結果不會改變（#3542、#3596）。
     /// 401 由請求層登出並於重新登入後重送；408、429 為暫時性，維持未完成以待重試。
-    static func isTerminalRejection(_ error: KGError) -> Bool {
+    nonisolated static func isTerminalRejection(_ error: KGError) -> Bool {
         guard case .httpError(let status, _) = error else { return false }
         return (400...499).contains(status) && ![401, 408, 429].contains(status)
     }
@@ -255,6 +260,9 @@ final class SubscriptionManager: SubscriptionManaging {
                 case .rejected(let error):
                     // 終局拒絕已 finish，不記 Sentry：每次啟動重送的是同一筆無法成功的交易，不是待修的錯誤
                     AppLog.subscription.warning("syncTransaction rejected by backend, transaction finished: \(error.localizedDescription)")
+                case .acceptedUnreadableResponse(let error):
+                    // 後端已接受，不記 Sentry：重送不會改變結果（#3614）
+                    AppLog.subscription.warning("syncTransaction accepted but response undecodable, transaction finished: \(error.localizedDescription)")
                 case .syncFailed(let error):
                     AppLog.subscription.error("syncTransaction failed: \(error.localizedDescription)")
                     if !(error is CancellationError) {
