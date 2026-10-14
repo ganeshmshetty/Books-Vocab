@@ -46,7 +46,8 @@ struct BackgroundSyncActorTests {
         isDeleted: Bool = false,
         reviewStreak: Int? = nil,
         reviewCount: Int? = nil,
-        lapseCount: Int? = nil
+        lapseCount: Int? = nil,
+        createdAt: String? = nil
     ) throws -> KGCard {
         let sourceFragment = sourceJSON.map { ",\"source\":\($0)" } ?? ""
         let meaningValue = meaning ?? "meaning-\(content)"
@@ -56,11 +57,12 @@ struct BackgroundSyncActorTests {
         let streakFragment = reviewStreak.map { ",\"reviewStreak\":\($0)" } ?? ""
         let reviewCountFragment = reviewCount.map { ",\"reviewCount\":\($0)" } ?? ""
         let lapseCountFragment = lapseCount.map { ",\"lapseCount\":\($0)" } ?? ""
+        let createdAtFragment = createdAt.map { ",\"createdAt\":\"\($0)\"" } ?? ""
         let json = """
         {"id":"\(id)","content":"\(content)","meaning":"\(meaningValue)",
          "pos":null,"difficulty":null,"difficultyTier":null,"note":null,
          "collocations":[],"examples":["an example"],"mode":"recognition",
-         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)\(lapseCountFragment)}
+         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)\(lapseCountFragment)\(createdAtFragment)}
         """.data(using: .utf8)!
         return try JSONDecoder().decode(KGCard.self, from: json)
     }
@@ -727,6 +729,74 @@ struct BackgroundSyncActorTests {
         #expect(result.deleted == 50)
         let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
         #expect(remaining == 50)
+    }
+
+    // MARK: - dateAdded from server createdAt (#3801)
+    //
+    // dateAdded is the "when did I add this word" instant. Pull used to stamp
+    // every card with the pull time; the server createdAt is the true instant.
+
+    /// 2025-01-01T00:00:00Z
+    private static let serverCreatedAt = Date(timeIntervalSince1970: 1_735_689_600)
+
+    @Test func syncDown_newEntry_takesServerCreatedAt() async throws {
+        let container = try makeContainer()
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(content: "dated", sourceJSON: nil, createdAt: "2025-01-01T00:00:00Z")
+
+        _ = try await actor.pullCardsToLocal(
+            fetchedCards: [card],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let entry = try #require(try fetchEntry(container, word: "dated"))
+        #expect(entry.dateAdded == Self.serverCreatedAt)
+    }
+
+    @Test func syncDown_existingEntry_movesDateAddedBackToEarlierServerCreatedAt() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "dated", translation: "m", context: "ctx", bookTitle: "Book")
+        entry.notebookId = "default"
+        entry.dateAdded = Date(timeIntervalSince1970: 1_780_000_000) // 2026: the legacy pull-time stamp
+        entry.markSynced()
+        context.insert(entry)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(content: "dated", sourceJSON: nil, createdAt: "2025-01-01T00:00:00Z")
+        _ = try await actor.pullCardsToLocal(
+            fetchedCards: [card],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let merged = try #require(try fetchEntry(container, word: "dated"))
+        #expect(merged.dateAdded == Self.serverCreatedAt)
+    }
+
+    @Test func syncDown_existingEntry_keepsEarlierDateAddedWhenServerIsLater() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let earlier = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11-14, before server createdAt
+        let entry = VocabularyEntry(word: "dated", translation: "m", context: "ctx", bookTitle: "Book")
+        entry.notebookId = "default"
+        entry.dateAdded = earlier
+        entry.markSynced()
+        context.insert(entry)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(content: "dated", sourceJSON: nil, createdAt: "2025-01-01T00:00:00Z")
+        _ = try await actor.pullCardsToLocal(
+            fetchedCards: [card],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let merged = try #require(try fetchEntry(container, word: "dated"))
+        #expect(merged.dateAdded == earlier)
     }
 
     // MARK: - clearUserData (logout / account-switch isolation)
