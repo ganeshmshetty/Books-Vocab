@@ -6,8 +6,7 @@ import os
 import shutil
 import tarfile
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
@@ -19,14 +18,15 @@ from kg.graph.models import LinkKind
 from kg.ops_shared import data_dir
 from kg.review_events import ReviewEventStore
 from kg.user_store import load_users_from
-from kg.worker_guard import WORKER_LOCK_FILENAME, WorkerLockHeldError, hold_worker_lock
 
 from .ops_edit_shared import (
     EditContext,
     EditError,
     assert_safe_uid,
     backup_world,
+    destructive_worker_lock,
     emit,
+    hold_worker_lock_or_refuse,
     user_dir_for,
     users_file,
     world_backup_root,
@@ -710,27 +710,6 @@ def verify_seed(
     return out
 
 
-def _hold_worker_lock_or_refuse(dd: Path, *, action: str) -> int:
-    """取得 worker flock；API 持鎖或鎖路徑不可開啟時一律翻成 EditError（不漏裸 OSError）。"""
-    lock_path = dd / WORKER_LOCK_FILENAME
-    try:
-        return hold_worker_lock(lock_path)
-    except WorkerLockHeldError as e:
-        raise EditError(f"{e}；{action} 須在 API 停止後執行") from e
-    except OSError as e:
-        raise EditError(f"無法開啟 worker 鎖 {lock_path}：{e}") from e
-
-
-@contextmanager
-def _destructive_worker_lock(dd: Path) -> Iterator[None]:
-    """破壞性 commit 期間持有 worker flock：執行中的 API 持鎖時拒絕（同 world-restore），鎖持續到寫入結束。"""
-    lock_fd = _hold_worker_lock_or_refuse(dd, action="破壞性 commit")
-    try:
-        yield
-    finally:
-        os.close(lock_fd)
-
-
 def _run_seed(
     spec: SeedSpec,
     ctx: EditContext,
@@ -740,7 +719,7 @@ def _run_seed(
 ) -> int:
     state: dict[str, Any] = {}
     # --replace commit 會 unlink 活體 vocab inode;dry-run 零副作用,不取鎖。
-    guard = _destructive_worker_lock(ctx.data_dir) if replace and ctx.commit else nullcontext()
+    guard = destructive_worker_lock(ctx.data_dir) if replace and ctx.commit else nullcontext()
     with guard:
         return ctx.run(
             action="seed",
@@ -852,7 +831,7 @@ def cmd_clone_demo(args: argparse.Namespace) -> int:
         }
 
     # apply_fn 會 unlink 目標 vocab inode;commit 時鎖須覆蓋整個 backup→apply→verify。
-    guard = _destructive_worker_lock(dd) if args.commit else nullcontext()
+    guard = destructive_worker_lock(dd) if args.commit else nullcontext()
     with guard:
         return ctx.run(action="clone-demo", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
 
@@ -929,7 +908,7 @@ def cmd_world_restore(args: argparse.Namespace) -> int:
         return 0
 
     # 整個 data_dir 會被覆蓋：先取得 worker flock，執行中的 API 持鎖時拒絕，且鎖在還原期間持續持有。
-    lock_fd = _hold_worker_lock_or_refuse(dd, action="world-restore --commit")
+    lock_fd = hold_worker_lock_or_refuse(dd, action="world-restore --commit")
     try:
         pre_restore = backup_world(dd, label="pre-world-restore")
         with tempfile.TemporaryDirectory(prefix="kg-world-restore-") as tmp:

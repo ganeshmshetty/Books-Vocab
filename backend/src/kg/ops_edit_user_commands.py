@@ -5,6 +5,7 @@ import logging
 import shutil
 import tarfile
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,15 @@ from kg.sentry_init import capture_handled
 from kg.settings import load_settings
 from kg.user_store import load_users_from, parse_datetime
 
-from .ops_edit_shared import EditContext, EditError, assert_safe_uid, emit, user_dir_for, users_file
+from .ops_edit_shared import (
+    EditContext,
+    EditError,
+    assert_safe_uid,
+    destructive_worker_lock,
+    emit,
+    user_dir_for,
+    users_file,
+)
 from .ops_edit_support import (
     _USER_BACKUP_META_DIR,
     _USER_BACKUP_RECORD,
@@ -596,4 +605,8 @@ def cmd_restore(args: argparse.Namespace) -> int:
         # notebooks.db 在即視為成功還原。
         return {"ok": ctx.user_dir.exists() and (ctx.user_dir / "notebooks.db").exists()}
 
-    return ctx.run(action="restore", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
+    # rmtree + 解壓會替換活體 user_dir;執行中的 API 持有 .worker.lock 時必須拒絕,否則其 store cache
+    # 綁在已 unlink 的 inode 上,之後寫入會靜默遺失(#3823)。鎖覆蓋整個 backup→apply→verify。
+    guard = destructive_worker_lock(dd) if args.commit else nullcontext()
+    with guard:
+        return ctx.run(action="restore", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)

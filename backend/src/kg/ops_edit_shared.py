@@ -30,10 +30,14 @@ import sqlite3
 import stat
 import tarfile
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
+
+from kg.worker_guard import WORKER_LOCK_FILENAME, WorkerLockHeldError, hold_worker_lock
 
 # uid 會被 join 進檔案系統路徑(`data_dir/users/<uid>`),必須限制在 path-safe
 # 白名單,否則 crafted uid 可用 `/` 或 `..` 逃出 sandbox。鏡像
@@ -325,6 +329,27 @@ def append_audit(data_dir: Path, entry: dict[str, Any]) -> None:
     line = json.dumps({"ts": _now_iso(), **entry}, ensure_ascii=False, default=str)
     with open(path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def hold_worker_lock_or_refuse(dd: Path, *, action: str) -> int:
+    """取得 worker flock；API 持鎖或鎖路徑不可開啟時一律翻成 EditError（不漏裸 OSError）。"""
+    lock_path = dd / WORKER_LOCK_FILENAME
+    try:
+        return hold_worker_lock(lock_path)
+    except WorkerLockHeldError as e:
+        raise EditError(f"{e}；{action} 須在 API 停止後執行") from e
+    except OSError as e:
+        raise EditError(f"無法開啟 worker 鎖 {lock_path}：{e}") from e
+
+
+@contextmanager
+def destructive_worker_lock(dd: Path) -> Iterator[None]:
+    """破壞性 commit 期間持有 worker flock：執行中的 API 持鎖時拒絕（同 world-restore），鎖持續到寫入結束。"""
+    lock_fd = hold_worker_lock_or_refuse(dd, action="破壞性 commit")
+    try:
+        yield
+    finally:
+        os.close(lock_fd)
 
 
 def emit(obj: Any, *, json_mode: bool) -> None:
