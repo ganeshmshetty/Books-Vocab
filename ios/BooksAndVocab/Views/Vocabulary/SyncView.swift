@@ -14,6 +14,7 @@ struct SyncView: View {
     @Environment(\.kgService) private var kgService
     @Environment(\.authManager) private var authManager
     @Environment(\.toastCoordinator) private var toastCoordinator
+    @Environment(\.networkMonitor) private var networkMonitor
     @Query(filter: #Predicate<VocabularyEntry> { $0.syncStatus != 1 })
     private var pendingEntries: [VocabularyEntry]
 
@@ -33,7 +34,11 @@ struct SyncView: View {
             )
             .settingsSheet(isPresented: $showSettings)
             .task {
+                await SyncReconnectProbe.onPresent(kgService)
                 refreshStepLayoutIfIdle()
+            }
+            .onChange(of: networkMonitor.isConnected) { wasConnected, isConnected in
+                Task { await SyncReconnectProbe.onConnectivityChange(from: wasConnected, to: isConnected, kgService) }
             }
             .onChange(of: pendingEntries.count) { _, _ in
                 refreshStepLayoutIfIdle()
@@ -149,9 +154,12 @@ struct SyncView: View {
 @MainActor
 enum SyncReconnectProbe {
     static func onPresent(_ service: any HealthChecking) async {
+        await service.healthCheck()
     }
 
     static func onConnectivityChange(from wasConnected: Bool, to isConnected: Bool, _ service: any HealthChecking) async {
+        guard !wasConnected, isConnected else { return }
+        await service.healthCheck()
     }
 }
 
