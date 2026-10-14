@@ -315,6 +315,24 @@ APP_STORE_CONNECT_PRIVATE_KEY_PATH=/Users/chenliangyu/project/kg/backend/certs/A
 - host-specific path key（例如 App Store cert path）允許本地/遠端主機路徑不同，但要求檔名一致且位於各自主機 repo 目錄下的 `certs/`（遠端為 `<遠端 repo 真實目錄>/certs/`，與上方 host 路徑 `.env` 佈局一致；不是容器內 `/app/certs`）
 - 有 drift 時指令以非 0 結束（僅回報）
 
+### Sign in with Apple 權杖撤回設定 (#3815)
+
+帳號刪除時若設定了 Sign in with Apple 相關變數，後端會向 Apple 撤回 refresh token（App Store Review 規範 5.1.1(v) 要求）。
+
+#### 設定變數
+
+| Env | 預設 | 用途 |
+|---|---|---|
+| `APPLE_SIWA_TEAM_ID` | （空） | Apple Developer Team ID（10 碼） |
+| `APPLE_SIWA_KEY_ID` | （空） | Sign in with Apple private key ID（10 碼） |
+| `APPLE_SIWA_PRIVATE_KEY_PATH` | （空） | Sign in with Apple `.p8` 金鑰在主機上的檔案路徑 |
+
+- **開關規則**：三個變數（`APPLE_SIWA_TEAM_ID`、`APPLE_SIWA_KEY_ID`、`APPLE_SIWA_PRIVATE_KEY_PATH`）必須全部設定才啟用 Apple 撤回；任一未設則功能停用（Unset = feature off）。後端啟動時若有缺漏，會打一行 info log 列出缺少的變數（`SIWA token revocation disabled (missing: ...)`）。
+- **Client ID**：直接使用既有的 `APPLE_BUNDLE_ID` 作為 client_id。
+- **金鑰檔案處理（.p8 key-file handling）**：
+  - **存放位置**：金鑰檔放在主機的 `certs/` 目錄（例如 `<repo>/backend/certs/AuthKey_<key-id>.p8`，`.env` 設定 host 絕對路徑）。
+  - **檔案權限**：主機上的 `.p8` 金鑰檔案權限必須設為 `600`（`chmod 600` / file mode 600），限制僅擁有者可讀寫。
+
 ### Sentry 錯誤追蹤 **(SoT)**
 
 Sentry 為 **opt-in** — `SENTRY_DSN` 留空時 SDK 完全 no-op，整層免費。本段為 Sentry 環境變數 / 取樣 / 隱私規範的權威來源；iOS bootstrap 程式碼層 wiring 見 `docs/sop/ios.md §Crash Reporting`，架構層概覽見 `docs/sop/architecture.md §Crash Reporting Layer`。
