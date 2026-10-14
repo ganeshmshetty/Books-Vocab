@@ -581,10 +581,19 @@ def check_quota(user_id: str, call_type: str, *, is_pro: bool = False) -> QuotaC
 
 
 def check_and_get_quota(user_id: str, call_type: str, *, is_pro: bool = False) -> QuotaCheck:
-    """Pre-flight check + state in one query."""
-    limit, used, fraction = _quota_view(user_id, is_pro=is_pro)
+    """Pre-flight check + state in one query.
+
+    ``exceeded`` uses the admission rule (`_try_admit`): only recorded usage at
+    or over the limit is real exhaustion. In-flight reservations are contention,
+    which `reserve`/`areserve` wait out, so they must not trip the gate (#3809).
+    ``fraction`` still reports the budget left after in-flight reservations.
+    """
+    limit = _daily_limit(is_pro)
+    recorded, reserved = _admission_usage_snapshot(user_id)
+    remaining = max(limit - recorded - reserved, 0.0)
+    fraction = round(remaining / limit, 4) if limit > 0 else 0.0
     return {
-        "exceeded": used >= limit,
+        "exceeded": recorded >= limit,
         "fraction": fraction,
-        "reset_seconds": _reset_seconds(user_id, limit, used),
+        "reset_seconds": _reset_seconds(user_id, limit, recorded),
     }

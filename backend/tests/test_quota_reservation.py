@@ -108,12 +108,13 @@ def test_reservation_released_even_on_exception(mock_db):
     assert q["fraction"] == pytest.approx(1.0, abs=0.001)
 
 
-def test_stacked_reservations_block_when_sum_exceeds_limit(mock_db):
-    """Two concurrent in-flight reservations whose sum tops the limit
-    must make a third check report exceeded — the core defense."""
+def test_stacked_reservations_do_not_trip_gate_without_recorded_usage(mock_db):
+    """Two concurrent in-flight reservations whose sum tops the limit do not
+    trip the gate: no recorded spend means no real exhaustion. Admission waits
+    them out instead (#3809)."""
     with qs.reserve("u1", 0.02), qs.reserve("u1", 0.02):
         q = qs.check_quota("u1", "translate", is_pro=False)
-        assert q["exceeded"] is True
+        assert q["exceeded"] is False
 
 
 # ── concurrency repro ─────────────────────────────────────────────
@@ -469,10 +470,10 @@ def test_enforced_reservation_retries_on_equal_sum_reservation_swap(mock_db, mon
         qs._reservation_version += 1
 
 
-def test_tracked_llm_pipeline_burst_blocks_via_gate(mock_db):
+def test_tracked_llm_pipeline_burst_keeps_gate_open(mock_db):
     """Simulated pipeline enrich fan-out: 5 concurrent TrackedLLM calls for
-    a Free user. The reservation makes the gate observe in-flight spend, so
-    a check during the burst reports the user as quota-exceeded.
+    a Free user. In-flight spend is not recorded spend, so a check during the
+    burst keeps the gate open; admission serializes the calls instead (#3809).
 
     Workers stay inside the call until the gate has been read. The barrier
     alone releases them together with the main thread, so they could finish
@@ -500,7 +501,7 @@ def test_tracked_llm_pipeline_burst_blocks_via_gate(mock_db):
         futs = [ex.submit(worker) for _ in range(5)]
         try:
             barrier.wait(timeout=5)  # all 5 calls now in flight, reservations held
-            # 5 * $0.012 = $0.06 reserved > Free $0.03 → gate must block now.
+            # 5 * $0.012 = $0.06 reserved > Free $0.03, but nothing recorded yet → gate stays open.
             q = qs.check_quota("u1", "translate", is_pro=False)
             gate_seen_exceeded.append(q["exceeded"])
         finally:
@@ -508,4 +509,56 @@ def test_tracked_llm_pipeline_burst_blocks_via_gate(mock_db):
         for f in futs:
             f.result()
 
-    assert gate_seen_exceeded == [True], "gate must see in-flight burst as over-quota"
+    assert gate_seen_exceeded == [False], "in-flight burst must not trip the gate without recorded spend"
+
+
+def test_areserve_times_out_when_in_flight_blocks(mock_db, monkeypatch):
+    """#3728: the async admission wait is bounded. A blocked areserve must raise
+    QuotaExceededError with X-Quota-Reset once _ADMISSION_WAIT_SECONDS elapses,
+    instead of polling forever and pinning the event loop task."""
+    from kg.exceptions import QuotaExceededError
+
+    monkeypatch.setattr(qs, "_ADMISSION_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(qs, "_ADMISSION_POLL_SECONDS", 0.01)
+
+    async def blocked():
+        async with qs.areserve("u1", 0.02, enforce=True, is_pro=False):
+            pass
+
+    async def main():
+        # Holding the whole Free budget keeps the second call blocked by in-flight spend.
+        async with qs.areserve("u1", 0.03, enforce=True, is_pro=False):
+            try:
+                await asyncio.wait_for(blocked(), 2)
+            except QuotaExceededError as exc:
+                return exc
+        raise AssertionError("second areserve was admitted while in-flight budget was full")
+
+    err = asyncio.run(main())
+    assert err.headers["X-Quota-Fraction"] == "0.0"
+    assert "X-Quota-Reset" in err.headers
+    assert qs._reserved_usd("u1") == 0.0
+
+
+def test_gate_stays_open_while_own_call_holds_reservation(mock_db, monkeypatch):
+    """#3809: in-flight reservations are not spent budget for the route gate.
+    Admission raises only on recorded >= limit, so the gate must use the same rule."""
+    import kg.deps_quota as deps_quota
+
+    monkeypatch.setattr(deps_quota, "_is_pro", lambda _user: False)
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.02)
+    with qs.reserve("u1", qs.ESTIMATED_CALL_COST_USD, enforce=True, is_pro=False):
+        assert qs.check_and_get_quota("u1", "translate_quick", is_pro=False)["exceeded"] is False
+        deps_quota._check_quota({"id": "u1"}, "translate_quick", None)
+
+
+def test_gate_real_exhaustion_still_raises_with_recorded_reset(mock_db, monkeypatch):
+    """#3809: recorded >= limit still raises at the gate, with the recorded-based reset."""
+    import kg.deps_quota as deps_quota
+    from kg.exceptions import QuotaExceededError
+
+    monkeypatch.setattr(deps_quota, "_is_pro", lambda _user: False)
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.03)
+    with pytest.raises(QuotaExceededError) as exc_info:
+        deps_quota._check_quota({"id": "u1"}, "translate_quick", None)
+    assert exc_info.value.headers["X-Quota-Reset"] == str(qs._reset_seconds("u1", 0.03, 0.03))
