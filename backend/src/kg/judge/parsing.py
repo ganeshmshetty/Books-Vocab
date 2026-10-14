@@ -79,7 +79,8 @@ def _parse_batch_response(
     for item in data:
         if isinstance(item, dict):
             w = item.get("word", "")
-            if w:
+            # Non-string word (list/dict/number) is unhashable or unmatchable: skip it (#3893).
+            if isinstance(w, str) and w:
                 _word_items.setdefault(w, []).append(item)
 
     # Track response items already assigned (by identity) so neither the
@@ -100,7 +101,9 @@ def _parse_batch_response(
         if i < len(data) and isinstance(data[i], dict):
             pos_item = data[i]
             pos_word = pos_item.get("word", "")
-            if (not pos_word or pos_word == word) and id(pos_item) not in _consumed:
+            # Non-string pos_word never equals a str candidate word, so it falls through to
+            # the word-keyed fallback instead of raising on the comparison path (#3893).
+            if (pos_word == "" or pos_word == word) and id(pos_item) not in _consumed:
                 item = pos_item  # positional match confirmed (and still free)
             else:
                 # Positional mismatch (or already taken) — use word-keyed fallback,
