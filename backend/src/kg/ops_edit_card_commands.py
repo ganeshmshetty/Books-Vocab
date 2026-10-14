@@ -260,6 +260,14 @@ def cmd_card_import(args: argparse.Namespace) -> int:
     rows = [r for r in all_rows if (r.get("content") or "").strip()]
     blank_meaning = sum(1 for r in rows if not (r.get("meaning") or "").strip())
     has_review_col = "review_state" in fieldnames
+    with closing(_card_store(ctx.user_dir)) as store:
+        # 唯讀預演:帶 review_state 但已存在的重複卡,commit 時只計 skipped_dup、不覆寫複習態。
+        dup_review_rows = sum(
+            1
+            for r in rows
+            if (r.get("review_state") or "").strip() in _VALID_REVIEW_STATES
+            and store.find_by_content(r["content"].strip(), notebook_id=nb_id) is not None
+        )
     plan = {
         "csv": str(csv_path),
         "notebook_id": nb_id,
@@ -267,6 +275,7 @@ def cmd_card_import(args: argparse.Namespace) -> int:
         "skipped_blank_content": len(all_rows) - len(rows),
         "blank_meaning_rows": blank_meaning,  # >0 會在 commit 時被擋
         "has_review_col": has_review_col,
+        "dup_review_rows": dup_review_rows,  # 既有卡且帶 review_state:commit 時不套用複習態
         "sample": [r.get("content") for r in rows[:5]],
     }
 
@@ -299,6 +308,7 @@ def cmd_card_import(args: argparse.Namespace) -> int:
             # 用 pre/post id diff 算**真實**新增數 —— CardStore.add 對既有 content
             # 冪等回傳舊卡,無腦 +1 會把「跳過的重複」誤計為新增。
             pre_ids = {c.id for c in store.all(notebook_id=nb_id)}
+            known_ids = set(pre_ids)
             for r in rows:
                 card = store.add(
                     content=r["content"].strip(),
@@ -308,8 +318,12 @@ def cmd_card_import(args: argparse.Namespace) -> int:
                     collocations=_split_multi(r.get("collocations")),
                     notebook_id=nb_id,
                 )
+                # 只對本批新插入的卡套用複習態;重複卡(既有或同批先前已插入)回傳舊列,
+                # 套用會把既有 review_count/streak/interval 歸零(#3909)。
+                is_new = card.id not in known_ids
+                known_ids.add(card.id)
                 rv = (r.get("review_state") or "").strip()
-                if rv in _VALID_REVIEW_STATES:
+                if is_new and rv in _VALID_REVIEW_STATES:
                     raw_iv = (r.get("review_interval") or "").strip()
                     iv = float(raw_iv) if raw_iv else None
                     store.update(card.id, **_review_fields(rv, iv, now))

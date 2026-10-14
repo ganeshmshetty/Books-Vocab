@@ -378,6 +378,74 @@ class TestCmdCardImport:
         rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
         assert rc == 1
 
+    # ── #3909: 重複卡不得覆寫既有複習態 ──
+
+    def _seed_reviewed_card(self, tmp_path: Path, content: str) -> str:
+        store = CardStore(tmp_path / "users" / "u1" / "cards.db")
+        try:
+            card = store.add(content=content, meaning="蘋果", notebook_id="default")
+            store.update(card.id, review_count=200, review_streak=50, review_interval_hours=240.0)
+            return card.id
+        finally:
+            store.close()
+
+    def test_duplicate_row_with_review_state_keeps_existing_review_fields(self, tmp_path, monkeypatch, capsys):
+        _setup_user(tmp_path)
+        self._seed_reviewed_card(tmp_path, "apple")
+        p = tmp_path / "import.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["content", "meaning", "review_state", "review_interval"])
+            w.writeheader()
+            w.writerow({"content": "apple", "meaning": "蘋果", "review_state": "new", "review_interval": ""})
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["result"]["skipped_dup"] == 1
+        store = CardStore(tmp_path / "users" / "u1" / "cards.db")
+        try:
+            c = store.find_by_content("apple", notebook_id="default")
+            assert c is not None
+            assert c.review_count == 200
+            assert c.review_streak == 50
+            assert c.review_interval_hours == 240.0
+        finally:
+            store.close()
+
+    def test_new_row_with_review_state_still_applies_review_fields(self, tmp_path, monkeypatch, capsys):
+        _setup_user(tmp_path)
+        p = tmp_path / "import.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["content", "meaning", "review_state", "review_interval"])
+            w.writeheader()
+            w.writerow({"content": "pear", "meaning": "梨", "review_state": "due", "review_interval": "12"})
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p), commit=True))
+        assert rc == 0
+        store = CardStore(tmp_path / "users" / "u1" / "cards.db")
+        try:
+            c = store.find_by_content("pear", notebook_id="default")
+            assert c is not None
+            assert c.review_count == 1
+            assert c.review_interval_hours == 12.0
+        finally:
+            store.close()
+
+    def test_dry_run_reports_duplicate_rows_carrying_review_state(self, tmp_path, monkeypatch, capsys):
+        _setup_user(tmp_path)
+        self._seed_reviewed_card(tmp_path, "apple")
+        p = tmp_path / "import.csv"
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["content", "meaning", "review_state"])
+            w.writeheader()
+            w.writerow({"content": "apple", "meaning": "蘋果", "review_state": "new"})
+            w.writerow({"content": "pear", "meaning": "梨", "review_state": "new"})
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        rc = cards_cmd.cmd_card_import(_make_args(csv=str(p)))
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["plan"]["dup_review_rows"] == 1
+
 
 # ── cmd_card_move ────────────────────────────────────────────────────────
 
