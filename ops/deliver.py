@@ -1085,7 +1085,8 @@ class Delivery:
 
         if stage in ("adopt", "hand-back", "receipt"):
             self.rebase_if_behind()
-        stale_claim: tuple[int, str] | None = None  # (generation, head) to retire
+        # (generation, handed-back head to retire); "" when no hand-back is stored.
+        stale_claim: tuple[int, str] | None = None
         if (
             stage in ("hand-back", "receipt")
             and record is not None
@@ -1095,11 +1096,10 @@ class Delivery:
                 f"claim base {record.get('base_sha')} is not the fork point "
                 f"{self.claim_base()}; re-adopting"
             )
-            head = str(
-                record.get("handed_back_sha")
-                or self.git("rev-parse", "HEAD", stage="preflight")
+            stale_claim = (
+                int(record.get("claim_generation") or 0),
+                str(record.get("handed_back_sha") or ""),
             )
-            stale_claim = (int(record.get("claim_generation") or 0), head)
             record, stage = None, "adopt"
         if stage in ("adopt", "hand-back"):
             if not self.args.check:
@@ -1166,6 +1166,13 @@ class Delivery:
                     self.say("scope refreshed from the diff")
                 if stage == "adopt":
                     intent = self.args.intent or self.git("log", "-1", "--format=%s")
+                    # Read HEAD only now, after format: its commit moves HEAD, and with no
+                    # stored hand-back the registry's CAS compares the live branch head.
+                    stale_head = ""
+                    if stale_claim:
+                        stale_head = stale_claim[1] or self.git(
+                            "rev-parse", "HEAD", stage="preflight"
+                        )
                     self.mutate(
                         [
                             orchestrate,
@@ -1188,7 +1195,7 @@ class Delivery:
                                     "--expected-generation",
                                     str(stale_claim[0]),
                                     "--expected-head-sha",
-                                    stale_claim[1],
+                                    stale_head,
                                 ]
                                 if stale_claim
                                 else []

@@ -89,6 +89,8 @@ class FakeWorld:
         # ruff format rewrites the files (the worktree turns dirty) when True.
         self.format_changes = state.get("format_changes", False)
         self.format_pending = False
+        # HEAD: a format commit moves it, so a head read before format is stale.
+        self.git_head = state.get("git_head", "d" * 40)
         self.fail_commands: set[str] = set(state.get("fail_commands", set()))
         self.stderr_for: dict[str, str] = state.get("stderr_for", {})
         # the merge-queue re-read fails once a queue attempt has run (#3563)
@@ -203,6 +205,7 @@ class FakeWorld:
                 return ok()
             if sub[0] == "commit":
                 self.format_pending = False
+                self.git_head = "c" * 40
                 return ok("[branch abc1234] style: ruff format (pre-publish)\n")
             if sub[:2] == ["merge-base", "--is-ancestor"]:
                 answer = (
@@ -221,6 +224,8 @@ class FakeWorld:
                 return ok(self.trunk)
             if sub[0] == "log":
                 return ok("feat: the thing")
+            if sub == ["rev-parse", "HEAD"]:
+                return ok(self.git_head)
             if sub[0] == "rev-parse":
                 return ok(str(self.canon))
             if sub[0] == "ls-remote":
@@ -2092,6 +2097,20 @@ def test_an_agent_claim_with_a_stale_base_is_readopted_in_one_call() -> None:
     assert _value(readopt, "--expected-head-sha") == "e" * 40
     assert _value(readopt, "--expected-generation") == "0"
     assert _value(readopt, "--base") == "f" * 40  # world.fork
+
+
+def test_a_stale_claim_without_handback_readopts_on_the_head_after_format() -> None:
+    """#3683: the format commit moves HEAD, so readopt names the post-format head."""
+    world = FakeWorld(
+        branch="worktree-agent-abc123",
+        record=_agent_record(handed_back_sha=None),
+        format_changes=True,
+    )
+    code, result = ship(world, "--check", "docs=good")
+    assert code == 0, result
+    assert len(_commits(world)) == 1
+    readopt = next(c for c in world.calls if c[1:2] == ["readopt"])
+    assert _value(readopt, "--expected-head-sha") == "c" * 40
 
 
 def _adopt_bases(world: FakeWorld) -> list[str]:
