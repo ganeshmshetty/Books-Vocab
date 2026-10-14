@@ -243,21 +243,21 @@ class _LinksMixin:
             return self._reconcile_persisted_pairs(snapshot, pairs, preferred_link=preferred_link)
 
     def _persist_new_link(self, link: GraphLink, snapshot: list[dict]) -> GraphLink | None:
-        """Persist a new link and return the durable winner for its pair."""
+        """Persist a new link and return the durable winner for its pair.
+
+        Caller must hold the pair locks (see ``add_link``); they are not re-entrant.
+        """
         pair = self._normalize_pair(link.from_id, link.to_id)
-        with ExitStack() as locks:
-            locks.enter_context(self._pair_thread_lock(pair))
-            locks.enter_context(path_write_lock(self._pair_lock_path(pair)))
 
-            # A stale store may already have a durable winner. Check before
-            # flushing its provisional ID so a later request cannot replace
-            # the winner merely because its snapshot lists its own ID first.
-            winner = self._reconcile_persisted_pairs(snapshot, {pair}, preferred_link=link)
-            if winner is not None:
-                return winner if winner.id != link.id else None
+        # A stale store may already have a durable winner. Check before
+        # flushing its provisional ID so a later request cannot replace
+        # the winner merely because its snapshot lists its own ID first.
+        winner = self._reconcile_persisted_pairs(snapshot, {pair}, preferred_link=link)
+        if winner is not None:
+            return winner if winner.id != link.id else None
 
-            self._flush_links(snapshot)
-            winner = self._reconcile_persisted_pairs(snapshot, {pair}, preferred_link=link)
+        self._flush_links(snapshot)
+        winner = self._reconcile_persisted_pairs(snapshot, {pair}, preferred_link=link)
         return winner if winner is not None and winner.id != link.id else None
 
     def _rollback_provisional_link(self, link: GraphLink) -> None:
@@ -286,10 +286,11 @@ class _LinksMixin:
         The sole caller (create_manual_link) does check-then-act: it reads
         find_link_between == None, runs a multi-second LLM call without holding
         _lock, then calls add_link. Two concurrent manual-link requests for the
-        same pair therefore both reach add_link. Re-checking inside _lock closes
-        the same-instance gap; _persist_new_link re-reads under the cross-process
-        file lock so an already-persisted (active/hidden) pair returns the
-        existing link instead of inserting a duplicate.
+        same pair therefore both reach add_link. The pair locks held across the
+        insert, post-insert check and persist close the same-instance gap and the
+        cross-process one: a same-pair creator waits for the in-flight link to be
+        persisted or rolled back, so an already-persisted (active/hidden) pair
+        returns the durable link instead of a provisional one or a duplicate.
 
         ``require_live`` reads the cards DB, so it runs outside ``_lock``: once
         before the insert (fast refusal, nothing inserted) and once after it. The
@@ -311,26 +312,34 @@ class _LinksMixin:
             reason=reason,
         )
         _require_both_live(require_live, from_id, to_id)
-        with self._lock:
-            existing = self._find_link_between_unlocked(from_id, to_id)
-            if existing is None:
-                self._links[link.id] = link
-                self._index_link(link)
-                self._touch_links((link.id,))
-                snapshot = self._links_to_serializable()
-        if existing is not None:
-            _require_both_live(require_live, from_id, to_id)
-            return existing
-        try:
-            _require_both_live(require_live, from_id, to_id)
-        except BaseException:
-            self._rollback_provisional_link(link)
-            raise
-        try:
-            existing = self._persist_new_link(link, snapshot)
-        except BaseException:
-            self._rollback_provisional_link(link)
-            raise
+        pair = self._normalize_pair(from_id, to_id)
+        with ExitStack() as locks:
+            # Hold the pair locks from the provisional insert until the link is
+            # either persisted or rolled back. A same-pair creator then waits
+            # here instead of returning an in-memory link whose fate is still
+            # undecided (#3576).
+            locks.enter_context(self._pair_thread_lock(pair))
+            locks.enter_context(path_write_lock(self._pair_lock_path(pair)))
+            with self._lock:
+                existing = self._find_link_between_unlocked(from_id, to_id)
+                if existing is None:
+                    self._links[link.id] = link
+                    self._index_link(link)
+                    self._touch_links((link.id,))
+                    snapshot = self._links_to_serializable()
+            if existing is not None:
+                _require_both_live(require_live, from_id, to_id)
+                return existing
+            try:
+                _require_both_live(require_live, from_id, to_id)
+            except BaseException:
+                self._rollback_provisional_link(link)
+                raise
+            try:
+                existing = self._persist_new_link(link, snapshot)
+            except BaseException:
+                self._rollback_provisional_link(link)
+                raise
         if existing is not None:
             return existing
         self._emit_graph_event(
