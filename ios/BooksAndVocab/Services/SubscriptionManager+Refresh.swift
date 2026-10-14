@@ -99,6 +99,16 @@ extension SubscriptionManager {
         }
     }
 
+    /// 登入後的權益對帳（#3508）：先以 StoreKit currentEntitlements 補同步，再 refresh。
+    /// 登出期間未 finish 的交易只能經此路徑送達後端；refresh 不觸及 currentEntitlements，順序不可對調。
+    static func reconcileEntitlementsAfterLogin(
+        syncCurrentEntitlements: () async -> CurrentEntitlementSyncOutcome,
+        refresh: () async -> Void
+    ) async {
+        _ = await syncCurrentEntitlements()
+        await refresh()
+    }
+
     /// 從 Apple 訂閱管理頁返回後執行完整重新同步
     func resyncAfterManagement(using kgService: any KGServing, authManager: any AuthManaging) async {
         guard authManager.isLoggedIn else { return }
