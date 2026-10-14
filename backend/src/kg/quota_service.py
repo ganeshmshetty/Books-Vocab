@@ -187,43 +187,49 @@ def _admission_usage_snapshot(user_id: str) -> tuple[float, float]:
 
 # Max seconds a caller waits for same-user in-flight reservations to release
 # before admission gives up with QuotaExceededError. Sized to a few LLM calls:
-# only in-flight contention waits; real exhaustion (recorded + estimate > limit)
-# still raises immediately.
+# only in-flight contention waits; real exhaustion (recorded >= limit, the same
+# rule the pre-flight gate uses) raises immediately.
 _ADMISSION_WAIT_SECONDS: float = 120.0
 _ADMISSION_POLL_SECONDS: float = 0.05
 _release_cond = threading.Condition(_reservation_lock)
 
 
-def _quota_exhausted_error() -> QuotaExceededError:
+def _exhausted_error(user_id: str, *, limit: float, recorded: float, reserved: float) -> QuotaExceededError:
+    """429 built from the admission snapshot that rejected the call, with the
+    same arithmetic as the pre-flight gate (`_quota_view`): fraction over
+    recorded + reserved, reset from the recorded rows. Reads SQLite, so it must
+    never be called while holding `_reservation_lock`."""
+    remaining = max(limit - recorded - reserved, 0.0)
+    fraction = round(remaining / limit, 4) if limit > 0 else 0.0
+    reset = _reset_seconds(user_id, limit, recorded)
     return QuotaExceededError(
-        _ROLLING_WINDOW_SECONDS,
-        headers={
-            "X-Quota-Fraction": "0.0",
-            "X-Quota-Reset": str(_ROLLING_WINDOW_SECONDS),
-        },
+        reset,
+        headers={"X-Quota-Fraction": str(fraction), "X-Quota-Reset": str(reset)},
     )
 
 
-def _try_admit(user_id: str, estimated_usd: float, enforce: bool, is_pro: bool) -> tuple[int | None, int]:
-    """One admission attempt: ``(rid, version)``; ``rid`` is None when only
-    other in-flight reservations block (caller may wait). Raises
-    QuotaExceededError on real exhaustion (recorded + estimate > limit)."""
+def _try_admit(user_id: str, estimated_usd: float, enforce: bool, is_pro: bool) -> tuple[int | None, int, float, float]:
+    """One admission attempt: ``(rid, version, recorded, reserved)``; ``rid`` is
+    None when same-user in-flight reservations block (caller may wait). Raises
+    QuotaExceededError on real exhaustion (recorded >= limit)."""
     global _reservation_version
     rid = next(_reservation_ids)
     # Do SQLite reads outside `_reservation_lock`; `_admission_usage_snapshot`
     # retries if a concurrent reservation is released during the read.
-    recorded, reserved_snapshot = _admission_usage_snapshot(user_id) if enforce else (0.0, 0.0)
+    recorded, reserved = _admission_usage_snapshot(user_id) if enforce else (0.0, 0.0)
+    limit = _daily_limit(is_pro)
+    if enforce and recorded >= limit:
+        raise _exhausted_error(user_id, limit=limit, recorded=recorded, reserved=reserved)
     with _reservation_lock:
         if enforce:
-            reserved = max(reserved_snapshot, _reserved_usd_unlocked(user_id))
-            limit = _daily_limit(is_pro)
-            if recorded + float(estimated_usd) > limit:
-                raise _quota_exhausted_error()
-            if recorded + reserved + float(estimated_usd) > limit:
-                return None, _reservation_version
+            reserved = max(reserved, _reserved_usd_unlocked(user_id))
+            # Waiting is only justified by other in-flight calls. With none in
+            # flight, a call under the recorded limit is admitted, matching the gate.
+            if reserved > 0 and recorded + reserved + float(estimated_usd) > limit:
+                return None, _reservation_version, recorded, reserved
         _reservations[rid] = (user_id, float(estimated_usd))
         _reservation_version += 1
-        return rid, _reservation_version
+        return rid, _reservation_version, recorded, reserved
 
 
 def _release(rid: int) -> None:
@@ -258,12 +264,12 @@ def reserve(user_id: str, estimated_usd: float, *, enforce: bool = False, is_pro
         return
     deadline = time.monotonic() + _ADMISSION_WAIT_SECONDS
     while True:
-        rid, version = _try_admit(user_id, estimated_usd, enforce, is_pro)
+        rid, version, recorded, reserved = _try_admit(user_id, estimated_usd, enforce, is_pro)
         if rid is not None:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise _quota_exhausted_error()
+            raise _exhausted_error(user_id, limit=_daily_limit(is_pro), recorded=recorded, reserved=reserved)
         with _release_cond:
             _release_cond.wait_for(lambda v=version: _reservation_version != v, timeout=remaining)
     try:
@@ -281,11 +287,11 @@ async def areserve(user_id: str, estimated_usd: float, *, enforce: bool = False,
         return
     deadline = time.monotonic() + _ADMISSION_WAIT_SECONDS
     while True:
-        rid, _version = _try_admit(user_id, estimated_usd, enforce, is_pro)
+        rid, _version, recorded, reserved = _try_admit(user_id, estimated_usd, enforce, is_pro)
         if rid is not None:
             break
         if deadline - time.monotonic() <= 0:
-            raise _quota_exhausted_error()
+            raise _exhausted_error(user_id, limit=_daily_limit(is_pro), recorded=recorded, reserved=reserved)
         await asyncio.sleep(_ADMISSION_POLL_SECONDS)
     try:
         yield

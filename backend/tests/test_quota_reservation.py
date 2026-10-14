@@ -202,12 +202,54 @@ def test_reserve_waits_for_inflight_release_then_admits(mock_db):
 def test_reserve_real_exhaustion_raises_without_waiting(mock_db, monkeypatch):
     from kg.exceptions import QuotaExceededError
 
-    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.025)
+    # Real exhaustion is recorded >= limit (the gate's rule), not recorded + estimate > limit.
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.03)
     started = time.monotonic()
     with pytest.raises(QuotaExceededError):
         with qs.reserve("u1", 0.012, enforce=True, is_pro=False):
             pass
     assert time.monotonic() - started < 1.0
+
+
+def test_reserve_admits_below_limit_when_nothing_in_flight(mock_db, monkeypatch):
+    """#3654: Free limit 0.03, recorded 0.02, nothing in flight. The gate reports
+    budget left, so admission must admit the call even though recorded + estimate
+    crosses the limit. Rejecting here cut users off early with a fake 24h reset."""
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.02)
+    assert qs.check_and_get_quota("u1", "translate", is_pro=False)["exceeded"] is False
+
+    with qs.reserve("u1", qs.ESTIMATED_CALL_COST_USD, enforce=True, is_pro=False):
+        assert qs._reserved_usd("u1") == pytest.approx(qs.ESTIMATED_CALL_COST_USD)
+    assert qs._reserved_usd("u1") == 0.0
+
+
+def test_reserve_real_exhaustion_reports_real_reset_and_gate_fraction(mock_db, monkeypatch):
+    """#3654: a 429 from real exhaustion must carry the real reset (from the oldest
+    recorded row, via _reset_seconds) and the gate's fraction, never the constants
+    fraction 0.0 / reset 86400."""
+    from datetime import UTC, datetime, timedelta
+
+    from kg.exceptions import QuotaExceededError
+
+    one_hour_ago = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    mock_db.execute(
+        "INSERT INTO token_usage (user_id, call_type, input_tokens, output_tokens, created_at, provider, model)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("u1", "translate", 1_000_000, 0, one_hour_ago, None, None),
+    )
+    mock_db.commit()
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.03)
+
+    gate = qs.check_and_get_quota("u1", "translate", is_pro=False)
+    expected_reset = qs._reset_seconds("u1", 0.03, 0.03)
+    assert expected_reset < qs._ROLLING_WINDOW_SECONDS
+
+    with pytest.raises(QuotaExceededError) as exc_info:
+        with qs.reserve("u1", qs.ESTIMATED_CALL_COST_USD, enforce=True, is_pro=False):
+            pass
+    headers = exc_info.value.headers
+    assert headers["X-Quota-Reset"] == str(expected_reset)
+    assert float(headers["X-Quota-Fraction"]) == gate["fraction"]
 
 
 def test_reserve_inflight_wait_is_bounded(mock_db, monkeypatch):
@@ -305,11 +347,12 @@ def test_tracked_llm_releases_reservation_on_call_failure(mock_db):
     assert qs._reserved_usd("u1") == 0.0
 
 
-def test_tracked_llm_enforced_quota_blocks_before_call(mock_db):
+def test_tracked_llm_enforced_quota_blocks_before_call(mock_db, monkeypatch):
     from kg.exceptions import QuotaExceededError
     from kg.tracked_llm import TrackedLLM
 
     qs.configure_limits(pro=0.30, free=0.001)
+    monkeypatch.setattr(qs, "_recorded_usd", lambda _uid: 0.001)
 
     class _Client:
         called = False
@@ -373,7 +416,7 @@ def test_enforced_reservation_retries_if_inflight_finishes_during_recorded_read(
                 qs._reservations.pop(999_001, None)
                 qs._reservation_version += 1
             return 0.0
-        return 0.02
+        return 0.021
 
     monkeypatch.setattr(qs, "_recorded_usd", recorded)
 
