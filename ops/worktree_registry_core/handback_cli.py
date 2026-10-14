@@ -179,6 +179,10 @@ def cmd_hand_back(args: argparse.Namespace) -> int:
         if rc != 0 or not tip_sha:
             print("✗ cannot read worktree HEAD", file=sys.stderr)
             return EXIT_PARTIAL
+        # One clock read for the whole hand-back: the seal and the record must
+        # carry the identical timestamp or handback validation fails on a
+        # whole-second boundary between two reads.
+        _, now_iso = resolve_now(args.at)
         if args.outcomes:
             try:
                 outcomes = load_outcomes(Path(args.outcomes).expanduser())
@@ -219,7 +223,6 @@ def cmd_hand_back(args: argparse.Namespace) -> int:
                     print("✗ every hand-back outcome must be green", file=sys.stderr)
                     return EXIT_PARTIAL
                 normalized.append(item)
-            _, now_iso = resolve_now(args.at)
             record["handback_seal"] = seal_with_digest(
                 seal_body(
                     record,
@@ -232,7 +235,6 @@ def cmd_hand_back(args: argparse.Namespace) -> int:
                 )
             )
             record["handback_outcomes"] = normalized
-        _, now_iso = resolve_now(args.at)
         record["handed_back_at"] = now_iso
         record["handed_back_sha"] = tip_sha
         generation = claim_generation(record, "claim_generation")
