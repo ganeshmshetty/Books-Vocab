@@ -1015,6 +1015,24 @@ struct AddLinkJobCompletionNoticeTests {
         #expect(rig.poster.items.isEmpty)
     }
 
+    @Test("a job that succeeds while its detail sheet is open still posts a success notice (#3603)")
+    func successWithDetailSheetPresentedNoticesOnce() async throws {
+        let gate = Gate()
+        let rig = try makeRig(service: gatedSuccess(gate))
+        start(rig)
+        #expect(await CreationFixtures.eventually { rig.hub.runningJobs.count == 1 })
+        // The detail sheet shows the job's failure or partial outcome itself; a success
+        // removes the job and closes that sheet, so the hub must still announce it.
+        rig.hub.detailSheetDidAppear(jobKey: jobKey)
+
+        await gate.release()
+        #expect(await CreationFixtures.eventually { rig.poster.items.count == 1 })
+        for _ in 0..<5 { await Task.yield() }
+        #expect(rig.poster.items.count == 1)
+        #expect(rig.poster.items.first?.style == .success)
+        #expect(rig.hub.jobs.isEmpty)
+    }
+
     @Test("a sheet that presented and then disappeared no longer silences its job")
     func disappearedSheetNoticesOnce() async throws {
         let gate = Gate()
