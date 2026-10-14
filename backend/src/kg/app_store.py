@@ -37,6 +37,13 @@ SANDBOX_API_BASE_URL = "https://api.storekit-sandbox.itunes.apple.com"
 # https://developer.apple.com/documentation/appstoreserverapi (WWDR App Store OID)
 APPLE_APP_STORE_OID = x509.ObjectIdentifier("1.2.840.113635.100.6.11.1")
 
+# Apple's WWDR intermediate marker extension, required on the middle certificate
+# of every App Store signing chain (same pin as app-store-server-library).
+APPLE_INTERMEDIATE_OID = x509.ObjectIdentifier("1.2.840.113635.100.6.2.1")
+
+# App Store chains are always leaf, intermediate, root.
+_APP_STORE_CHAIN_LENGTH = 3
+
 # JWS signatures from Apple are ECDSA P-256 (ES256). We pin this and never read
 # the attacker-controlled `alg` header, closing alg-confusion / downgrade attacks.
 _APP_STORE_JWS_ALGORITHM = "ES256"
@@ -123,15 +130,49 @@ def _ensure_certificate_valid_now(cert: x509.Certificate) -> None:
         raise AppStoreVerificationError("App Store certificate is outside its validity period.")
 
 
+def _ensure_certificate_can_issue(cert: x509.Certificate) -> None:
+    """Require a non-leaf certificate to be a CA allowed to sign certificates."""
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound as exc:
+        raise AppStoreVerificationError("App Store issuing certificate is missing BasicConstraints.") from exc
+    if not basic_constraints.ca:
+        raise AppStoreVerificationError("App Store issuing certificate is not a CA.")
+    try:
+        key_usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return
+    if not key_usage.key_cert_sign:
+        raise AppStoreVerificationError("App Store issuing certificate is not allowed to sign certificates.")
+
+
+def _ensure_issuer_matches_subject(child: x509.Certificate, parent: x509.Certificate) -> None:
+    if child.issuer != parent.subject:
+        raise AppStoreVerificationError("App Store certificate issuer does not match the next certificate subject.")
+
+
 def _verify_certificate_chain(certificates: list[x509.Certificate], trusted_roots: list[x509.Certificate]) -> None:
     if not certificates:
         raise AppStoreVerificationError("App Store JWS header is missing x5c certificates.")
+    if len(certificates) != _APP_STORE_CHAIN_LENGTH:
+        raise AppStoreVerificationError("App Store JWS x5c chain must contain exactly three certificates.")
 
     for cert in certificates:
         _ensure_certificate_valid_now(cert)
 
+    for cert in certificates[1:]:
+        _ensure_certificate_can_issue(cert)
+
     for index in range(len(certificates) - 1):
+        _ensure_issuer_matches_subject(certificates[index], certificates[index + 1])
         _verify_certificate_signature(certificates[index], certificates[index + 1])
+
+    try:
+        certificates[1].extensions.get_extension_for_oid(APPLE_INTERMEDIATE_OID)
+    except x509.ExtensionNotFound as exc:
+        raise AppStoreVerificationError(
+            "App Store JWS intermediate certificate is missing the Apple intermediate OID extension."
+        ) from exc
 
     chain_root = certificates[-1]
     for trusted_root in trusted_roots:
@@ -139,6 +180,7 @@ def _verify_certificate_chain(certificates: list[x509.Certificate], trusted_root
             _ensure_certificate_valid_now(trusted_root)
             if chain_root.fingerprint(hashes.SHA256()) == trusted_root.fingerprint(hashes.SHA256()):
                 return
+            _ensure_issuer_matches_subject(chain_root, trusted_root)
             _verify_certificate_signature(chain_root, trusted_root)
             return
         except AppStoreVerificationError:
@@ -182,10 +224,7 @@ def verify_and_decode_signed_jws(signed_jws: str, *, bundle_id: str | None = Non
         raise AppStoreVerificationError("App Store JWS header missing x5c certificate chain.")
 
     try:
-        certificates = tuple(
-            x509.load_der_x509_certificate(base64.b64decode(cert_b64))
-            for cert_b64 in x5c_entries
-        )
+        certificates = tuple(x509.load_der_x509_certificate(base64.b64decode(cert_b64)) for cert_b64 in x5c_entries)
     except (TypeError, ValueError, UnicodeError) as exc:
         raise AppStoreVerificationError("Malformed App Store JWS certificate chain.") from exc
     trusted_roots = _load_trusted_root_certificates()
@@ -278,7 +317,7 @@ def make_app_store_api_token(bundle_id: str) -> str:
 
 def _validate_transaction_id(transaction_id: str) -> None:
     """Ensure transaction_id is numeric (Apple's format)."""
-    if not re.fullmatch(r'\d+', transaction_id):
+    if not re.fullmatch(r"\d+", transaction_id):
         raise ValueError(f"Invalid transaction_id: {transaction_id!r}")
 
 

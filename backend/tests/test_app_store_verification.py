@@ -24,9 +24,12 @@ from kg.api import app
 from kg.settings import KGSettings
 
 APPLE_APP_STORE_OID = "1.2.840.113635.100.6.11.1"
+APPLE_INTERMEDIATE_OID = "1.2.840.113635.100.6.2.1"
 
 
-def _build_certificate(subject_cn: str, issuer_cert=None, issuer_key=None, *, app_store_oid=False):
+def _build_certificate(
+    subject_cn: str, issuer_cert=None, issuer_key=None, *, app_store_oid=False, intermediate_oid=False
+):
     key = ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject_cn)])
     issuer = issuer_cert.subject if issuer_cert else subject
@@ -51,6 +54,11 @@ def _build_certificate(subject_cn: str, issuer_cert=None, issuer_key=None, *, ap
             x509.UnrecognizedExtension(x509.ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00"),
             critical=False,
         )
+    if intermediate_oid:
+        builder = builder.add_extension(
+            x509.UnrecognizedExtension(x509.ObjectIdentifier(APPLE_INTERMEDIATE_OID), b"\x05\x00"),
+            critical=False,
+        )
     cert = builder.sign(private_key=signer_key, algorithm=hashes.SHA256())
     return key, cert
 
@@ -61,6 +69,7 @@ def _certificate_chain():
         "Test Apple Intermediate",
         issuer_cert=root_cert,
         issuer_key=root_key,
+        intermediate_oid=True,
     )
     leaf_key, leaf_cert = _build_certificate(
         "Test Apple Leaf",
