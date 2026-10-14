@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 
 import pytest
 
+import kg.user_store as user_store_mod
 from kg.user_store import (
     collect_account_ids_for_deletion,
     load_users_from,
@@ -190,3 +192,40 @@ class TestCollectAccountIdsForDeletion:
         assert canonical == "ghost_canonical"
         assert "u1" in ids
         assert "ghost_canonical" in ids
+
+
+# ===========================================================================
+# save_users_to durability (#3822)
+# ===========================================================================
+
+
+def test_save_users_to_fsyncs_tmp_before_replace_then_fsyncs_parent_dir(tmp_path, monkeypatch):
+    events: list[tuple[str, object]] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def recording_fsync(fd):
+        events.append(("fsync", os.fstat(fd).st_ino))
+        return real_fsync(fd)
+
+    def recording_replace(src, dst, *args, **kwargs):
+        events.append(("replace", os.stat(src).st_ino))
+        return real_replace(src, dst, *args, **kwargs)
+
+    def recording_fsync_dir(directory):
+        events.append(("fsync_dir", directory))
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+    monkeypatch.setattr(user_store_mod, "fsync_dir", recording_fsync_dir, raising=False)
+
+    users_file = tmp_path / "users.json"
+    users = {"u1": {"email": "a@example.com"}}
+    user_store_mod.save_users_to(users_file, users, lambda payload: (payload, False))
+
+    assert [kind for kind, _ in events] == ["fsync", "replace", "fsync_dir"], events
+    fsynced_ino = events[0][1]
+    replaced_ino = events[1][1]
+    assert fsynced_ino == replaced_ino, "the fsync must target the tmp file that is renamed"
+    assert events[2][1] == tmp_path
+    assert json.loads(users_file.read_text()) == users
