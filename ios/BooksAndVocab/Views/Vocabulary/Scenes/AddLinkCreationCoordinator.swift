@@ -42,6 +42,9 @@ struct AddLinkCreationEnvironment: Sendable {
     /// Monotonic nanoseconds.
     var now: @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
 
+    /// Upper bound of the poll backoff. Polls double from `pollIntervalNanoseconds` up to this.
+    static let pollBackoffCeilingNanoseconds: UInt64 = 8_000_000_000
+
     static let live = AddLinkCreationEnvironment()
 }
 
@@ -486,6 +489,20 @@ final class AddLinkCreationCoordinator {
         case poll(operationId: String)
     }
 
+    /// A poll failure that says nothing about the operation itself: rate limiting (429),
+    /// server-side 5xx, or no connectivity. The poll keeps going until the deadline.
+    static func isTransientPollError(_ error: Error) -> Bool {
+        guard let kgError = error as? KGError else { return false }
+        switch kgError {
+        case .offline, .networkError:
+            return true
+        case .httpError(let statusCode, _):
+            return statusCode == 429 || (500...599).contains(statusCode)
+        default:
+            return false
+        }
+    }
+
     private func run(
         request: KGAddLinkOperationRequest,
         notebookId: String,
@@ -498,25 +515,43 @@ final class AddLinkCreationCoordinator {
         // finishes (no restart to mark it `interrupted`) must not be polled forever.
         let deadline = environment.now() &+ environment.pollTimeoutNanoseconds
         do {
-            let first: KGAddLinkOperationStatus
+            // Nil until the first status arrives. A resumed poll has none yet, so its first GET gets
+            // the same transient tolerance as every later one (#3811).
+            var latest: KGAddLinkOperationStatus?
+            let pollOperationId: String
             switch sendPlan {
             case .post(let key):
-                first = try await operationService.startAddLinkOperation(
+                let first = try await operationService.startAddLinkOperation(
                     request: request, notebookId: notebookId, idempotencyKey: key
                 )
+                guard isCurrent(generation) else { return }
+                // The server acknowledged: from here on `operationId` identifies the
+                // job, and the key must never be reused for a business retry.
+                operationId = first.operationId
+                publish()
+                apply(first, generation: generation)
+                latest = first
+                pollOperationId = first.operationId
             case .poll(let existingOperationId):
-                first = try await operationService.fetchAddLinkOperation(operationId: existingOperationId)
+                pollOperationId = existingOperationId
             }
-            guard isCurrent(generation) else { return }
-            // The server acknowledged: from here on `operationId` identifies the
-            // job, and the key must never be reused for a business retry.
-            operationId = first.operationId
-            publish()
-            apply(first, generation: generation)
 
-            var current = first
-            while !current.isTerminal {
-                try await environment.sleep(environment.pollIntervalNanoseconds)
+            // Exponential backoff from the base interval up to a ceiling: a long operation costs
+            // a handful of GETs, not one every 500 ms, which keeps us clear of `/api/operations`'
+            // shared rate limit (#3811).
+            var pollDelay = environment.pollIntervalNanoseconds
+            let pollCeiling = max(
+                environment.pollIntervalNanoseconds,
+                AddLinkCreationEnvironment.pollBackoffCeilingNanoseconds
+            )
+            // Only an acknowledged POST waits before its first GET; a resumed poll fetches at once.
+            var waitsBeforeFetch = latest != nil
+            while latest?.isTerminal != true {
+                if waitsBeforeFetch {
+                    try await environment.sleep(pollDelay)
+                    pollDelay = min(pollDelay &* 2, pollCeiling)
+                }
+                waitsBeforeFetch = true
                 try Task.checkCancellation()
                 guard isCurrent(generation) else { return }
                 if environment.now() >= deadline {
@@ -528,12 +563,19 @@ final class AddLinkCreationCoordinator {
                     )
                     return
                 }
-                current = try await operationService.fetchAddLinkOperation(operationId: first.operationId)
-                guard isCurrent(generation) else { return }
-                apply(current, generation: generation)
+                do {
+                    let polled = try await operationService.fetchAddLinkOperation(operationId: pollOperationId)
+                    guard isCurrent(generation) else { return }
+                    apply(polled, generation: generation)
+                    latest = polled
+                } catch let error where Self.isTransientPollError(error) {
+                    // Rate-limited or transient: the operation is still running server-side, so the
+                    // next tick retries within the same deadline instead of failing the job (#3811).
+                    continue
+                }
             }
 
-            guard isCurrent(generation) else { return }
+            guard let current = latest, isCurrent(generation) else { return }
             switch current.status {
             case "succeeded", "succeeded_with_warnings":
                 let remoteWarnings = AddLinkCreationWarning.parse(current.warnings)

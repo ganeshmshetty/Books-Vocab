@@ -257,7 +257,8 @@ struct AddLinkCreationCoordinatorSeamTests {
         start(coordinator, source: CreationFixtures.entry("source", cardID: "src"), service: service, container: container)
 
         #expect(await CreationFixtures.eventually { coordinator.phase == .succeeded })
-        #expect(recorder.durations == [7, 7])
+        // Backoff doubles from the base interval: the second wait is twice the first (#3811).
+        #expect(recorder.durations == [7, 14])
         #expect(service.pullCount == 1)
     }
 
@@ -306,7 +307,7 @@ struct AddLinkCreationCoordinatorSeamTests {
         #expect(service.startKeys == ["key-1", "key-2"])
     }
 
-    @Test("transport loss while polling resumes the same operation, no second POST")
+    @Test("transport loss while polling keeps polling the same operation, no second POST")
     func transportLossResumesOperation() async throws {
         let service = ScriptedCreationService(
             onStart: { _, _ in CreationFixtures.status("op-1", "running", sequence: 1) },
@@ -319,11 +320,11 @@ struct AddLinkCreationCoordinatorSeamTests {
         let source = CreationFixtures.entry("source", cardID: "src")
         let coordinator = AddLinkCreationCoordinator(environment: CreationFixtures.environment())
 
-        start(coordinator, source: source, service: service, container: container)
-        #expect(await CreationFixtures.eventually { coordinator.phase == .failed })
+        // A transient poll failure keeps the job alive within its deadline (#3811): no terminal failure.
         start(coordinator, source: source, service: service, container: container)
         #expect(await CreationFixtures.eventually { coordinator.phase == .succeeded })
 
+        #expect(coordinator.failure == nil)
         #expect(service.startKeys.count == 1)
         #expect(service.fetchedOperationIds == ["op-1", "op-1"])
     }
