@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
 from kg.api_models import (
     AppStoreNotificationRequest,
     AppStoreReconcileRequest,
+    AppStoreSyncRequest,
     EntitlementsResponse,
     SubscriptionStatusResponse,
 )
+from kg.app_store import AppStoreConfigurationError, AppStoreVerificationError
 from kg.billing_handlers import (
     app_store_notifications_response,
     reconcile_app_store_subscription_response,
+    sync_app_store_subscription_response,
 )
 
 
@@ -241,3 +245,108 @@ async def test_reconcile_owner_without_token_still_writes_to_self(tmp_path):
     _, run = _reconcile_with(users, "P", None)
     await run(tmp_path)
     assert users["_subscription_index"]["orig-1"] == "P"
+
+
+# ── App Store error mapping: configuration vs network (#3729) ──────────────────
+
+
+def _raise(exc: Exception):
+    def _fail(*args, **kwargs):
+        raise exc
+
+    return _fail
+
+
+def _sync_req() -> AppStoreSyncRequest:
+    return AppStoreSyncRequest(product_id="pro_monthly", transaction_id="txn-1", signed_transaction_info="j")
+
+
+def _call_sync(tmp_path, decode):
+    return sync_app_store_subscription_response(
+        _sync_req(),
+        {"id": "u1"},
+        allow_unsigned_sync=False,
+        users_lock_file=tmp_path / "lock",
+        load_users=lambda: {},
+        save_users=lambda u: None,
+        decode_signed_transaction_info=decode,
+        write_subscription_snapshot=MagicMock(),
+        build_entitlements_response=lambda rec: _active_entitlements(),
+    )
+
+
+def _call_notification(tmp_path, decode):
+    return app_store_notifications_response(
+        AppStoreNotificationRequest(notification_type="DID_RENEW", signed_payload="signed.payload"),
+        users_lock_file=tmp_path / "lock",
+        load_users=lambda: {},
+        save_users=lambda u: None,
+        decode_notification_payload=decode,
+        append_app_store_event=MagicMock(),
+        resolve_user_id_from_subscription_index=lambda *a: None,
+        write_subscription_snapshot=MagicMock(),
+        build_entitlements_response=lambda rec: _active_entitlements(),
+    )
+
+
+async def _call_reconcile(tmp_path, *, fetch, decode):
+    return await reconcile_app_store_subscription_response(
+        AppStoreReconcileRequest(transaction_id="txn-1", environment="production"),
+        {"id": "u1"},
+        apple_bundle_id="com.example.app",
+        users_lock_file=tmp_path / "lock",
+        load_users=lambda: {},
+        save_users=lambda u: None,
+        fetch_transaction_info=fetch,
+        decode_signed_transaction_info=decode,
+        resolve_user_id_from_subscription_index=lambda *a: None,
+        write_subscription_snapshot=MagicMock(),
+        build_entitlements_response=lambda rec: _active_entitlements(),
+    )
+
+
+async def _fetch_ok(*args, **kwargs):
+    return {"signedTransactionInfo": "j"}
+
+
+def test_sync_configuration_error_maps_to_500(tmp_path):
+    with pytest.raises(HTTPException) as exc_info:
+        _call_sync(tmp_path, _raise(AppStoreConfigurationError("missing root CA")))
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "App Store configuration error"
+
+
+def test_notification_configuration_error_maps_to_500(tmp_path):
+    with pytest.raises(HTTPException) as exc_info:
+        _call_notification(tmp_path, _raise(AppStoreConfigurationError("missing root CA")))
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "App Store configuration error"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_configuration_error_maps_to_500(tmp_path):
+    with pytest.raises(HTTPException) as exc_info:
+        await _call_reconcile(
+            tmp_path,
+            fetch=_fetch_ok,
+            decode=_raise(AppStoreConfigurationError("missing root CA")),
+        )
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "App Store configuration error"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_network_error_maps_to_502_service_unavailable(tmp_path):
+    async def fetch_unreachable(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _call_reconcile(tmp_path, fetch=fetch_unreachable, decode=MagicMock())
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "App Store service unavailable"
+
+
+def test_sync_verification_error_stays_400(tmp_path):
+    with pytest.raises(HTTPException) as exc_info:
+        _call_sync(tmp_path, _raise(AppStoreVerificationError("bad signature")))
+    assert exc_info.value.status_code == 400
