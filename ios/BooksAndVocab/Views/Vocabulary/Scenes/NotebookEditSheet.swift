@@ -40,6 +40,27 @@ enum NotebookEditSaveGate {
     }
 }
 
+/// processPhoto 寫出新 JPEG 後的收尾決定（#3498、#3414、#3595）。純函式：sheet 的 `@State`
+/// 以參數傳入，讓寫檔與 Save／關閉的交錯、staged 替換與 original 保護可單元測試，不需 PhotosPicker。
+enum NotebookEditPhotoWrite {
+    enum Outcome: Equatable {
+        /// sheet 已 commit 或已關閉：新檔沒有 owner，丟棄新檔；不動任何既有檔案。
+        case discardNewFile
+        /// 仍在編輯：新檔收為 staged。`staleStaged` 為被取代的先前 staged 新檔（非 original），需清掉。
+        case adoptStaged(staleStaged: String?)
+    }
+
+    static func outcome(previousStaged: String?, original: String?, committed: Bool, dismissed: Bool) -> Outcome {
+        if NotebookCoverCommit.shouldDiscardLateWrite(committed: committed, dismissed: dismissed) {
+            return .discardNewFile
+        }
+        if let previousStaged, previousStaged != original {
+            return .adoptStaged(staleStaged: previousStaged)
+        }
+        return .adoptStaged(staleStaged: nil)
+    }
+}
+
 struct NotebookEditSheet: View {
     @ObserveInjection private var inject
     enum Mode {
@@ -313,18 +334,21 @@ struct NotebookEditSheet: View {
             photoError = NotebookEditCopy.photoErrorMessage(.saveFailed)
             return
         }
-        // sheet 已 commit 或關閉（取消 / 存檔後才完成）：沒有 owner 會接手這個新檔，立即清掉（#3414、#3498）。
-        // 必須在刪除前一個 staged / 指派 coverImagePath 之前判斷，已交給 onSave 的檔不可再被動到。
-        if NotebookCoverCommit.shouldDiscardLateWrite(committed: isCommitted, dismissed: isDismissed) {
+        // 收尾決定必須在刪除前一個 staged / 指派 coverImagePath 之前做，已交給 onSave 的檔不可再被動到。
+        switch NotebookEditPhotoWrite.outcome(
+            previousStaged: coverImagePath,
+            original: originalCoverImagePath,
+            committed: isCommitted,
+            dismissed: isDismissed
+        ) {
+        case .discardNewFile:
             try? FileManager.default.removeItem(at: fileURL)
             return
+        case .adoptStaged(let staleStaged):
+            if let staleStaged { try? FileManager.default.removeItem(atPath: staleStaged) }
+            coverImagePath = fileURL.path
+            selectedPattern = nil
         }
-        // 清掉本次編輯中已 staged 的舊新檔（非 original），避免 orphan
-        if let prev = coverImagePath, prev != originalCoverImagePath {
-            try? FileManager.default.removeItem(atPath: prev)
-        }
-        coverImagePath = fileURL.path
-        selectedPattern = nil
     }
 
     private func removeCoverImage() {
