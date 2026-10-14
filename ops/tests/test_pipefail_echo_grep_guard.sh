@@ -16,8 +16,9 @@ SELF="ops/tests/test_pipefail_echo_grep_guard.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/kg_pipefail_guard.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# producer 與 grep 之間允許中間 pipe 階段（echo | tr | grep -q），但不跨 && ; 以免跨到不同指令。
 # grep 的旗標區（緊接 grep 之後）必須含 q；不可跨到 `[ -eq 1 ]` 之類的非 grep 旗標。
-PATTERN='(^|[^[:alnum:]_.-])(echo|printf)[^|&;]*[|][[:space:]]*grep([[:space:]]+-[[:alpha:]]+)*[[:space:]]+-[[:alpha:]]*q'
+PATTERN='(^|[^[:alnum:]_.-])(echo|printf)[^&;]*[|][[:space:]]*grep([[:space:]]+-[[:alpha:]]+)*[[:space:]]+-[[:alpha:]]*q'
 
 # scan <root>：印出 <root>/ops 下、含 pipefail 的 *.sh 中、非註解行的違規站點（file:line: text）。
 scan() {
@@ -46,13 +47,23 @@ x="hello"
 echo "$x" | grep -q P && echo matched
 FIXTURE
 
+cat >"$TMP/seeded/ops/multi.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+set -euo pipefail
+x="hello"
+echo "$x" | tr a b | grep -q P && echo matched
+printf '%s\n' "$x" | sed -n '1p' | grep -q P && echo matched
+FIXTURE
+
 cat >"$TMP/clean/ops/good.sh" <<'FIXTURE'
 #!/usr/bin/env bash
 set -euo pipefail
 x="hello"
 grep -q P <<<"$x" && echo matched
 # 註解裡提到 echo "$x" | grep -q P 不算違規
+# 註解裡的多階段 echo "$x" | tr a b | grep -q P 也不算違規
 n="$(echo "$x" | grep -c .)"
+grep -q P <<<"$(echo "$x" | tr a b)" && echo matched
 FIXTURE
 
 cat >"$TMP/nopipefail/ops/loose.sh" <<'FIXTURE'
@@ -66,6 +77,12 @@ if [[ "$seeded_hits" == *"bad.sh:4:"* ]]; then
   ok "seeded pipefail violation is caught"
 else
   bad "seeded pipefail violation not caught: [$seeded_hits]"
+fi
+
+if [[ "$seeded_hits" == *"multi.sh:4:"* && "$seeded_hits" == *"multi.sh:5:"* ]]; then
+  ok "multi-stage echo|tr|grep -q and printf|sed|grep -q violations are caught"
+else
+  bad "multi-stage pipefail violation not caught: [$seeded_hits]"
 fi
 
 if [[ -z "$(scan "$TMP/clean")" ]]; then
