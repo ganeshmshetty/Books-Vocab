@@ -916,3 +916,68 @@ def test_reveal_sweep_keeps_copy_staged_when_source_deck_row_is_gone(tmp_path):
 
     assert nbs.get(nb_id).is_staged is True
     assert shared.get_copy_log("u1", "orphan-log").download_counted is False
+
+
+# ── 11. same-key replay is keyed by the copy log, not discoverability (#3898) ──
+
+
+def _hide_deck(shared, deck_id="deck_a"):
+    """Unpublish/hide: the source row stays, the discoverability gate closes."""
+    with Session(shared.engine) as session:
+        deck = session.get(SharedDeck, deck_id)
+        deck.is_deleted = True
+        session.commit()
+
+
+def _download_count(shared, deck_id="deck_a") -> int:
+    with sqlite3.connect(shared.path) as conn:
+        return conn.execute("SELECT download_count FROM shared_deck WHERE id = ?", (deck_id,)).fetchone()[0]
+
+
+def test_same_key_replay_survives_source_hidden_after_copy(tmp_path):
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+    o1 = _copy(shared, cards, nbs, user_dir, key="k1")
+
+    _hide_deck(shared)
+    o2 = _copy(shared, cards, nbs, user_dir, key="k1")  # transport retry after unpublish
+
+    assert o2.already_copied is True
+    assert o2.notebook_id == o1.notebook_id
+    assert _download_count(shared) == 1
+    assert len([n for n in nbs.all() if not n.is_default]) == 1
+
+
+def test_same_key_replay_completes_interrupted_reveal_of_hidden_source(tmp_path):
+    """Reveal was interrupted (staged, marker unset) and the source got hidden
+    before the retry: the retry must still finish the reveal and count it once."""
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+    o1 = _copy(shared, cards, nbs, user_dir, key="k1")
+    with sqlite3.connect(user_dir / "notebooks.db") as conn:
+        conn.execute("UPDATE notebook SET is_staged = 1 WHERE id = ?", (o1.notebook_id,))
+    with sqlite3.connect(shared.path) as conn:
+        conn.execute("UPDATE shared_deck_copy_log SET download_counted = 0 WHERE idempotency_key = 'k1'")
+        conn.execute("UPDATE shared_deck SET download_count = 0 WHERE id = 'deck_a'")
+    _hide_deck(shared)
+
+    o2 = _copy(shared, cards, nbs, user_dir, key="k1")
+
+    assert o2.already_copied is True
+    assert nbs.get(o1.notebook_id).is_staged is False
+    assert _download_count(shared) == 1
+
+
+def test_new_key_on_hidden_source_still_returns_notfound(tmp_path):
+    """The discoverability gate stays for NEW copies: a hidden deck is 404 and
+    nothing is staged, logged, or counted."""
+    user_dir, shared, cards, nbs = _stores(tmp_path)
+    _publish_deck(shared)
+    _hide_deck(shared)
+
+    with pytest.raises(NotFoundError):
+        _copy(shared, cards, nbs, user_dir, key="k2")
+
+    assert shared.get_copy_log("u1", "k2") is None
+    assert list(nbs.all(include_staged=True)) == []
+    assert _download_count(shared) == 0

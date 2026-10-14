@@ -13,7 +13,9 @@ here so the router stays a thin adapter:
   page boundary silently drop cards on sync-down), and
   ``source_shared_card_guid`` = the source card's ``content_guid``.
 * **idempotency**: ``shared_deck_copy_log(copier_id, idempotency_key)`` UNIQUE —
-  a transport retry replays to the same notebook, never a duplicate.
+  a transport retry replays to the same notebook, never a duplicate. Replay is
+  keyed by the log alone, so it still works after the source is unpublished or
+  hidden (#3898); the discoverability gate applies only to new copies.
 * **materialization barrier + compensating rollback**: cards.db / notebooks.db
   have no cross-file transaction, so the notebook is staged HIDDEN and revealed
   only after the idempotency log commits. Any pre-commit failure compensates
@@ -58,7 +60,7 @@ from pathlib import Path
 from ..cards import CardStore
 from ..exceptions import ConflictError, NotFoundError
 from ..notebook import NotebookStore
-from .store import SharedDeck, SharedDeckStore
+from .store import SharedDeckStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -276,28 +278,22 @@ def copy_shared_deck(
     """
     now = now or datetime.now(UTC)
 
-    deck = shared_store.get(deck_id)
-    if deck is None:  # not discoverable → 404 (never leak hidden decks)
-        raise NotFoundError("Deck", deck_id)
-    if deck.source != "official":
-        # Explore copy is intentionally limited to curated official content.
-        # Community publishing/copying remains a separate product phase.
-        raise ConflictError("Only official decks can be copied")
-
     # Serialize per-user copies (see _user_copy_lock): the copy handler is a SYNC
     # FastAPI endpoint, so two concurrent same-user copies run on separate
     # threadpool threads. Without this lock they would both read the pre-create
     # notebook snapshot, compute the SAME unique name, and both INSERT → two
     # same-named active notebooks → world-export's name→id map collapses (§2 name
     # uniqueness is mandatory). Held through materialize so the second copy sees
-    # the first's committed notebook and disambiguates to "X (2)".
+    # the first's committed notebook and disambiguates to "X (2)". The
+    # discoverability gate also runs under the lock, so it cannot race a replay
+    # that the in-flight copy is about to log.
     with _user_copy_lock(user_dir):
         return _copy_locked(
             shared_store=shared_store,
             card_store=card_store,
             notebook_store=notebook_store,
             user_dir=user_dir,
-            deck=deck,
+            deck_id=deck_id,
             copier_id=copier_id,
             idempotency_key=idempotency_key,
             notebook_name=notebook_name,
@@ -312,7 +308,7 @@ def _copy_locked(
     card_store: CardStore,
     notebook_store: NotebookStore,
     user_dir: Path,
-    deck: SharedDeck,
+    deck_id: str,
     copier_id: str,
     idempotency_key: str,
     notebook_name: str | None,
@@ -320,15 +316,27 @@ def _copy_locked(
     _on_card: Callable[[int], None] | None,
 ) -> CopyOutcome:
     """The per-user-serialized body of :func:`copy_shared_deck`, executed while
-    holding the per-user copy lock. ``deck`` is the already-resolved discoverable
-    deck; every user-dir mutation (name-compute → create → card copy →
-    record_copy → materialize) happens here so a concurrent same-user copy is
-    fully queued behind it."""
-    # Idempotent replay: a prior copy with this key short-circuits (no new work,
-    # no second download count) — transport-retry safety.
+    holding the per-user copy lock. Every user-dir mutation (name-compute →
+    create → card copy → record_copy → materialize) happens here so a concurrent
+    same-user copy is fully queued behind it."""
+    # Idempotent replay is keyed by the copy log, not by discoverability: a
+    # same-key retry after the source was unpublished or hidden must still replay
+    # (and finish an interrupted reveal) instead of 404ing (#3898). Only a NEW
+    # copy passes the discoverability gate below.
     prior = shared_store.get_copy_log(copier_id, idempotency_key)
     if prior is not None:
-        return _replay(shared_store, notebook_store, card_store, prior, deck.id)
+        source = shared_store.get_any(deck_id)
+        if source is None or source.source != "official":
+            raise NotFoundError("Deck", deck_id)
+        return _replay(shared_store, notebook_store, card_store, prior, source.id)
+
+    deck = shared_store.get(deck_id)
+    if deck is None:  # not discoverable → 404 (never leak hidden decks)
+        raise NotFoundError("Deck", deck_id)
+    if deck.source != "official":
+        # Explore copy is intentionally limited to curated official content.
+        # Community publishing/copying remains a separate product phase.
+        raise ConflictError("Only official decks can be copied")
 
     version = deck.current_version
     src_cards = shared_store.all_cards(deck.id, version=version)
