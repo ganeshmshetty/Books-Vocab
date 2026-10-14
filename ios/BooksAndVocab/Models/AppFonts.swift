@@ -33,7 +33,8 @@ final class FontAvailabilityTracker {
 
     /// 字型輸入變動（CJK 字型就緒、Dynamic Type 變更）時清除 typography cache，
     /// 並遞增版本號讓依賴 `AppThemeContainer` 的視圖重建 token。
-    private func typographyInputsDidChange() {
+    /// internal 供測試直接呼叫，避免依賴 NotificationCenter 的投遞時序。
+    func typographyInputsDidChange() {
         AppSkin.invalidateTypographyCache()
         serifCJKVersion += 1
     }
