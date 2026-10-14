@@ -87,7 +87,8 @@ struct PendingLinkDetailSheet: View {
             if gone { dismiss() }
         }
         .onAppear {
-            // Tells the hub this sheet shows the job's outcome, so it posts no duplicate notice (#3512).
+            // Tells the hub this sheet shows a failed or partial outcome, so the hub does not post
+            // a notice for that outcome. A success still gets one, since the sheet closes with its job (#3603).
             if let jobKey { hub.detailSheetDidAppear(jobKey: jobKey) }
         }
         .onDisappear {
