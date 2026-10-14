@@ -59,6 +59,8 @@ class StoredUserRecord(TypedDict, total=False):
     admin_grant: AdminGrantRecord
     linked_ids: list[str]
     _linked_to: str
+    # Sign in with Apple refresh token, kept only when SIWA revocation is configured (#3815).
+    apple_refresh_token: str
 
 
 type UsersPayload = dict[str, Any]

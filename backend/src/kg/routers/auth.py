@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Request
 
 from ..api_models import AuthVerifyRequest, AuthVerifyResponse
 from ..apple_auth import verify_apple_token
+from ..apple_token_revocation import capture_apple_refresh_token
 from ..auth_handlers import auth_verify_response
 from ..deps import _create_jwt_token, _resolve_and_link_user
 from ..google_auth import verify_google_token
@@ -31,7 +34,7 @@ async def auth_verify(req: AuthVerifyRequest, request: Request):
             save_users_fn=save_users_fn,
         )
 
-    return await auth_verify_response(
+    response = await auth_verify_response(
         req,
         google_client_id=settings.google_client_id,
         apple_bundle_id=settings.apple_bundle_id,
@@ -41,3 +44,9 @@ async def auth_verify(req: AuthVerifyRequest, request: Request):
         resolve_and_link_user=_link_user,
         create_jwt_token=_jwt_token,
     )
+    if req.provider == "apple" and req.authorization_code is not None:
+        # Blocking Apple exchange: keep it off the event loop. Best effort, never fails sign-in (#3815).
+        await asyncio.to_thread(
+            capture_apple_refresh_token, request.app.state, response.user_id, req.authorization_code
+        )
+    return response

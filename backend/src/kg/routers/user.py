@@ -11,6 +11,7 @@ from ..api_models import (
     UserConfigResponse,
     UserProfileResponse,
 )
+from ..apple_token_revocation import revoke_apple_tokens_for_account
 from ..deps import (
     CurrentUser,
     _build_entitlements_response,
@@ -72,6 +73,8 @@ def update_user_config(req: UserConfigRequest, request: Request, user: CurrentUs
 @router.delete("/api/user/account", response_model=DeleteAccountResponse)
 def delete_user_account(request: Request, user: CurrentUser):
     settings = request.app.state.kg_settings
+    # Must run before the tombstone purges the stored refresh tokens. Best effort (#3815).
+    revoke_apple_tokens_for_account(request.app.state, user["id"])
     return delete_user_account_response(
         user,
         users_lock_file=settings.users_lock_file,
