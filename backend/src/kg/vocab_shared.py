@@ -216,6 +216,7 @@ def card_response(
         notebookId=getattr(card, "notebook_id", "default"),
         source=_parse_vocab_source(getattr(card, "source", None), card_id=card.id),
         updatedAt=_dt_to_iso(card.updated_at),
+        createdAt=_dt_to_iso(getattr(card, "created_at", None)),
         reviewIntervalHours=card.review_interval_hours,
         nextReviewAt=_dt_to_iso(card.next_review_at),
         lastReviewedAt=_dt_to_iso(card.last_reviewed_at),

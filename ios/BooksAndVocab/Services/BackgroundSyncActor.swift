@@ -228,6 +228,12 @@ actor BackgroundSyncActor {
                     }
                     existingEntry.kgCardId = card.id
                     localByCardID[card.id] = existingEntry
+                    // Pull-time stamps from before createdAt was synced are pulled back to the
+                    // server instant; an entry already added earlier keeps its date (#3801).
+                    if let createdStr = card.createdAt, let createdAt = Self.parseISO8601(createdStr),
+                       createdAt < existingEntry.dateAdded {
+                        existingEntry.dateAdded = createdAt
+                    }
                     existingEntry.inflections = card.inflections ?? []
                     existingEntry.collocations = card.collocations ?? []
                     // A local review-mode change or progress reset not yet confirmed by the server is the user's
@@ -281,6 +287,10 @@ actor BackgroundSyncActor {
                 newEntry.isReviewExcluded = card.isReviewExcluded ?? false
                 newEntry.notebookId = card.notebookId ?? notebookId
                 newEntry.markSynced()
+                // dateAdded is the add instant: take the server createdAt, not the pull time (#3801).
+                if let createdStr = card.createdAt, let createdAt = Self.parseISO8601(createdStr) {
+                    newEntry.dateAdded = createdAt
+                }
 
                 // Apply server review state to new entry
                 Self.mergeReviewState(from: card, into: newEntry)

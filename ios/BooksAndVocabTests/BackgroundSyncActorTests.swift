@@ -46,7 +46,8 @@ struct BackgroundSyncActorTests {
         isDeleted: Bool = false,
         reviewStreak: Int? = nil,
         reviewCount: Int? = nil,
-        lapseCount: Int? = nil
+        lapseCount: Int? = nil,
+        createdAt: String? = nil
     ) throws -> KGCard {
         let sourceFragment = sourceJSON.map { ",\"source\":\($0)" } ?? ""
         let meaningValue = meaning ?? "meaning-\(content)"
@@ -56,11 +57,12 @@ struct BackgroundSyncActorTests {
         let streakFragment = reviewStreak.map { ",\"reviewStreak\":\($0)" } ?? ""
         let reviewCountFragment = reviewCount.map { ",\"reviewCount\":\($0)" } ?? ""
         let lapseCountFragment = lapseCount.map { ",\"lapseCount\":\($0)" } ?? ""
+        let createdAtFragment = createdAt.map { ",\"createdAt\":\"\($0)\"" } ?? ""
         let json = """
         {"id":"\(id)","content":"\(content)","meaning":"\(meaningValue)",
          "pos":null,"difficulty":null,"difficultyTier":null,"note":null,
          "collocations":[],"examples":["an example"],"mode":"recognition",
-         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)\(lapseCountFragment)}
+         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)\(lapseCountFragment)\(createdAtFragment)}
         """.data(using: .utf8)!
         return try JSONDecoder().decode(KGCard.self, from: json)
     }
@@ -662,6 +664,139 @@ struct BackgroundSyncActorTests {
         )
 
         #expect(result.orphanCleanupBlocked == false)
+    }
+
+    // Tier-2 of the safety valve: ratio in [0.3, 0.8) AND diff > 50 must block.
+    // Only the tier-1 (<30%) path was pinned before; this covers the mid-ratio
+    // large-diff block so removing it cannot silently mass-delete a library.
+    @Test func fullSync_largeDiffMidRatio_blocksCleanup() async throws {
+        let container = try makeContainer()
+        // 200 local synced entries; server returns 120 → ratio 0.6, diff 80.
+        try seedSyncedEntries(container, count: 200)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let cards = try (0..<120).map { try makeCard(id: "c\($0)", content: "orphan-\($0)", sourceJSON: nil) }
+
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: cards,
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == true)
+        #expect(result.deleted == 0)
+        let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining == 200)
+    }
+
+    @Test func fullSync_largeLibrarySmallDiff_cleansUp() async throws {
+        let container = try makeContainer()
+        // 400 local synced entries; server returns 340 → ratio 0.85 (>= 0.8), diff 60.
+        // The tier-2 block must not fire, so the 60 true orphans are removed.
+        try seedSyncedEntries(container, count: 400)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let cards = try (0..<340).map { try makeCard(id: "c\($0)", content: "orphan-\($0)", sourceJSON: nil) }
+
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: cards,
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == false)
+        #expect(result.deleted == 60)
+        let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining == 340)
+    }
+
+    @Test func fullSync_midRatioDiffAtThreshold_cleansUp() async throws {
+        let container = try makeContainer()
+        // 100 local synced entries; server returns 50 → ratio 0.5, diff exactly 50.
+        // `diff > 50` is strict, so the boundary must NOT block.
+        try seedSyncedEntries(container, count: 100)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let cards = try (0..<50).map { try makeCard(id: "c\($0)", content: "orphan-\($0)", sourceJSON: nil) }
+
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: cards,
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == false)
+        #expect(result.deleted == 50)
+        let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining == 50)
+    }
+
+    // MARK: - dateAdded from server createdAt (#3801)
+    //
+    // dateAdded is the "when did I add this word" instant. Pull used to stamp
+    // every card with the pull time; the server createdAt is the true instant.
+
+    /// 2025-01-01T00:00:00Z
+    private static let serverCreatedAt = Date(timeIntervalSince1970: 1_735_689_600)
+
+    @Test func syncDown_newEntry_takesServerCreatedAt() async throws {
+        let container = try makeContainer()
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(content: "dated", sourceJSON: nil, createdAt: "2025-01-01T00:00:00Z")
+
+        _ = try await actor.pullCardsToLocal(
+            fetchedCards: [card],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let entry = try #require(try fetchEntry(container, word: "dated"))
+        #expect(entry.dateAdded == Self.serverCreatedAt)
+    }
+
+    @Test func syncDown_existingEntry_movesDateAddedBackToEarlierServerCreatedAt() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let entry = VocabularyEntry(word: "dated", translation: "m", context: "ctx", bookTitle: "Book")
+        entry.notebookId = "default"
+        entry.dateAdded = Date(timeIntervalSince1970: 1_780_000_000) // 2026: the legacy pull-time stamp
+        entry.markSynced()
+        context.insert(entry)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(content: "dated", sourceJSON: nil, createdAt: "2025-01-01T00:00:00Z")
+        _ = try await actor.pullCardsToLocal(
+            fetchedCards: [card],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let merged = try #require(try fetchEntry(container, word: "dated"))
+        #expect(merged.dateAdded == Self.serverCreatedAt)
+    }
+
+    @Test func syncDown_existingEntry_keepsEarlierDateAddedWhenServerIsLater() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let earlier = Date(timeIntervalSince1970: 1_700_000_000) // 2023-11-14, before server createdAt
+        let entry = VocabularyEntry(word: "dated", translation: "m", context: "ctx", bookTitle: "Book")
+        entry.notebookId = "default"
+        entry.dateAdded = earlier
+        entry.markSynced()
+        context.insert(entry)
+        try context.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(content: "dated", sourceJSON: nil, createdAt: "2025-01-01T00:00:00Z")
+        _ = try await actor.pullCardsToLocal(
+            fetchedCards: [card],
+            isIncremental: true,
+            progress: { _, _, _ in }
+        )
+
+        let merged = try #require(try fetchEntry(container, word: "dated"))
+        #expect(merged.dateAdded == earlier)
     }
 
     // MARK: - clearUserData (logout / account-switch isolation)
