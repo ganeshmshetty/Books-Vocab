@@ -72,7 +72,32 @@ jobs:
             exit 1
           fi
 
-          pr_json="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          # Evidence queries retry transient GitHub 5xx responses with
+          # exponential backoff; any other failure returns immediately.
+          gh_api_retry() {
+            local attempt=1 delay=2 rc=0 out err_file
+            err_file="$(mktemp "${RUNNER_TEMP:-/tmp}/gh-api-err.XXXXXX")"
+            while :; do
+              rc=0
+              out="$(gh api "$@" 2>"$err_file")" || rc=$?
+              if [[ "$rc" -eq 0 ]]; then
+                rm -f "$err_file"
+                printf '%s\n' "$out"
+                return 0
+              fi
+              if [[ "$attempt" -ge 4 ]] || ! grep -Eq 'HTTP 5[0-9]{2}' "$err_file"; then
+                cat "$err_file" >&2
+                rm -f "$err_file"
+                return "$rc"
+              fi
+              echo "transient GitHub API 5xx (attempt $attempt), retrying in ${delay}s" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          pr_json="$(gh_api_retry "repos/$REPOSITORY/pulls/$PR_NUMBER")"
           head_sha="$(jq -r '.head.sha // empty' <<<"$pr_json")"
           head_ref="$(jq -r '.head.ref // empty' <<<"$pr_json")"
           if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -80,7 +105,7 @@ jobs:
             exit 1
           fi
 
-          commit_json="$(gh api "repos/$REPOSITORY/commits/$head_sha")"
+          commit_json="$(gh_api_retry "repos/$REPOSITORY/commits/$head_sha")"
           head_timestamp="$(jq -r '.commit.committer.date // .commit.author.date // empty' <<<"$commit_json")"
           evidence_after="$EVIDENCE_AFTER"
           if [[ -z "$evidence_after" ]]; then
@@ -94,6 +119,7 @@ jobs:
           # The Actions job emits the optional advisory `agent-review` context.
           # This provenance-rich check remains quality observation data; the
           # repository's only required authority is the short `required` gate.
+          check_completed=0
           create_check() {
             local status="$1"
             local conclusion="${2:-}"
@@ -112,6 +138,7 @@ jobs:
                 --arg external_id "$external_id" \
                 '{name:$name, head_sha:$head_sha, status:"completed", conclusion:$conclusion, details_url:$details_url, external_id:$external_id, output:{title:$title, summary:$summary}}' \
                 | gh api "repos/$REPOSITORY/check-runs" --method POST --input - >/dev/null
+              check_completed=1
             else
               jq -n \
                 --arg name "agent-review" \
@@ -128,6 +155,21 @@ jobs:
           create_check in_progress "" "Waiting for independent agent review" \
             "Review evidence is evaluated only for exact head $head_sha ($head_ref)."
 
+          # Once the in_progress placeholder exists, any abort (an exhausted
+          # retry, a jq or API error) must still complete the same check,
+          # otherwise it stays in_progress forever. Completion paths set
+          # check_completed=1, so only unfinished runs reach this branch.
+          finalize_unfinished_check() {
+            local rc=$?
+            if [[ "$check_completed" -ne 1 ]]; then
+              create_check completed neutral "Independent agent review unavailable" \
+                "Exact head $head_sha evaluation stopped before a verdict (exit $rc); advisory only." || true
+              echo "Independent agent review evaluation aborted (exit $rc) for exact head $head_sha; advisory only." >&2
+            fi
+            exit "$rc"
+          }
+          trap finalize_unfinished_check EXIT
+
             review_evidence=""
             reviewed_issue_evidence=""
             blocker_evidence=""
@@ -139,10 +181,10 @@ jobs:
             # ((.body // "") | contains("**Reviewed commit:** `" + $prefix)))] | length
             # ((.body // "") | contains("**Reviewed commit:** `" + $prefix))) | (.body // "")
             for attempt in $(seq 1 20); do
-            reviews="$(gh api --paginate --slurp "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" | jq 'add // []')"
-            review_comments="$(gh api --paginate --slurp "repos/$REPOSITORY/pulls/$PR_NUMBER/comments" | jq 'add // []')"
-            issue_comments="$(gh api --paginate --slurp "repos/$REPOSITORY/issues/$PR_NUMBER/comments" | jq 'add // []')"
-            reactions="$(gh api --paginate --slurp "repos/$REPOSITORY/issues/$PR_NUMBER/reactions" | jq 'add // []')"
+            reviews="$(gh_api_retry --paginate --slurp "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" | jq 'add // []')"
+            review_comments="$(gh_api_retry --paginate --slurp "repos/$REPOSITORY/pulls/$PR_NUMBER/comments" | jq 'add // []')"
+            issue_comments="$(gh_api_retry --paginate --slurp "repos/$REPOSITORY/issues/$PR_NUMBER/comments" | jq 'add // []')"
+            reactions="$(gh_api_retry --paginate --slurp "repos/$REPOSITORY/issues/$PR_NUMBER/reactions" | jq 'add // []')"
             head_prefix="${head_sha:0:10}"
             current_review_ids="$(jq -c \
               --arg bot "$REVIEW_BOT" --arg current_bot "$REVIEW_BOT_CURRENT" --arg head "$head_sha" \

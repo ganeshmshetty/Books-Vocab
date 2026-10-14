@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -45,7 +46,7 @@ def test_agent_review_is_bound_to_pr_head_and_emits_exact_check() -> None:
     source = _workflow()
 
     assert 'head_sha="$(jq -r' in source
-    assert 'gh api "repos/$REPOSITORY/commits/$head_sha"' in source
+    assert 'gh_api_retry "repos/$REPOSITORY/commits/$head_sha"' in source
     assert '--arg head_sha "$head_sha"' in source
     assert 'status:"completed"' in source
     assert "conclusion:$conclusion" in source
@@ -170,3 +171,114 @@ def test_agent_review_response_does_not_cancel_pr_event_poller() -> None:
         "group: agent-review-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}"
         in source
     )
+
+
+def _evidence_run_script() -> str:
+    lines = _workflow().splitlines()
+    start = next(
+        i
+        for i, line in enumerate(lines)
+        if line.strip() == "- name: Evaluate exact-head independent review evidence"
+    )
+    run_idx = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
+    body: list[str] = []
+    for line in lines[run_idx + 1 :]:
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        body.append(line[10:] if line.strip() else "")
+    return "\n".join(body) + "\n"
+
+
+_FAKE_GH = r"""#!/usr/bin/env bash
+state="$STATE_DIR"
+sha="$HEAD_SHA"
+case "$*" in
+  *check-runs*)
+    jq -c . >>"$state/posts.jsonl"; echo '{}' ;;
+  *pulls/7/reviews*)
+    n=$(( $(cat "$state/reviews_calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$state/reviews_calls"
+    if [[ "$FAIL_REVIEWS" == always || ( "$FAIL_REVIEWS" =~ ^[0-9]+$ && "$n" -le "$FAIL_REVIEWS" ) ]]; then
+      echo "gh: Server Error (HTTP 500)" >&2; exit 1
+    fi
+    echo "[[{\"user\":{\"login\":\"chatgpt-codex-connector[bot]\"},\"commit_id\":\"$sha\",\"state\":\"COMMENTED\",\"body\":\"ok\"}]]" ;;
+  *pulls/7/comments*|*issues/7/comments*|*issues/7/reactions*)
+    echo '[[]]' ;;
+  *commits/*)
+    echo '{"commit":{"committer":{"date":"2026-10-14T00:00:00Z"}}}' ;;
+  *pulls/7)
+    echo "{\"head\":{\"sha\":\"$sha\",\"ref\":\"feature\"}}" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 2 ;;
+esac
+"""
+
+
+def _run_evidence_script(
+    tmp_path: Path, fail_reviews: str
+) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+    bin_dir = tmp_path / "bin"
+    state = tmp_path / "state"
+    bin_dir.mkdir()
+    state.mkdir()
+    (bin_dir / "gh").write_text(_FAKE_GH, encoding="utf-8")
+    (bin_dir / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    for name in ("gh", "sleep"):
+        (bin_dir / name).chmod(0o755)
+    script = tmp_path / "evidence.sh"
+    script.write_text(_evidence_run_script(), encoding="utf-8")
+    sha = "a" * 40
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:/opt/homebrew/bin",
+        "STATE_DIR": str(state),
+        "HEAD_SHA": sha,
+        "FAIL_REVIEWS": fail_reviews,
+        "RUNNER_TEMP": str(tmp_path),
+        "GH_TOKEN": "x",
+        "REPOSITORY": "o/r",
+        "PR_NUMBER": "7",
+        "EVIDENCE_AFTER": "2026-10-14T00:00:00Z",
+        "REVIEW_BOT": "chatgpt-codex-connector[bot]",
+        "REVIEW_BOT_CURRENT": "chatgpt-codex-connector",
+        "GITHUB_RUN_ID": "12345",
+    }
+    result = subprocess.run(
+        ["bash", str(script)], env=env, capture_output=True, text=True, check=False
+    )
+    posts_file = state / "posts.jsonl"
+    posts = (
+        [json.loads(line) for line in posts_file.read_text().splitlines()]
+        if posts_file.exists()
+        else []
+    )
+    return result, posts
+
+
+def test_agent_review_aborted_evidence_finalizes_placeholder_as_neutral(
+    tmp_path: Path,
+) -> None:
+    result, posts = _run_evidence_script(tmp_path, fail_reviews="always")
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert posts[0]["status"] == "in_progress"
+    last = posts[-1]
+    assert last["status"] == "completed"
+    assert last["conclusion"] == "neutral"
+    assert last["name"] == "agent-review"
+    assert last["head_sha"] == posts[0]["head_sha"]
+    assert last["external_id"] == posts[0]["external_id"]
+    assert last["external_id"] == "kg.agent-review.v1:12345:" + "a" * 40
+    assert last["output"]["summary"].startswith("Exact head " + "a" * 40 + " ")
+    assert sum(1 for p in posts if p["status"] == "completed") == 1
+
+
+def test_agent_review_retries_transient_5xx_on_evidence_query(tmp_path: Path) -> None:
+    result, posts = _run_evidence_script(tmp_path, fail_reviews="1")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "state" / "reviews_calls").read_text().strip() == "2"
+    assert posts[0]["status"] == "in_progress"
+    last = posts[-1]
+    assert last["status"] == "completed"
+    assert last["conclusion"] == "success"
+    assert last["external_id"] == posts[0]["external_id"]
+    assert sum(1 for p in posts if p["status"] == "completed") == 1
