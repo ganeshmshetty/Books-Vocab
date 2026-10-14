@@ -101,8 +101,9 @@ def _parse_batch_response(
         if i < len(data) and isinstance(data[i], dict):
             pos_item = data[i]
             pos_word = pos_item.get("word", "")
-            # Non-string pos_word never equals a str candidate word, so it falls through to
-            # the word-keyed fallback instead of raising on the comparison path (#3893).
+            # Non-string pos_word (null/number/bool/list/dict) never equals a str candidate word,
+            # so it is not a positional match and falls through to the word-keyed fallback (#3893).
+            # Comparison never raises; the only effect is no positional match (#3925).
             if (pos_word == "" or pos_word == word) and id(pos_item) not in _consumed:
                 item = pos_item  # positional match confirmed (and still free)
             else:

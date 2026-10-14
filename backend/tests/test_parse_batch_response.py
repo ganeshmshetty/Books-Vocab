@@ -446,3 +446,21 @@ class TestNonStringWord:
         result = _parse_batch_response(content, cands)
         assert result["c1"] == Judgement(link="contrasts_with", confidence=0.9, reason="r")
         assert result["c2"] is None
+
+    @pytest.mark.parametrize("bad_word", [None, 0, False, [], {}])
+    def test_falsy_non_str_word_at_positional_index_is_no_response(self, bad_word):
+        # Null/0/false/[]/{} at a positional index must not match the candidate positionally
+        # (base Judgement behavior was an accidental `not pos_word` match); it is unmatchable
+        # and the candidate reports no_response (#3925).
+        cands = [("c1", "alpha", "m1"), ("c2", "beta", "m2")]
+        content = json.dumps(
+            [
+                {"word": "alpha", "link": "contrasts_with", "confidence": 0.9, "reason": "r"},
+                {"word": bad_word, "link": "contrasts_with", "confidence": 0.9, "reason": "r"},
+            ]
+        )
+        raw: list[dict] = []
+        result = _parse_batch_response(content, cands, raw_decisions=raw)
+        assert result["c1"] == Judgement(link="contrasts_with", confidence=0.9, reason="r")
+        assert result["c2"] is None
+        assert [d["verdict"] for d in raw if d["to_id"] == "c2"] == ["no_response"]
