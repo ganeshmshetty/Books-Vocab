@@ -63,6 +63,7 @@ def test_resolve_and_link_user_merges_by_email(tmp_path):
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_store(tmp_path):
     """Return (users_file, lock_file, load_fn, save_fn) backed by tmp_path."""
     users_file = tmp_path / "users.json"
@@ -111,7 +112,8 @@ def test_repeated_login_updates_last_login_without_duplicating(tmp_path):
     users_file, lock, load, save = _make_store(tmp_path)
 
     resolve_and_link_user(
-        "user-1", "google",
+        "user-1",
+        "google",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
@@ -120,7 +122,8 @@ def test_repeated_login_updates_last_login_without_duplicating(tmp_path):
     first_login = json.loads(users_file.read_text())["user-1"]["last_login"]
 
     resolve_and_link_user(
-        "user-1", "google",
+        "user-1",
+        "google",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
@@ -146,18 +149,27 @@ def test_three_providers_same_email_all_link_to_first(tmp_path):
     email = "shared@example.com"
 
     first = resolve_and_link_user(
-        "google-1", "google",
-        users_lock_file=lock, load_users_fn=load, save_users_fn=save,
+        "google-1",
+        "google",
+        users_lock_file=lock,
+        load_users_fn=load,
+        save_users_fn=save,
         email=email,
     )
     second = resolve_and_link_user(
-        "apple-1", "apple",
-        users_lock_file=lock, load_users_fn=load, save_users_fn=save,
+        "apple-1",
+        "apple",
+        users_lock_file=lock,
+        load_users_fn=load,
+        save_users_fn=save,
         email=email,
     )
     third = resolve_and_link_user(
-        "apple-2", "apple",
-        users_lock_file=lock, load_users_fn=load, save_users_fn=save,
+        "apple-2",
+        "apple",
+        users_lock_file=lock,
+        load_users_fn=load,
+        save_users_fn=save,
         email=email,
     )
 
@@ -185,7 +197,8 @@ def test_revoked_before_cleared_after_login(tmp_path):
     users_file.write_text(json.dumps(seed))
 
     resolve_and_link_user(
-        "user-x", "google",
+        "user-x",
+        "google",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
@@ -206,7 +219,8 @@ def test_email_none_does_not_write_email_index(tmp_path):
     users_file, lock, load, save = _make_store(tmp_path)
 
     resolve_and_link_user(
-        "anon-1", "anonymous",
+        "anon-1",
+        "anonymous",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
@@ -273,7 +287,8 @@ def test_terminated_revocation_survives_relogin_same_sub(tmp_path):
     users_file.write_text(json.dumps(seed))
 
     resolve_and_link_user(
-        "apple-X", "apple",
+        "apple-X",
+        "apple",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
@@ -298,7 +313,8 @@ def test_terminated_revocation_survives_relogin_other_provider_same_email(tmp_pa
     users_file.write_text(json.dumps(seed))
 
     resolve_and_link_user(
-        "google-Y", "google",
+        "google-Y",
+        "google",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
@@ -321,7 +337,8 @@ def test_non_terminated_revocation_still_cleared_after_login(tmp_path):
     users_file.write_text(json.dumps(seed))
 
     resolve_and_link_user(
-        "user-x", "google",
+        "user-x",
+        "google",
         users_lock_file=lock,
         load_users_fn=load,
         save_users_fn=save,
