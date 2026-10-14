@@ -341,3 +341,28 @@ struct VocabularyEntryStateTests {
         #expect(!csv.contains("pending-add"))
     }
 }
+
+/// `SettingsFixturesTests.LoggedInAuthStub` 是該 suite 的私有巢狀型別，這裡不可見；
+/// 僅供 `LiveSettingsResetStore.readSnapshot` 需要已登入的 `AuthManaging`。
+@MainActor
+private final class LoggedInAuthStub: AuthManaging {
+    var isLoggedIn = true
+    var userId: String? = "vocabulary-entry-state-test-user"
+    var token: String? = "vocabulary-entry-state-test-token"
+    var displayName: String?
+    var userEmail: String?
+    var avatarURL: URL?
+    var authError: String?
+    var isAuthenticating = false
+    var isDemoMode = false
+
+    func enterDemoMode(modelContainer: ModelContainer) {}
+    func exitDemoMode(modelContainer: ModelContainer) {}
+    func refreshSessionIfNeeded() {}
+    func login(userId: String, token: String) {}
+    func login(customToken: String) async {}
+    func logout(modelContainer: ModelContainer?, reason: String) {}
+    func logoutAfterAccountDeletion(modelContainer: ModelContainer?, deletedAccountID: String?) {}
+    func loginWithGoogle(modelContainer: ModelContainer?) {}
+    func loginWithApple(modelContainer: ModelContainer?) {}
+}
