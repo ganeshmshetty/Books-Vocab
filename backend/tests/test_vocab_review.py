@@ -814,3 +814,26 @@ class TestPushReviewStatesEdgeCases:
             )
         assert result == {"updated": 0, "skipped": 1}
         assert "kept conflicting" in caplog.text
+
+    def test_cas_conflict_on_first_attempt_is_remerged_not_dropped(self):
+        """A single concurrent write must make the client re-merge, not drop its review."""
+        card = _ReviewCard(id="c1", content="run")
+        store = _FakeCardsStore([card])
+        real = store.batch_update_if_unchanged
+        calls: list[object] = []
+
+        def racing_once(updates):
+            if not calls:
+                card.review_count += 1  # a concurrent writer wins only the first CAS
+            calls.append(updates)
+            return real(updates)
+
+        store.batch_update_if_unchanged = racing_once
+        result = push_review_states(
+            [_entry(word="run", card_id="c1", last_reviewed_at=_iso(datetime.now(UTC)), review_count=3)],
+            cards_store=store,
+            logger=logging.getLogger("t"),
+        )
+        assert result == {"updated": 1, "skipped": 0}
+        assert len(calls) == 2
+        assert card.review_count == 3
