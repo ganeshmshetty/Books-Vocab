@@ -59,6 +59,7 @@ class SubscriptionSnapshotWriter(Protocol):
         signed_date: str | None = None,
         notification_uuid: str | None = None,
         grace_period_expires_at: str | None = None,
+        revoked: bool = False,
     ) -> StoredUserRecord: ...
 
 
@@ -119,6 +120,7 @@ def _write_snapshot(
         source=source,
         price_display=price_display,
         grace_period_expires_at=snapshot.get("grace_period_expires_at"),
+        revoked=bool(snapshot.get("revoked")),
         **fields,
     )
 

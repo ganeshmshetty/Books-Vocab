@@ -127,6 +127,8 @@ def verified_transaction_snapshot(
 
     return {
         "product_id": product_id.strip(),
+        # Apple revocation: the only expiry that may end a running grace period.
+        "revoked": bool(payload.get("revocationDate")),
         "transaction_id": str(transaction_id) if transaction_id is not None else None,
         "original_transaction_id": str(original_transaction_id) if original_transaction_id is not None else None,
         "environment": environment,
