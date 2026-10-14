@@ -157,7 +157,7 @@ def test_linked_identity_reclaims_email_still_indexed_to_itself(tmp_path):
     assert users["_email_index"]["a@example.com"] == "G"
     assert users["A"]["_linked_to"] == "G"
     assert users["G"]["linked_ids"] == ["A"]
-    assert login("other", "google", "a@example.com") == "G"
+    assert login("other", "apple", "a@example.com") == "G"
 
 
 @pytest.mark.parametrize(

@@ -143,7 +143,7 @@ async def test_apple_then_google_same_email_merges_without_data_loss(tmp_path):
         notebook keyed under that dir is reachable on either token
     """
     users_file, lock, load, save = _make_user_store(tmp_path)
-    shared_email = "user@example.com"
+    shared_email = "user@gmail.com"
 
     # Apple first — canonical = apple sub
     apple_kwargs = _build_handler_kwargs(
@@ -560,7 +560,7 @@ async def test_dual_device_cross_provider_both_resolve_to_canonical(tmp_path):
         lock,
         provider="apple",
         sub="iphone-apple",
-        email="dual@example.com",
+        email="dual@gmail.com",
         email_verified=True,
     )
     iphone_resp = await auth_verify_response(
@@ -576,7 +576,7 @@ async def test_dual_device_cross_provider_both_resolve_to_canonical(tmp_path):
         lock,
         provider="google",
         sub="mac-google",
-        email="dual@example.com",
+        email="dual@gmail.com",
         email_verified=True,
     )
     mac_resp = await auth_verify_response(

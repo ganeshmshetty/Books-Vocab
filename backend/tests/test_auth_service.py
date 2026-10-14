@@ -156,7 +156,7 @@ def test_three_providers_same_email_all_link_to_first(tmp_path):
         email=email,
     )
     third = resolve_and_link_user(
-        "github-1", "github",
+        "apple-2", "apple",
         users_lock_file=lock, load_users_fn=load, save_users_fn=save,
         email=email,
     )
@@ -164,9 +164,9 @@ def test_three_providers_same_email_all_link_to_first(tmp_path):
     assert first == second == third == "google-1"
 
     stored = json.loads(users_file.read_text())
-    assert set(stored["google-1"]["linked_ids"]) == {"apple-1", "github-1"}
+    assert set(stored["google-1"]["linked_ids"]) == {"apple-1", "apple-2"}
     assert stored["apple-1"]["_linked_to"] == "google-1"
-    assert stored["github-1"]["_linked_to"] == "google-1"
+    assert stored["apple-2"]["_linked_to"] == "google-1"
 
 
 # ---------------------------------------------------------------------------

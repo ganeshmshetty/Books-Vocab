@@ -9,7 +9,7 @@ from google.auth.exceptions import GoogleAuthError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
-from .auth_types import VerifiedIdentity
+from .auth_types import GoogleIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +54,12 @@ def _verify_oauth2_token_sync(token: str, client_id: str) -> dict:
     return id_token.verify_oauth2_token(token, request_adapter, client_id)
 
 
-async def verify_google_token(token: str, client_id: str) -> VerifiedIdentity:
-    """Validate Google ID Token and return ``(sub, email, email_verified)``.
+async def verify_google_token(token: str, client_id: str) -> GoogleIdentity:
+    """Validate Google ID Token and return ``(sub, email, email_verified, hd)``.
 
-    Returns the token-derived email and verification flag so callers can
-    safely link accounts by email (only when verified). Client-supplied
+    Returns the token-derived email, verification flag and Workspace hosted
+    domain (``hd``) so callers can safely link accounts by email (only when
+    verified and authoritative for the provider). Client-supplied
     emails MUST NOT be trusted — see C1 account-takeover regression.
 
     ``id_token.verify_oauth2_token`` performs blocking HTTP I/O to fetch
@@ -83,7 +84,10 @@ async def verify_google_token(token: str, client_id: str) -> VerifiedIdentity:
         raw_verified = idinfo.get("email_verified", False)
         email_verified = raw_verified.strip().lower() == "true" if isinstance(raw_verified, str) else bool(raw_verified)
 
-        return VerifiedIdentity(str(sub), email, email_verified)
+        hd_raw = idinfo.get("hd")
+        hd = hd_raw.strip().lower() if isinstance(hd_raw, str) and hd_raw.strip() else None
+
+        return GoogleIdentity(str(sub), email, email_verified, hd)
 
     except ValueError as e:
         # Invalid token signature or claims

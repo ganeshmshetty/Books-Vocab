@@ -37,6 +37,25 @@ def create_jwt_token(
     return jwt.encode(payload, jwt_secret, algorithm=jwt_algorithm)
 
 
+_GOOGLE_CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+def _email_is_authoritative(provider: str, email: str, hd: str | None) -> bool:
+    """Whether ``provider`` is the authority for the (already verified) ``email``.
+
+    Apple verifies every address it reports. Google only owns consumer
+    addresses and addresses of a Workspace domain whose ``hd`` claim matches;
+    for any other domain ``email_verified`` records a past check, not current
+    control of the mailbox.
+    """
+    if provider == "apple":
+        return True
+    if provider == "google":
+        domain = email.rpartition("@")[2]
+        return domain in _GOOGLE_CONSUMER_DOMAINS or (bool(hd) and hd == domain)
+    return False
+
+
 def resolve_and_link_user(
     provider_user_id: str,
     provider: str,
@@ -45,6 +64,7 @@ def resolve_and_link_user(
     load_users_fn: Callable[[], UsersPayload],
     save_users_fn: Callable[[UsersPayload], None],
     email: str | None = None,
+    hd: str | None = None,
 ) -> str:
     with users_file_lock(users_lock_file):
         users = load_users_fn()
@@ -84,6 +104,15 @@ def resolve_and_link_user(
                     # Owned by a different canonical: never re-link or move the
                     # index silently, and never copy that account's email here.
                     profile_email = None
+        elif email and email in users["_email_index"] and not _email_is_authoritative(provider, email, hd):
+            # The provider cannot vouch for this address, so it never selects
+            # an existing account. The id gets its own canonical account and
+            # the index keeps pointing at the address's current owner.
+            canonical_id = provider_user_id
+            if canonical_id not in users:
+                users[canonical_id] = {}
+            if users["_email_index"][email] != canonical_id:
+                profile_email = None
         elif email and email in users["_email_index"]:
             canonical_id = users["_email_index"][email]
 

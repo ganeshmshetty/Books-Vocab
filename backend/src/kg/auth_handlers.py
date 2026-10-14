@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import HTTPException
 
 from .api_models import AuthVerifyRequest, AuthVerifyResponse
-from .auth_types import VerifiedIdentity
+from .auth_types import GoogleIdentity, VerifiedIdentity, hosted_domain
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +18,18 @@ async def auth_verify_response(
     google_client_id: str,
     apple_bundle_id: str,
     jwt_expiry_minutes: int,
-    verify_google_token: Callable[[str, str], Awaitable[VerifiedIdentity]],
+    verify_google_token: Callable[[str, str], Awaitable[VerifiedIdentity | GoogleIdentity]],
     verify_apple_token: Callable[[str, str], VerifiedIdentity],
-    resolve_and_link_user: Callable[[str, str, str | None], str],
+    resolve_and_link_user: Callable[..., str],
     create_jwt_token: Callable[[str, str], str],
 ) -> AuthVerifyResponse:
+    google_hd: str | None = None
     if req.provider == "google":
         if not google_client_id:
             raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not configured")
-        provider_user_id, token_email, email_verified = await verify_google_token(req.token, google_client_id)
+        identity = await verify_google_token(req.token, google_client_id)
+        provider_user_id, token_email, email_verified = identity
+        google_hd = hosted_domain(identity)
     elif req.provider == "apple":
         # Sync JWKS fetch (on unknown kid / TTL expiry): keep it off the event loop.
         provider_user_id, token_email, email_verified = await asyncio.to_thread(
@@ -50,7 +53,12 @@ async def auth_verify_response(
 
     link_email = token_email if email_verified else None
     # Waits on the shared users.json FileLock: must not block the event loop.
-    canonical_user_id = await asyncio.to_thread(resolve_and_link_user, provider_user_id, req.provider, link_email)
+    # Only Workspace tokens carry a hosted domain; it decides whether Google is
+    # authoritative for a non-consumer address.
+    link_extra = {"hd": google_hd} if google_hd else {}
+    canonical_user_id = await asyncio.to_thread(
+        resolve_and_link_user, provider_user_id, req.provider, link_email, **link_extra
+    )
     access_token = create_jwt_token(canonical_user_id, req.provider)
 
     return AuthVerifyResponse(

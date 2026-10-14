@@ -31,6 +31,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..apple_auth import verify_apple_token
+from ..auth_types import hosted_domain
 from ..deps import _create_jwt_token, _resolve_and_link_user
 from ..google_auth import verify_google_token
 
@@ -294,7 +295,8 @@ async def google_callback(
         raise HTTPException(status_code=401, detail="No id_token in Google response")
 
     # Verify id_token and resolve user (reuse existing infra)
-    provider_user_id, token_email, email_verified = await verify_google_token(id_token_str, settings.google_client_id)
+    identity = await verify_google_token(id_token_str, settings.google_client_id)
+    provider_user_id, token_email, email_verified = identity
 
     # Waits on the shared users.json FileLock: keep it off the event loop.
     canonical_user_id = await asyncio.to_thread(
@@ -302,6 +304,7 @@ async def google_callback(
         provider_user_id,
         "google",
         email=token_email if email_verified else None,
+        hd=hosted_domain(identity),
         settings=settings,
         load_users_fn=request.app.state.load_users,
         save_users_fn=request.app.state.save_users,
