@@ -2134,6 +2134,20 @@ def test_a_stale_claim_without_handback_readopts_on_the_head_after_format() -> N
     assert _value(readopt, "--expected-head-sha") == "c" * 40
 
 
+def test_a_registry_record_without_external_ids_names_the_lane_by_its_branch() -> None:
+    """#3685: the registry matches an empty external_ids by the branch, not a derived name."""
+    world = FakeWorld(
+        branch="feat/s",
+        record=_agent_record(
+            branch="feat/s", external_ids=[], handed_back_sha=None, base_sha="f" * 40
+        ),
+    )
+    code, result = ship(world, "--check", "docs=good")
+    assert code == 0, result
+    receipt = next(c for c in world.calls if c[3:4] == ["receipt"])
+    assert _value(receipt, "--lane") == "feat/s"
+
+
 def _adopt_bases(world: FakeWorld) -> list[str]:
     return [
         _value(c, "--base")

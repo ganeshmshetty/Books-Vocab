@@ -1077,9 +1077,14 @@ class Delivery:
             branch=branch,
             is_ancestor=self.is_ancestor,
         )
-        lane = self.args.lane or (
-            record["external_ids"][0] if record and record.get("external_ids") else None
-        )
+        lane = self.args.lane
+        if not lane and record is not None:
+            # The registry's own lane id: external_ids[0], else the branch it falls back to.
+            lane = (
+                record["external_ids"][0]
+                if record.get("external_ids")
+                else record.get("branch")
+            )
         lane = lane or lane_from_branch(branch, time.strftime("%Y%m%d", time.gmtime()))
         self.say(f"branch={branch} lane={lane} starts at {stage}")
         if stage in ("adopt", "hand-back", "receipt") and not self.work.exists():
