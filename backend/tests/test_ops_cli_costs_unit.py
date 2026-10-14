@@ -349,7 +349,9 @@ class TestBackendRedirectNeverLeaksAdminToken:
             assert leaked == []
         finally:
             backend.shutdown()
+            backend.server_close()
             collector.shutdown()
+            collector.server_close()
 
     def test_same_origin_200_still_returns_retention_days(self, monkeypatch):
         import json as _json
@@ -379,3 +381,25 @@ class TestBackendRedirectNeverLeaksAdminToken:
             assert seen["auth"] == "Bearer tok"
         finally:
             backend.shutdown()
+            backend.server_close()
+
+
+def test_loopback_servers_release_sockets_after_each_test(monkeypatch):
+    """#3616: shutdown() stops serve_forever but leaves the listening socket open; each finally must server_close()."""
+    import sys
+    from unittest import mock
+
+    spawned: list = []
+    real_serve = _serve_loopback
+
+    def spy(handler_cls):
+        srv = real_serve(handler_cls)
+        spawned.append(srv)
+        return srv
+
+    with mock.patch.object(sys.modules[__name__], "_serve_loopback", spy):
+        TestBackendRedirectNeverLeaksAdminToken().test_redirect_to_other_origin_never_receives_bearer(monkeypatch)
+        TestBackendRedirectNeverLeaksAdminToken().test_same_origin_200_still_returns_retention_days(monkeypatch)
+
+    assert len(spawned) == 3
+    assert all(srv.socket.fileno() == -1 for srv in spawned)
