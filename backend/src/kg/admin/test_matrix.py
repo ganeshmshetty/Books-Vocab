@@ -6,27 +6,21 @@ from typing import Any, Protocol
 
 from fastapi.responses import HTMLResponse
 
-from .auth import _set_admin_cookie
-
 
 class RunPytestMatrix(Protocol):
-    def __call__(self, *, selected_items: list[str] | None = None) -> dict[str, Any]:
-        ...
+    def __call__(self, *, selected_items: list[str] | None = None) -> dict[str, Any]: ...
 
 
 class StoreLastTestRun(Protocol):
-    def __call__(self, result: dict[str, Any]) -> dict[str, Any]:
-        ...
+    def __call__(self, result: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class GetLastTestRun(Protocol):
-    def __call__(self) -> dict[str, Any] | None:
-        ...
+    def __call__(self) -> dict[str, Any] | None: ...
 
 
 class BuildTestCatalog(Protocol):
-    def __call__(self) -> dict[str, Any]:
-        ...
+    def __call__(self) -> dict[str, Any]: ...
 
 
 def admin_run_tests_response(
@@ -56,9 +50,6 @@ def admin_test_catalog_response(
     return build_test_catalog()
 
 
-def admin_tests_ui_response(
-    *,
-    admin_token: str,
-    admin_tests_html: str,
-) -> HTMLResponse:
-    return _set_admin_cookie(HTMLResponse(admin_tests_html), admin_token)
+def admin_tests_ui_response(*, admin_tests_html: str) -> HTMLResponse:
+    """Render the test matrix page. Page GETs never re-issue the session cookie (#3904)."""
+    return HTMLResponse(admin_tests_html)

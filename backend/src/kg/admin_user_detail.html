@@ -2008,7 +2008,8 @@ async function searchTranslate() {
     const data = await r.json();
     renderTranslateHistory(data);
     const n = (data.history || []).length;
-    status.textContent = (q || op) ? `${n} 筆 (filtered)` : `${n} 筆`;
+    const count = data.truncated ? `顯示 ${n} / 共 ${data.total} 筆` : `${n} 筆`;
+    status.textContent = (q || op) ? `${count} (filtered)` : count;
   } catch (e) {
     if (seq !== _translateSearchSeq) return;
     status.textContent = '錯誤';
@@ -2073,7 +2074,7 @@ async function loadPage() {
       renderTranslateHistory(translateData);
       const n = (translateData.history || []).length;
       const status = document.getElementById('translate-status');
-      if (status) status.textContent = n + ' 筆';
+      if (status) status.textContent = translateData.truncated ? `顯示 ${n} / 共 ${translateData.total} 筆` : n + ' 筆';
     } else {
       renderTranslateHistory(null);
     }

@@ -178,6 +178,15 @@ def build_login_routes(
             admin_token=settings.admin_token,
         )
 
+    @router.post("/admin/logout", include_in_schema=False)
+    async def admin_logout(admin_session: str | None = Cookie(None)) -> RedirectResponse:
+        from ..admin_handlers import admin_logout_response
+
+        return admin_logout_response(
+            cookie_token=admin_session,
+            admin_token=runtime_settings_fn().admin_token,
+        )
+
     return router
 
 

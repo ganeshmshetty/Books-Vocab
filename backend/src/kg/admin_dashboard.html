@@ -859,8 +859,11 @@ async function runServerSearch(query) {
     if (seq !== _serverSearchSeq) return;
     if (!r.ok) { span.textContent = '伺服器搜尋失敗 (' + r.status + ')'; return; }
     const data = await r.json();
-    const hits = (data.users || []).length;
-    span.textContent = '伺服器命中 ' + hits + ' / ' + (data.total ?? 0);
+    const shown = (data.users || []).length;
+    const matched = data.matched_total ?? shown;
+    span.textContent = data.truncated
+      ? '伺服器命中 ' + matched + '（顯示 ' + shown + '）/ ' + (data.total ?? 0)
+      : '伺服器命中 ' + matched + ' / ' + (data.total ?? 0);
   } catch (e) {
     if (seq !== _serverSearchSeq) return;
     span.textContent = '伺服器搜尋錯誤';

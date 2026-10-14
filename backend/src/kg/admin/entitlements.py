@@ -13,10 +13,28 @@ from ..api_models import (
     AdminUserEntitlementResponse,
     EntitlementsResponse,
 )
-from ..exceptions import NotFoundError
+from ..exceptions import ConflictError, NotFoundError
 from ..types import AdminGrantRecord, StoredUserRecord, UsersPayload
 from ..user_store import is_real_user
 from ..users_lock import users_file_lock
+
+
+def is_link_pointer(user_id: str, record: object) -> bool:
+    """True for a link pointer ``{"_linked_to": canonical}``.
+
+    Login resolves a pointer to its canonical account (``auth_service``), so the
+    pointer itself is not an account: admin reads/writes and user listings must
+    target the canonical id instead.
+    """
+    if not isinstance(record, dict):
+        return False
+    canonical = record.get("_linked_to")
+    return isinstance(canonical, str) and bool(canonical) and canonical != user_id and not canonical.startswith("_")
+
+
+def is_canonical_account(user_id: str, record: object) -> bool:
+    """A real user record that is an account in its own right (not a link pointer)."""
+    return is_real_user(user_id, record) and not is_link_pointer(user_id, record)
 
 
 def admin_user_entitlement_response(
@@ -28,7 +46,7 @@ def admin_user_entitlement_response(
 ) -> AdminUserEntitlementResponse:
     users = load_users()
     record = users.get(user_id)
-    if not isinstance(record, dict) or user_id.startswith("_"):
+    if not is_canonical_account(user_id, record):
         raise NotFoundError("User", user_id)
     return AdminUserEntitlementResponse(
         user_id=user_id,
@@ -53,6 +71,8 @@ def _mutate_admin_grant(
         record = users.get(user_id)
         if not is_real_user(user_id, record):
             raise NotFoundError("User", user_id)
+        if is_link_pointer(user_id, record):
+            raise ConflictError(f"User '{user_id}' is a link pointer; manage its canonical account instead")
 
         admin_grant = current_admin_grant_record(record)
         if grant_updates:

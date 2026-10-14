@@ -62,6 +62,12 @@ def _stats(tt, users, data_dir=Path("/nonexistent-kg-test")):
     )
 
 
+def test_admin_stats_excludes_link_pointer_rows(tt_db):
+    users = {"a1": {"email": "a@b.c"}, "p1": {"_linked_to": "a1"}}
+    out = _stats(tt_db, users)
+    assert [u["user_id"] for u in out["users"]] == ["a1"]
+
+
 def test_est_cost_prices_each_row_at_its_own_provider(tt_db, monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_JUDGE", "deepseek")
     tt_db.record("u1", "judge", 1_000_000, 0, provider="gemini")

@@ -142,10 +142,7 @@ def create_admin_handlers_from_dependencies(
 
     def admin_ui() -> HTMLResponse:
         """Admin dashboard UI."""
-        return admin_ui_response(
-            admin_html=ADMIN_HTML,
-            admin_token=runtime_settings_fn().admin_token,
-        )
+        return admin_ui_response(admin_html=ADMIN_HTML)
 
     def admin_stats() -> AdminEndpointResult:
         """Return per-user token + vocab stats for admin dashboard."""
@@ -251,10 +248,7 @@ def create_admin_handlers_from_dependencies(
 
     def admin_tests_ui() -> HTMLResponse:
         """Minimal grayscale test matrix dashboard."""
-        return admin_tests_ui_response(
-            admin_tests_html=ADMIN_TESTS_HTML,
-            admin_token=runtime_settings_fn().admin_token,
-        )
+        return admin_tests_ui_response(admin_tests_html=ADMIN_TESTS_HTML)
 
     def _safe_user_dir(uid: str) -> Path:
         """Resolve user directory, rejecting path traversal.
@@ -323,11 +317,15 @@ def create_admin_handlers_from_dependencies(
           - ``op``: exact operation filter (``translate_quick`` /
             ``translate_phrase`` / ``translate_explain``).
         """
-        from .translate_log import get_log
+        from .translate_log import count_log, get_log
 
+        history = get_log(user_id, limit=_clamp_limit(limit, TRANSLATE_HISTORY_MAX), q=q, op=op)
+        total = count_log(user_id, q=q, op=op)
         return {
             "user_id": user_id,
-            "history": get_log(user_id, limit=_clamp_limit(limit, TRANSLATE_HISTORY_MAX), q=q, op=op),
+            "history": history,
+            "total": total,
+            "truncated": total > len(history),
             "q": q or "",
             "op": op or "",
         }
@@ -411,10 +409,7 @@ def create_admin_handlers_from_dependencies(
 
     def admin_user_detail_ui() -> HTMLResponse:
         """User detail page UI."""
-        return admin_ui_response(
-            admin_html=ADMIN_USER_DETAIL_HTML,
-            admin_token=runtime_settings_fn().admin_token,
-        )
+        return admin_ui_response(admin_html=ADMIN_USER_DETAIL_HTML)
 
     async def admin_orphans_scan() -> AdminEndpointResult:
         """Return a read-only data-consistency scan report.
