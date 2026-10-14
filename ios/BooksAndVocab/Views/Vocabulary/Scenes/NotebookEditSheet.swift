@@ -61,6 +61,38 @@ enum NotebookEditPhotoWrite {
     }
 }
 
+/// sheet 寫檔收尾所需的封面狀態（#3595、#3641）。`committed`／`dismissed` 只能經具名 mutator 設定，
+/// 呼叫端不再以兩個位置相同的 Bool 參數傳入 `NotebookEditPhotoWrite.outcome`，互換無法通過編譯以外的途徑發生。
+struct NotebookEditPhotoState: Equatable {
+    /// 目前 staged 封面（nil = 無封面或已移除）。
+    var staged: String?
+    /// 進入編輯時的原始封面；原檔只在 API 成功後由 coordinator 刪除。
+    let original: String?
+    private(set) var isCommitted = false
+    private(set) var isDismissed = false
+
+    init(staged: String?, original: String?) {
+        self.staged = staged
+        self.original = original
+    }
+
+    /// Save 已把 staged 交給 onSave：所有權轉給 coordinator。
+    mutating func markCommitted() { isCommitted = true }
+
+    /// sheet 已關閉（取消／下滑／onDisappear）。
+    mutating func markDismissed() { isDismissed = true }
+
+    /// processPhoto 寫出新 JPEG 後的收尾決定。
+    func outcomeForLateWrite() -> NotebookEditPhotoWrite.Outcome {
+        NotebookEditPhotoWrite.outcome(
+            previousStaged: staged,
+            original: original,
+            committed: isCommitted,
+            dismissed: isDismissed
+        )
+    }
+}
+
 struct NotebookEditSheet: View {
     @ObserveInjection private var inject
     enum Mode {
@@ -77,15 +109,11 @@ struct NotebookEditSheet: View {
     @State private var name: String = ""
     @State private var selectedColor: String?
     @State private var selectedPattern: String?
-    @State private var coverImagePath: String?
-    private let originalCoverImagePath: String?
+    /// 封面 staged／original 與寫檔收尾旗標（committed = 已交給 onSave，dismissed = sheet 已關閉；#3414、#3498、#3595）。
+    @State private var photo: NotebookEditPhotoState
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isProcessingPhoto = false
     @State private var photoError: String?
-    /// staged 封面已交給 onSave（所有權轉給 coordinator）；未設為 true 時關閉即須清掉 staged 檔（#3414）。
-    @State private var isCommitted = false
-    /// sheet 已關閉；processPhoto 若在關閉後才寫出檔案，必須立即清掉（#3414）。
-    @State private var isDismissed = false
 
     init(mode: Mode, onSave: @escaping (NotebookAppearance) -> Void) {
         self.mode = mode
@@ -95,14 +123,12 @@ struct NotebookEditSheet: View {
             _name = State(initialValue: "")
             _selectedColor = State(initialValue: nil)
             _selectedPattern = State(initialValue: nil)
-            _coverImagePath = State(initialValue: nil)
-            self.originalCoverImagePath = nil
+            _photo = State(initialValue: NotebookEditPhotoState(staged: nil, original: nil))
         case .edit(let n, let c, let p, let img):
             _name = State(initialValue: n)
             _selectedColor = State(initialValue: c)
             _selectedPattern = State(initialValue: p)
-            _coverImagePath = State(initialValue: img)
-            self.originalCoverImagePath = img
+            _photo = State(initialValue: NotebookEditPhotoState(staged: img, original: img))
         }
     }
 
@@ -113,7 +139,7 @@ struct NotebookEditSheet: View {
                     NotebookCoverView(
                         color: NotebookPalette.color(for: selectedColor),
                         pattern: selectedPattern.flatMap { NotebookCoverPattern(rawValue: $0) },
-                        coverImagePath: coverImagePath,
+                        coverImagePath: photo.staged,
                         name: name.isEmpty ? NotebookEditCopy.previewTitle : name
                     )
                     .frame(height: 100)
@@ -180,10 +206,10 @@ struct NotebookEditSheet: View {
                 Section(NotebookEditCopy.customImageSectionTitle) {
                     HStack {
                         PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                            Label(NotebookEditCopy.imagePickerTitle(hasImage: coverImagePath != nil), systemImage: "photo")
+                            Label(NotebookEditCopy.imagePickerTitle(hasImage: photo.staged != nil), systemImage: "photo")
                         }
 
-                        if coverImagePath != nil {
+                        if photo.staged != nil {
                             Spacer()
                             Button(role: .destructive) {
                                 removeCoverImage()
@@ -219,13 +245,13 @@ struct NotebookEditSheet: View {
                         // 舊原檔的刪除延到 updateNotebook API 成功後才做（見
                         // NotebookCoverCommit），失敗則原檔保留 + coverImagePath 不變，
                         // 避免「新封面 + server 舊欄位」drift（track-23）。
-                        isCommitted = true
+                        photo.markCommitted()
                         onSave(NotebookAppearance(
                             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                             color: selectedColor,
                             coverPattern: selectedPattern,
-                            coverImagePath: coverImagePath,
-                            originalCoverImagePath: originalCoverImagePath
+                            coverImagePath: photo.staged,
+                            originalCoverImagePath: photo.original
                         ))
                         dismiss()
                     }
@@ -241,11 +267,11 @@ struct NotebookEditSheet: View {
         }
         .appSheet(.large)
         .onDisappear {
-            isDismissed = true
+            photo.markDismissed()
             NotebookCoverCommit.discardUncommittedStaged(
-                staged: coverImagePath,
-                original: originalCoverImagePath,
-                committed: isCommitted
+                staged: photo.staged,
+                original: photo.original,
+                committed: photo.isCommitted
             )
         }
         .enableInjection()
@@ -335,27 +361,22 @@ struct NotebookEditSheet: View {
             return
         }
         // 收尾決定必須在刪除前一個 staged / 指派 coverImagePath 之前做，已交給 onSave 的檔不可再被動到。
-        switch NotebookEditPhotoWrite.outcome(
-            previousStaged: coverImagePath,
-            original: originalCoverImagePath,
-            committed: isCommitted,
-            dismissed: isDismissed
-        ) {
+        switch photo.outcomeForLateWrite() {
         case .discardNewFile:
             try? FileManager.default.removeItem(at: fileURL)
             return
         case .adoptStaged(let staleStaged):
             if let staleStaged { try? FileManager.default.removeItem(atPath: staleStaged) }
-            coverImagePath = fileURL.path
+            photo.staged = fileURL.path
             selectedPattern = nil
         }
     }
 
     private func removeCoverImage() {
-        // 只清掉 staged 新檔；originalCoverImagePath 延遲到 save 再刪
-        if let path = coverImagePath, path != originalCoverImagePath {
+        // 只清掉 staged 新檔；original 延遲到 save 再刪
+        if let path = photo.staged, path != photo.original {
             try? FileManager.default.removeItem(atPath: path)
         }
-        coverImagePath = nil
+        photo.staged = nil
     }
 }

@@ -181,6 +181,32 @@ struct NotebookCoverCommitTests {
         #expect(outcome == .discardNewFile)
     }
 
+    // MARK: - sheet 寫檔收尾的 @State 映射（#3595）
+
+    /// 控制組：新開編輯、未 commit 未關閉 → 新檔收為 staged，不清任何檔。
+    @Test func sheetStateFreshEditAdoptsWithoutCleanup() {
+        let state = NotebookEditPhotoState(staged: nil, original: nil)
+        #expect(state.outcomeForLateWrite() == .adoptStaged(staleStaged: nil))
+    }
+
+    /// Save 只設 committed：必須不設 dismissed，且寫檔收尾丟新檔（不可 adopt 已交給 onSave 的檔）。
+    @Test func markCommittedSetsOnlyCommittedAndDiscardsLateWrite() {
+        var state = NotebookEditPhotoState(staged: "/covers/new.jpg", original: nil)
+        state.markCommitted()
+        #expect(state.isCommitted)
+        #expect(!state.isDismissed)
+        #expect(state.outcomeForLateWrite() == .discardNewFile)
+    }
+
+    /// onDisappear 只設 dismissed：必須不設 committed，寫檔收尾丟新檔（無 owner）。
+    @Test func markDismissedSetsOnlyDismissedAndDiscardsLateWrite() {
+        var state = NotebookEditPhotoState(staged: nil, original: nil)
+        state.markDismissed()
+        #expect(state.isDismissed)
+        #expect(!state.isCommitted)
+        #expect(state.outcomeForLateWrite() == .discardNewFile)
+    }
+
     /// #3498：處理照片中禁止 Save，避免 staged 交接與 processPhoto 寫檔交錯；空白名稱同樣禁止。
     @Test func saveDisabledWhilePhotoProcessing() {
         #expect(!NotebookEditSaveGate.isSaveEnabled(name: "N", isProcessingPhoto: true))
