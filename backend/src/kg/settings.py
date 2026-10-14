@@ -52,6 +52,11 @@ class KGSettings:
     google_redirect_uri: str = DEFAULT_PUBLIC_WEB_BASE_URL + _GOOGLE_WEB_CALLBACK_PATH
     apple_bundle_id: str = "com.Max0228.BooksBrowser"
     apple_service_id: str = "com.Max0228.BooksAndVocab.web"
+    # Sign in with Apple token revocation (#3815). Enabled only when all three are
+    # set; the client_id is apple_bundle_id. See kg/apple_token_revocation.py.
+    apple_siwa_team_id: str | None = None
+    apple_siwa_key_id: str | None = None
+    apple_siwa_private_key_path: Path | None = None
     app_store_allow_unsigned_sync: bool = False
     app_store_allow_unsigned_notifications: bool = False
     admin_token: str = ""
@@ -252,6 +257,25 @@ def load_rate_limit_settings() -> RateLimitSettingsSnapshot:
     )
 
 
+def _apple_siwa_env() -> tuple[str | None, str | None, Path | None]:
+    """Read the Sign in with Apple revocation config; log one line when it is off (#3815)."""
+    team_id = os.getenv("APPLE_SIWA_TEAM_ID") or None
+    key_id = os.getenv("APPLE_SIWA_KEY_ID") or None
+    key_path = os.getenv("APPLE_SIWA_PRIVATE_KEY_PATH") or None
+    missing = [
+        name
+        for name, value in (
+            ("APPLE_SIWA_TEAM_ID", team_id),
+            ("APPLE_SIWA_KEY_ID", key_id),
+            ("APPLE_SIWA_PRIVATE_KEY_PATH", key_path),
+        )
+        if value is None
+    ]
+    if missing:
+        _logger.info("SIWA token revocation disabled (missing: %s)", ", ".join(missing))
+    return team_id, key_id, (Path(key_path) if key_path else None)
+
+
 def load_settings() -> KGSettings:
     default_data_dir = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -282,6 +306,7 @@ def load_settings() -> KGSettings:
         )
 
     rate_limit_settings = load_rate_limit_settings()
+    siwa_team_id, siwa_key_id, siwa_key_path = _apple_siwa_env()
 
     public_web_base_url = os.getenv("PUBLIC_WEB_BASE_URL", DEFAULT_PUBLIC_WEB_BASE_URL).rstrip("/")
 
@@ -296,6 +321,9 @@ def load_settings() -> KGSettings:
         google_redirect_uri=os.getenv("GOOGLE_REDIRECT_URI", public_web_base_url + _GOOGLE_WEB_CALLBACK_PATH),
         apple_bundle_id=os.getenv("APPLE_BUNDLE_ID", "com.Max0228.BooksBrowser"),
         apple_service_id=os.getenv("APPLE_SERVICE_ID", "com.Max0228.BooksAndVocab.web"),
+        apple_siwa_team_id=siwa_team_id,
+        apple_siwa_key_id=siwa_key_id,
+        apple_siwa_private_key_path=siwa_key_path,
         app_store_allow_unsigned_sync=app_store_allow_unsigned_sync,
         app_store_allow_unsigned_notifications=app_store_allow_unsigned_notifications,
         admin_token=os.getenv("ADMIN_TOKEN", ""),
