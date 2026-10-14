@@ -1,0 +1,8 @@
+{
+  "schema": "kg.complexity-budget-raise.v1",
+  "issue": 3635,
+  "raise": {
+    "workflows": 51
+  },
+  "note": "agent-review workflow: EXIT trap completes the in_progress placeholder on any abort, plus 5xx retry-with-backoff for evidence queries (#3635)"
+}
