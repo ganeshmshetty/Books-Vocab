@@ -8,7 +8,7 @@ extension ReaderView {
             withAnimation(AppMotion.contentFade) { readerState.isWebViewReady = true }
         }
         readerState.runtime.markReady()
-        currentLocator = locator
+        pageTurn.currentLocator = locator
         let locatorProgression = ReaderProgressState.validProgression(locator.locations.totalProgression)
         readerState.runtime.recordLocationProgression(locatorProgression)
 

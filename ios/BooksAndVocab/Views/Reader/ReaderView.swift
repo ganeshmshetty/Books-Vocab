@@ -13,6 +13,14 @@ import ReadiumShared
 import ReadiumNavigator
 import os
 
+/// 翻頁狀態（#3824）。`currentLocator` 獨立成 observable：每頁翻頁只失效讀取它的 leaf，
+/// 不使 `ReaderView.body` 重新求值（否則每頁都重跑高亮 revision 與 presenter 狀態）。
+@Observable
+@MainActor
+final class ReaderPageTurnState {
+    var currentLocator: Locator?
+}
+
 /// 閱讀器主介面（Readium 版）
 struct ReaderView: View {
     @ObserveInjection private var inject
@@ -47,8 +55,12 @@ struct ReaderView: View {
     // 觸發導航
     @State var navigateToLocator: (locator: Locator, id: UUID)? = nil
 
-    // Readium current location
-    @State var currentLocator: Locator?
+    // Readium current location（#3824：獨立 observable，見 `ReaderPageTurnState`）
+    @State var pageTurn = ReaderPageTurnState()
+    /// 首次載入後固化的 restore locator（#3824：不在每次 body 求值時重新解碼 lastReadLocatorJSON）。
+    @State var restoredInitialLocator: Locator?
+    /// 高亮 revision 求值入口（#3824）：只在 owner body 求值，翻頁路徑不經此。
+    @State private var highlightRevisionSource = VocabularyHighlightRevisionSource()
     /// Invalid persisted locators must not be passed to Readium as `nil`.
     /// The first reading-order resource becomes a real recovery destination
     /// after publication loading, and the navigator's location event remains
@@ -105,8 +117,12 @@ struct ReaderView: View {
     }
 
     var body: some View {
-        ReaderViewPresenter(
-            state: presenterState,
+        ReaderPresenterHost(
+            readerState: readerState,
+            chromeState: chromeState,
+            paperColor: viewConfiguration.paperColor,
+            bookTitle: book.title,
+            hasPublication: publication != nil,
             onDismiss: { dismiss() },
             onShowTableOfContents: {
                 tocNavigationState.reset()
@@ -179,7 +195,7 @@ struct ReaderView: View {
             // notebooks settle 後補 seed：.task 當下 liveNotebooks 可能尚未 settle 而跳過。
             seedNotebookBindingIfNeeded()
         }
-        .onChange(of: VocabularyHighlightSignature.revision(
+        .onChange(of: highlightRevisionSource.revision(
             entries: allVocabulary,
             notebookId: book.resolvedNotebookId
         )) { _, _ in
@@ -229,7 +245,7 @@ struct ReaderView: View {
         if let publication {
             TOCView(
                 publication: publication,
-                currentLocatorHref: currentLocator?.href.string,
+                currentLocatorHref: pageTurn.currentLocator?.href.string,
                 navigationState: $tocNavigationState,
                 onSelect: { item in handleTOCSelection(item, in: publication) }
             )
@@ -325,24 +341,6 @@ struct ReaderView: View {
         }
     }
 
-    private var presenterState: ReaderViewPresenterState {
-        .init(
-            paperColor: viewConfiguration.paperColor,
-            isWebViewReady: readerState.isWebViewReady,
-            loadingPhase: readerState.loadingPhase,
-            underlineProgress: readerState.underlineProgress,
-            chrome: chromeState,
-            totalProgression: readerState.runtime.visibleTotalProgression(hasPublication: publication != nil),
-            bookTitle: book.title,
-            progressState: readerState.runtime.visibleProgressState(hasPublication: publication != nil),
-            loadingState: readerState.loadingState,
-            runtimeStateAccessibilityValue: readerState.runtime.runtimeStateAccessibilityValue(
-                hasPublication: publication != nil
-            ),
-            canResolveSlowLoading: readerState.runtime.selection.loadMode == .slow && readerState.loadingState == .loading(.slow)
-        )
-    }
-
     // MARK: - 載入 Publication
 
     /// 從錯誤狀態回到 loading 並重新呼叫 `loadPublication()`。
@@ -354,8 +352,9 @@ struct ReaderView: View {
         readerState.isWebViewReady = false
         publicationLoadCoordinator.cancelAndInvalidate()
         publication = nil
+        restoredInitialLocator = nil
         restoreFallbackLocator = nil
-        currentLocator = nil
+        pageTurn.currentLocator = nil
         // 持 handle：retry 為非結構化 Task，需 onDisappear 顯式取消（見 retryLoadTask 宣告）。
         // 重入先取消舊 retry，避免連點時舊 in-flight 載入洩漏（與 onDisappear 對稱）。
         retryLoadTask?.cancel()
@@ -410,6 +409,7 @@ struct ReaderView: View {
                     }.first
                     readerState.runtime.markRestoreFailure()
                 }
+                restoredInitialLocator = initialLocator
                 readerState.runtime.markReady()
                 PerfLog.reader.mark("reader.opened", "title=\(book.title)")
                 handler.loadLookedUpWords(
@@ -426,6 +426,89 @@ struct ReaderView: View {
                 readerState.isWebViewReady = true  // 顯示錯誤畫面
             }
         )
+    }
+}
+
+/// Presenter 的 leaf 包裝（#3824）。進度／runtime 讀取與 main／translation content 都在本 view 的
+/// body 求值，而不是 `ReaderView.body`：每頁翻頁只失效本 leaf，owner 不再重跑高亮 revision。
+private struct ReaderPresenterHost<MainContent: View, TranslationPanelContent: View>: View {
+    let readerState: ReaderViewState
+    let chromeState: ReaderChromeState
+    let paperColor: Color
+    let bookTitle: String
+    let hasPublication: Bool
+    let onDismiss: () -> Void
+    let onShowTableOfContents: () -> Void
+    let onShowReaderSettings: () -> Void
+    let onShowNotebookPicker: () -> Void
+    let onExpandHeader: () -> Void
+    let onCollapseHeader: () -> Void
+    let onResolveSlowLoading: () -> Void
+    let mainContent: () -> MainContent
+    let translationPanel: () -> TranslationPanelContent
+
+    init(
+        readerState: ReaderViewState,
+        chromeState: ReaderChromeState,
+        paperColor: Color,
+        bookTitle: String,
+        hasPublication: Bool,
+        onDismiss: @escaping () -> Void,
+        onShowTableOfContents: @escaping () -> Void,
+        onShowReaderSettings: @escaping () -> Void,
+        onShowNotebookPicker: @escaping () -> Void,
+        onExpandHeader: @escaping () -> Void,
+        onCollapseHeader: @escaping () -> Void,
+        onResolveSlowLoading: @escaping () -> Void,
+        @ViewBuilder mainContent: @escaping () -> MainContent,
+        @ViewBuilder translationPanel: @escaping () -> TranslationPanelContent
+    ) {
+        self.readerState = readerState
+        self.chromeState = chromeState
+        self.paperColor = paperColor
+        self.bookTitle = bookTitle
+        self.hasPublication = hasPublication
+        self.onDismiss = onDismiss
+        self.onShowTableOfContents = onShowTableOfContents
+        self.onShowReaderSettings = onShowReaderSettings
+        self.onShowNotebookPicker = onShowNotebookPicker
+        self.onExpandHeader = onExpandHeader
+        self.onCollapseHeader = onCollapseHeader
+        self.onResolveSlowLoading = onResolveSlowLoading
+        self.mainContent = mainContent
+        self.translationPanel = translationPanel
+    }
+
+    var body: some View {
+        ReaderViewPresenter(
+            state: .init(
+                paperColor: paperColor,
+                isWebViewReady: readerState.isWebViewReady,
+                loadingPhase: readerState.loadingPhase,
+                underlineProgress: readerState.underlineProgress,
+                chrome: chromeState,
+                totalProgression: readerState.runtime.visibleTotalProgression(hasPublication: hasPublication),
+                bookTitle: bookTitle,
+                progressState: readerState.runtime.visibleProgressState(hasPublication: hasPublication),
+                loadingState: readerState.loadingState,
+                runtimeStateAccessibilityValue: readerState.runtime.runtimeStateAccessibilityValue(
+                    hasPublication: hasPublication
+                ),
+                canResolveSlowLoading: readerState.runtime.selection.loadMode == .slow
+                    && readerState.loadingState == .loading(.slow)
+            ),
+            onDismiss: onDismiss,
+            onShowTableOfContents: onShowTableOfContents,
+            onShowReaderSettings: onShowReaderSettings,
+            onShowNotebookPicker: onShowNotebookPicker,
+            onExpandHeader: onExpandHeader,
+            onCollapseHeader: onCollapseHeader,
+            onResolveSlowLoading: onResolveSlowLoading
+        ) {
+            mainContent()
+        } translationPanel: {
+            translationPanel()
+        }
     }
 }
 #endif
