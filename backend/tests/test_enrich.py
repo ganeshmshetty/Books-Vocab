@@ -560,6 +560,10 @@ class _MeaningCards:
         self.updates.append(list(updates))
         return len(updates)
 
+    def batch_update_if_unchanged(self, updates):
+        self.updates.append([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
+
     def bump_enrich_attempts(self, _ids):
         return None
 
