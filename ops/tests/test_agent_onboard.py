@@ -372,7 +372,9 @@ def test_mismatch_errors_list_the_identitys_allowed_values() -> None:
         mod.build_onboarding(
             ROOT, identity="Issue Solver", intent="backend", entry="direct-assignment"
         )
-    assert ", ".join(identities["issue-solver"]["entry_modes"]) in str(entry_error.value)
+    assert ", ".join(identities["issue-solver"]["entry_modes"]) in str(
+        entry_error.value
+    )
 
 
 @pytest.mark.parametrize(
