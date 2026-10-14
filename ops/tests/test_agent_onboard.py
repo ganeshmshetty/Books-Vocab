@@ -1256,6 +1256,25 @@ def test_docs_show_evidence_file_not_inline_json_for_onboarding(doc) -> None:
         assert "--evidence '" not in line, f"{doc}: inline --evidence: {line}"
 
 
+def test_dogfood_maintenance_row_names_an_audit_only_ds_evidence_convention() -> None:
+    text = (ROOT / "docs/sop/docs_dogfood.md").read_text(encoding="utf-8")
+    maintenance = next(
+        line for line in text.splitlines() if line.startswith("| maintenance |")
+    )
+    assert "audit-only" in maintenance
+    section = text.split("## Audit-only DS evidence", 1)[1].split("\n## ", 1)[0]
+    assert "placeholder" in section
+    assert "GitHub PR diff" in section and "changed paths" in section
+    assert "不是真實 assignment" in section
+    assert "不適用" in section and "停止" in section
+
+
+def test_docs_steward_stop_rule_scopes_the_audit_only_maintenance_exception() -> None:
+    text = (ROOT / ".claude/agents/docs-steward.md").read_text(encoding="utf-8")
+    stop_rule = next(line for line in text.splitlines() if "停止並回報缺口" in line)
+    assert "audit-only" in stop_rule
+
+
 def test_code_review_skill_covers_both_entries_and_scopes_the_stop_rule() -> None:
     text = (ROOT / ".claude/skills/code-review/SKILL.md").read_text(encoding="utf-8")
     assert "--entry lane-review" in text and "--entry pr-review" in text

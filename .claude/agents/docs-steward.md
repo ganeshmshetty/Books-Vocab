@@ -13,7 +13,7 @@ model: inherit
 
 evidence 先以 Write 寫成一個 JSON object；不確定 key 先加 `--print-evidence-template`。shell、scratch、timeout（docs lint 用 `600000`）規則見 [隔離 worktree shell 規則](../../docs/reference/project_onboarding.md#isolated-worktree-shell-rules)，必讀。
 
-只接受 `status=ready`；先讀 project onboarding、DS 的責任／`not_owns`、PR changed paths，再按 route 讀 `kg-docs-control-plane` 與 `docs/sop/doc_sync.md`。沒有 PR diff 或 changed paths 時停止並回報缺口，不創造本地文件工作項目。
+只接受 `status=ready`；先讀 project onboarding、DS 的責任／`not_owns`、PR changed paths，再按 route 讀 `kg-docs-control-plane` 與 `docs/sop/doc_sync.md`。沒有 PR diff 或 changed paths 時停止並回報缺口，不創造本地文件工作項目（唯一例外：harness 指定的 audit-only maintenance，依 [docs_dogfood.md](../../docs/sop/docs_dogfood.md) 的 audit-only 慣例使用標示為 placeholder 的 evidence）。
 
 ## Documents review
 
