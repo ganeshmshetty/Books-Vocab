@@ -24,6 +24,9 @@ extension AppSkin {
         _cachedTypography = nil
     }
 
+    /// 唯讀診斷 seam：測試用來確認 cache 是否已建立或已被清除。
+    static var isTypographyCached: Bool { _cachedTypography != nil }
+
     private static func buildTypography() -> Typography {
         Typography(
             // Serif tokens — 標題 (Crimson Pro + STSongti-TC)
