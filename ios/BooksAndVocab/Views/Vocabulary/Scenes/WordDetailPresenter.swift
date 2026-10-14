@@ -65,6 +65,16 @@ struct WordDetailPresenter: View {
     var onViewCollocationExplanation: ((String) -> Void)? = nil
     var onDeleteCollocationExplanation: ((String) -> Void)? = nil
 
+    /// 封存卡不提供「+」（#3671）：後端對封存來源一律 404，入口只會產生無法重試的錯誤。
+    /// 唯一的決策點：sheet 照常傳入 handler，這裡依 `isArchived` 解析出實際可見的 handler。
+    static func addLinkHandler(isArchived: Bool, handler: (() -> Void)?) -> (() -> Void)? {
+        isArchived ? nil : handler
+    }
+
+    private var addLink: (() -> Void)? {
+        Self.addLinkHandler(isArchived: isArchived, handler: onAddLink)
+    }
+
     var body: some View {
         Group {
             if showsChrome {
@@ -133,7 +143,7 @@ struct WordDetailPresenter: View {
                         .accessibilityIdentifier("wordDetail.forms")
                     }
 
-                    if !state.card.activeLinkGroups.isEmpty || !state.card.hiddenLinks.isEmpty || onAddLink != nil {
+                    if !state.card.activeLinkGroups.isEmpty || !state.card.hiddenLinks.isEmpty || addLink != nil {
                         linksSection
                             .padding(appSkin.metrics.cardBlockPadding)
                     }
@@ -168,10 +178,10 @@ struct WordDetailPresenter: View {
             HStack {
                 CardSectionLabel(title: "知識連結".localized, systemImage: "link")
                 Spacer()
-                if let onAddLink {
+                if let addLink {
                     // 可點區外擴到 44pt、版面不變（#3117，同複習卡 add-link）。
                     ReviewCardHitTargetButton(
-                        action: onAddLink,
+                        action: addLink,
                         accessibilityIdentifier: "wordDetail.card.addLink",
                         accessibilityLabel: L10n.string("vocab.card.addLink")
                     ) {
