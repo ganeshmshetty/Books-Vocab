@@ -339,19 +339,22 @@ class TestBackendRedirectNeverLeaksAdminToken:
             def log_message(self, *args):
                 pass
 
-        collector = _serve_loopback(Collector)
-        backend = _serve_loopback(Redirecting)
+        collector = backend = None
         try:
+            collector = _serve_loopback(Collector)
+            backend = _serve_loopback(Redirecting)
             monkeypatch.undo()
             monkeypatch.setenv("ADMIN_TOKEN", "tok")
             monkeypatch.setenv("KG_OPS_BACKEND_URL", f"http://127.0.0.1:{backend.server_address[1]}")
             assert costs._backend_token_retention_days() is None
             assert leaked == []
         finally:
-            backend.shutdown()
-            backend.server_close()
-            collector.shutdown()
-            collector.server_close()
+            if backend is not None:
+                backend.shutdown()
+                backend.server_close()
+            if collector is not None:
+                collector.shutdown()
+                collector.server_close()
 
     def test_same_origin_200_still_returns_retention_days(self, monkeypatch):
         import json as _json
@@ -403,3 +406,28 @@ def test_loopback_servers_release_sockets_after_each_test(monkeypatch):
 
     assert len(spawned) == 3
     assert all(srv.socket.fileno() == -1 for srv in spawned)
+
+
+def test_collector_socket_released_when_backend_setup_fails(monkeypatch):
+    """#3621: a failure while building the second loopback server must still close the first one."""
+    import sys
+    from unittest import mock
+
+    spawned: list = []
+    real_serve = _serve_loopback
+    calls = {"n": 0}
+
+    def flaky(handler_cls):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("backend setup failed")
+        srv = real_serve(handler_cls)
+        spawned.append(srv)
+        return srv
+
+    with mock.patch.object(sys.modules[__name__], "_serve_loopback", flaky):
+        with pytest.raises(RuntimeError, match="backend setup failed"):
+            TestBackendRedirectNeverLeaksAdminToken().test_redirect_to_other_origin_never_receives_bearer(monkeypatch)
+
+    assert len(spawned) == 1
+    assert spawned[0].socket.fileno() == -1
