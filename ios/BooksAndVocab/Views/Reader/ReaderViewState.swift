@@ -185,6 +185,10 @@ struct ReaderNavigatorLifecycleGate: Equatable, Sendable {
 @MainActor
 protocol ReaderNavigatorDriving: AnyObject {
     func go(to locator: Locator) async -> Bool?
+    /// Readium's own position. Readium skips `locationDidChange` when a jump
+    /// computes the location it last notified, so this is the only way to
+    /// confirm a jump onto the reader's current position.
+    var currentLocation: Locator? { get }
 }
 
 @MainActor
@@ -201,6 +205,17 @@ final class ReaderTOCNavigationBridge {
         self.navigator = navigator
         self.timeoutNanoseconds = timeoutNanoseconds
         self.beforeContinuationInstall = beforeContinuationInstall
+    }
+
+    /// Same resource and fragment rules as the locationDidChange path
+    /// (`ReaderTOCNavigationRequestGate`), applied to `currentLocation`.
+    static func isAtDestination(_ current: Locator?, requested locator: Locator) -> Bool {
+        guard let current else { return false }
+        return current.href.string == locator.href.string
+            && ReaderTOCNavigationRequestGate.fragmentsAccept(
+                expected: locator.locations.fragments,
+                reported: current.locations.fragments
+            )
     }
 
     /// `onAccepted` runs in the same main-actor turn that Readium's `go(to:)`
@@ -237,6 +252,12 @@ final class ReaderTOCNavigationBridge {
                     }
                     if accepted {
                         onAccepted?()
+                        // Readium emits no locationDidChange for a jump onto the
+                        // location it already notified, so confirm arrival here.
+                        if ReaderTOCNavigationBridge.isAtDestination(navigator.currentLocation, requested: locator) {
+                            race.finish(.locationDidChange(requestID: requestID, locatorHref: locator.href.string))
+                            return
+                        }
                     }
                     race.finish(
                         accepted
@@ -339,7 +360,24 @@ extension ReadiumNavigatorView.Coordinator {
             } catch {
                 return
             }
-            guard let self, self.tocNavigationGate.finish(requestID) else { return }
+            guard let self else { return }
+            // Readium may have reached the destination without a delegate
+            // callback, so check its position once more before failing.
+            if let current = self.navigator?.currentLocation,
+               self.tocNavigationGate.finish(
+                   requestID,
+                   ifMatchingLocatorHref: current.href.string,
+                   locatorFragments: current.locations.fragments
+               ) {
+                self.activeTOCNavigationTask?.cancel()
+                self.activeTOCNavigationTask = nil
+                self.activeTOCTimeoutTask = nil
+                self.parent.onTOCNavigationEvent(
+                    .locationDidChange(requestID: requestID, locatorHref: current.href.string)
+                )
+                return
+            }
+            guard self.tocNavigationGate.finish(requestID) else { return }
             self.activeTOCNavigationTask?.cancel()
             self.activeTOCNavigationTask = nil
             self.activeTOCTimeoutTask = nil
@@ -385,8 +423,11 @@ struct ReaderTOCNavigationState: Equatable {
     private(set) var activeRequestID: UUID?
     private(set) var expectedLocatorHref: String?
 
+    /// A failed jump must stay dismissable; only an in-flight request blocks
+    /// closing the sheet. `.missingDestination` is deliberately not included:
+    /// its UI pins the sheet open for retry (ReaderFlowUITests).
     var canDismissSheet: Bool {
-        phase == .idle || phase == .success
+        phase == .idle || phase == .success || phase == .failure
     }
 
     var canRetry: Bool {

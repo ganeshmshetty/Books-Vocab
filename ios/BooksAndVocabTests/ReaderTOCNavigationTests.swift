@@ -540,7 +540,75 @@ struct ReaderTOCNavigationTests {
         #expect(event == .goRejected(requestID: requestID))
         #expect(state.phase == .failure)
         #expect(state.canRetry)
+        #expect(state.canDismissSheet)
+    }
+
+    @Test @MainActor
+    func jumpToAlreadyNotifiedLocationCompletesWithoutDelegateCallback() async throws {
+        let requestID = UUID()
+        let destination = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+        // Readium skips locationDidChange for a jump onto its last notified
+        // location, so the fake never reports a callback and only exposes
+        // the destination through currentLocation.
+        let navigator = FakeReaderNavigator(outcome: .accepted, currentLocation: destination)
+        var state = ReaderTOCNavigationState()
+        _ = state.beginSelection(
+            path: [1],
+            title: "Chapter B",
+            expectedHref: "OEBPS/chapter-b.xhtml",
+            requestID: requestID
+        )
+
+        let event = await ReaderTOCNavigationBridge(
+            navigator: navigator,
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: requestID, locator: destination)
+        state.apply(event)
+
+        #expect(event == .locationDidChange(requestID: requestID, locatorHref: "OEBPS/chapter-b.xhtml"))
+        #expect(state.phase == .success)
+        #expect(state.failureReason == nil)
+        #expect(state.canDismissSheet)
+    }
+
+    @Test @MainActor
+    func staleCurrentLocationOnAnotherResourceStillAwaitsDelegateCallback() async throws {
+        let requestID = UUID()
+        let destination = try Self.locator(href: "OEBPS/chapter-b.xhtml")
+        let stale = try Self.locator(href: "OEBPS/chapter-a.xhtml")
+        let event = await ReaderTOCNavigationBridge(
+            navigator: FakeReaderNavigator(outcome: .accepted, currentLocation: stale),
+            timeoutNanoseconds: 50_000_000
+        ).navigate(requestID: requestID, locator: destination)
+
+        #expect(event == .goAccepted(requestID: requestID, locatorHref: "OEBPS/chapter-b.xhtml"))
+    }
+
+    @Test @MainActor
+    func failedJumpIsDismissableWhileLoadingIsNot() throws {
+        let requestID = UUID()
+        var state = ReaderTOCNavigationState()
+        _ = state.beginSelection(
+            path: [1],
+            title: "Chapter B",
+            expectedHref: "OEBPS/chapter-b.xhtml",
+            requestID: requestID
+        )
         #expect(!state.canDismissSheet)
+
+        state.apply(.timedOut(requestID: requestID))
+        #expect(state.phase == .failure)
+        #expect(state.failureReason == .timedOut)
+        #expect(state.canDismissSheet)
+        #expect(state.canRetry)
+
+        let retryID = UUID()
+        _ = state.beginRetry(requestID: retryID)
+        #expect(!state.canDismissSheet)
+
+        state.apply(.locationDidChange(requestID: retryID, locatorHref: "OEBPS/chapter-a.xhtml"))
+        #expect(state.failureReason == .locatorMismatch)
+        #expect(state.canDismissSheet)
     }
 
     @Test @MainActor
@@ -902,9 +970,11 @@ private final class FakeReaderNavigator: ReaderNavigatorDriving {
 
     let outcome: Outcome
     private(set) var requestedLocator: Locator?
+    var currentLocation: Locator?
 
-    init(outcome: Outcome) {
+    init(outcome: Outcome, currentLocation: Locator? = nil) {
         self.outcome = outcome
+        self.currentLocation = currentLocation
     }
 
     func go(to locator: Locator) async -> Bool? {
