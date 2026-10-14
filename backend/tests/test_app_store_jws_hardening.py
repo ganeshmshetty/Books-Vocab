@@ -30,6 +30,7 @@ from cryptography.x509.oid import NameOID, ObjectIdentifier
 from kg.app_store import AppStoreVerificationError, verify_and_decode_signed_jws
 
 APPLE_APP_STORE_OID = "1.2.840.113635.100.6.11.1"
+APPLE_INTERMEDIATE_OID = "1.2.840.113635.100.6.2.1"
 BUNDLE_ID = "com.Max0228.BooksBrowser"
 
 
@@ -113,13 +114,14 @@ def root_ca(monkeypatch, tmp_path):
 
     def make_chain(*, leaf_has_apple_oid: bool):
         inter_key, inter_cert = _build_certificate(
-            "Test Apple Intermediate", issuer_cert=root_cert, issuer_key=root_key
+            "Test Apple Intermediate",
+            issuer_cert=root_cert,
+            issuer_key=root_key,
+            extra_extensions=[x509.UnrecognizedExtension(ObjectIdentifier(APPLE_INTERMEDIATE_OID), b"\x05\x00")],
         )
         leaf_exts = []
         if leaf_has_apple_oid:
-            leaf_exts.append(
-                x509.UnrecognizedExtension(ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00")
-            )
+            leaf_exts.append(x509.UnrecognizedExtension(ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00"))
         leaf_key, leaf_cert = _build_certificate(
             "Test Apple Leaf",
             issuer_cert=inter_cert,
@@ -234,9 +236,7 @@ def test_broken_chain_rejected(root_ca):
         "Foreign Leaf",
         issuer_cert=inter_cert,
         issuer_key=inter_key,
-        extra_extensions=[
-            x509.UnrecognizedExtension(ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00")
-        ],
+        extra_extensions=[x509.UnrecognizedExtension(ObjectIdentifier(APPLE_APP_STORE_OID), b"\x05\x00")],
     )
     chain = {
         "root_cert": foreign_root,

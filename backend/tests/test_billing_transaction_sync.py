@@ -198,7 +198,14 @@ def test_sync_forged_cert_chain_maps_to_400_not_500(tmp_path, monkeypatch):
     root_cert = _cert("Test Apple Root", root_key.public_key(), root_name, root_key, ca=True)
 
     inter_key = ec.generate_private_key(ec.SECP256R1())
-    inter_cert = _cert("Test Apple Intermediate", inter_key.public_key(), root_cert.subject, root_key, ca=True)
+    inter_cert = _cert(
+        "Test Apple Intermediate",
+        inter_key.public_key(),
+        root_cert.subject,
+        root_key,
+        ca=True,
+        exts=[x509.UnrecognizedExtension(ObjectIdentifier("1.2.840.113635.100.6.2.1"), b"\x05\x00")],
+    )
 
     # Forge the leaf: signed by an attacker key, not the genuine intermediate.
     attacker_key = ec.generate_private_key(ec.SECP256R1())
