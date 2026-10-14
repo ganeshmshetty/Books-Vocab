@@ -57,6 +57,18 @@ GitHub 是交付控制面：Issue（`P0`–`P3`／狀態 label 與 IM 的公開�
 | DS | 判斷文件影響、維護 registry／SoT、執行 docs lint | 建立文件狀態庫、PR lifecycle、merge |
 | Release operator | 依批准與 SOP 執行 release、deploy、health gate、rollback | 自行批准 production、繞過 safety wrapper |
 
+每個 identity 可用的 `--intent`／`--entry` 白名單（與 `ops/context_plane.json` 的 `allowed_intents`／`entry_modes` 一致；`ops/tests/test_agent_onboard.py` 會比對，漂移即紅）：
+
+| canonical identity | 允許的 `--intent` | 允許的 `--entry` |
+|---|---|---|
+| CM | `delivery`, `release` | `coordination`, `merge` |
+| IM | `delivery` | `issue-planning`, `direct-assignment` |
+| Worker | `delivery`, `backend`, `ios` | `direct-assignment` |
+| Issue Solver | `delivery`, `backend`, `ios` | `issue` |
+| CR | `review` | `pr-review`, `lane-review` |
+| DS | `docs` | `pr-review` |
+| Release operator | `release` | `release` |
+
 完整角色邊界以 [`delivery_model.md`](delivery_model.md) 為準。Onboarding、assignment
 與報告一律使用 canonical identity；route manifest 的內部 key 只屬執行層實作，
 不是角色、權限或工作狀態，代理不需要記住它們。
@@ -77,7 +89,7 @@ GitHub 是交付控制面：Issue（`P0`–`P3`／狀態 label 與 IM 的公開�
 ./ops/agent_onboard.py \
   --identity '<CM|IM|Worker|Issue Solver|CR|DS|Release operator>' \
   --intent '<delivery|review|docs|release|backend|ios>' \
-  --entry '<coordination|merge|direct-assignment|issue|pr-review|lane-review|release>' \
+  --entry '<coordination|merge|direct-assignment|issue|issue-planning|pr-review|lane-review|release>' \
   --specialist-intent '<optional identity-scoped specialist intent>' \
   --evidence-file '<own worktree>/.cache/agent-scratch/evidence.json' \
   --json

@@ -514,11 +514,16 @@ def _route_context(
 
     identity_def = manifest["identities"][identity_id]
     if canonical_intent not in identity_def["allowed_intents"]:
+        allowed = ", ".join(identity_def["allowed_intents"])
         raise OnboardingError(
             f"identity 不允許 intent: {identity_id} -> {canonical_intent}"
+            f"（允許：{allowed}）"
         )
     if entry not in identity_def["entry_modes"]:
-        raise OnboardingError(f"entry 不符合 identity: {identity_id} -> {entry}")
+        allowed = ", ".join(identity_def["entry_modes"])
+        raise OnboardingError(
+            f"entry 不符合 identity: {identity_id} -> {entry}（允許：{allowed}）"
+        )
     return manifest, catalog, identity_id, canonical_intent
 
 
