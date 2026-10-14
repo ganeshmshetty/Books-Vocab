@@ -254,40 +254,67 @@ got="$(tree_active_probe "$active_lock_dir/live.lock")"
 kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
 
 echo "── docker build: argv[0] and subcommand decide; argv text that mentions a build does not ──"
-# $1 is the argv snapshot (ps -axww -o args=, one line per process), $2 the
-# executable snapshot (ps -axo comm=).  Stubbed in-process like active_build.
+# $1 is the argv snapshot (ps -axww -o args=, one line per process).  Stubbed
+# in-process like active_build.  Only argv is probed: the buildx plugin's
+# executable is docker-buildx whether it runs a build or ls, so the subcommand
+# in argv is the only discriminator.
 docker_active_probe() {
-  local argv_snapshot="$1" command_snapshot="$2"
+  local argv_snapshot="$1"
   (
     unset KG_DISK_GUARD_DOCKER_ACTIVE
     set --
     source "$SCRIPT"
     process_snapshot() { printf '%s\n' "$argv_snapshot"; }
-    process_command_snapshot() { printf '%s\n' "$command_snapshot"; }
     docker_active
   )
 }
 expect_docker_active() {
   local want="$1" label="$2" got
-  got="$(docker_active_probe "$3" "$4")"
+  got="$(docker_active_probe "$3")"
   [[ "$got" == "$want" ]] && ok "$label" || bad "$label (want docker_active=$want, got $got)"
 }
 expect_docker_active 0 "a shell whose argv mentions docker build is not a build" \
-  '/bin/bash -c docker build -t kg .' '/bin/bash'
+  '/bin/bash -c docker build -t kg .'
 expect_docker_active 0 "a log tail naming docker build is not a build" \
-  'tail -f /tmp/docker build.log' '/usr/bin/tail'
+  'tail -f /tmp/docker build.log'
 expect_docker_active 0 "a deliver note quoting docker build is not a build" \
-  '/opt/homebrew/bin/python3.13 ops/deliver.py --note docker build' '/opt/homebrew/bin/python3.13'
+  '/opt/homebrew/bin/python3.13 ops/deliver.py --note docker build'
+expect_docker_active 0 "a shell wrapper naming the buildx plugin build is not a build" \
+  '/bin/sh -c /usr/local/lib/docker/cli-plugins/docker-buildx build -t kg .'
 expect_docker_active 0 "docker ps is not a build" \
-  'docker ps -a' '/usr/local/bin/docker'
+  'docker ps -a'
 expect_docker_active 0 "docker builder prune is cache maintenance, not a build" \
-  'docker builder prune -f' '/usr/local/bin/docker'
+  'docker builder prune -f'
 expect_docker_active 1 "docker build CLI is a build" \
-  'docker build -t kg .' '/usr/local/bin/docker'
+  'docker build -t kg .'
 expect_docker_active 1 "docker compose build CLI is a build" \
-  '/usr/local/bin/docker compose build api' '/usr/local/bin/docker'
-expect_docker_active 1 "buildx plugin process is a build" \
-  '' '/usr/local/lib/docker/cli-plugins/docker-buildx'
+  '/usr/local/bin/docker compose build api'
+expect_docker_active 1 "docker buildx build CLI is a build" \
+  '/usr/local/bin/docker buildx build -t kg .'
+expect_docker_active 1 "docker buildx bake CLI is a build" \
+  '/usr/local/bin/docker buildx bake api'
+expect_docker_active 0 "docker buildx ls CLI is not a build" \
+  '/usr/local/bin/docker buildx ls'
+expect_docker_active 0 "docker buildx inspect CLI is not a build" \
+  '/usr/local/bin/docker buildx inspect default'
+expect_docker_active 0 "docker-buildx ls is not a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx ls'
+expect_docker_active 0 "docker-buildx inspect is not a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx inspect default'
+expect_docker_active 1 "buildx plugin build process is a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx build -t kg .'
+expect_docker_active 1 "buildx plugin bake process is a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx bake api'
+# The docker CLI execs the plugin as `docker-buildx buildx <sub>`; these are the
+# argv shapes ps reports for a real build, bake, ls and inspect.
+expect_docker_active 1 "buildx plugin exec'd by the CLI as buildx build is a build" \
+  'docker-buildx buildx build -t kg .'
+expect_docker_active 1 "buildx plugin exec'd by the CLI as buildx bake is a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx buildx bake api'
+expect_docker_active 0 "buildx plugin exec'd by the CLI as buildx ls is not a build" \
+  'docker-buildx buildx ls'
+expect_docker_active 0 "buildx plugin exec'd by the CLI as buildx inspect is not a build" \
+  '/usr/local/lib/docker/cli-plugins/docker-buildx buildx inspect default'
 
 echo "── global DerivedData: active consumer defers repair ──"
 root="$TMP/global-dd-active"; global_derived="$root/global-derived-data"; state="$root/state.json"
