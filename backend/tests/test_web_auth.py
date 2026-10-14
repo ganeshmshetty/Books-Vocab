@@ -472,3 +472,28 @@ def test_apple_callback_verifies_id_token_against_service_id(web_auth_env):
     assert resp.status_code == 200, resp.text
     assert audiences == [settings.apple_service_id]
     assert audiences != [settings.apple_bundle_id]
+
+
+# ── Apple login authorize redirect (#3733) ───────────────────────────────────
+# Pin the Location query the browser is sent to Apple with: client_id, the
+# code+id_token response type, form_post response mode, and the state nonce
+# that must match the oauth_state cookie.
+
+
+def test_apple_login_redirect_pins_authorize_params(web_auth_env):
+    settings = app.state.kg_settings
+    resp = web_auth_env.client.get("/auth/web/apple/login", follow_redirects=False)
+    assert resp.status_code == 307, resp.text
+    location = urlparse(resp.headers["location"])
+    assert location.scheme == "https"
+    assert location.netloc == "appleid.apple.com"
+    assert location.path == "/auth/authorize"
+
+    params = parse_qs(location.query)
+    assert params["client_id"] == [settings.apple_service_id]
+    assert params["response_type"] == ["code id_token"]
+    assert params["response_mode"] == ["form_post"]
+    assert params["scope"] == ["email"]
+    assert params["redirect_uri"] == [settings.apple_redirect_uri]
+    assert params["state"][0]
+    assert f"oauth_state={params['state'][0]}" in resp.headers.get("set-cookie", "")
