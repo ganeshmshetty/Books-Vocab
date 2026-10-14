@@ -571,6 +571,20 @@ def test_recovery_rejects_security_hold_before_local_mutation(
         _perform(tmp_path, github=github)
 
 
+def test_recovery_refuses_auto_merge_ownership_before_local_mutation(
+    tmp_path: Path,
+) -> None:
+    _, _, pull_request = _fixture(tmp_path)
+    git = FakeGit()
+    with pytest.raises(ReanchorRefused, match="auto-merge ownership"):
+        _perform(
+            tmp_path,
+            git=git,
+            github=FakeGitHub(replace(pull_request, auto_merge_enabled=True)),
+        )
+    assert git.actions == []
+
+
 def test_recovery_rejects_native_queue_ownership_and_duplicate_history(
     tmp_path: Path,
 ) -> None:

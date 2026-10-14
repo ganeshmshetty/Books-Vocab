@@ -388,6 +388,18 @@ def test_abandon_rejects_queued_pr_before_any_mutation() -> None:
     assert git.actions == []
 
 
+def test_abandon_rejects_auto_merge_pr_before_any_mutation() -> None:
+    github = FakeGitHub(replace(_pr(), auto_merge_enabled=True))
+    service, registry, git, github = _service(github=github)
+
+    with pytest.raises(PolicyViolation, match="merge queue"):
+        service.abandon(pull_request_number=17)
+
+    assert github.actions == []
+    assert registry.actions == []
+    assert git.actions == []
+
+
 def test_abandon_rejects_nonunique_branch_history_before_any_mutation() -> None:
     github = FakeGitHub()
     github.inventory = PullRequestInventory(

@@ -332,6 +332,17 @@ def test_legacy_abandoned_pr_closes_and_removes_remote_only() -> None:
     assert git.actions == ["delete-remote"]
 
 
+def test_legacy_abandoned_pr_with_auto_merge_is_refused_before_any_mutation() -> None:
+    git = FakeGit(local=None)
+    github = FakeGitHub(replace(_pr(state="OPEN"), auto_merge_enabled=True))
+
+    with pytest.raises(PolicyViolation, match="not safe to abandon"):
+        _service(_record(status="abandoned"), git, github).abandon_open_pr(1)
+
+    assert not github.closed
+    assert git.actions == []
+
+
 def test_legacy_abandoned_branch_at_base_can_be_released_without_pr() -> None:
     branch = "debug/no-pr"
     record = replace(
