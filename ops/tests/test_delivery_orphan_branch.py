@@ -254,6 +254,96 @@ def test_remote_discard_fails_closed_on_remote_drift() -> None:
     assert git.actions == []
 
 
+_REMOTE_CLAIM = RegistrySnapshot(
+    lane_id="LANE",
+    branch=BRANCH,
+    path=PATH,
+    status="abandoned",
+    scope=Scope.from_paths(modify=("ops/example.py",)),
+    base_sha=BASE,
+    claim_generation=0,
+)
+
+
+@pytest.mark.parametrize(
+    ("registry", "git", "github", "message"),
+    (
+        (
+            FakeRegistry(RegistryInventory((_REMOTE_CLAIM,))),
+            FakeGit(local=None, remote=HEAD),
+            FakeGitHub(),
+            "registry claim",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local=None, remote=HEAD),
+            FakeGitHub(PullRequestInventory((object(),))),
+            "PR history",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(
+                local=None,
+                remote=HEAD,
+                physical=(PhysicalWorktree(PATH, HEAD, BRANCH),),
+            ),
+            FakeGitHub(),
+            "physical worktree",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local=None, remote=HEAD, canonical_branch="feature"),
+            FakeGitHub(),
+            "canonical checkout must be on main",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local=None, remote=HEAD, canonical_clean=False),
+            FakeGitHub(),
+            "canonical checkout is dirty",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local=None, remote=HEAD, canonical_head=HEAD),
+            FakeGitHub(),
+            "not equal to live origin/main",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local=None, remote=HEAD, ancestor=False),
+            FakeGitHub(),
+            "not an ancestor",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local="c" * 40, remote=HEAD),
+            FakeGitHub(),
+            "paired local branch changed",
+        ),
+        (
+            FakeRegistry(),
+            FakeGit(local=None, remote=None),
+            FakeGitHub(),
+            "remote orphan branch changed",
+        ),
+    ),
+)
+def test_remote_discard_refuses_each_unproven_precondition(
+    registry: FakeRegistry,
+    git: FakeGit,
+    github: FakeGitHub,
+    message: str,
+) -> None:
+    with pytest.raises(PolicyViolation, match=message):
+        _build_service(git=git, registry=registry, github=github).discard_remote(
+            branch=BRANCH,
+            expected_head_sha=HEAD,
+            operator="supervisor",
+            reason="test",
+        )
+    assert git.actions == []
+
+
 def test_preflight_is_read_only_and_reports_all_passed_checks() -> None:
     git = FakeGit()
 

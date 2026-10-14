@@ -85,6 +85,27 @@ def _graphql_pr_node(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize(
+    ("auto_merge_request", "expected"),
+    (({"enabledAt": "2026-10-14T00:00:00Z"}, True), (None, False)),
+)
+def test_pull_request_snapshot_pins_auto_merge_enabled_flag(
+    auto_merge_request: object, expected: bool
+) -> None:
+    payload = {**_pr_payload(), "autoMergeRequest": auto_merge_request}
+
+    snapshot = github_parsing.parse_pull_request(payload)
+
+    assert snapshot.auto_merge_enabled is expected
+
+
+def test_pull_request_snapshot_rejects_non_mapping_auto_merge_payload() -> None:
+    payload = {**_pr_payload(), "autoMergeRequest": "x"}
+
+    with pytest.raises(AdapterPayloadError, match="auto-merge"):
+        github_parsing.parse_pull_request(payload)
+
+
 def _candidate_payload(number: int) -> dict[str, object]:
     return {
         "number": number,
