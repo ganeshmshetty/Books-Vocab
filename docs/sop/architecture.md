@@ -147,6 +147,7 @@ Migration 順序：
 - metadata tombstone 同步到後端，其他裝置隱藏該書。
 - 本機檔案可立即刪除；object storage asset 在 tombstone commit 後 best-effort 立即 `delete_object`（`DELETE /api/library/books/{id}`），asset 格式 / local-only 變更時同樣刪除被取代的舊 key；刪除失敗只記 log、不使請求失敗，舊 key 留在 `library.db` 的 `librarypendingobjectdelete` ledger，於下一次 library 寫入重試，並由帳號刪除（erasure）兜底回收。目前沒有「刪書後 recovery window」：tombstone 不可還原 asset。
 - 帳號刪除（erasure）的 late PUT 上界：tombstone 後仍有效的 presigned PUT（`_ASSET_URL_TTL` = 3600 秒 = 1 小時）可能落地為 `library/<uid>/` 下的孤兒物件。erasure 於本地目錄移除之後執行前綴 sweep（`sweep_account_prefixes`）清除；已接受的保留上界是「erasure 之後至多 1 小時內的上傳」，reconciler 不在範圍內。
+- 刪書與換格式的 late PUT 上界（#3896）：舊 object key 進 pending-delete ledger 後，須等 `PENDING_DELETE_GRACE`（= `_ASSET_URL_TTL` = 3600 秒 = 1 小時，自 `recorded_at` 起算）過期才可被 claim 回收，因此在 presigned 視窗內到達的 late PUT 會在之後被回收，不會成為孤兒。回收由之後的 library 寫入（刪書、asset 上傳）觸發，不另設排程。
 - 帳號持有人需套用的 IAM policy（agent 不執行 aws；`<bucket>` 換成實際 bucket 名）：
 
   ```json

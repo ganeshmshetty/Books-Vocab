@@ -19,13 +19,14 @@ from ..api_models.library import (
 )
 from ..deps import CurrentUser, _library_store, _notebook_store
 from ..exceptions import BadRequestError, ConflictError, NotFoundError
+from ..library.store import ASSET_URL_TTL_SECONDS
 from ..notebook import validate_notebook_access
 from ..settings import KGSettings
 from ..users_lock import users_file_lock
 from ..utc_instant import parse_utc_instant
 
 # Presigned URL TTL (seconds) for asset upload/download targets.
-_ASSET_URL_TTL = 3600
+_ASSET_URL_TTL = ASSET_URL_TTL_SECONDS
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["library"])

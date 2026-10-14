@@ -34,6 +34,12 @@ from ..vocab_shared import _dt_to_iso
 # 2s connect + 2s read per key, batch of 5), so a slow delete cannot outlive its
 # lease and race a re-adoption of the same key.
 RECLAIM_LEASE = timedelta(seconds=120)
+# Presigned URL TTL (seconds) for asset upload/download targets. A PUT minted
+# before a delete or format change can still land this long after it.
+ASSET_URL_TTL_SECONDS = 3600
+# A pending key is claimable only after every presigned PUT that could reference
+# it has expired, so a late PUT cannot land as an orphan after reclaim (#3896).
+PENDING_DELETE_GRACE = timedelta(seconds=ASSET_URL_TTL_SECONDS)
 
 
 class PendingClaim(NamedTuple):
@@ -306,6 +312,8 @@ class LibraryStore:
                 ).first()
                 if live is not None:
                     session.delete(row)
+                    continue
+                if _utc(row.recorded_at) + PENDING_DELETE_GRACE > now:
                     continue
                 row.claimed_until = now + RECLAIM_LEASE
                 row.claim_token = uuid.uuid4().hex

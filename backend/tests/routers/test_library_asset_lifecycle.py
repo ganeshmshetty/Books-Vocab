@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,24 @@ import kg.routers.library as library_router
 from conftest import TEST_JWT_SECRET, _swap_settings, make_jwt
 from kg.api import app
 from kg.settings import KGSettings
+
+
+@pytest.fixture()
+def pending_window():
+    """Opt-in marker: keep the real presigned-URL window (#3896) for this test."""
+
+
+@pytest.fixture(autouse=True)
+def _claim_state_machine_without_window(request, monkeypatch):
+    """Claim/lease tests pin the ledger state machine, so pending keys are claimable at once.
+
+    The presigned-URL window is covered by tests that request ``pending_window``.
+    """
+    if "pending_window" in request.fixturenames:
+        return
+    import kg.library.store as library_store
+
+    monkeypatch.setattr(library_store, "PENDING_DELETE_GRACE", timedelta(0))
 
 
 @pytest.fixture()
@@ -335,3 +354,43 @@ def test_failed_same_key_reupload_with_different_size_is_conflict(isolated_api, 
     # Re-upload declares a different size but the new bytes never land.
     assert _request_upload(isolated_api, book_id, byte_size=99).status_code == 200
     assert _download(isolated_api, book_id).status_code == 409
+
+
+def _age_pending_ledger(api, *, by: timedelta) -> None:
+    """Backdate every ledger row so its presigned-URL window has passed (test clock)."""
+    from sqlmodel import Session, select
+
+    from kg.library.store import LibraryPendingObjectDelete
+
+    # The factory caches the store per user dir; closing it here would break later requests.
+    store = library_router._library_store(api.data_dir / "users" / api.user_id)
+    with Session(store.engine) as session:
+        for row in session.exec(select(LibraryPendingObjectDelete)).all():
+            row.recorded_at = datetime.now(UTC) - by
+            session.add(row)
+        session.commit()
+
+
+def test_late_put_after_delete_is_reclaimed_once_url_window_passes(isolated_api, monkeypatch, pending_window):
+    """#3896: a PUT minted before the delete stays valid for _ASSET_URL_TTL. Reclaiming
+    the key at delete time lets that late PUT land as an orphan, so the key must stay
+    pending until the window has passed, then be reclaimed on a later library write."""
+    s3 = _RecordingS3()
+    _bucket_api(isolated_api, monkeypatch, s3)
+    book_id = _seed_book(isolated_api)
+    key = _request_upload(isolated_api, book_id).json()["object_key"]
+    other_id = isolated_api.client.post(
+        "/api/library/books",
+        json={"client_book_id": "asset-lifecycle-2", "title": "Other", "format": "epub"},
+        headers=isolated_api.headers,
+    ).json()["id"]
+
+    assert isolated_api.client.delete(f"/api/library/books/{book_id}", headers=isolated_api.headers).status_code == 200
+    assert s3.deleted == [], "key must not be reclaimed inside the presigned-URL window"
+
+    _age_pending_ledger(isolated_api, by=timedelta(seconds=library_router._ASSET_URL_TTL + 1))
+    assert isolated_api.client.delete(f"/api/library/books/{other_id}", headers=isolated_api.headers).status_code == 200
+
+    assert s3.deleted == [key]
+    store = library_router._library_store(isolated_api.data_dir / "users" / isolated_api.user_id)
+    assert store.pending_object_keys() == []
