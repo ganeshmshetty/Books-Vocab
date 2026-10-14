@@ -23,6 +23,7 @@ from .ops_edit_support import (
     _resolve_card_id,
     _review_fields,
     _split_multi,
+    validate_review_interval,
 )
 
 logger = logging.getLogger(__name__)
@@ -245,7 +246,8 @@ def cmd_card_import(args: argparse.Namespace) -> int:
     if not csv_path.exists():
         raise EditError(f"CSV not found: {csv_path}")
     nb_id = _resolve_notebook_id_for_command(ctx.user_dir, args.notebook)
-    with open(csv_path, encoding="utf-8") as f:
+    # utf-8-sig:Excel/Numbers 匯出的 CSV 常帶 BOM,否則首欄名會變 "﻿pos" 被靜默丟棄(#3914)。
+    with open(csv_path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         # header 正規化成小寫:CSV 用 `Content`/`CONTENT` 不該靜默跳過全批。
         fieldnames = [h.strip().lower() for h in (reader.fieldnames or [])]
@@ -260,6 +262,14 @@ def cmd_card_import(args: argparse.Namespace) -> int:
     rows = [r for r in all_rows if (r.get("content") or "").strip()]
     blank_meaning = sum(1 for r in rows if not (r.get("meaning") or "").strip())
     has_review_col = "review_state" in fieldnames
+    with closing(_card_store(ctx.user_dir)) as store:
+        # 唯讀預演:帶 review_state 但已存在的重複卡,commit 時只計 skipped_dup、不覆寫複習態。
+        dup_review_rows = sum(
+            1
+            for r in rows
+            if (r.get("review_state") or "").strip() in _VALID_REVIEW_STATES
+            and store.find_by_content(r["content"].strip(), notebook_id=nb_id) is not None
+        )
     plan = {
         "csv": str(csv_path),
         "notebook_id": nb_id,
@@ -267,6 +277,7 @@ def cmd_card_import(args: argparse.Namespace) -> int:
         "skipped_blank_content": len(all_rows) - len(rows),
         "blank_meaning_rows": blank_meaning,  # >0 會在 commit 時被擋
         "has_review_col": has_review_col,
+        "dup_review_rows": dup_review_rows,  # 既有卡且帶 review_state:commit 時不套用複習態
         "sample": [r.get("content") for r in rows[:5]],
     }
 
@@ -288,9 +299,17 @@ def cmd_card_import(args: argparse.Namespace) -> int:
             raw_iv = (r.get("review_interval") or "").strip()
             if raw_iv:
                 try:
-                    float(raw_iv)
+                    iv = float(raw_iv)
                 except ValueError as exc:
                     raise EditError(f"列 {i} review_interval 非數值:{raw_iv!r}") from exc
+                try:
+                    validate_review_interval(iv)
+                except EditError as exc:
+                    raise EditError(f"列 {i} review_interval 不合法:{exc}") from exc
+
+    if not ctx.commit:
+        # dry-run 不進 apply_fn:預演同一組格式/數值檢查,讓 preview 與 --commit 同樣失敗(#3910)。
+        _prevalidate_rows()
 
     def apply_fn() -> dict[str, Any]:
         _prevalidate_rows()
@@ -299,6 +318,9 @@ def cmd_card_import(args: argparse.Namespace) -> int:
             # 用 pre/post id diff 算**真實**新增數 —— CardStore.add 對既有 content
             # 冪等回傳舊卡,無腦 +1 會把「跳過的重複」誤計為新增。
             pre_ids = {c.id for c in store.all(notebook_id=nb_id)}
+            known_ids = set(pre_ids)
+            # 第一筆寫入即進入 destructive 區段:之後任一列失敗都會留下部分寫入(#3910)。
+            ctx.mark_destructive()
             for r in rows:
                 card = store.add(
                     content=r["content"].strip(),
@@ -308,8 +330,12 @@ def cmd_card_import(args: argparse.Namespace) -> int:
                     collocations=_split_multi(r.get("collocations")),
                     notebook_id=nb_id,
                 )
+                # 只對本批新插入的卡套用複習態;重複卡(既有或同批先前已插入)回傳舊列,
+                # 套用會把既有 review_count/streak/interval 歸零(#3909)。
+                is_new = card.id not in known_ids
+                known_ids.add(card.id)
                 rv = (r.get("review_state") or "").strip()
-                if rv in _VALID_REVIEW_STATES:
+                if is_new and rv in _VALID_REVIEW_STATES:
                     raw_iv = (r.get("review_interval") or "").strip()
                     iv = float(raw_iv) if raw_iv else None
                     store.update(card.id, **_review_fields(rv, iv, now))

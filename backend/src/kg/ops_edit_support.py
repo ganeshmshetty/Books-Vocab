@@ -23,6 +23,7 @@ import argparse  # noqa: F401 - re-exported for ops_edit_* command modules
 import csv  # noqa: F401 - re-exported for ops_edit_* command modules
 import hashlib
 import json
+import math
 import shutil
 import sqlite3
 import sys  # noqa: F401 - re-exported for ops_edit_* command modules
@@ -160,6 +161,17 @@ def _assert_clean_notebook_name(name: str) -> None:
         raise EditError(f"notebook name 過長(>100 chars):{len(name)}")
 
 
+def validate_review_interval(interval_hours: float | None) -> None:
+    """複習間隔須為有限正數(小時);None 代表沿用預設。純函數,供寫入前預驗與 _review_fields 共用。
+
+    NaN 與 inf 不可經 `<= 0` 判斷擋下(NaN 比較恆 False),故另檢 isfinite(#3910)。
+    """
+    if interval_hours is None:
+        return
+    if not math.isfinite(interval_hours) or interval_hours <= 0:
+        raise EditError(f"複習間隔須為有限正數(> 0 小時),得到 {interval_hours}")
+
+
 def _review_fields(state: str, interval_hours: float | None, now: datetime) -> dict[str, Any]:
     """把語意化的複習態映成 card 欄位(spaced-review state)。
 
@@ -176,8 +188,7 @@ def _review_fields(state: str, interval_hours: float | None, now: datetime) -> d
     # interval 須 > 0:負/零會讓 due 的 last_reviewed 落到未來、reviewed 的 next_review
     # 落到過去,破壞「reviewed→next 在未來」「due→last 在過去」不變量。argparse type=float
     # 不擋負值,在此一次根治所有呼叫端(card-add/card-set-review/card-import/seed)。
-    if interval_hours is not None and interval_hours <= 0:
-        raise EditError(f"複習間隔須 > 0 小時,得到 {interval_hours}")
+    validate_review_interval(interval_hours)
     if state == "new":
         return {
             "review_count": 0,
