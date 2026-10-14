@@ -155,7 +155,7 @@ class CardMutationMixin:
                 pos=pos,
                 examples=examples or [],
                 collocations=collocations or [],
-                note=note,
+                note=note or None,
                 difficulty=difficulty,
                 mode=mode,
                 root_form=root_form,

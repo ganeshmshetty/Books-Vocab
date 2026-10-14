@@ -168,6 +168,7 @@ def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(t
     total_writes = n_writers * writes_per_writer
 
     stop = threading.Event()
+    overlap = threading.Event()  # set by the reader once it has seen a mid-flight `calls`
     writer_errors: list[BaseException] = []
     reader_errors: list[BaseException] = []
     err_lock = threading.Lock()
@@ -177,8 +178,15 @@ def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(t
 
     def writer(_i: int) -> None:
         try:
-            for _ in range(writes_per_writer):
+            for k in range(writes_per_writer):
                 tt.record(user_id, "judge", input_each, output_each)
+                if k == 0:
+                    # `_lock` is an unfair RLock: eight writers re-acquiring it in a
+                    # tight loop can keep the reader parked for the whole burst, so
+                    # it sees only the final state (observed_calls=[200]). Park each
+                    # writer after its first INSERT until the reader has interleaved,
+                    # so the overlap this test asserts is guaranteed, not scheduler luck.
+                    overlap.wait(timeout=10)
         except BaseException as e:  # noqa: BLE001
             with err_lock:
                 writer_errors.append(e)
@@ -206,7 +214,10 @@ def test_token_usage_query_during_concurrent_write_returns_consistent_snapshot(t
                 with snapshots_lock:
                     snapshots_seen += 1
                     if user_id in snap and "judge" in snap[user_id]:
-                        observed_partial_calls.add(snap[user_id]["judge"]["calls"])
+                        seen = snap[user_id]["judge"]["calls"]
+                        observed_partial_calls.add(seen)
+                        if 0 < seen < total_writes:
+                            overlap.set()
         except BaseException as e:  # noqa: BLE001
             with err_lock:
                 reader_errors.append(e)

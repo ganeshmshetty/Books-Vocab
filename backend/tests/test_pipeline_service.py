@@ -878,3 +878,168 @@ def test_step_judge_candidates_unchanged():
     assert _norm(graph_batch.created_links) == _norm(graph_single.created_links), (
         f"batch links {_norm(graph_batch.created_links)} != fallback links {_norm(graph_single.created_links)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #3661: enrich writes are compare-and-set on the snapshot they decided from
+# ---------------------------------------------------------------------------
+
+
+class _EnrichRecordingEmbeddings:
+    def __init__(self):
+        self.removed: list[str] = []
+
+    def remove(self, card_id):
+        self.removed.append(card_id)
+
+
+class _EnrichRecordingGraph:
+    def __init__(self):
+        self.queued: list[str] = []
+
+    def add_pending_judge(self, card_id):
+        self.queued.append(card_id)
+
+
+def _patch_enrich_stream(monkeypatch, stream):
+    import kg.deps_quota as deps_quota
+    import kg.enrich as enrich_mod
+    import kg.llm.providers as providers
+    import kg.tracked_llm as tracked_llm
+
+    monkeypatch.setattr(enrich_mod, "enrich_cards_stream", stream)
+    monkeypatch.setattr(providers, "provider_for", lambda _task: SimpleNamespace(chat_model="m"))
+    monkeypatch.setattr(tracked_llm, "TrackedLLM", lambda *_a, **_k: None)
+    monkeypatch.setattr(deps_quota, "_is_pro", lambda _user: False)
+
+
+def test_step_enrich_skips_write_for_card_edited_during_stream(monkeypatch, tmp_path):
+    """#3661: a user edit made while the LLM stream is in flight must not be overwritten by enrich."""
+    import logging
+
+    from kg.cards import CardStore
+    from kg.pipeline_service.steps import _step_enrich
+
+    cards = CardStore(tmp_path / "cards.db")
+    card = cards.add(content="evoke", meaning="", pos=None, notebook_id="default")
+    embeddings, graph = _EnrichRecordingEmbeddings(), _EnrichRecordingGraph()
+
+    async def stream(llm, targets, **kwargs):
+        # The user edits the card after the enrich snapshot was taken and before the result lands.
+        cards.update(card.id, note="user note", meaning="user meaning")
+        yield {
+            "status": "running",
+            "card_ids": [card.id],
+            "results": [
+                {
+                    "word": "evoke",
+                    "pos": "verb",
+                    "note": "REGENERATED",
+                    "collocations": ["a b"],
+                    "meaning_fix": "LLM meaning",
+                }
+            ],
+        }
+
+    _patch_enrich_stream(monkeypatch, stream)
+    user = {"id": "u_enrich_race", "dir": "/tmp/u_enrich_race", "config": {}}
+
+    updated = asyncio.run(
+        _step_enrich(
+            "u_enrich_race",
+            user,
+            card_store_factory=lambda _d: cards,
+            client_factory=lambda _provider: None,
+            logger=logging.getLogger("test_enrich_race"),
+            embedding_store_factory=lambda _d, **_k: embeddings,
+            graph_store_factory=lambda _d, **_k: graph,
+        )
+    )
+
+    after = cards.get(card.id)
+    assert after.note == "user note"
+    assert after.meaning == "user meaning"
+    assert after.pos is None
+    assert updated == 0
+    assert embeddings.removed == []
+    assert graph.queued == []
+
+
+def test_step_enrich_still_writes_when_card_unchanged_during_stream(monkeypatch, tmp_path):
+    """#3661 companion: the compare-and-set must not block an ordinary enrich write."""
+    import logging
+
+    from kg.cards import CardStore
+    from kg.pipeline_service.steps import _step_enrich
+
+    cards = CardStore(tmp_path / "cards.db")
+    card = cards.add(content="evoke", meaning="旧", pos=None, notebook_id="default")
+
+    async def stream(llm, targets, **kwargs):
+        yield {
+            "status": "running",
+            "card_ids": [card.id],
+            "results": [{"word": "evoke", "pos": "verb", "note": "REGENERATED", "meaning_fix": "新"}],
+        }
+
+    _patch_enrich_stream(monkeypatch, stream)
+    user = {"id": "u_enrich_ok", "dir": "/tmp/u_enrich_ok", "config": {}}
+
+    updated = asyncio.run(
+        _step_enrich(
+            "u_enrich_ok",
+            user,
+            card_store_factory=lambda _d: cards,
+            client_factory=lambda _provider: None,
+            logger=logging.getLogger("test_enrich_ok"),
+            embedding_store_factory=lambda _d, **_k: _EnrichRecordingEmbeddings(),
+            graph_store_factory=lambda _d, **_k: _EnrichRecordingGraph(),
+        )
+    )
+
+    after = cards.get(card.id)
+    assert (after.pos, after.note, after.meaning) == ("verb", "REGENERATED", "新")
+    assert updated == 1
+
+
+def test_default_enrich_skips_write_for_card_edited_during_stream(monkeypatch, tmp_path):
+    """#3661: the add-link single-card enrich path uses the same compare-and-set."""
+    import logging
+
+    from kg.cards import CardStore
+    from kg.vocab_add_link_operation import _default_enrich
+
+    cards = CardStore(tmp_path / "cards.db")
+    card = cards.add(content="evoke", meaning="", pos=None, notebook_id="default")
+    snapshot = cards.get(card.id)
+    embeddings, graph = _EnrichRecordingEmbeddings(), _EnrichRecordingGraph()
+
+    async def stream(llm, targets, **kwargs):
+        cards.update(card.id, note="user note", meaning="user meaning")
+        yield {
+            "status": "running",
+            "card_ids": [card.id],
+            "results": [{"word": "evoke", "pos": "verb", "note": "REGENERATED", "meaning_fix": "LLM meaning"}],
+        }
+
+    _patch_enrich_stream(monkeypatch, stream)
+    user = {"id": "u_add_link_race", "dir": "/tmp/u_add_link_race", "config": {}}
+
+    asyncio.run(
+        _default_enrich(
+            card=snapshot,
+            cards=cards,
+            user=user,
+            client_factory=lambda _provider: None,
+            logger=logging.getLogger("test_default_enrich_race"),
+            graph=graph,
+            open_embeddings=lambda: embeddings,
+        )
+    )
+
+    after = cards.get(card.id)
+    assert after.note == "user note"
+    assert after.meaning == "user meaning"
+    assert after.pos is None
+    assert embeddings.removed == []
+    assert graph.queued == []

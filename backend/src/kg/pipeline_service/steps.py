@@ -120,6 +120,49 @@ def _index_enrichment_results(results: Any) -> tuple[dict[str, dict], int]:
 ENRICH_MAX_ATTEMPTS = 3
 
 
+def _enrich_guard(card: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot the user-editable columns the enrich write decided from (#3661).
+
+    Each written column is guarded on the value its own decision read: ``pos`` gates on
+    ``not card.pos``; ``note`` gates on ``note is None``; the ``meaning_fix`` gate reads ``note`` and
+    its effective-change check reads ``meaning``. ``collocations`` is pipeline-owned, so it is not guarded.
+    """
+    expected: dict[str, Any] = {}
+    if "pos" in kwargs:
+        expected["pos"] = card.pos
+    if "note" in kwargs or "meaning" in kwargs:
+        expected["note"] = card.note
+    if "meaning" in kwargs:
+        expected["meaning"] = card.meaning
+    return expected
+
+
+def _enrich_write_plan(card: Any, enrichment: dict, *, force: bool) -> tuple[dict, dict] | None:
+    """Return ``(kwargs, expected)`` for one enriched card, or None when nothing should change.
+
+    ``kwargs`` keeps only effective changes (``batch_update_if_unchanged`` bumps ``updated_at``
+    unconditionally). ``expected`` is the snapshot the decision read, for the compare-and-set.
+    """
+    kwargs: dict[str, Any] = {}
+    if enrichment.get("pos"):
+        if force or not card.pos:
+            from ..vocab_shared import _normalize_pos
+
+            kwargs["pos"] = _normalize_pos(enrichment["pos"])
+    if enrichment.get("note"):
+        if force or card.note is None:
+            kwargs["note"] = enrichment["note"]
+    if enrichment.get("collocations"):
+        kwargs["collocations"] = enrichment["collocations"]
+    # note == "" is the user's explicit clear: their meaning edit must not be reverted.
+    if enrichment.get("meaning_fix") and (force or card.note != ""):
+        kwargs["meaning"] = enrichment["meaning_fix"]
+    kwargs = {key: value for key, value in kwargs.items() if getattr(card, key, None) != value}
+    if not kwargs:
+        return None
+    return kwargs, _enrich_guard(card, kwargs)
+
+
 async def _step_enrich(
     uid: str,
     user: UserRecord,
@@ -141,7 +184,7 @@ async def _step_enrich(
         targets = [
             card
             for card in eligible_cards
-            if (not card.pos or not card.note) and card.enrich_attempts < ENRICH_MAX_ATTEMPTS
+            if (not card.pos or card.note is None) and card.enrich_attempts < ENRICH_MAX_ATTEMPTS
         ]
 
     if not targets:
@@ -187,30 +230,23 @@ async def _step_enrich(
                 result_map, skipped = _index_enrichment_results(msg["results"])
                 if skipped:
                     logger.warning("[%s] Skipped %d malformed enrichment items", uid, skipped)
-                batch_updates: list[tuple[str, dict]] = []
+                pending: list[tuple[str, dict, dict]] = []
                 for card in targets:
                     enrichment = result_map.get(normalize_nfc_lower(card.content))
                     if not enrichment:
                         continue
-                    kwargs: dict[str, Any] = {}
-                    if enrichment.get("pos"):
-                        if force or not card.pos:
-                            from ..vocab_shared import _normalize_pos
-
-                            kwargs["pos"] = _normalize_pos(enrichment["pos"])
-                    if enrichment.get("note"):
-                        if force or not card.note:
-                            kwargs["note"] = enrichment["note"]
-                    if enrichment.get("collocations"):
-                        kwargs["collocations"] = enrichment["collocations"]
-                    if enrichment.get("meaning_fix"):
-                        kwargs["meaning"] = enrichment["meaning_fix"]
-                        if kwargs["meaning"] != card.meaning:
-                            meaning_changed_ids.append(card.id)
-                    if kwargs:
-                        batch_updates.append((card.id, kwargs))
-                if batch_updates:
-                    updated += cards.batch_update(batch_updates)
+                    plan = _enrich_write_plan(card, enrichment, force=force)
+                    if plan is not None:
+                        pending.append((card.id, *plan))
+                if pending:
+                    # Compare-and-set on the snapshot the write decision read. A card the user edited
+                    # during the stream is skipped, not re-evaluated: this LLM output predates that edit.
+                    rejected = set(cards.batch_update_if_unchanged(pending))
+                    if rejected:
+                        logger.info("[%s] Skipped %d enrich write(s): card edited during run", uid, len(rejected))
+                    written = [(card_id, kwargs) for card_id, kwargs, _expected in pending if card_id not in rejected]
+                    updated += len(written)
+                    meaning_changed_ids.extend(card_id for card_id, kwargs in written if "meaning" in kwargs)
                 if meaning_changed_ids:
                     from ..deps import _embedding_store, _graph_store
                     from ..vocab_crud import reembed_meaning_edits_best_effort
@@ -468,8 +504,8 @@ async def _judge_pending(
     others_cache = cards.get_batch(all_other_ids) if all_other_ids else {}
 
     # Pass 2: filter candidates using the shared cache, build judge_tasks.
-    # Include current_degree in the tuple so Phase 2b can initialize
-    # from_link_counts without redundant get_links_for calls (fixes W3).
+    # Include current_degree in the tuple so Phase 2b can seed the degree ledger
+    # without redundant get_links_for calls (fixes W3).
     judge_tasks: list[tuple[str, Any, list, dict, int | None, int]] = []
     for card_id, card, current_degree, candidates in per_card_similar:
         available = MAX_DEGREE - current_degree
@@ -519,14 +555,17 @@ async def _judge_pending(
             )
         )
 
-    # Track per-card link count to enforce MAX_DEGREE on both sides.
-    # from_link_counts: from-side — seeded from current_degree computed in
-    #   Phase 2a to avoid redundant get_links_for calls (W3 fix).
-    # to_link_counts: to-side (the other_id being linked TO) — tracks
-    #   in-flight links so multiple pending cards don't exceed MAX_DEGREE
-    #   on a shared target (C1 fix).
-    from_link_counts: dict[str, int] = {cid: deg for cid, _, _, _, _, deg in judge_tasks}
-    to_link_counts: dict[str, int] = {}
+    # One degree ledger for both endpoints of every in-flight link (#3660). A pending card
+    # that is also another card's link target must count its incoming links too, so the
+    # ledger is seeded lazily from the persisted degree and bumped on both ends. seen_pairs
+    # keeps A->B and B->A from counting as two links.
+    degree: dict[str, int] = {cid: deg for cid, _, _, _, _, deg in judge_tasks}
+    seen_pairs: set[frozenset[str]] = set()
+
+    def _degree_of(cid: str) -> int:
+        if cid not in degree:
+            degree[cid] = _active_degree(cid)
+        return degree[cid]
 
     # Per-card similarity map for audit logging when degree cap forces a
     # reject — built lazily so we only pay if a cap actually fires.
@@ -579,14 +618,11 @@ async def _judge_pending(
         for other_id, judgement in results.items():
             if judgement is None:
                 continue
-            if from_link_counts[card_id] >= MAX_DEGREE:
-                _log_degree_cap(card_id, other_id, judgement)
-                continue  # from-side at cap; keep logging surplus
-            # Initialize to-side count on first access
-            if other_id not in to_link_counts:
-                to_link_counts[other_id] = _active_degree(other_id)
-            if to_link_counts[other_id] >= MAX_DEGREE:
-                _log_degree_cap(card_id, other_id, judgement)
+            pair = frozenset((card_id, other_id))
+            if pair in seen_pairs:
+                continue  # the reverse direction of a link already taken this run
+            if _degree_of(card_id) >= MAX_DEGREE or _degree_of(other_id) >= MAX_DEGREE:
+                _log_degree_cap(card_id, other_id, judgement)  # keep logging surplus
                 continue
             all_links.append(
                 (
@@ -597,8 +633,9 @@ async def _judge_pending(
                     judgement.reason,
                 )
             )
-            from_link_counts[card_id] += 1
-            to_link_counts[other_id] += 1
+            seen_pairs.add(pair)
+            degree[card_id] += 1
+            degree[other_id] += 1
 
     consumed: list[str] = []
     quota_error: QuotaExceededError | None = None

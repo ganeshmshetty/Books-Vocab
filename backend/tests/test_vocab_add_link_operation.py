@@ -78,6 +78,10 @@ class Cards:
         self.added.append(card)
         return card
 
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
+
     def batch_update(self, updates):
         self.updated.extend(updates)
         return len(updates)
@@ -626,6 +630,10 @@ class _AddLinkMeaningCards:
     def __init__(self):
         self.updates: list[list[tuple[str, dict]]] = []
 
+    def batch_update_if_unchanged(self, updates):
+        self.batch_update([(card_id, kwargs) for card_id, kwargs, _expected in updates])
+        return []
+
     def batch_update(self, updates):
         self.updates.append(list(updates))
         return len(updates)
@@ -720,7 +728,8 @@ def test_add_link_unchanged_meaning_never_opens_embedding_store(monkeypatch):
     )
 
     assert opened == []
-    assert cards.updates == [[("t1", {"note": "新注解", "meaning": "旧"})]]
+    # An unchanged meaning is not an effective change, so it is not written (#3661: updated_at stays put).
+    assert cards.updates == [[("t1", {"note": "新注解"})]]
 
 
 def test_add_link_embedding_store_failure_keeps_other_enrich_fields(monkeypatch):
