@@ -166,7 +166,7 @@
 "一絲不苟的；非常仔細的" = "Meticulous; extremely careful";
 "語境解釋" = "Context Explanation";
 "選取的文字超過 %@ 字元，請縮短後再試" = "The selected text exceeds %@ characters. Please shorten it and try again.";
-"請求過於頻繁，請稍後再試" ="Too many requests. Please try again later.";
+"請求過於頻繁，請稍後再試" = "Too many requests. Please try again later.";
 "請稍後再試" = "Please try again later.";
 "請至設定中登入以查閱您的知識關聯。" = "Sign in from Settings to view your knowledge connections.";
 "試試其他關鍵字，或切換到別的狀態。" = "Try a different keyword or switch to another state.";
