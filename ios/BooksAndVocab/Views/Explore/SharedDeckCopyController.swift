@@ -216,6 +216,15 @@ final class SharedDeckCopyController {
     }
 }
 
+/// 「複製到我的單字本」是否可開始的唯一判定（#3681）。demo 模式 `enterDemoMode` 會把
+/// `isLoggedIn` 設為 true 但沒有 token／userId，複製必以 `KGSessionPendingError` 失敗並被誤報為
+/// 「登入已過期」，故必須與全 repo 慣例 `isLoggedIn && !isDemoMode` 一致。
+enum SharedDeckCopyGate {
+    static func canStartCopy(isLoggedIn: Bool, isDemoMode: Bool) -> Bool {
+        isLoggedIn && !isDemoMode
+    }
+}
+
 /// 以 (帳號 owner, deckId) 為鍵的 controller 註冊表（#2748）。`SharedDeckDetailView` 的 `@State`
 /// 在 pop 時被丟棄，但 `performCopy` 的 unstructured `Task` 仍在跑、idempotencyKey 也
 /// 需跨 reopen 保留；有進行中／失敗／已成功意圖的 controller 因此由行程級註冊表持有，view 只借用。

@@ -576,6 +576,22 @@ struct SharedDeckCopyControllerTests {
         #expect(store.load().isEmpty, "success clears the persisted intent")
     }
 
+    // MARK: - Copy gate (#3681)
+
+    /// demo 模式 `isLoggedIn == true` 但無 token、無 userId：複製必定以 KGSessionPendingError 失敗。
+    /// gate 必須只放行「已登入且非 demo」，與 repo 慣例 `isLoggedIn && !isDemoMode` 一致。
+    @Test func copy_gate_blocks_demo_mode_even_though_logged_in_flag_is_set() {
+        #expect(SharedDeckCopyGate.canStartCopy(isLoggedIn: true, isDemoMode: true) == false)
+    }
+
+    @Test func copy_gate_allows_real_logged_in_account() {
+        #expect(SharedDeckCopyGate.canStartCopy(isLoggedIn: true, isDemoMode: false) == true)
+    }
+
+    @Test func copy_gate_blocks_logged_out() {
+        #expect(SharedDeckCopyGate.canStartCopy(isLoggedIn: false, isDemoMode: false) == false)
+    }
+
     /// `@MainActor` (nested types don't inherit the suite's isolation) so
     /// `continuation` is never touched off-main; `hasStarted` flips only once the
     /// continuation exists, so `release` cannot race ahead of it.

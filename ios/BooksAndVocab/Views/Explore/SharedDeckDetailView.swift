@@ -129,6 +129,14 @@ struct SharedDeckDetailView: View {
     private func adoptCopyController() async {
         let owner = authManager.userId
         let container = modelContext.container
+        // 無法複製的帳號（demo／未登入）沒有可登記的 owner：不接回、不寫 registry，避免 owner=nil 的意圖殘留（#3681）。
+        guard SharedDeckCopyGate.canStartCopy(
+            isLoggedIn: authManager.isLoggedIn,
+            isDemoMode: authManager.isDemoMode
+        ) else {
+            copyController = SharedDeckCopyController()
+            return
+        }
         copyController = SharedDeckCopyRegistry.shared.controller(for: deckId, owner: owner)
         copyController = await SharedDeckCopyRegistry.shared.resolve(
             deckId: deckId,
@@ -160,7 +168,10 @@ struct SharedDeckDetailView: View {
         VStack(alignment: .leading, spacing: AppSpacing.s2) {
             if let previewCopyState {
                 copyStateView(previewCopyState, deck: deck)
-            } else if !authManager.isLoggedIn {
+            } else if !SharedDeckCopyGate.canStartCopy(
+                isLoggedIn: authManager.isLoggedIn,
+                isDemoMode: authManager.isDemoMode
+            ) {
                 loginRequiredCTA
             } else if copyController.state == .idle && !networkMonitor.isConnected {
                 // Gate the START of a copy offline so a tap can't kick off an
