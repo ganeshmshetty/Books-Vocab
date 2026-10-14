@@ -145,11 +145,16 @@ def test_linked_identity_reclaims_email_still_indexed_to_itself(tmp_path):
     (its own email from before it was merged into G, or a split left behind by
     #2256) is an alias of G: the login resolves to G and the entry moves to G,
     so no other provider can later be routed onto the stale provider id."""
-    login, load_users = _make_login(tmp_path)
-
-    assert login("G", "google", "e1@example.com") == "G"
-    assert login("A", "apple", "a@example.com") == "A"
-    assert login("A", "apple", "e1@example.com") == "G"
+    # State left by an earlier split: A is linked under G while the index
+    # still maps A's old email to A.
+    login, load_users = _make_login(
+        tmp_path,
+        {
+            "_email_index": {"e1@example.com": "G", "a@example.com": "A"},
+            "G": {"provider": "google", "email": "e1@example.com", "linked_ids": ["A"]},
+            "A": {"_linked_to": "G"},
+        },
+    )
 
     assert login("A", "apple", "a@example.com") == "G"
 
@@ -197,8 +202,10 @@ def test_invalid_linked_to_is_ignored(tmp_path, bad_link, extra_seed):
         "fresh@example.com": "A",
     }
 
-    # With the bad pointer gone, the existing verified-email merge applies.
-    assert login("A", "apple", "o@example.com") == "O"
+    # With the bad pointer gone A is an independent account with its own
+    # record: another account's email never re-links it.
+    assert login("A", "apple", "o@example.com") == "A"
     users = load_users()
-    assert users["A"]["_linked_to"] == "O"
-    assert users["O"]["linked_ids"] == ["A"]
+    assert "_linked_to" not in users["A"]
+    assert "linked_ids" not in users["O"]
+    assert users["_email_index"]["o@example.com"] == "O"

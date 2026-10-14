@@ -195,3 +195,32 @@ def test_google_web_callback_passes_hosted_domain_to_linking(web_auth_env):  # n
 
     assert resp.status_code == 200, resp.text
     assert resolve_mock.call_args.kwargs["hd"] == "corp.example"
+
+
+# ---------------------------------------------------------------------------
+# Independent canonical accounts are never re-linked
+# ---------------------------------------------------------------------------
+
+
+def test_independent_account_is_not_relinked_by_email(tmp_path):
+    login, load = _make_login(tmp_path, {"p": {"subscription": {"tier": "pro"}, "provider": "google"}})
+    assert login("c", "apple", "e@x.com") == "c"
+    owner_before = dict(load()["c"])
+
+    assert login("p", "apple", "e@x.com") == "p"
+
+    users = load()
+    assert "_linked_to" not in users["p"]
+    assert "p" not in users["c"].get("linked_ids", [])
+    assert users["_email_index"]["e@x.com"] == "c"
+    assert users["c"]["provider"] == owner_before["provider"]
+    assert users["p"]["subscription"] == {"tier": "pro"}
+    assert users["p"].get("email") is None
+
+
+def test_fresh_provider_id_still_links_by_authoritative_email(tmp_path):
+    login, load = _make_login(tmp_path)
+    assert login("c", "apple", "e@x.com") == "c"
+
+    assert login("fresh", "apple", "e@x.com") == "c"
+    assert load()["c"]["linked_ids"] == ["fresh"]
