@@ -375,9 +375,13 @@ final class AddLinkCreationCoordinator {
         generation += 1
         pollingTask?.cancel()
         pollingTask = nil
+        let wasRetryingWarnings = isRetryingWarnings
         isRetryingWarnings = false
         if phase == .running {
             transition(.cancelled, message: nil)
+        } else if wasRetryingWarnings {
+            // A cancelled warning retry is a state change observers must see, not an outcome.
+            publish()
         }
     }
 
