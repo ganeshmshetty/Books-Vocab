@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,24 @@ import kg.deps as deps_mod
 from conftest import TEST_JWT_SECRET, _swap_settings, make_jwt
 from kg.api import app
 from kg.settings import KGSettings
+
+
+@pytest.fixture()
+def pending_window():
+    """Opt-in marker: keep the real presigned-URL window (#3896) for this test."""
+
+
+@pytest.fixture(autouse=True)
+def _claim_state_machine_without_window(request, monkeypatch):
+    """Claim/lease tests pin the ledger state machine, so pending keys are claimable at once.
+
+    The presigned-URL window is covered by tests that request ``pending_window``.
+    """
+    if "pending_window" in request.fixturenames:
+        return
+    import kg.library.store as library_store
+
+    monkeypatch.setattr(library_store, "PENDING_DELETE_GRACE", timedelta(0))
 
 
 @pytest.fixture()

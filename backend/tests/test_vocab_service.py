@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from kg.difficulty import get_tier
 from kg.graph import GraphStore, LinkKind
+from kg.text_utils import normalize_nfc_lower
 from kg.vocab_graph import graph_links_payload
 from kg.vocab_handlers.crud import list_vocab_response
 from kg.vocab_shared import card_response
@@ -66,6 +67,15 @@ class _FakeCardsStore:
                 return card
         return None
 
+    def find_by_contents(self, keys, notebook_id: str | None = None):
+        wanted = set(keys)
+        found = {}
+        for card in self._cards:
+            key = normalize_nfc_lower(card.content)
+            if key in wanted and not card.is_deleted:
+                found.setdefault(key, card)
+        return found
+
     def update(self, card_id, **kwargs):
         for card in self._cards:
             if card.id == card_id:
@@ -102,6 +112,15 @@ class _FakeCards:
             if card.content.strip().lower() == norm:
                 return card
         return None
+
+    def find_by_contents(self, keys, notebook_id=None):
+        wanted = set(keys)
+        found = {}
+        for card in self._cards:
+            key = normalize_nfc_lower(card.content)
+            if key in wanted:
+                found.setdefault(key, card)
+        return found
 
     def add(self, content, meaning, **kwargs):
         from types import SimpleNamespace

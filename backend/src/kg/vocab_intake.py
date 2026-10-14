@@ -95,7 +95,9 @@ def add_vocab_entries(
     # Build content→card dict once; eliminates per-duplicate find_by_content() DB
     # call. Shares the same normalized lookup as the batch CRUD paths
     # (cards.all() defaults to include_deleted=False, matching _build_content_lookup).
-    existing_by_norm = _build_content_lookup(cards, notebook_id=notebook_id)
+    existing_by_norm = _build_content_lookup(
+        cards, (_normalize_word(word) for word in cleaned_words), notebook_id=notebook_id
+    )
     existing = set(existing_by_norm.keys())
 
     created = 0

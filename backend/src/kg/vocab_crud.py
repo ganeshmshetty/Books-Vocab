@@ -15,6 +15,7 @@ from .api_models.vocab import ArchiveWordResponse, DeleteWordResponse
 from .exceptions import BadRequestError, NotFoundError, ValidationError
 from .sentry_init import capture_handled
 from .user_store import parse_datetime
+from .utc_instant import to_utc_instant
 from .vocab_graph_ops import link_peer_ids, touch_peers
 from .vocab_shared import (
     MAX_BATCH_SIZE,
@@ -219,9 +220,10 @@ def _parse_since_timestamp(raw: str) -> datetime | None:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return parse_datetime(raw)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return to_utc_instant(parsed)
+    except ValueError:  # year-1 offset overflows UTC: invalid input, caller raises 400 (#3890)
+        return None
 
 
 class CardMutator(Protocol):
@@ -570,7 +572,9 @@ def _batch_apply(
     not_found: list[str] = []
     failed: list[str] = []
 
-    lookup = _build_content_lookup(cards_store, notebook_id=notebook_id)
+    lookup = _build_content_lookup(
+        cards_store, (_normalize_word(_clean_content(word)) for word in words), notebook_id=notebook_id
+    )
     seen_words_by_key: dict[str, set[str]] = {}
     outcome_by_key: dict[str, tuple[str, VocabCard | None]] = {}
 

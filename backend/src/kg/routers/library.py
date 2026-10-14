@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
@@ -20,22 +19,17 @@ from ..api_models.library import (
 )
 from ..deps import CurrentUser, _library_store, _notebook_store
 from ..exceptions import BadRequestError, ConflictError, NotFoundError
+from ..library.store import ASSET_URL_TTL_SECONDS
 from ..notebook import validate_notebook_access
 from ..settings import KGSettings
 from ..users_lock import users_file_lock
+from ..utc_instant import parse_utc_instant
 
 # Presigned URL TTL (seconds) for asset upload/download targets.
-_ASSET_URL_TTL = 3600
+_ASSET_URL_TTL = ASSET_URL_TTL_SECONDS
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["library"])
-
-
-def _utc_instant(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 @router.get("/api/library/books", response_model=list[BookMetadataResponse])
@@ -44,10 +38,10 @@ def list_books(user: CurrentUser, since: str | None = None):
     books = store.all(include_deleted=True)
     if since is not None:
         try:
-            since_instant = _utc_instant(since)
+            since_instant = parse_utc_instant(since)
         except ValueError:
             raise BadRequestError("Invalid since timestamp") from None
-        books = [b for b in books if b.updated_at and _utc_instant(b.updated_at) > since_instant]
+        books = [b for b in books if b.updated_at and parse_utc_instant(b.updated_at) > since_instant]
     return books
 
 

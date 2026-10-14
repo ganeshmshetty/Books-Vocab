@@ -22,6 +22,7 @@ import pytest
 import test_notebook_api
 from kg.api_models import VocabEntry, VocabSource
 from kg.exceptions import ValidationError
+from kg.text_utils import normalize_nfc_lower
 from kg.vocab_intake import _build_example, _derive_inflections, add_vocab_entries
 
 isolated_api = test_notebook_api.isolated_api  # reuse the real-app fixture
@@ -51,10 +52,21 @@ class _IntakeCardsStore:
         self.add_calls: list[dict[str, Any]] = []
         self._counter = 0
         self.all_calls: list[str | None] = []
+        self.lookup_calls: list[tuple[list[str], str | None]] = []
 
     def all(self, include_deleted: bool = False, notebook_id: str | None = None) -> list[_IntakeCard]:
         self.all_calls.append(notebook_id)
         return [c for c in self._cards if c.notebook_id == notebook_id and (include_deleted or not c.is_deleted)]
+
+    def find_by_contents(self, keys: Any, notebook_id: str | None = None) -> dict[str, _IntakeCard]:
+        self.lookup_calls.append((list(keys), notebook_id))
+        wanted = set(keys)
+        found: dict[str, _IntakeCard] = {}
+        for c in self._cards:
+            key = normalize_nfc_lower(c.content)
+            if key in wanted and not c.is_deleted and (notebook_id is None or c.notebook_id == notebook_id):
+                found.setdefault(key, c)
+        return found
 
     def add(self, **kwargs: Any) -> _IntakeCard:
         self.add_calls.append(kwargs)
@@ -365,14 +377,15 @@ class TestAddVocabEntries:
 
     def test_notebook_scope_threads_through(self):
         # Same word lives in another notebook — must NOT be treated as duplicate
-        # because cards.all() is called with notebook_id filter.
+        # because the keyed lookup is called with the notebook_id filter.
         store = _IntakeCardsStore(preload=[_IntakeCard(id="other", content="hello", notebook_id="nb_other")])
         entries = [VocabEntry(word="hello", translation="你好", context="")]
 
         result = add_vocab_entries(entries, notebook_id="nb_target", **self._kwargs(cards=store))
 
         assert result.created == 1
-        assert store.all_calls == ["nb_target"]
+        assert store.lookup_calls == [(["hello"], "nb_target")]
+        assert store.all_calls == []
         assert store.add_calls[0]["notebook_id"] == "nb_target"
 
     def test_no_embedding_when_nothing_created(self):
