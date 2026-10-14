@@ -347,3 +347,57 @@ def test_operator_deleted_user_old_token_rejected_and_dir_not_recreated(tmp_path
         )
     assert exc.value.status_code == 401
     assert not (tmp_path / "users" / "doomed").exists()
+
+
+# ============================================================================
+# #3813: the client must tell a deleted-account 401 apart from an expired or
+# invalid-token 401. Only the revoked-account 401 carries the machine-readable
+# `X-KG-Auth-Error: account_deleted` header; the iOS DELETE handler treats that
+# code (and only that code) as delete success.
+# ============================================================================
+
+
+def test_expired_token_401_has_no_account_deleted_code(tmp_path):
+    users_file = tmp_path / "users.json"
+    user_id = "user-expired-3813"
+    users_file.write_text(json.dumps({user_id: {"config": {}}}))
+    token = make_jwt(user_id, expires_in=timedelta(seconds=-1))
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_current_user(
+            token,
+            settings=make_settings(tmp_path),
+            load_users=_load_users_fn(users_file),
+            parse_datetime=_parse_datetime,
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Token has expired"
+    assert "X-KG-Auth-Error" not in (exc_info.value.headers or {})
+
+
+def test_revoked_account_401_carries_account_deleted_code(tmp_path):
+    users_file = tmp_path / "users.json"
+    user_id = "user-revoked-3813"
+    revoked_at = datetime.now(tz=UTC) + timedelta(hours=1)
+    users_file.write_text(
+        json.dumps(
+            {
+                "_revoked_before": {user_id: revoked_at.isoformat()},
+                user_id: {"config": {}},
+            }
+        )
+    )
+    token = make_jwt(user_id)
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_current_user(
+            token,
+            settings=make_settings(tmp_path),
+            load_users=_load_users_fn(users_file),
+            parse_datetime=_parse_datetime,
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Account was deleted. Please sign in again."
+    assert exc_info.value.headers["X-KG-Auth-Error"] == "account_deleted"
