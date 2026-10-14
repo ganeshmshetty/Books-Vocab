@@ -202,9 +202,9 @@ struct NotebookReconcilerTests {
         // GET 在 t=1000 發出；t=2000 才本地建立的列不可能在該 GET 的結果裡，不是遠端刪除證據。
         let ctx = try makeContext()
         let stale = localNB("nb-old", syncStatus: 1)
-        stale.createdAt = Date(timeIntervalSince1970: 500)
+        stale.localInsertedAt = Date(timeIntervalSince1970: 500)
         let fresh = localNB("nb-new", syncStatus: 1)
-        fresh.createdAt = Date(timeIntervalSince1970: 2_000)
+        fresh.localInsertedAt = Date(timeIntervalSince1970: 2_000)
         ctx.insert(stale); ctx.insert(fresh)
         try ctx.save()
 

@@ -22,6 +22,9 @@ final class Notebook {
     var sortOrder: Int = 0
     var isDefault: Bool = false
     var createdAt: Date = Date()
+    /// 本機首次建立此列的時間（本機時鐘）。`createdAt` 會改存 server 建立時間以跨裝置一致排序，
+    /// 因此 reconcile 的 tombstone 守衛必須以本機時間判斷列是否晚於某次 GET 快照（#3675）。
+    var localInsertedAt: Date = Date()
     var updatedAt: Date = Date()
     @Attribute(originalName: "isDeleted")
     var isSoftDeleted: Bool = false

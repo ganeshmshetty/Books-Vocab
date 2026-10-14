@@ -26,8 +26,8 @@ enum NotebookReconciler {
     /// - Returns: 本回合轉為不可見的 remoteId 集合（tombstoned ∪ reaped），
     ///   供 caller 清掉指向它們的 stale `activeNotebookId`。
     /// - Note: **不**呼叫 `modelContext.save()`；由 caller 統一 save。
-    /// - Parameter fetchStartedAt: 發出 `remote` 那次 GET 的開始時間。tombstone 只對
-    ///   `createdAt < fetchStartedAt` 的列生效：之後才本地建立的列（例如 create 與 reconcile 交錯）
+    /// - Parameter fetchStartedAt: 發出 `remote` 那次 GET 的開始時間（本機時鐘）。tombstone 只對
+    ///   `localInsertedAt < fetchStartedAt` 的列生效：之後才本地建立的列（例如 create 與 reconcile 交錯）
     ///   不可能在這份快照裡，不是遠端刪除的證據（#3675）。
     @discardableResult
     static func reconcile(
@@ -105,7 +105,7 @@ enum NotebookReconciler {
         // 曾同步但 server 不再回報 → tombstone（跨裝置刪除）。
         // 快照開始後才建立的列不在這份回應裡，不可據此 tombstone（#3675）。
         for l in local where l.syncStatus == 1 && !remoteIds.contains(l.remoteId) && !l.isSoftDeleted
-            && l.createdAt < fetchStartedAt {
+            && l.localInsertedAt < fetchStartedAt {
             l.isSoftDeleted = true
             l.updatedAt = Date()
             tombstoned.insert(l.remoteId)
