@@ -248,6 +248,7 @@ def _write_subscription_snapshot(
     signed_date: str | None = None,
     notification_uuid: str | None = None,
     grace_period_expires_at: str | None = None,
+    revoked: bool = False,
 ) -> StoredUserRecord:
     return write_subscription_snapshot(
         users,
@@ -265,6 +266,7 @@ def _write_subscription_snapshot(
         signed_date=signed_date,
         notification_uuid=notification_uuid,
         grace_period_expires_at=grace_period_expires_at,
+        revoked=revoked,
     )
 
 
