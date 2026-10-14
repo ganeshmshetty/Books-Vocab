@@ -267,6 +267,18 @@ tar_failure_recorded() { [[ "$(last_log)" == *"tar exited"* && "$(last_log)" == 
 check "log names the tar failure and keeps bytes/sha256" tar_failure_recorded
 check "staging removed" tmp_empty
 
+# ── 1e. aws 上傳失敗（#3746）────────────────────────────────────────────
+# aws 讀完串流後以非零結束（AccessDenied／CompleteMultipartUpload 失敗）：紀錄必須是
+# exit=<非零>，不得記 exit=0；backup_status 讀這行判斷有無備份。
+section "case 1e: aws upload failure never logs exit=0"
+make_stub failaws "cat >/dev/null; exit 1" aws
+reset_run
+run_backup "$DATA" PATH="$T/stub-failaws:$PATH"; rc=$?
+if [[ $rc -ne 0 ]]; then ok "exit $rc"; else fail_t "exit 0 although aws failed"; show_run; fi
+check "log records exit=<nonzero>, backup_status unhealthy" failure_logged
+check "no exit=0 record" no_exit0
+check "staging removed" tmp_empty
+
 # ── 2. 快照失敗 ────────────────────────────────────────────────────────
 section "case 2: garbage *.db fails closed before upload"
 mkdir -p "$DATA/users/u2"
