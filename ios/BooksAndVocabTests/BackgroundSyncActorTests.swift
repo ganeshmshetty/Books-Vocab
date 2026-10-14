@@ -664,6 +664,71 @@ struct BackgroundSyncActorTests {
         #expect(result.orphanCleanupBlocked == false)
     }
 
+    // Tier-2 of the safety valve: ratio in [0.3, 0.8) AND diff > 50 must block.
+    // Only the tier-1 (<30%) path was pinned before; this covers the mid-ratio
+    // large-diff block so removing it cannot silently mass-delete a library.
+    @Test func fullSync_largeDiffMidRatio_blocksCleanup() async throws {
+        let container = try makeContainer()
+        // 200 local synced entries; server returns 120 → ratio 0.6, diff 80.
+        try seedSyncedEntries(container, count: 200)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let cards = try (0..<120).map { try makeCard(id: "c\($0)", content: "orphan-\($0)", sourceJSON: nil) }
+
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: cards,
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == true)
+        #expect(result.deleted == 0)
+        let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining == 200)
+    }
+
+    @Test func fullSync_largeLibrarySmallDiff_cleansUp() async throws {
+        let container = try makeContainer()
+        // 400 local synced entries; server returns 340 → ratio 0.85 (>= 0.8), diff 60.
+        // The tier-2 block must not fire, so the 60 true orphans are removed.
+        try seedSyncedEntries(container, count: 400)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let cards = try (0..<340).map { try makeCard(id: "c\($0)", content: "orphan-\($0)", sourceJSON: nil) }
+
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: cards,
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == false)
+        #expect(result.deleted == 60)
+        let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining == 340)
+    }
+
+    @Test func fullSync_midRatioDiffAtThreshold_cleansUp() async throws {
+        let container = try makeContainer()
+        // 100 local synced entries; server returns 50 → ratio 0.5, diff exactly 50.
+        // `diff > 50` is strict, so the boundary must NOT block.
+        try seedSyncedEntries(container, count: 100)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let cards = try (0..<50).map { try makeCard(id: "c\($0)", content: "orphan-\($0)", sourceJSON: nil) }
+
+        let result = try await actor.pullCardsToLocal(
+            fetchedCards: cards,
+            isIncremental: false,
+            progress: { _, _, _ in }
+        )
+
+        #expect(result.orphanCleanupBlocked == false)
+        #expect(result.deleted == 50)
+        let remaining = try ModelContext(container).fetchCount(FetchDescriptor<VocabularyEntry>())
+        #expect(remaining == 50)
+    }
+
     // MARK: - clearUserData (logout / account-switch isolation)
     //
     // Regression coverage for the multi-account leak: the local clear path must
