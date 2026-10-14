@@ -55,7 +55,7 @@ struct PodcastNotebookPicker: View {
     /// 只有 clear 分支才寫入（keep 不寫）。
     private func sanitizeStaleBoundNotebook() {
         guard let boundId = series.preferredNotebookId else { return }
-        let action = PodcastSeries.sanitizeAction(
+        let action = PodcastSeries.sanitizeActionWithLedger(
             bound: boundId,
             localNotebookIds: Set(allNotebookRows.map(\.remoteId)),
             tombstonedNotebookIds: Set(allNotebookRows.filter(\.isSoftDeleted).map(\.remoteId))

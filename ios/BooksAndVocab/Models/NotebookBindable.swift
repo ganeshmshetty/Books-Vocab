@@ -41,18 +41,45 @@ extension NotebookBindable {
     /// 只有正面證據才 clear：
     /// - `tombstonedNotebookIds`：本機列 `isSoftDeleted`（reconcile 或刪除寫入）→ 確定已刪除。
     /// - `local-*` 離線占位已不在本機（reconcile 回收）：server 永遠不會回報此 id，無法再解析 → clear。
+    /// - `omittedByReconcileAfterBinding`：綁定之後才開始的 reconcile 回報 server 不含此 id，且本機無列
+    ///   （#3799；證據由 `NotebookReconcileLedger` 提供）→ 從未同步且已刪除，永遠無法解析 → clear。
     ///
     /// 「不在本機 live 清單」本身不是刪除證據（另一裝置新建、尚未 reconcile 的 notebook 也會缺席，#3674）。
+    /// 空列表仍是未 settle（#3411），不採信任何證據。
     /// 呼叫端只在 clear 時才清綁定並寫 manifest，keep 時不寫。
     static func sanitizeAction(
         bound: String?,
         localNotebookIds: Set<String>,
-        tombstonedNotebookIds: Set<String>
+        tombstonedNotebookIds: Set<String>,
+        omittedByReconcileAfterBinding: Bool = false
     ) -> NotebookBindingSanitizeAction {
         guard let bound else { return .keep }
         if tombstonedNotebookIds.contains(bound) { return .clear }
         if bound.hasPrefix("local-"), !localNotebookIds.contains(bound) { return .clear }
+        if omittedByReconcileAfterBinding, !localNotebookIds.isEmpty, !localNotebookIds.contains(bound) {
+            return .clear
+        }
         return .keep
+    }
+
+    /// 呼叫端入口：先記下綁定的首次觀察時刻，再以 ledger 證據判定。
+    static func sanitizeActionWithLedger(
+        bound: String?,
+        localNotebookIds: Set<String>,
+        tombstonedNotebookIds: Set<String>,
+        ledger: NotebookReconcileLedger = .shared
+    ) -> NotebookBindingSanitizeAction {
+        var omitted = false
+        if let bound {
+            ledger.observeBinding(bound)
+            omitted = ledger.omittedAfterBinding(bound)
+        }
+        return sanitizeAction(
+            bound: bound,
+            localNotebookIds: localNotebookIds,
+            tombstonedNotebookIds: tombstonedNotebookIds,
+            omittedByReconcileAfterBinding: omitted
+        )
     }
 }
 

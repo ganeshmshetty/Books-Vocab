@@ -10,6 +10,51 @@
 import Foundation
 import SwiftData
 
+/// 進程內 reconcile 證據帳（#3799，#3674 acceptance 2）。
+///
+/// 綁定經 CloudKit 抵達，「不在本機列表」可能是另一裝置新建、尚未進 snapshot 的合法缺席。
+/// 因此只有**觀察到綁定之後才開始**、且 server 回報不含該 id 的 reconcile 才是刪除證據：
+/// - `observeBinding`：caller 評估綁定時記下首次觀察時刻（必 ≥ 綁定實際抵達，故偏保守）。
+/// - `recordReconcile`：reconcile 完成時以「開始時刻 + server 回報 id 集合」入帳（僅保留近期 N 筆）。
+/// 不持久化：重啟後由新的觀察重新累積，只會偏向 keep。
+final class NotebookReconcileLedger {
+    static let shared = NotebookReconcileLedger()
+
+    private struct Snapshot {
+        let startedAt: Date
+        let remoteIds: Set<String>
+    }
+
+    private static let retainedSnapshotLimit = 16
+
+    private let lock = NSLock()
+    private var snapshots: [Snapshot] = []
+    private var firstObservedAt: [String: Date] = [:]
+
+    func observeBinding(_ id: String, at now: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+        if firstObservedAt[id] == nil { firstObservedAt[id] = now }
+    }
+
+    func recordReconcile(startedAt: Date, remoteIds: Set<String>) {
+        lock.lock()
+        defer { lock.unlock() }
+        snapshots.append(Snapshot(startedAt: startedAt, remoteIds: remoteIds))
+        if snapshots.count > Self.retainedSnapshotLimit {
+            snapshots.removeFirst(snapshots.count - Self.retainedSnapshotLimit)
+        }
+    }
+
+    /// 是否有「觀察綁定之後才開始、且 server 不含此 id」的 reconcile。未觀察過 → false。
+    func omittedAfterBinding(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let observed = firstObservedAt[id] else { return false }
+        return snapshots.contains { $0.startedAt > observed && !$0.remoteIds.contains(id) }
+    }
+}
+
 enum NotebookReconciler {
 
     /// 將 server 權威 notebook 清單與本地 SwiftData reconcile。
@@ -136,6 +181,7 @@ enum NotebookReconciler {
             cascadeDeleteEntries(matching: tombstoned, allEntries: allEntries, modelContext: modelContext)
         }
 
+        NotebookReconcileLedger.shared.recordReconcile(startedAt: fetchStartedAt, remoteIds: remoteIds)
         return tombstoned.union(reaped)
     }
 

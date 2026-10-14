@@ -298,7 +298,7 @@ struct ReaderView: View {
     /// 若 book.preferredNotebookId 有本機刪除證據（tombstone 或已回收的 local-* 占位）才清除綁定，
     /// 避免新單字存入孤兒 notebook。僅「不在本機列表」不構成刪除證據，不清（見 `Book.sanitizeAction`）。
     private func sanitizeStaleBoundNotebook() {
-        let action = Book.sanitizeAction(
+        let action = Book.sanitizeActionWithLedger(
             bound: book.preferredNotebookId,
             localNotebookIds: Set(allNotebookRows.map(\.remoteId)),
             tombstonedNotebookIds: Set(allNotebookRows.filter(\.isSoftDeleted).map(\.remoteId))

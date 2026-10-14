@@ -37,5 +37,21 @@ struct PodcastNotebookPickerSanitizeTests {
             bound: "X", localNotebookIds: ["X", "Y"], tombstonedNotebookIds: []
         ) == .keep)
     }
+
+    /// #3799：綁定之後才開始的 reconcile 回報 server 不含 X，且本機無 X 列 → clear（never-synced 已刪除）。
+    @Test func reconcileBegunAfterBindingOmittingIdClears() {
+        #expect(PodcastSeries.sanitizeAction(
+            bound: "X", localNotebookIds: ["Y"], tombstonedNotebookIds: [],
+            omittedByReconcileAfterBinding: true
+        ) == .clear)
+    }
+
+    /// #3799：綁定之前開始的 reconcile 缺席不是刪除證據 → keep。
+    @Test func reconcileBegunBeforeBindingOmittingIdKeeps() {
+        #expect(PodcastSeries.sanitizeAction(
+            bound: "X", localNotebookIds: ["Y"], tombstonedNotebookIds: [],
+            omittedByReconcileAfterBinding: false
+        ) == .keep)
+    }
 }
 #endif

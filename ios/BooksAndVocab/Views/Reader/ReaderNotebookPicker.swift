@@ -63,7 +63,7 @@ struct ReaderNotebookPicker: View {
 
     /// 已刪除 notebook 防護：僅有本機刪除證據（tombstone／已回收的 local-*）才清除綁定（決策與 ReaderView 共用）。
     private func sanitizeStaleBoundNotebook() {
-        let action = Book.sanitizeAction(
+        let action = Book.sanitizeActionWithLedger(
             bound: book.preferredNotebookId,
             localNotebookIds: Set(allNotebookRows.map(\.remoteId)),
             tombstonedNotebookIds: Set(allNotebookRows.filter(\.isSoftDeleted).map(\.remoteId))

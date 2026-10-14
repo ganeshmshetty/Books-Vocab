@@ -63,5 +63,49 @@ struct ReaderNotebookPickerSanitizeTests {
             bound: nil, localNotebookIds: [], tombstonedNotebookIds: []
         ) == .keep)
     }
+
+    /// #3799（#3674 acceptance 2）：綁定之後才開始的 reconcile 回報 server 不含 N，且本機無 N 列 → clear。
+    @Test func reconcileBegunAfterBindingOmittingIdClearsBinding() {
+        #expect(Book.sanitizeAction(
+            bound: "N", localNotebookIds: ["A", "B"], tombstonedNotebookIds: [],
+            omittedByReconcileAfterBinding: true
+        ) == .clear)
+    }
+
+    /// #3799：綁定之前就開始的 reconcile 可能合法地缺席（另一裝置剛建、尚未進 snapshot）→ keep。
+    @Test func reconcileBegunBeforeBindingOmittingIdKeepsBinding() {
+        #expect(Book.sanitizeAction(
+            bound: "N", localNotebookIds: ["A", "B"], tombstonedNotebookIds: [],
+            omittedByReconcileAfterBinding: false
+        ) == .keep)
+    }
+
+    /// 空列表仍是未 settle（#3411），即使有 reconcile 證據也 keep。
+    @Test func emptyUnsettledListKeepsBindingEvenWithReconcileEvidence() {
+        #expect(Book.sanitizeAction(
+            bound: "N", localNotebookIds: [], tombstonedNotebookIds: [],
+            omittedByReconcileAfterBinding: true
+        ) == .keep)
+    }
+
+    /// 時序契約：只有「觀察綁定在前、reconcile 開始在後」且不含 N 的 reconcile 才算證據。
+    @Test func ledgerCountsOnlyReconcilesBegunAfterObservedBinding() {
+        let ledger = NotebookReconcileLedger()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        ledger.recordReconcile(startedAt: t0.addingTimeInterval(-10), remoteIds: ["A"])
+        ledger.observeBinding("N", at: t0)
+        #expect(!ledger.omittedAfterBinding("N"))
+        ledger.recordReconcile(startedAt: t0.addingTimeInterval(10), remoteIds: ["A", "N"])
+        #expect(!ledger.omittedAfterBinding("N"))
+        ledger.recordReconcile(startedAt: t0.addingTimeInterval(20), remoteIds: ["A"])
+        #expect(ledger.omittedAfterBinding("N"))
+    }
+
+    /// 未觀察過的綁定沒有證據（保守 keep）。
+    @Test func ledgerReturnsNoEvidenceForUnobservedBinding() {
+        let ledger = NotebookReconcileLedger()
+        ledger.recordReconcile(startedAt: Date(), remoteIds: [])
+        #expect(!ledger.omittedAfterBinding("N"))
+    }
 }
 #endif
