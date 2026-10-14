@@ -194,3 +194,33 @@ if ! grep -q "docs/sop/brand-new.md" "$tmpdir/gitfixture.out"; then
   exit 1
 fi
 grep -q "active_unregistered=1" "$tmpdir/gitfixture.out"
+
+# ── sync_lifecycle doc-meta scope must be reachable from registry sources ─────
+# contract.sync_lifecycle used to list only routers/ on the backend, so changes to
+# the vocab API models, intake/crud modules and handlers were never flagged as an
+# exact hit on the sync SoT (#3758). Every backend path in the doc-meta scope must
+# now resolve to contract.sync_lifecycle as exact, and the vocabulary iOS boundary
+# must no longer claim the backend router as its exact source.
+sync_scope_paths=(
+  backend/src/kg/api_models/vocab.py
+  backend/src/kg/routers/vocab.py
+  backend/src/kg/vocab_intake.py
+  backend/src/kg/vocab_crud.py
+  backend/src/kg/vocab_handlers/intake.py
+  backend/src/kg/vocab_handlers/crud.py
+)
+for scope_path in "${sync_scope_paths[@]}"; do
+  ./ops/docs_impact.py --files "$scope_path" >"$tmpdir/impact_sync.out" 2>&1 || true
+  if ! grep -q "IMPACT contract.sync_lifecycle .*match_type=exact" "$tmpdir/impact_sync.out"; then
+    echo "sync_lifecycle doc-meta scope path is not an exact registry source hit: $scope_path" >&2
+    cat "$tmpdir/impact_sync.out" >&2
+    exit 1
+  fi
+done
+
+./ops/docs_impact.py --files backend/src/kg/routers/vocab.py >"$tmpdir/impact_vocab_router.out" 2>&1 || true
+if grep -q "IMPACT reference.feature_boundary.vocabulary .*match_type=exact" "$tmpdir/impact_vocab_router.out"; then
+  echo "iOS vocabulary feature boundary must not claim backend routers/vocab.py as an exact source" >&2
+  cat "$tmpdir/impact_vocab_router.out" >&2
+  exit 1
+fi
