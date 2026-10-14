@@ -179,7 +179,7 @@ struct ReaderView: View {
             // notebooks settle 後補 seed：.task 當下 liveNotebooks 可能尚未 settle 而跳過。
             seedNotebookBindingIfNeeded()
         }
-        .onChange(of: VocabularyHighlightSignature.make(
+        .onChange(of: VocabularyHighlightSignature.revision(
             entries: allVocabulary,
             notebookId: book.resolvedNotebookId
         )) { _, _ in

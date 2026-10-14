@@ -4,20 +4,23 @@ import SwiftData
 import os
 
 enum VocabularyHighlightSignature {
-    /// Stable signature for the effective, notebook-scoped highlight set.
-    static func make(entries: [VocabularyEntry], notebookId: String?) -> String {
-        let words = entries.lazy
-            .filter { entry in
-                guard entry.shouldAppearInReader else { return false }
-                return notebookId.map { entry.notebookId == $0 } ?? true
-            }
-            .flatMap { entry -> [String] in
-                var forms = Set([entry.word.lowercased()])
-                forms.formUnion(entry.inflections.map { $0.lowercased() })
-                if let root = entry.rootForm?.lowercased() { forms.insert(root) }
-                return Array(forms)
-            }
-        return ([notebookId ?? "*"] + Set(words).sorted()).joined(separator: "\u{1F}")
+    /// Change key for the effective, notebook-scoped highlight set (#3824).
+    ///
+    /// Hashes exactly the inputs the highlight set is derived from (`shouldAppearInReader`,
+    /// `notebookId`, `word`, `rootForm`, `inflections`) without lowercasing, sorting or joining,
+    /// so a view can compare it on every body pass at O(N) integer-hash cost instead of the
+    /// O(N log N) string rebuild the previous string signature did. Equal inputs yield equal keys;
+    /// a key change means the highlight set may have changed.
+    static func revision(entries: [VocabularyEntry], notebookId: String?) -> Int {
+        var hasher = Hasher()
+        hasher.combine(notebookId)
+        for entry in entries where entry.shouldAppearInReader {
+            if let notebookId, entry.notebookId != notebookId { continue }
+            hasher.combine(entry.word)
+            hasher.combine(entry.rootForm)
+            hasher.combine(entry.inflections)
+        }
+        return hasher.finalize()
     }
 }
 
