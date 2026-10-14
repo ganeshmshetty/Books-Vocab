@@ -118,6 +118,20 @@ extension ReaderTranslationHandler {
         wordSelection = selection
         lastLookup = LastLookup(kind: .phrase, text: phrase, context: context)
 
+        // Mirrors handleWordSelected: a guest cannot translate, so the phrase is
+        // saved locally instead of calling the API (which would fail and leave
+        // the guest card stuck on「正在記錄…」).
+        if !authManager.isLoggedIn {
+            withAnimation(AppMotion.panelState) {
+                isTranslating = false
+                resetTranslationFields()
+            }
+            if let vocabularyContext {
+                guestSaveToVocabulary(selection: selection, context: vocabularyContext)
+            }
+            return
+        }
+
         withAnimation(AppMotion.panelState) {
             isTranslating = true
             resetTranslationFields()

@@ -41,6 +41,10 @@ final class ReadiumNavigatorDriver: ReaderNavigatorDriving {
         guard let navigator else { return nil }
         return await navigator.go(to: locator)
     }
+
+    var currentLocation: Locator? {
+        navigator?.currentLocation
+    }
 }
 
 extension ReadiumNavigatorView.Coordinator {

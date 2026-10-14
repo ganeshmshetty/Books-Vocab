@@ -493,6 +493,31 @@ struct ReaderTranslationHandlerTests {
                 "no vocabContext provided → no autoSave path → isSaved must remain false")
     }
 
+    @Test func handlePhraseSelected_guest_savesLocallyWithoutTranslationCall() async {
+        let service = MockTranslating()
+        service.phraseResult = .success("unused")
+        let handler = makeHandler(loggedIn: false, service: service)
+        let ctx = MockVocabContext()
+
+        handler.handlePhraseSelected(phrase: "in due course", context: "...", vocabularyContext: ctx)
+        await drain(handler)
+
+        #expect(service.phraseCalls == 0, "guest phrase tap must mirror the word path and never call the API")
+        #expect(handler.isTranslating == false)
+        #expect(handler.isSaved == true)
+        #expect(handler.translationErrorMessage == nil)
+        #expect(ctx.savedSelections.map(\.word) == ["in due course"])
+
+        let state = TranslationPanelPresenterState(
+            word: "in due course", partOfSpeech: nil, translation: nil,
+            isLoading: handler.isTranslating, isSaved: handler.isSaved, isLoggedIn: false,
+            isExpanded: false, explanation: nil, isLoadingExplanation: false,
+            statusMessage: nil, isExplanationOnly: false, translationErrorMessage: nil,
+            explanationErrorMessage: nil, timerText: "", isSpeaking: false, isPanelLarge: false
+        )
+        #expect(state.guestMessageTitle == "已加入待收錄".localized)
+    }
+
     @Test func retryLastLookup_afterExplanationFailure_retriesOnlyExplanationAndStaysExpanded() async {
         let service = MockTranslating()
         service.quickResult = .success(TranslationResult(translation: "t", partOfSpeech: nil, explanation: nil))
