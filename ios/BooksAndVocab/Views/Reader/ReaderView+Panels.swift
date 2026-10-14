@@ -9,7 +9,7 @@ extension ReaderView {
             vocabulary: allVocabulary,
             modelContext: modelContext,
             book: book,
-            currentLocator: currentLocator,
+            currentLocator: pageTurn.currentLocator,
             notebookId: book.resolvedNotebookId,
             toastCoordinator: toastCoordinator
         )
@@ -54,7 +54,7 @@ extension ReaderView {
             if let publication {
             ReadiumNavigatorView(
                 publication: publication,
-                initialLocator: restoreFallbackLocator == nil ? initialLocator : nil,
+                initialLocator: restoreFallbackLocator == nil ? restoredInitialLocator : nil,
                 recoveryLocator: restoreFallbackLocator,
                 lookedUpWords: handler.lookedUpWords,
                 bookUniqueWords: handler.bookUniqueWords,
@@ -171,7 +171,7 @@ extension ReaderView {
 
     @ViewBuilder
     private var readerTOCEvidenceLocator: some View {
-        if let currentLocator {
+        if let currentLocator = pageTurn.currentLocator {
             Text(currentLocator.href.string)
                 .accessibilityIdentifier("reader.currentLocator")
                 .accessibilityValue(currentLocator.href.string)
