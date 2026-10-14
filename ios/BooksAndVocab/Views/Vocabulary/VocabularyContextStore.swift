@@ -24,27 +24,6 @@ enum VocabularyHighlightSignature {
     }
 }
 
-/// Owner body 的高亮 revision 求值入口（#3824）。每次求值都經此計數，讓「翻頁不重算」
-/// 可由計數器斷言；計算函式可注入以隔離測試。
-@MainActor
-final class VocabularyHighlightRevisionSource {
-    private(set) var computations = 0
-    private let compute: ([VocabularyEntry], String?) -> Int
-
-    init(
-        compute: @escaping ([VocabularyEntry], String?) -> Int = {
-            VocabularyHighlightSignature.revision(entries: $0, notebookId: $1)
-        }
-    ) {
-        self.compute = compute
-    }
-
-    func revision(entries: [VocabularyEntry], notebookId: String?) -> Int {
-        computations += 1
-        return compute(entries, notebookId)
-    }
-}
-
 @MainActor
 protocol VocabularyContextStore: VocabularyContextProtocol {
     var vocabulary: [VocabularyEntry] { get }

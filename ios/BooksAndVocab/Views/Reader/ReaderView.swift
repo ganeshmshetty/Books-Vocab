@@ -59,8 +59,6 @@ struct ReaderView: View {
     @State var pageTurn = ReaderPageTurnState()
     /// 首次載入後固化的 restore locator（#3824：不在每次 body 求值時重新解碼 lastReadLocatorJSON）。
     @State var restoredInitialLocator: Locator?
-    /// 高亮 revision 求值入口（#3824）：只在 owner body 求值，翻頁路徑不經此。
-    @State private var highlightRevisionSource = VocabularyHighlightRevisionSource()
     /// Invalid persisted locators must not be passed to Readium as `nil`.
     /// The first reading-order resource becomes a real recovery destination
     /// after publication loading, and the navigator's location event remains
@@ -195,7 +193,7 @@ struct ReaderView: View {
             // notebooks settle 後補 seed：.task 當下 liveNotebooks 可能尚未 settle 而跳過。
             seedNotebookBindingIfNeeded()
         }
-        .onChange(of: highlightRevisionSource.revision(
+        .onChange(of: VocabularyHighlightSignature.revision(
             entries: allVocabulary,
             notebookId: book.resolvedNotebookId
         )) { _, _ in
