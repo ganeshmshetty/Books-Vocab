@@ -28,7 +28,16 @@ verified_against: 2d9f6fdbebca9fe0f2aa9a790f1498dded80050d
 ./ops/agent_onboard.py --identity '<identity>' --intent '<intent>' --entry '<entry>' [--specialist-intent '<identity-scoped specialist>'] --evidence-file '<own worktree>/.cache/agent-scratch/evidence.json' --json
 ```
 
-只有 `status=ready` 才能讀 `load_order` 後續的 skill／domain 文件。必須觀察 project → identity → assignment → skill → domain 五個 phase；缺少 evidence 時先停在 `awaiting-assignment`；若 identity、入口、PR／Issue、Scope 或 fresh evidence 不足，agent 應停止並回報，不得以預設 `delivery` 繞過。
+只有 `status=ready` 才能讀 `load_order` 後續的 skill／domain 文件。必須觀察 project → identity → assignment → skill → domain 五個 phase；缺少 evidence 時先停在 `awaiting-assignment`；若 identity、入口、PR／Issue、Scope 或 fresh evidence 不足，agent 應停止並回報，不得以預設 `delivery` 繞過（maintenance 的 audit-only 例外見下節）。
+
+## Audit-only DS evidence（maintenance 專用）
+
+maintenance 是純文檔系統審計，沒有 PR、diff 或真實 changed paths，因此「沒有 PR／changed paths 就停止」的規則對此角色**不適用**。它的 DS evidence 必須是明確標示的 placeholder；這組值不是真實 assignment，不得偽裝成真實 PR 或 changed paths：
+
+- `GitHub PR diff`：`dogfood placeholder, no real PR (audit-only), not a real assignment`
+- `changed paths`：`docs/reference/tech_index.md (placeholder changed-path set for audit-only dogfood)`
+
+兩個值都不得含 `<...>`（那會被 onboarding 判為未填）。這組 evidence 只讓 onboarding 進入 `status=ready` 以供審計閱讀，不代表任何文件已變更、不得據以判定 synced；findings 只回報給 harness，不建立 Issue／PR／worktree 狀態。
 
 ## 測試任務
 
@@ -38,10 +47,10 @@ verified_against: 2d9f6fdbebca9fe0f2aa9a790f1498dded80050d
 |---|---|---|
 | backend-change | 假設要改 `backend/src/kg/routers/vocab.py`,判斷需同步哪些 docs | `docs/registry.yml`, `ops/docs_impact.py`, `docs/reference/tech_index.md`, `docs/sop/doc_sync.md` |
 | ops-change | 假設要改 `ops/devops_kg_safe.sh`,判斷 docs gate 會提示什麼,哪些提示是必要/噪音 | `docs/registry.yml`, `ops/docs_impact.py`, `docs/policy/safety.md`, `docs/sop/deploy.md`, `docs/sop/debug.md` |
-| docs-tooling-change | 假設要改 `ops/docs_lint.sh`,判斷 impact hints 是否足夠精準,必要時用 `--explain` 追噪音/漏報來源 | `ops/docs_impact.py`, `docs/registry.yml`, `docs/sop/doc_sync.md` |
+| docs-tooling-change | 假設要改 `ops/docs_lint.sh`,判斷 impact hints 是否足夠精準;噪音用 `--explain` 追 `!` 抑制來源,漏報用 `--surface-scan PATTERN` 掃 agent-facing surface | `ops/docs_impact.py` (含 `--surface-scan`), `docs/registry.yml`, `docs/sop/doc_sync.md` |
 | ios-feature-change | 假設要改 `ios/BooksAndVocab/Models/Book.swift`,判斷該查哪些 feature boundary / snapshot | `docs/registry.yml`, `docs/reference/tech_index.md`, `docs/reference/feature_boundary/bookshelf.md` |
 | simulator-solidification | 假設已跑通一個 Simulator 流程，要求把它固化成 SOP／skill，驗證執行 agent 與 DS 是否能分工完成閉環 | `ios-simulator-verification`、`docs/sop/ios.md`、`docs/sop/doc_sync.md`、`docs/registry.yml` |
-| maintenance | 只看文檔系統本身,判斷新 agent 如何知道該跑哪些 gate；先走 onboarding，再按 DS/docs route deep dive | `CLAUDE.md`, `docs/reference/project_onboarding.md`, `docs/registry.yml`, `docs/sop/doc_sync.md` |
+| maintenance | 只看文檔系統本身(audit-only，無 PR)，判斷新 agent 如何知道該跑哪些 gate；先走 onboarding，DS evidence 依下節 audit-only 慣例，再按 DS/docs route deep dive | `CLAUDE.md`, `docs/reference/project_onboarding.md`, `docs/registry.yml`, `docs/sop/doc_sync.md` |
 
 ## 必跑命令
 
@@ -59,9 +68,10 @@ docs gates；兩者分開，避免把診斷命令誤當成 agent loader：
 ./ops/docs_lint.sh --registry
 ./ops/docs_lint.sh --audit
 ./ops/docs_registry_coverage.py
+./ops/docs_impact.py --surface-scan '<missed-reference regex>'
 ```
 
-`docs_impact.py --files ...` 是單一檔案改動的精準樣本；需要理解 broad source 為何命中、又被 `!path` / `!glob` 排除時，補跑 `--explain`。`match_type=exact|broad|suppressed-partial|suppressed` 是第一層理由欄位；若仍有有效 impact，`IMPACT` 會帶 `excluded_changed=` / `excluded_by=`。`./ops/docs_lint.sh` 反映目前 checkout 的 range、staged、unstaged 與 untracked 變更；若沒有選到任何文件也會明確報告。`./ops/docs_registry_coverage.py` 的輸出分成 active 與 historical；historical 只供健康盤點，不是日常 gate debt。回報時分開判讀 impact hints 與角色真正需要的文件。
+`docs_impact.py --files ...` 是單一檔案改動的精準樣本；`--explain` 只列出被 `!path` / `!glob` 抑制的 broad 命中（registry 無 `!` 排除時為空），不能揭露漏報。查漏報（該被提到卻沒被 impact 命中的引用）用 `--surface-scan PATTERN` 掃 registry 的 agent-facing surface。`match_type=exact|broad|suppressed-partial|suppressed` 是第一層理由欄位；若仍有有效 impact，`IMPACT` 會帶 `excluded_changed=` / `excluded_by=`。`./ops/docs_lint.sh` 反映目前 checkout 的 range、staged、unstaged 與 untracked 變更；若沒有選到任何文件也會明確報告。`./ops/docs_registry_coverage.py` 的輸出分成 active 與 historical；historical 只供健康盤點，不是日常 gate debt。回報時分開判讀 impact hints 與角色真正需要的文件。
 
 ## Simulator 流程固化測試（代表性 fixture，不是唯一 domain）
 

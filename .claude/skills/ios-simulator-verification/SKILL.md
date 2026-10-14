@@ -18,7 +18,10 @@ verdict schema、UI World、artifact TTL 與 DerivedData 細節以以下 SoT 為
 ## 觸發與前置
 
 只在 onboarding `status=ready` 且 intent 是 `ios`／`simulator-verification`／
-`ui-test-evidence` 時載入。開始前確認：
+`ui-test-evidence`，**並且**工作涉及 UI 或 Simulator evidence（UI 畫面、UITest selector、
+UI World、flow evidence）時載入。非 UI 的 iOS model／service 變更不需要 Simulator 證據：
+走 `delivery-worktree`（worktree-flow）交付，以 unit tests 與 CI 為準，不在此 skill 內產生
+UI evidence。開始前確認：
 
 1. 已有 Worker／Issue Solver 的 branch、worktree、structured Scope、exact HEAD。
 2. source tree、UI World／dataset、selector、Simulator lease 與 evidence 目的已明確。

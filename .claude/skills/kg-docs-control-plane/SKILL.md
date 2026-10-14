@@ -19,7 +19,8 @@ description: "新增、修改或退役 KG 文件的閉環 workflow：判定 SoT�
 
 ```bash
 ./ops/agent_onboard.py --identity DS --intent docs --entry pr-review --evidence-file '<own worktree>/.cache/agent-scratch/evidence.json' --json
-./ops/docs_impact.py --files <path...> --explain
+./ops/docs_impact.py --files <path...>            # add --explain only to inspect ! suppressions
+./ops/docs_impact.py --surface-scan '<regex>'     # missed-reference check (false negatives)
 ./ops/docs_lint.sh
 ./ops/docs_lint.sh --registry
 ./ops/docs_registry_coverage.py

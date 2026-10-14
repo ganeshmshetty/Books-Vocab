@@ -267,6 +267,19 @@ def test_ios_worker_loads_delivery_dependency_and_ios_specialist():
     ]
 
 
+def test_ios_simulator_skill_trigger_excludes_non_ui_model_service_changes():
+    # #3769: Worker ios routes to this skill by intent alone; the skill must itself
+    # say that non-UI iOS model/service changes do not need Simulator evidence.
+    text = (ROOT / ".claude/skills/ios-simulator-verification/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    trigger = text.split("## 觸發與前置", 1)[1].split("## 固定執行路徑", 1)[0]
+
+    assert "非 UI" in trigger
+    assert "delivery-worktree" in trigger
+    assert "unit tests" in trigger
+
+
 def test_backend_worker_can_select_an_explicit_debug_specialist():
     payload = mod.build_onboarding(
         ROOT,
@@ -342,6 +355,26 @@ def test_identity_intent_entry_mismatch_fails_closed():
         mod.build_onboarding(
             ROOT, identity="Issue Solver", intent="backend", entry="direct-assignment"
         )
+
+
+def test_mismatch_errors_list_the_identitys_allowed_values() -> None:
+    identities = json.loads(
+        (ROOT / "ops" / "context_plane.json").read_text(encoding="utf-8")
+    )["identities"]
+
+    with pytest.raises(mod.OnboardingError) as intent_error:
+        mod.build_onboarding(
+            ROOT, identity="Worker", intent="review", entry="direct-assignment"
+        )
+    assert ", ".join(identities["worker"]["allowed_intents"]) in str(intent_error.value)
+
+    with pytest.raises(mod.OnboardingError) as entry_error:
+        mod.build_onboarding(
+            ROOT, identity="Issue Solver", intent="backend", entry="direct-assignment"
+        )
+    assert ", ".join(identities["issue-solver"]["entry_modes"]) in str(
+        entry_error.value
+    )
 
 
 @pytest.mark.parametrize(
@@ -1193,6 +1226,25 @@ def test_docs_show_evidence_file_not_inline_json_for_onboarding(doc) -> None:
     assert commands or doc.endswith("agent_context.md")
     for line in commands:
         assert "--evidence '" not in line, f"{doc}: inline --evidence: {line}"
+
+
+def test_dogfood_maintenance_row_names_an_audit_only_ds_evidence_convention() -> None:
+    text = (ROOT / "docs/sop/docs_dogfood.md").read_text(encoding="utf-8")
+    maintenance = next(
+        line for line in text.splitlines() if line.startswith("| maintenance |")
+    )
+    assert "audit-only" in maintenance
+    section = text.split("## Audit-only DS evidence", 1)[1].split("\n## ", 1)[0]
+    assert "placeholder" in section
+    assert "GitHub PR diff" in section and "changed paths" in section
+    assert "不是真實 assignment" in section
+    assert "不適用" in section and "停止" in section
+
+
+def test_docs_steward_stop_rule_scopes_the_audit_only_maintenance_exception() -> None:
+    text = (ROOT / ".claude/agents/docs-steward.md").read_text(encoding="utf-8")
+    stop_rule = next(line for line in text.splitlines() if "停止並回報缺口" in line)
+    assert "audit-only" in stop_rule
 
 
 def test_code_review_skill_covers_both_entries_and_scopes_the_stop_rule() -> None:
