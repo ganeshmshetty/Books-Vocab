@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,6 +22,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NOTEBOOK_ID = "default"
 DEFAULT_NOTEBOOK_NAME = "我的單字本"
+
+
+def _disambiguate_name(base: str, taken: set[str]) -> str:
+    """Return ``base`` if free, else the first ``"base (n)"`` (n >= 2) that is.
+
+    Same suffix scheme as the shared-deck copy path (``_unique_notebook_name``).
+    """
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base} ({n})" in taken:
+        n += 1
+    return f"{base} ({n})"
 
 
 def _utc_instant(value: datetime) -> datetime:
@@ -142,6 +157,37 @@ class NotebookStore:
             session.refresh(nb)
             return nb
 
+    @contextmanager
+    def _name_guarded_txn(self) -> Iterator[Session]:
+        """One SQLite writer transaction for a check-then-write on notebook names.
+
+        ``BEGIN IMMEDIATE`` takes the write lock before the active-name query, so
+        a racing create or rename (another thread or process) waits instead of
+        reading the same name as free. No UNIQUE index: accounts that already hold
+        duplicates from before this guard must still open and migrate.
+        """
+        with self.engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                with Session(bind=conn) as session:
+                    yield session
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _active_names(session: Session, *, exclude_id: str | None = None) -> set[str]:
+        """Names held by active notebooks (not soft-deleted, not copy-staged): the
+        set that world-export requires to be duplicate-free (#3889)."""
+        rows = session.execute(
+            select(Notebook.id, Notebook.name).where(
+                Notebook.is_deleted.is_(False),
+                Notebook.is_staged.is_(False),
+            )
+        ).all()
+        return {name for nb_id, name in rows if nb_id != exclude_id}
+
     def create(
         self,
         name: str,
@@ -157,18 +203,19 @@ class NotebookStore:
         The Phase 2 copy path passes ``is_staged=True`` to stage the notebook
         HIDDEN (the materialization barrier, distinct from a user soft-delete)
         plus the provenance columns, then reveals it via :meth:`materialize` once
-        every card has landed."""
-        nb = Notebook(
-            name=name,
-            color=color,
-            cover_pattern=cover_pattern,
-            source_shared_deck_id=source_shared_deck_id,
-            source_version=source_version,
-            is_staged=is_staged,
-        )
-        with Session(self.engine) as session:
+        every card has landed. The stored name is disambiguated against active
+        names (``"X (2)"``), so the API never yields two same-named active notebooks."""
+        with self._name_guarded_txn() as session:
+            nb = Notebook(
+                name=_disambiguate_name(name, self._active_names(session)),
+                color=color,
+                cover_pattern=cover_pattern,
+                source_shared_deck_id=source_shared_deck_id,
+                source_version=source_version,
+                is_staged=is_staged,
+            )
             session.add(nb)
-            session.commit()
+            session.flush()
             session.refresh(nb)
         return nb
 
@@ -337,10 +384,14 @@ class NotebookStore:
             return [notebooks_by_id[notebook_id] for notebook_id in modified_ids]
 
     def update(self, notebook_id: str, **kwargs) -> Notebook | None:
-        with Session(self.engine) as session:
+        with self._name_guarded_txn() as session:
             nb = session.get(Notebook, notebook_id)
             if nb is None or nb.is_deleted or nb.is_staged:
                 return None
+            # Only a real rename is checked: re-sending the current name must not
+            # self-suffix, and a legacy duplicate left as-is stays as-is.
+            if "name" in kwargs and kwargs["name"] != nb.name:
+                kwargs["name"] = _disambiguate_name(kwargs["name"], self._active_names(session, exclude_id=nb.id))
             has_changes = False
             for key, value in kwargs.items():
                 if hasattr(nb, key) and getattr(nb, key) != value:
@@ -349,7 +400,7 @@ class NotebookStore:
             if has_changes:
                 nb.updated_at = datetime.now(UTC)
                 session.add(nb)
-                session.commit()
+                session.flush()
                 session.refresh(nb)
             return nb
 

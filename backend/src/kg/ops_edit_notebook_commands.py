@@ -39,11 +39,11 @@ def cmd_notebook_create(args: argparse.Namespace) -> int:
 
     def apply_fn() -> dict[str, Any]:
         with closing(_notebook_store(ctx.user_dir)) as store:
-            # 同名既存不擋(系統允許重名),但 warn:重名會讓 name→id 解析取最舊那本,
-            # operator 易混淆(dogfood D LOW-1)。診斷走 stderr,不污染 --json stdout。
+            # 同名既存時 store 會自動消歧為 "X (n)"(#3889),不會產生重名;warn 讓 operator
+            # 知道新本不是預期名稱(dogfood D LOW-1)。診斷走 stderr,不污染 --json stdout。
             dup = next((nb for nb in store.all() if nb.name == args.name), None)
             if dup is not None:
-                print(f"⚠ 已存在同名 notebook(id={dup.id});name→id 解析將取最舊那本", file=sys.stderr)
+                print(f"⚠ 已存在同名 notebook(id={dup.id});新本將自動消歧為 {args.name} (n)", file=sys.stderr)
             nb = store.create(name=args.name, color=args.color, cover_pattern=args.cover)
             state["nb_id"] = nb.id
             return {"notebook": {"id": nb.id, "name": nb.name, "color": nb.color, "cover_pattern": nb.cover_pattern}}
@@ -73,12 +73,15 @@ def cmd_notebook_update(args: argparse.Namespace) -> int:
     if not updates:
         raise EditError("notebook-update 需至少一個 --name / --color / --cover / --sort-order")
     plan = {"notebook_id": nb_id, "updates": updates}
+    # 名稱會被 store 自動消歧（"X (2)"，#3889），故驗證對照 apply 實際寫入值而非請求值。
+    applied: dict[str, Any] = {}
 
     def apply_fn() -> dict[str, Any]:
         with closing(_notebook_store(ctx.user_dir)) as store:
             nb = store.update(nb_id, **updates)
             if nb is None:
                 raise EditError(f"notebook not found 或已刪除:{nb_id}")
+            applied.update({k: getattr(nb, k) for k in updates})
             return {
                 "notebook": {
                     "id": nb.id,
@@ -94,7 +97,7 @@ def cmd_notebook_update(args: argparse.Namespace) -> int:
             nb = store.get(nb_id)
             if nb is None:
                 return {"ok": False, "reason": "notebook missing"}
-            mism = [k for k, v in updates.items() if getattr(nb, k, None) != v]
+            mism = [k for k in updates if getattr(nb, k, None) != applied.get(k)]
             return {"ok": not mism, "mismatched": mism}
 
     return ctx.run(action="notebook-update", plan=plan, apply_fn=apply_fn, verify_fn=verify_fn)
