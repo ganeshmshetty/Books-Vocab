@@ -1007,6 +1007,54 @@ struct SubscriptionManagerTests {
             return
         }
     }
+
+    // MARK: - undecodable success response (#3614)
+
+    /// 2xx 同步已被後端接受、只是回應無法解碼：必須 finish。否則 StoreKit 每次啟動重送，重 POST 並重報 Sentry。
+    @MainActor
+    @Test func settle_undecodableSuccessResponse_finishesWithoutRetry() async {
+        var events: [String] = []
+        let outcome = await SubscriptionManager.settleVerifiedTransaction(
+            "tx-7",
+            isLoggedIn: true,
+            sync: { _ in
+                events.append("sync")
+                throw KGError.decodingError(underlying: URLError(.cannotParseResponse))
+            },
+            finish: { _ in events.append("finish") }
+        )
+        #expect(events == ["sync", "finish"])
+        guard case .acceptedUnreadableResponse = outcome else {
+            Issue.record("expected acceptedUnreadableResponse, got \(outcome)")
+            return
+        }
+    }
+
+    /// 408 與 429 為暫時性錯誤，即使 P3 統一 4xx 判定後也不得被視為終局拒絕（#3614）。
+    @MainActor
+    @Test func isTerminalRejection_exemptsTransientStatuses() {
+        #expect(!SubscriptionManager.isTerminalRejection(.httpError(statusCode: 408, detail: "")))
+        #expect(!SubscriptionManager.isTerminalRejection(.httpError(statusCode: 429, detail: "")))
+        #expect(!SubscriptionManager.isTerminalRejection(.httpError(statusCode: 401, detail: "")))
+        #expect(SubscriptionManager.isTerminalRejection(.httpError(statusCode: 404, detail: "")))
+    }
+
+    // MARK: - post-login reconciliation (#3508)
+
+    /// 登入後必須先以 StoreKit currentEntitlements 補同步，再 refresh：登出期間未 finish 的交易只能由此路徑送達後端，
+    /// refresh 不觸及 currentEntitlements，因此順序不可對調或省略。
+    @MainActor
+    @Test func postLogin_syncsCurrentEntitlementsBeforeRefresh() async {
+        var events: [String] = []
+        await SubscriptionManager.reconcileEntitlementsAfterLogin(
+            syncCurrentEntitlements: {
+                events.append("sync")
+                return .noEntitlement
+            },
+            refresh: { events.append("refresh") }
+        )
+        #expect(events == ["sync", "refresh"])
+    }
 }
 
 /// 依呼叫序號回應；標記為 suspended 的呼叫會掛起，直到測試以 `release` 放行。
