@@ -760,6 +760,9 @@ def test_cleanup_refuses_registry_claim_that_is_not_the_typed_handback(
     (
         ("dirty_worktree", "worktree changed after typed handback"),
         ("local_branch", "local branch changed after typed handback"),
+        ("head_sha", "worktree changed after typed handback"),
+        ("branch", "worktree changed after typed handback"),
+        ("out_of_scope_path", "worktree changed after typed handback"),
     ),
 )
 def test_cleanup_refuses_worktree_or_local_branch_drift_after_handback(
@@ -770,6 +773,20 @@ def test_cleanup_refuses_worktree_or_local_branch_drift_after_handback(
     registry = FakeRegistry(_record(receipt, status=status))
     if drift == "dirty_worktree":
         git = FakeGit(receipt, snapshot=_snapshot(receipt, clean=False))
+    elif drift == "head_sha":
+        git = FakeGit(receipt, snapshot=replace(_snapshot(receipt), head_sha="e" * 40))
+    elif drift == "branch":
+        git = FakeGit(
+            receipt, snapshot=replace(_snapshot(receipt), branch="feat/other")
+        )
+    elif drift == "out_of_scope_path":
+        git = FakeGit(
+            receipt,
+            snapshot=replace(
+                _snapshot(receipt),
+                changes=(FileChange(FileOperation.MODIFY, "ops/b.py"),),
+            ),
+        )
     else:
         git = FakeGit(receipt, local_sha="d" * 40)
     state = "OPEN" if flow == "release" else "MERGED"
