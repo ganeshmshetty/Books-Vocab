@@ -1518,7 +1518,9 @@ class Delivery:
             self.probe_note = f"required check is {state}"
         else:
             names = ", ".join(sorted(str(c.get("name")) for c in checks)) or "none"
-            self.probe_note = f"no check named 'required' on #{number} (reported: {names})"
+            self.probe_note = (
+                f"no check named 'required' on #{number} (reported: {names})"
+            )
         return None
 
     def _pr_state(self, repo: str, number: int) -> str:
