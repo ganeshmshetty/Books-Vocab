@@ -28,6 +28,7 @@ struct AddLinkCreationFailure: Equatable {
 
     static let timedOutReason = "timed_out"
     static let operationNotFoundReason = "operation_not_found"
+    static let sourceUnavailableReason = "source_unavailable"
     static let offlineReason = "offline"
     static let notAuthenticatedReason = "not_authenticated"
     static let unknownReason = "unknown"
@@ -60,7 +61,7 @@ struct AddLinkCreationFailure: Equatable {
     var kind: Kind {
         switch reason {
         case "quota_exhausted": return .quotaExhausted
-        case "source_unavailable": return .sourceUnavailable
+        case Self.sourceUnavailableReason: return .sourceUnavailable
         case "target_archived": return .targetArchived
         case "target_is_source": return .targetIsSource
         case "translation_failed": return .translationFailed

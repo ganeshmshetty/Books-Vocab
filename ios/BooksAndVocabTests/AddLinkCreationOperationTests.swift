@@ -114,6 +114,95 @@ struct AddLinkCreationOperationTests {
         #expect(coordinator.fraction == 1)
     }
 
+    /// #3672: 只剩 `link_projection_pending` 的終態，本機 pull 成功即已同步，應為 `.succeeded`。
+    /// Red on main: `serverReportedWarnings`（status 為 succeeded_with_warnings）讓相位停在 `.succeededWithWarnings` 且 warnings 為空。
+    @Test("#3672: link_projection_pending resolved by a successful pull ends as succeeded")
+    @MainActor
+    func projectionPendingResolvedByPullEndsSucceeded() async throws {
+        let coordinator = try await Self.finishedWarningRun(warnings: ["link_projection_pending"]) {
+            KGPullOutcome(pipelinePending: false, inserted: 0)
+        }
+        #expect(coordinator.phase == .succeeded)
+        #expect(coordinator.warnings.isEmpty)
+    }
+
+    @Test("#3672 regression: unrecognised server warning code still ends as succeededWithWarnings")
+    @MainActor
+    func unknownServerWarningKeepsWarningPhase() async throws {
+        let coordinator = try await Self.finishedWarningRun(warnings: ["some_future_code"]) {
+            KGPullOutcome(pipelinePending: false, inserted: 0)
+        }
+        #expect(coordinator.phase == .succeededWithWarnings)
+        #expect(coordinator.warnings.isEmpty)
+    }
+
+    @Test("#3672 regression: link_projection_pending plus a failed pull yields localSyncIncomplete")
+    @MainActor
+    func projectionPendingWithFailedPullKeepsLocalSyncWarning() async throws {
+        let coordinator = try await Self.finishedWarningRun(warnings: ["link_projection_pending"]) {
+            throw CocoaError(.fileReadUnknown)
+        }
+        #expect(coordinator.phase == .succeededWithWarnings)
+        // 本機 pull 失敗時投影並未落地，`link_projection_pending` 仍為真，必須保留（不可被視為已解決）。
+        #expect(coordinator.warnings == [.linkProjectionPending, .localSyncIncomplete])
+    }
+
+    @Test("#3672 regression: a recognised code mixed with an unknown code keeps the warning phase")
+    @MainActor
+    func mixedKnownAndUnknownServerWarningsKeepWarningPhase() async throws {
+        let coordinator = try await Self.finishedWarningRun(
+            warnings: ["link_projection_pending", "some_future_code"]
+        ) {
+            KGPullOutcome(pipelinePending: false, inserted: 0)
+        }
+        #expect(coordinator.phase == .succeededWithWarnings)
+        #expect(coordinator.warnings.isEmpty)
+    }
+
+    @MainActor
+    private static func finishedWarningRun(
+        warnings: [String],
+        pull: @escaping @Sendable () async throws -> KGPullOutcome
+    ) async throws -> AddLinkCreationCoordinator {
+        let container = try CreationFixtures.container()
+        let source = CreationFixtures.entry("source", cardID: "src")
+        let target = CreationFixtures.entry("target", cardID: "tgt")
+        let service = ScriptedCreationService(
+            onStart: { _, _ in Self.warningStatus(sequence: 1, warnings: warnings) },
+            onFetch: { _, _ in Self.warningStatus(sequence: 2, warnings: warnings) }
+        )
+        service.onPull = pull
+        let coordinator = AddLinkCreationCoordinator(environment: CreationFixtures.environment())
+
+        coordinator.start(
+            word: "target",
+            sourceEntry: source,
+            allEntries: [source, target],
+            operationService: service,
+            syncService: service,
+            container: container
+        )
+        #expect(await CreationFixtures.eventually {
+            coordinator.phase == .succeeded || coordinator.phase == .succeededWithWarnings
+        })
+        return coordinator
+    }
+
+    private static func warningStatus(sequence: Int, warnings: [String]) -> KGAddLinkOperationStatus {
+        let base = existingCardStatus(sequence: sequence)
+        return KGAddLinkOperationStatus(
+            operationId: base.operationId,
+            notebookId: base.notebookId,
+            status: "succeeded_with_warnings",
+            sequence: sequence,
+            steps: base.steps,
+            targetCardId: base.targetCardId,
+            linkId: base.linkId,
+            warnings: warnings,
+            errorCode: nil
+        )
+    }
+
     private static func existingCardStatus(sequence: Int) -> KGAddLinkOperationStatus {
         KGAddLinkOperationStatus(
             operationId: "op-1",

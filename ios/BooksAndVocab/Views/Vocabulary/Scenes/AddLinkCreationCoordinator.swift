@@ -319,7 +319,7 @@ final class AddLinkCreationCoordinator {
             guard self.isCurrent(currentGeneration) else { return }
             await self.projectLocally(
                 remoteWarnings: remaining,
-                serverReportedWarnings: false,
+                unrecognisedServerWarnings: false,
                 syncService: context.services.syncService,
                 container: context.services.container,
                 notebookId: context.sourceEntry.notebookId,
@@ -536,9 +536,13 @@ final class AddLinkCreationCoordinator {
             guard isCurrent(generation) else { return }
             switch current.status {
             case "succeeded", "succeeded_with_warnings":
+                let remoteWarnings = AddLinkCreationWarning.parse(current.warnings)
+                let hasUnrecognisedWarning = current.warnings.contains { AddLinkCreationWarning(rawValue: $0) == nil }
                 await projectLocally(
-                    remoteWarnings: AddLinkCreationWarning.parse(current.warnings),
-                    serverReportedWarnings: current.completedWithWarnings,
+                    remoteWarnings: remoteWarnings,
+                    // 伺服器旗標只是後備：僅在有無法辨識的 code，或宣告有警告卻無任何可辨識 code 時保留警告相位（#3672）。
+                    unrecognisedServerWarnings: current.completedWithWarnings
+                        && (hasUnrecognisedWarning || remoteWarnings.isEmpty),
                     syncService: services.syncService,
                     container: services.container,
                     notebookId: notebookId,
@@ -560,8 +564,9 @@ final class AddLinkCreationCoordinator {
             var failure = AddLinkCreationFailure(error: error)
             if failure.kind == .operationNotFound {
                 if operationId == nil {
-                    // A 404 on the POST is not "the operation vanished".
-                    failure = AddLinkCreationFailure(reason: nil)
+                    // A 404 on the POST is not "the operation vanished". The enqueue route answers 404 only
+                    // when the source card is missing, deleted or archived: retrying the same key cannot succeed.
+                    failure = AddLinkCreationFailure(reason: AddLinkCreationFailure.sourceUnavailableReason)
                 } else {
                     // The server forgot the operation; only a new one can proceed.
                     operationTerminal = true
@@ -588,7 +593,7 @@ final class AddLinkCreationCoordinator {
     /// pull adds `.localSyncIncomplete`. Any warning keeps the sheet open.
     private func projectLocally(
         remoteWarnings: [AddLinkCreationWarning],
-        serverReportedWarnings: Bool,
+        unrecognisedServerWarnings: Bool,
         syncService: any VocabularySyncServing,
         container: ModelContainer,
         notebookId: String,
@@ -646,7 +651,7 @@ final class AddLinkCreationCoordinator {
         failure = nil
         warnings = AddLinkCreationWarning.allCases.filter(outcomeWarnings.contains)
         isRetryingWarnings = false
-        if warnings.isEmpty && !serverReportedWarnings {
+        if warnings.isEmpty && !unrecognisedServerWarnings {
             transition(.succeeded, message: L10n.string("同步完成"))
         } else {
             transition(.succeededWithWarnings, message: L10n.string("addLink.creation.warning.summary"))

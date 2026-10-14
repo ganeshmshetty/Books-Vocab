@@ -126,6 +126,49 @@ struct TodayReviewSnapshotRestoreTests {
         #expect(restored?.forgotCount == 1)
     }
 
+    // Issue #3670: 未作答的卡在還原時必須以即時列為基準，不得沿用快照基準（否則評分會覆寫較新的 SRS 進度）。
+    @Test func unansweredKeptCardRebasesOnLiveEntryWhileAnsweredKeepsSnapshotBaseline() {
+        cleanUp()
+        defer { cleanUp() }
+        let answered = makeEntry("answered", kgCardId: "card-answered")
+        let unanswered = makeEntry("unanswered", kgCardId: "card-unanswered")
+        answered.reviewCount = 3
+        answered.reviewIntervalHours = 48
+        unanswered.reviewCount = 3
+        unanswered.reviewIntervalHours = 48
+        unanswered.lapseCount = 1
+        let now = Date()
+        ReviewSessionPersistence.persistSnapshot(
+            userId: userId,
+            sessionStartTime: now,
+            currentIndex: 0,
+            queueCount: 2,
+            queuePersistenceIDs: ["kg:card-answered", "kg:card-unanswered"],
+            queueBaselines: [answered, unanswered].map(ReviewSessionPersistence.makeBaseline(from:)),
+            submittedAnswers: [0: answer(.remembered, at: now)]
+        )
+        // 快照寫入後，另一台裝置把兩張卡的 SRS 推進（live 值與快照不同）。
+        answered.reviewCount = 4
+        answered.reviewIntervalHours = 96
+        unanswered.reviewCount = 7
+        unanswered.reviewIntervalHours = 200
+        unanswered.lapseCount = 2
+
+        let restored = ReviewSessionPersistence.restoreSnapshotIfPossible(
+            orderedEntries: [answered, unanswered],
+            userId: userId
+        )
+
+        #expect(restored?.baselines.count == 2)
+        // 未作答：必須等於即時列。
+        #expect(restored?.baselines[1].reviewCount == 7)
+        #expect(restored?.baselines[1].reviewIntervalHours == 200)
+        #expect(restored?.baselines[1].lapseCount == 2)
+        // 已作答：保留快照基準，確保 flush 冪等。
+        #expect(restored?.baselines[0].reviewCount == 3)
+        #expect(restored?.baselines[0].reviewIntervalHours == 48)
+    }
+
     @Test func loadOrderCollapsesDuplicatePersistenceIDs() {
         cleanUp()
         defer { cleanUp() }
