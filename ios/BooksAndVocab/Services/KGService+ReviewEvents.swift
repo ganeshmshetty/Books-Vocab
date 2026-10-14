@@ -63,13 +63,37 @@ struct KGReviewEventPayload: Codable, Sendable, Equatable {
 extension KGService {
     private static let reviewEventPushBatchSize = 1000
 
+    /// Pushes until no request is pending. A caller that finds a push in flight
+    /// returns `(0, 0)` at once and leaves its saved events to the owner, which
+    /// runs one more round for them (#3907). Each round rebuilds its payload, so
+    /// a record saved after a round's snapshot is never stranded until the next sync.
     func pushReviewEvents(container: ModelContainer) async throws -> (inserted: Int, skipped: Int) {
         guard claimReviewEventPush() else {
-            AppLog.kg.info("pushReviewEvents skipped: another push already in flight")
+            AppLog.kg.info("pushReviewEvents deferred: another push in flight will run another round")
             return (0, 0)
         }
-        defer { releaseReviewEventPush() }
 
+        // Captured once per claim, before any round: every batch of every round belongs to this session only (#3806).
+        let sessionEpoch = await authSession.sessionEpoch
+        var totalInserted = 0
+        var totalSkipped = 0
+        do {
+            repeat {
+                let round = try await pushReviewEventsRound(container: container, sessionEpoch: sessionEpoch)
+                totalInserted += round.inserted
+                totalSkipped += round.skipped
+            } while finishReviewEventPushRound()
+        } catch {
+            releaseReviewEventPush()
+            throw error
+        }
+        return (totalInserted, totalSkipped)
+    }
+
+    private func pushReviewEventsRound(
+        container: ModelContainer,
+        sessionEpoch: Int
+    ) async throws -> (inserted: Int, skipped: Int) {
         let actor = BackgroundSyncActor(modelContainer: container)
         let payload = try await actor.buildReviewEventsPushPayload()
         guard !payload.isEmpty else { return (0, 0) }
@@ -84,6 +108,9 @@ extension KGService {
         for batchStart in stride(from: 0, to: payload.count, by: Self.reviewEventPushBatchSize) {
             let batchEnd = min(batchStart + Self.reviewEventPushBatchSize, payload.count)
             let batch = Array(payload[batchStart..<batchEnd])
+            // Re-checked per batch: a session change between batches must stop the drain here, so no
+            // later batch is sent under the new account's token (#3806).
+            try await ensureSessionUnchanged(since: sessionEpoch)
             let result = try await authenticatedDecode(
                 PushResponse.self,
                 path: "api/vocab/review-events",
@@ -105,6 +132,7 @@ extension KGService {
             // (offline, 401, or the 429 this very burst used to provoke) must
             // still leave the landed ones marked — that is what lets a large
             // legacy history drain across syncs instead of restarting each time.
+            try await ensureSessionUnchanged(since: sessionEpoch)
             try await actor.markReviewEventsPushed(eventIDs: batch.map(\.event_id))
             totalInserted += result.inserted
             totalSkipped += result.skipped

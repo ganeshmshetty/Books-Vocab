@@ -123,21 +123,49 @@ final class KGService: KGServing {
     @ObservationIgnored
     private var _isPushingReviewEvents = false
 
+    /// Set when a caller arrives while a push is in flight. The owner then runs
+    /// one more round before releasing the claim: its payload snapshot predates
+    /// that caller's saved events, and skipping them would leave them unpushed
+    /// until the next sync (#3907).
+    @ObservationIgnored
+    private var _reviewEventPushRequested = false
+
     /// Returns `true` when the caller owns the review-event push. A `false`
-    /// return means another push is already in flight; with the `pushedAt`
-    /// watermark in place that push covers this caller's events too, so
-    /// skipping loses nothing.
+    /// return means another push is in flight and has been asked to run again,
+    /// so this caller's already-saved events go out in its next round.
     func claimReviewEventPush() -> Bool {
         _reviewEventPushLock.lock()
         defer { _reviewEventPushLock.unlock() }
-        guard !_isPushingReviewEvents else { return false }
+        guard !_isPushingReviewEvents else {
+            _reviewEventPushRequested = true
+            return false
+        }
         _isPushingReviewEvents = true
+        _reviewEventPushRequested = false
         return true
     }
 
+    /// The owner's end-of-round step, atomic with `claimReviewEventPush`.
+    /// `true`: a request arrived during the round, so the owner keeps the claim
+    /// and runs another round. `false`: the claim is released in this same
+    /// critical section, so no request can slip between the check and the release.
+    func finishReviewEventPushRound() -> Bool {
+        _reviewEventPushLock.lock()
+        defer { _reviewEventPushLock.unlock() }
+        if _reviewEventPushRequested {
+            _reviewEventPushRequested = false
+            return true
+        }
+        _isPushingReviewEvents = false
+        return false
+    }
+
+    /// Releases the claim on an error path, dropping any pending request. The
+    /// events stay unpushed and go out with the next sync.
     func releaseReviewEventPush() {
         _reviewEventPushLock.lock()
         _isPushingReviewEvents = false
+        _reviewEventPushRequested = false
         _reviewEventPushLock.unlock()
     }
     /// Thread-safe check-and-set for background sync guard.

@@ -5,6 +5,13 @@ import SwiftData
 protocol AuthSessionProviding: AnyObject {
     var isLoggedIn: Bool { get }
     var token: String? { get }
+    /// 每次 session 邊界（登出、採納新登入）遞增。在途的同步輪以它偵測帳號已換，
+    /// 換了就放棄本輪結果、不寫 cursor（#3806）。不會變動的替身維持預設值 0。
+    var sessionEpoch: Int { get }
+}
+
+extension AuthSessionProviding {
+    var sessionEpoch: Int { 0 }
 }
 
 @MainActor
