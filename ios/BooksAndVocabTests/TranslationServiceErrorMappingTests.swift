@@ -9,6 +9,7 @@ import Foundation
 import Testing
 @testable import BooksAndVocab
 
+@MainActor
 struct TranslationServiceErrorMappingTests {
     private struct Payload: Decodable { let t: String }
 

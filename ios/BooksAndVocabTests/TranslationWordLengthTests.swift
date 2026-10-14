@@ -71,6 +71,7 @@ final class TranslationStubURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 /// `TranslationService` 測試共用的 auth／quota 替身與 JWT 產生器。
+@MainActor
 enum TranslationTestSupport {
     final class StubAuthSession: AuthSessionProviding {
         let isLoggedIn = true
@@ -107,6 +108,7 @@ enum TranslationTestSupport {
     }
 }
 
+@MainActor
 @Suite(.serialized)
 struct TranslationWordLengthTests {
     /// 與 backend `MAX_WORD_LENGTH = 200`（pydantic max_length，以 code point 計）一致。
