@@ -241,6 +241,27 @@ def test_external_card_ingest_is_idempotent_and_supports_card_operations(externa
     assert deleted.json() == {"cardId": card_id, "deleted": True}
 
 
+def test_external_card_create_with_blank_note_stores_no_note_issue_3738(external_api):
+    api_key = _create_key(external_api)
+    headers = {"X-KG-API-Key": api_key}
+
+    created = external_api.client.post(
+        "/api/v1/cards",
+        json={"content": "blanknote", "meaning": "空備註", "pos": "n", "note": ""},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["created"] is True
+    # An empty-string note must normalise to None, so the card stays note-less
+    # and remains eligible for enrich (eligibility is `note is None` after #3722).
+    assert body["card"]["note"] is None
+
+    fetched = external_api.client.get(f"/api/v1/cards/{body['card']['id']}", headers=headers)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["note"] is None
+
+
 def test_external_card_responses_project_per_card_preferences(external_api):
     headers = {"X-KG-API-Key": _create_key(external_api)}
     created = external_api.client.post(

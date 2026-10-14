@@ -326,7 +326,7 @@ def _ingest_card(
                 source=source,
             )
     if req.note is not None:
-        card = cards.update(card.id, note=req.note) or card
+        card = cards.update(card.id, note=req.note or None) or card
     return _render_card(user, card, req.notebookId, cards=cards), True
 
 
