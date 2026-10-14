@@ -509,3 +509,31 @@ def test_tracked_llm_pipeline_burst_blocks_via_gate(mock_db):
             f.result()
 
     assert gate_seen_exceeded == [True], "gate must see in-flight burst as over-quota"
+
+
+def test_areserve_times_out_when_in_flight_blocks(mock_db, monkeypatch):
+    """#3728: the async admission wait is bounded. A blocked areserve must raise
+    QuotaExceededError with X-Quota-Reset once _ADMISSION_WAIT_SECONDS elapses,
+    instead of polling forever and pinning the event loop task."""
+    from kg.exceptions import QuotaExceededError
+
+    monkeypatch.setattr(qs, "_ADMISSION_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(qs, "_ADMISSION_POLL_SECONDS", 0.01)
+
+    async def blocked():
+        async with qs.areserve("u1", 0.02, enforce=True, is_pro=False):
+            pass
+
+    async def main():
+        # Holding the whole Free budget keeps the second call blocked by in-flight spend.
+        async with qs.areserve("u1", 0.03, enforce=True, is_pro=False):
+            try:
+                await asyncio.wait_for(blocked(), 2)
+            except QuotaExceededError as exc:
+                return exc
+        raise AssertionError("second areserve was admitted while in-flight budget was full")
+
+    err = asyncio.run(main())
+    assert err.headers["X-Quota-Fraction"] == "0.0"
+    assert "X-Quota-Reset" in err.headers
+    assert qs._reserved_usd("u1") == 0.0
