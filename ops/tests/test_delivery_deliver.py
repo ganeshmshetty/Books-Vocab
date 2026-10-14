@@ -89,6 +89,10 @@ class FakeWorld:
         # ruff format rewrites the files (the worktree turns dirty) when True.
         self.format_changes = state.get("format_changes", False)
         self.format_pending = False
+        # HEAD: a format commit moves it, so a head read before format is stale.
+        self.git_head = state.get("git_head", "d" * 40)
+        # Answers of the first `gh pr checks` calls, before the `checks` batches.
+        self.check_errors: list[deliver.Proc] = list(state.get("check_errors", []))
         self.fail_commands: set[str] = set(state.get("fail_commands", set()))
         self.stderr_for: dict[str, str] = state.get("stderr_for", {})
         # the merge-queue re-read fails once a queue attempt has run (#3563)
@@ -203,6 +207,7 @@ class FakeWorld:
                 return ok()
             if sub[0] == "commit":
                 self.format_pending = False
+                self.git_head = "c" * 40
                 return ok("[branch abc1234] style: ruff format (pre-publish)\n")
             if sub[:2] == ["merge-base", "--is-ancestor"]:
                 answer = (
@@ -221,6 +226,8 @@ class FakeWorld:
                 return ok(self.trunk)
             if sub[0] == "log":
                 return ok("feat: the thing")
+            if sub == ["rev-parse", "HEAD"]:
+                return ok(self.git_head)
             if sub[0] == "rev-parse":
                 return ok(str(self.canon))
             if sub[0] == "ls-remote":
@@ -265,6 +272,8 @@ class FakeWorld:
                 )
                 return ok(json.dumps(published))
             if cmd[1:3] == ["pr", "checks"]:
+                if self.check_errors:
+                    return self.check_errors.pop(0)
                 batch = self.checks.pop(0) if len(self.checks) > 1 else self.checks[0]
                 return ok(json.dumps(batch))
             if cmd[1:3] == ["api", "graphql"]:
@@ -1000,6 +1009,23 @@ def test_it_waits_while_required_is_pending() -> None:
     code, _ = ship(world, "--check", "u=good")
     assert code == 0
     assert sum(1 for c in world.calls if c[1:3] == ["pr", "checks"]) == 3
+
+
+def test_a_pr_with_no_checks_registered_yet_is_pending_not_a_failure() -> None:
+    """#3684: gh exits 1 'no checks reported' before the first check run appears."""
+    no_checks = deliver.Proc(1, "", "no checks reported on the 'feat/thing' branch\n")
+    world = FakeWorld(check_errors=[no_checks])
+    code, result = ship(world, "--check", "u=good")
+    assert code == 0, result
+    assert sum(1 for c in world.calls if c[1:3] == ["pr", "checks"]) == 2
+
+
+def test_an_unrelated_checks_read_failure_still_fails_the_run() -> None:
+    auth = deliver.Proc(1, "", "HTTP 401: Bad credentials\n")
+    world = FakeWorld(check_errors=[auth])
+    code, result = ship(world, "--check", "u=good")
+    assert code == 1
+    assert "read checks failed (rc=1)" in result["error"]
 
 
 def test_a_stage_failure_names_the_stage() -> None:
@@ -2092,6 +2118,34 @@ def test_an_agent_claim_with_a_stale_base_is_readopted_in_one_call() -> None:
     assert _value(readopt, "--expected-head-sha") == "e" * 40
     assert _value(readopt, "--expected-generation") == "0"
     assert _value(readopt, "--base") == "f" * 40  # world.fork
+
+
+def test_a_stale_claim_without_handback_readopts_on_the_head_after_format() -> None:
+    """#3683: the format commit moves HEAD, so readopt names the post-format head."""
+    world = FakeWorld(
+        branch="worktree-agent-abc123",
+        record=_agent_record(handed_back_sha=None),
+        format_changes=True,
+    )
+    code, result = ship(world, "--check", "docs=good")
+    assert code == 0, result
+    assert len(_commits(world)) == 1
+    readopt = next(c for c in world.calls if c[1:2] == ["readopt"])
+    assert _value(readopt, "--expected-head-sha") == "c" * 40
+
+
+def test_a_registry_record_without_external_ids_names_the_lane_by_its_branch() -> None:
+    """#3685: the registry matches an empty external_ids by the branch, not a derived name."""
+    world = FakeWorld(
+        branch="feat/s",
+        record=_agent_record(
+            branch="feat/s", external_ids=[], handed_back_sha=None, base_sha="f" * 40
+        ),
+    )
+    code, result = ship(world, "--check", "docs=good")
+    assert code == 0, result
+    receipt = next(c for c in world.calls if c[3:4] == ["receipt"])
+    assert _value(receipt, "--lane") == "feat/s"
 
 
 def _adopt_bases(world: FakeWorld) -> list[str]:

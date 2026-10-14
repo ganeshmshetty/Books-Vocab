@@ -158,6 +158,10 @@ def progress(message: str) -> None:
 _ABSENT_COMMIT_RE = re.compile(
     r"^fatal: Not a valid (?:commit|object) name ([0-9a-f]{40})$"
 )
+# `gh pr checks` exits 1 with this until GitHub has registered the PR's first check run.
+_NO_CHECKS_YET_RE = re.compile(
+    r"no (?:required )?checks reported on the '[^'\n]+' branch"
+)
 
 
 def _absent_commit_named(stderr: str, shas: tuple[str, str]) -> str | None:
@@ -1073,9 +1077,14 @@ class Delivery:
             branch=branch,
             is_ancestor=self.is_ancestor,
         )
-        lane = self.args.lane or (
-            record["external_ids"][0] if record and record.get("external_ids") else None
-        )
+        lane = self.args.lane
+        if not lane and record is not None:
+            # The registry's own lane id: external_ids[0], else the branch it falls back to.
+            lane = (
+                record["external_ids"][0]
+                if record.get("external_ids")
+                else record.get("branch")
+            )
         lane = lane or lane_from_branch(branch, time.strftime("%Y%m%d", time.gmtime()))
         self.say(f"branch={branch} lane={lane} starts at {stage}")
         if stage in ("adopt", "hand-back", "receipt") and not self.work.exists():
@@ -1085,7 +1094,8 @@ class Delivery:
 
         if stage in ("adopt", "hand-back", "receipt"):
             self.rebase_if_behind()
-        stale_claim: tuple[int, str] | None = None  # (generation, head) to retire
+        # (generation, handed-back head to retire); "" when no hand-back is stored.
+        stale_claim: tuple[int, str] | None = None
         if (
             stage in ("hand-back", "receipt")
             and record is not None
@@ -1095,11 +1105,10 @@ class Delivery:
                 f"claim base {record.get('base_sha')} is not the fork point "
                 f"{self.claim_base()}; re-adopting"
             )
-            head = str(
-                record.get("handed_back_sha")
-                or self.git("rev-parse", "HEAD", stage="preflight")
+            stale_claim = (
+                int(record.get("claim_generation") or 0),
+                str(record.get("handed_back_sha") or ""),
             )
-            stale_claim = (int(record.get("claim_generation") or 0), head)
             record, stage = None, "adopt"
         if stage in ("adopt", "hand-back"):
             if not self.args.check:
@@ -1166,6 +1175,13 @@ class Delivery:
                     self.say("scope refreshed from the diff")
                 if stage == "adopt":
                     intent = self.args.intent or self.git("log", "-1", "--format=%s")
+                    # Read HEAD only now, after format: its commit moves HEAD, and with no
+                    # stored hand-back the registry's CAS compares the live branch head.
+                    stale_head = ""
+                    if stale_claim:
+                        stale_head = stale_claim[1] or self.git(
+                            "rev-parse", "HEAD", stage="preflight"
+                        )
                     self.mutate(
                         [
                             orchestrate,
@@ -1188,7 +1204,7 @@ class Delivery:
                                     "--expected-generation",
                                     str(stale_claim[0]),
                                     "--expected-head-sha",
-                                    stale_claim[1],
+                                    stale_head,
                                 ]
                                 if stale_claim
                                 else []
@@ -1479,13 +1495,16 @@ class Delivery:
         )
 
     def _required(self, repo: str, number: int) -> str | None:
-        out = must(
-            self.runner,
+        done = self.runner(
             ["gh", "pr", "checks", str(number), "--repo", repo, "--json", "name,state"],
             self.home,
-            "read checks",
-        ).stdout
-        state = required_state(json.loads(out or "[]"))
+        )
+        if done.returncode != 0:
+            detail = failure_detail(done) or "no output"
+            if _NO_CHECKS_YET_RE.search(detail):
+                return None  # not an error: keep polling until the first run appears
+            raise DeliverError(f"read checks failed (rc={done.returncode}): {detail}")
+        state = required_state(json.loads(done.stdout or "[]"))
         if state in SUCCESS_STATES:
             return state
         if state in FAILURE_STATES:
