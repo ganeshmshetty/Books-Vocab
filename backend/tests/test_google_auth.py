@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -10,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from google.auth.exceptions import GoogleAuthError, TransportError
+from google.oauth2 import id_token
 
 from kg import google_auth
 
@@ -265,6 +268,64 @@ class TestGoogleTokenNonBlocking:
 
         # If verify blocked the loop, the ticker could not have progressed.
         assert len(ticks) >= 10, f"event loop stalled — only {len(ticks)} ticks during blocking verify"
+
+
+def _b64url_json(obj: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+
+class TestCertsResponseValidation:
+    """#3860: a 200 non-JSON certs body (captive portal / proxy) must surface as
+    an upstream outage (503), not as a bad credential (401).
+
+    google-auth's ``_fetch_certs`` calls ``json.loads`` on the body; that raises
+    ``JSONDecodeError`` (a ``ValueError``), which ``verify_google_token`` maps to
+    401. The adapter must reject a non-JSON certs body as ``TransportError``.
+    """
+
+    @staticmethod
+    def _certs_session(body: bytes) -> MagicMock:
+        session = MagicMock()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.content = body
+        session.request.return_value = resp
+        return session
+
+    @classmethod
+    def _html_session(cls) -> MagicMock:
+        return cls._certs_session(b"<html><body>captive portal</body></html>")
+
+    def test_adapter_rejects_non_json_certs_body_as_transport_error(self):
+        adapter = google_auth._build_request_adapter(self._html_session())
+        with pytest.raises(TransportError):
+            id_token._fetch_certs(adapter, google_auth._CERTS_URL)
+
+    @pytest.mark.asyncio
+    async def test_captive_portal_certs_response_raises_503(self):
+        """End-to-end: a real google-auth verify path whose certs fetch gets HTML."""
+        header = _b64url_json({"alg": "RS256", "kid": "k1", "typ": "JWT"})
+        payload = _b64url_json(
+            {"aud": CLIENT_ID, "iss": "accounts.google.com", "sub": "u1", "exp": 4102444800, "iat": 1}
+        )
+        token = f"{header}.{payload}.c2ln"
+        with patch("kg.google_auth._session", self._html_session()):
+            with pytest.raises(HTTPException) as exc_info:
+                await google_auth.verify_google_token(token, CLIENT_ID)
+        assert exc_info.value.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_malformed_client_id_token_payload_still_raises_401(self):
+        """A non-JSON client id-token payload is a bad credential: must stay 401."""
+        header = _b64url_json({"alg": "RS256", "kid": "k1", "typ": "JWT"})
+        payload = base64.urlsafe_b64encode(b"not-json-at-all").rstrip(b"=").decode()
+        token = f"{header}.{payload}.c2ln"
+        # Certs endpoint is healthy (valid JSON), so the failure is the client payload.
+        with patch("kg.google_auth._session", self._certs_session(b"{}")):
+            with pytest.raises(HTTPException) as exc_info:
+                await google_auth.verify_google_token(token, CLIENT_ID)
+        assert exc_info.value.status_code == 401
 
 
 class TestTokenNotLogged:

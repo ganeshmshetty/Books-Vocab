@@ -1,6 +1,7 @@
 """Google Sign-In token validation module."""
 
 import asyncio
+import json
 import logging
 
 import requests as _requests
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 # ``id_token._fetch_certs`` never overrides. We inject our own small bound.
 _REQUEST_TIMEOUT_SECONDS = 10
 
+# google-auth's default signing-certificate endpoint (pinned in google-auth's
+# ``id_token`` module); the only URL this adapter validates the body of.
+_CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs"
+
 # Shared HTTP session for connection pooling across token verifications.
 _session = _requests.Session()
 
@@ -37,7 +42,16 @@ class _TimeoutRequest(google_requests.Request):
     def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kwargs):
         if timeout is None:
             timeout = _REQUEST_TIMEOUT_SECONDS
-        return super().__call__(url, method=method, body=body, headers=headers, timeout=timeout, **kwargs)
+        response = super().__call__(url, method=method, body=body, headers=headers, timeout=timeout, **kwargs)
+        if url == _CERTS_URL and response.status == 200:
+            # A 200 with a non-JSON body (captive portal / proxy) would otherwise
+            # surface as JSONDecodeError (a ValueError) and map to 401. Report it
+            # as a transport failure so verify_google_token returns 503 instead.
+            try:
+                json.loads(response.data.decode("utf-8"))
+            except ValueError as e:
+                raise TransportError(f"Non-JSON certificate response from {url}") from e
+        return response
 
 
 def _build_request_adapter(session: _requests.Session | None = None) -> _TimeoutRequest:
