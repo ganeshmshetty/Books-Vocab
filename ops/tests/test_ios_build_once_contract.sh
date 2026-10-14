@@ -27,7 +27,7 @@ PIN_DOWNLOAD='actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
 PIN_UPLOAD='actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
 GUARD_STEP='Require build-once test products'
 
-tmp="$(mktemp -d "$ROOT/.cache/test-ios-build-once-XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/kg-ios-build-once-XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 # --- 1. Workflow topology (parsed YAML) -------------------------------------
@@ -265,7 +265,8 @@ grep -q -- '--xctestrun' "$IOS_TEST" || fail "ios_test.sh has no --xctestrun fla
 # payload only to fd 9. ios_ops.sh must pass --prepare-cache through natively.
 grep -Fq 'exec 9>&1 1>&2' "$IOS_TEST" || fail "ios_test.sh does not fence stdout to stderr under --json for cache actions"
 grep -Fq '"$payload" >&9' "$IOS_TEST" || fail "ios_test.sh cache payload is not written to the reserved fd 9"
-if grep -F "printf '%s\\n' \"\$payload\"" "$IOS_TEST" | grep -qvF '>&9'; then
+payload_lines="$(grep -F "printf '%s\\n' \"\$payload\"" "$IOS_TEST" || true)"
+if [[ -n "$payload_lines" ]] && grep -qvF '>&9' <<<"$payload_lines"; then
   fail "ios_test.sh writes a cache payload to plain stdout (would corrupt --json)"
 fi
 grep -Fq -- '--cache-status|--prepare-cache|--clean-cache)' ops/ios_ops.sh \
