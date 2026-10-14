@@ -451,10 +451,37 @@ def test_ci_history_is_fetched_per_workflow_so_noise_cannot_crowd_it_out(
     assert [f.level for f in doctor.evaluate_ci(runs, NOW)] == ["block", "block"]
 
 
-def test_ci_collector_degrades_to_nothing_when_gh_is_unavailable(
+def test_ci_collector_reports_unreadable_state_instead_of_nothing(
     tmp_path: Path,
 ) -> None:
-    assert doctor.collect_ci(tmp_path, run=lambda *a, **k: _Done("", 1)) == []
+    runs = doctor.collect_ci(tmp_path, run=lambda *a, **k: _Done("", 1))
+    assert [r["workflowName"] for r in runs] == ["gh workflow list"]
+    assert [f.level for f in doctor.evaluate_ci(runs, NOW)] == ["warn"]
+
+
+def test_a_workflow_whose_history_cannot_be_read_is_unknown_not_healthy(
+    tmp_path: Path,
+) -> None:
+    def fake(cmd: list[str], cwd: Path, timeout: int = 60) -> _Done:
+        if cmd[:3] == ["gh", "workflow", "list"]:
+            return _Done(
+                json.dumps(
+                    [
+                        {"name": "ops-suite", "state": "active"},
+                        {"name": "agent-review", "state": "active"},
+                    ]
+                )
+            )
+        name = cmd[cmd.index("--workflow") + 1]
+        if name == "agent-review":
+            return _Done("", 1)
+        return _Done(json.dumps([_run("success", 0.1, name)]))
+
+    findings = doctor.evaluate_ci(doctor.collect_ci(tmp_path, run=fake), NOW)
+    unknown = [f for f in findings if f.level != "ok"]
+    assert [f.level for f in unknown] == ["warn"]
+    assert "agent-review" in unknown[0].summary
+    assert not any("agent-review" in f.summary and f.level == "ok" for f in findings)
 
 
 def test_production_probe_sends_a_user_agent_the_edge_accepts() -> None:

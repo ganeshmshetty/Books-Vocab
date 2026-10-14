@@ -239,6 +239,53 @@ def test_exit_code_follows_the_worst_finding(
     assert json.loads(capsys.readouterr().out)["worst"] == "block"
 
 
+# ---- CI must never read as healthy when its history is unreadable -------------
+
+
+def test_a_workflow_whose_runs_cannot_be_listed_is_not_reported_as_ok(
+    tmp_path: Path,
+) -> None:
+    def fake(cmd: list[str], cwd: Path, timeout: int = 60) -> Any:
+        if cmd[:3] == ["gh", "workflow", "list"]:
+            return proc(
+                out=json.dumps(
+                    [
+                        {"name": "ops-suite", "state": "active"},
+                        {"name": "agent-review", "state": "active"},
+                    ]
+                )
+            )
+        name = cmd[cmd.index("--workflow") + 1]
+        if name == "agent-review":
+            return proc(code=1)
+        return proc(
+            out=json.dumps(
+                [
+                    {
+                        "workflowName": name,
+                        "conclusion": "success",
+                        "status": "completed",
+                        "createdAt": "2026-10-13T00:00:00Z",
+                        "url": "",
+                    }
+                ]
+            )
+        )
+
+    findings = rt.ci_findings(rt.doctor.collect_ci(tmp_path, run=fake))
+    assert not [f for f in findings if f.level == "ok"]
+    assert [f.level for f in findings] == ["warn"]
+    assert "agent-review" in findings[0].summary
+
+
+def test_an_unreadable_workflow_list_is_unknown_not_healthy(tmp_path: Path) -> None:
+    findings = rt.ci_findings(
+        rt.doctor.collect_ci(tmp_path, run=lambda *a, **k: proc(code=1))
+    )
+    assert [f.level for f in findings] == ["warn"]
+    assert "unknown" in findings[0].summary
+
+
 # ---- doctor integration --------------------------------------------------------
 
 
