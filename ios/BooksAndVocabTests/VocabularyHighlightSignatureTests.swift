@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import ReadiumShared
 import Testing
 @testable import BooksAndVocab
 
@@ -28,6 +29,22 @@ struct VocabularyHighlightSignatureTests {
             }
         }
         #expect(changes == 0)
+    }
+
+    /// 50 次翻頁（`ReaderPageTurnState.currentLocator` 更新）× 5,000 筆：高亮 revision 求值 0 次。
+    /// 正控：翻頁後手動求值一次必須計 1，否則計數器失效，零次斷言即假綠。
+    @Test func pageTurnsEvaluateNoHighlightRevisionOverFiveThousandEntries() throws {
+        let entries = makeEntries(5_000)
+        let source = VocabularyHighlightRevisionSource()
+        let pageTurn = ReaderPageTurnState()
+        let mediaType = try #require(MediaType("application/xhtml+xml"))
+        for index in 0..<50 {
+            let href = try #require(AnyURL(path: "chapter\(index).xhtml"))
+            pageTurn.currentLocator = Locator(href: href, mediaType: mediaType)
+        }
+        #expect(source.computations == 0)
+        _ = source.revision(entries: entries, notebookId: "nb")
+        #expect(source.computations == 1)
     }
 
     /// 插入一筆新 entry → key 改變恰好一次（之後再翻頁不再改變）。
