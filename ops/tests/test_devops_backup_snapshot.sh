@@ -265,12 +265,33 @@ tar -C "$src" "${deref[@]}" -cf - \
 exit 0
 STUB
 chmod 755 "$RSYNC_MODEL_BIN/rsync"
+# sqlite3 spy（#3578）：記下遠端快照開 DB 的 URI，斷言symlink 目錄下的外部 DB 以 mode=ro 開啟。
+REAL_SQLITE3="$(command -v sqlite3)"
+SQLITE_LOG="$TMP/sqlite-spy.log"
+: >"$SQLITE_LOG"
+cat >"$RSYNC_MODEL_BIN/sqlite3" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SNAP_TEST_SQLITE_LOG:?}"
+exec "${SNAP_TEST_REAL_SQLITE3:?}" "$@"
+STUB
+chmod 755 "$RSYNC_MODEL_BIN/sqlite3"
+outside_snapshot_copy="$TMP/outside-u1-before.db"
+cp "$OUTSIDE_ROOT/users/u1/cards.db" "$outside_snapshot_copy"
 OUT_DIRLINK="$TMP/backups-dirlink"; mkdir -p "$OUT_DIRLINK"
 set +e
-RSYNC_STUB_DIR="$RSYNC_MODEL_BIN" run_backup "$DATA_DIRLINK" "$OUT_DIRLINK" cmd_backup >"$TMP/dirlink.out" 2>&1
+RSYNC_STUB_DIR="$RSYNC_MODEL_BIN" SNAP_TEST_SQLITE_LOG="$SQLITE_LOG" SNAP_TEST_REAL_SQLITE3="$REAL_SQLITE3" \
+  run_backup "$DATA_DIRLINK" "$OUT_DIRLINK" cmd_backup >"$TMP/dirlink.out" 2>&1
 dirlink_rc=$?
 set -e
 (( dirlink_rc == 0 )) || { cat "$TMP/dirlink.out" >&2; fail "cmd_backup failed on a symlinked-directory fixture (rc=$dirlink_rc)"; }
+grep -Fq 'users/u2/cards.db?mode=ro' "$SQLITE_LOG" \
+  || fail "symlink-followed *.db was not opened read-only (mode=ro) by the remote snapshot"
+if grep -Fq 'users/u2/cards.db?mode=rw' "$SQLITE_LOG"; then
+  fail "symlink-followed *.db was opened read-write (mode=rw) outside the data dir"
+fi
+cmp -s "$OUTSIDE_ROOT/users/u1/cards.db" "$outside_snapshot_copy" \
+  || fail "outside source DB bytes changed during the symlinked-dir snapshot"
+pass "symlink-followed *.db is opened read-only and the outside source stays byte-identical"
 dirlink_db="$(find "$OUT_DIRLINK" -path '*/users/u2/cards.db' -type f | head -n 1)"
 [[ -n "$dirlink_db" ]] || fail "*.db under a symlinked directory was silently dropped from the backup"
 [[ ! -L "$(dirname "$dirlink_db")" ]] || fail "restored users/u2 is still a symlink; tar wrote through it"
@@ -333,5 +354,52 @@ inc_second="$(find "$OUT_INC" -mindepth 1 -maxdepth 1 -type d -name 'data_*' ! -
 [[ "$(inode_of "$inc_second/users/u2/cards.db")" != "$inc_base_inode" ]] \
   || fail ".INCOMPLETE base was used as the hardlink source"
 pass ".INCOMPLETE base is never used for hardlinks"
+
+# ── 9. #3578：懸空的非 DB symlink 不可讓 rsync（--copy-links）整段中止 ─────────
+# 真 rsync 對懸空 symlink 在 --copy-links 下回 exit 23（"symlink has no referent"）。替身模擬此行為：
+# 未被 --exclude-from 排除的懸空 symlink → exit 23。cmd_backup 必須預先排除並具名警告，仍 exit 0；
+# 懸空 *.db symlink 則維持 #3479 的 fail-closed（不在此範圍）。
+DATA_DANGLE="$TMP/remote-dangle"
+make_wal_fixture "$DATA_DANGLE"
+ln -s "$TMP/no-such-target.txt" "$DATA_DANGLE/users/u1/notes.txt"
+RSYNC_DANGLE_BIN="$TMP/rsync-dangle-bin"
+mkdir -p "$RSYNC_DANGLE_BIN"
+cat >"$RSYNC_DANGLE_BIN/rsync" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$#" -eq 1 && "$1" == --version ]]; then
+  echo "openrsync: protocol version 29"
+  exit 0
+fi
+printf '%s\n' "$*" >>"${SNAP_TEST_RSYNC_LOG:?}"
+excl=""; src=""; dst=""
+for a; do
+  case "$a" in --exclude-from=*) excl="${a#--exclude-from=}" ;; esac
+  src="$dst"; dst="$a"
+done
+src="${src#*:}"; src="${src%/}"
+rc=0
+while IFS= read -r rel; do
+  [[ -n "$rel" ]] || continue
+  if [[ -z "$excl" ]] || ! grep -qxF "/${rel#./}" "$excl"; then
+    echo "rsync: symlink has no referent: \"$src/${rel#./}\"" >&2
+    rc=23
+  fi
+done < <(cd "$src" && find -L . -type l)
+exit "$rc"
+STUB
+chmod 755 "$RSYNC_DANGLE_BIN/rsync"
+OUT_DANGLE="$TMP/backups-dangle"; mkdir -p "$OUT_DANGLE"
+set +e
+RSYNC_STUB_DIR="$RSYNC_DANGLE_BIN" run_backup "$DATA_DANGLE" "$OUT_DANGLE" cmd_backup >"$TMP/dangle.out" 2>&1
+dangle_rc=$?
+set -e
+(( dangle_rc == 0 )) || { cat "$TMP/dangle.out" >&2; fail "dangling non-DB symlink aborted cmd_backup (rc=$dangle_rc)"; }
+grep -Fq 'notes.txt' "$TMP/dangle.out" \
+  || fail "skipped dangling symlink was not named in a warning"
+dangle_db="$(find "$OUT_DANGLE" -path '*/users/u1/cards.db' -type f | head -n 1)"
+[[ -n "$dangle_db" ]] || fail "dangling non-DB symlink suppressed the DB snapshot"
+[[ "$(sqlite3 "$dangle_db" 'SELECT COUNT(*) FROM card;')" == 2 ]] \
+  || fail "snapshot after dangling-link skip lost the WAL-only row"
+pass "dangling non-DB symlink is skipped with a warning and does not abort the backup"
 
 printf 'backup snapshot: all checks passed\n'
