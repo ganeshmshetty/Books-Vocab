@@ -311,6 +311,27 @@ struct NotebookCoverCommitTests {
         #expect(notebooks.first?.coverImagePath == nil)
     }
 
+    /// #3675：reconcile 先於 POST 回應插入同 remoteId 的列 → create 必須 upsert，不得再插第二列。
+    @MainActor
+    @Test func createUpsertsExistingRemoteIdWithoutDuplicate() async throws {
+        let ctx = try makeContext()
+        let existing = Notebook(remoteId: "nb-1", name: "N", color: nil)
+        existing.syncStatus = 1
+        ctx.insert(existing)
+        let staged = try writeTempJPEG()
+        let service = NotebookServiceFake(result: .success(remote(id: "nb-1")))
+
+        await NotebookListCoordinator().createNotebook(
+            name: "N", color: nil, coverPattern: nil, coverImagePath: staged,
+            modelContext: ctx, kgService: service, toastCoordinator: AppToastCoordinator()
+        )
+
+        let rows = try ctx.fetch(FetchDescriptor<Notebook>()).filter { $0.remoteId == "nb-1" }
+        #expect(rows.count == 1, "同 remoteId 只能有一列")
+        #expect(rows.first?.coverImagePath == staged, "既有列接收本次建立的封面")
+        try? FileManager.default.removeItem(atPath: staged)
+    }
+
     /// #2731：更新 API 失敗 → staged 新圖被清掉，原圖與 model 路徑不動。
     @MainActor
     @Test func updateFailureRemovesStagedAndKeepsOriginal() async throws {

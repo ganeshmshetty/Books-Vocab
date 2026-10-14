@@ -72,7 +72,7 @@ struct NotebookReconcilerTests {
             remote: [remote("default", name: "我的單字本", isDefault: true)],
             local: [orphanA, orphanB, realDefault],
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -91,7 +91,7 @@ struct NotebookReconcilerTests {
         try ctx.save()
 
         _ = NotebookReconciler.reconcile(
-            remote: [], local: [orphan], allEntries: [], modelContext: ctx
+            remote: [], local: [orphan], allEntries: [], modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -113,7 +113,7 @@ struct NotebookReconcilerTests {
             remote: [remote("default", isDefault: true)],
             local: [orphan, real],
             allEntries: [stray],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -134,7 +134,7 @@ struct NotebookReconcilerTests {
             remote: [remote("default", name: "我的單字本", isDefault: true)],
             local: [placeholder, orphan],
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -187,13 +187,53 @@ struct NotebookReconcilerTests {
             remote: [remote("default", name: "我的單字本", isDefault: true)],
             local: local,
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
         let alive = try aliveNotebooks(ctx)
         #expect(alive.count == 1, "離線占位 default 應被 server default upsert 就地合併，不分裂")
         #expect(alive.first?.syncStatus == 1, "合併後升級為 synced")
+    }
+
+    // MARK: - #3675：create / reconcile race
+
+    @Test func reconcile_does_not_tombstone_rows_created_after_fetch_started() throws {
+        // GET 在 t=1000 發出；t=2000 才本地建立的列不可能在該 GET 的結果裡，不是遠端刪除證據。
+        let ctx = try makeContext()
+        let stale = localNB("nb-old", syncStatus: 1)
+        stale.createdAt = Date(timeIntervalSince1970: 500)
+        let fresh = localNB("nb-new", syncStatus: 1)
+        fresh.createdAt = Date(timeIntervalSince1970: 2_000)
+        ctx.insert(stale); ctx.insert(fresh)
+        try ctx.save()
+
+        _ = NotebookReconciler.reconcile(
+            remote: [], local: [stale, fresh], allEntries: [], modelContext: ctx,
+            fetchStartedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        try ctx.save()
+
+        #expect(stale.isSoftDeleted, "快照前已同步、server 不回報 → 仍須 tombstone")
+        #expect(!fresh.isSoftDeleted, "快照開始後才建立的本子不可被過期快照 tombstone")
+    }
+
+    @Test func reconcile_collapses_duplicate_rows_sharing_remoteId() throws {
+        // 舊 create/reconcile race 殘留的重複列：upsert 只更新第一列，其餘永久殘留。
+        let ctx = try makeContext()
+        let first = localNB("nb-1", syncStatus: 1)
+        let second = localNB("nb-1", syncStatus: 1)
+        ctx.insert(first); ctx.insert(second)
+        try ctx.save()
+
+        _ = NotebookReconciler.reconcile(
+            remote: [remote("nb-1")], local: [first, second], allEntries: [],
+            modelContext: ctx, fetchStartedAt: .distantFuture
+        )
+        try ctx.save()
+
+        let rows = try ctx.fetch(FetchDescriptor<Notebook>()).filter { $0.remoteId == "nb-1" }
+        #expect(rows.count == 1, "同 remoteId 的重複列應收斂為一列")
     }
 
     // MARK: - 既有行為回歸（behavior-preserving）
@@ -209,7 +249,7 @@ struct NotebookReconcilerTests {
             remote: [remote("default", isDefault: true)],
             local: [a, def],
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -228,7 +268,7 @@ struct NotebookReconcilerTests {
             remote: [remote("default", isDefault: true), remote("nb-new", name: "新本")],
             local: [def],
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -251,7 +291,7 @@ struct NotebookReconcilerTests {
             remote: [],
             local: [nb],
             allEntries: [entry],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -301,7 +341,7 @@ struct NotebookReconcilerTests {
             remote: [],
             local: [notebook],
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -349,7 +389,7 @@ struct NotebookReconcilerTests {
             remote: [deleted],
             local: [notebook],
             allEntries: [],
-            modelContext: ctx
+            modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 
@@ -381,7 +421,7 @@ struct NotebookReconcilerTests {
             )
         )
         _ = NotebookReconciler.reconcile(
-            remote: [stale], local: [notebook], allEntries: [], modelContext: ctx
+            remote: [stale], local: [notebook], allEntries: [], modelContext: ctx, fetchStartedAt: .distantFuture
         )
         try ctx.save()
 

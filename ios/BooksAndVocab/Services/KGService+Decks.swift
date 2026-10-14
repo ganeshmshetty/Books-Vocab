@@ -73,12 +73,15 @@ extension KGService {
     @MainActor
     private func landCopiedNotebook(container: ModelContainer) async -> Bool {
         do {
+            // 快照時點先於 GET（#3675）：並行建立的本子不可被這份結果 tombstone。
+            let fetchStartedAt = Date()
             let remote = try await fetchNotebooks()
             let context = container.mainContext
             let localNotebooks = try context.fetch(FetchDescriptor<Notebook>())
             let allEntries = try context.fetch(FetchDescriptor<VocabularyEntry>())
             let removed = NotebookReconciler.reconcile(
-                remote: remote, local: localNotebooks, allEntries: allEntries, modelContext: context
+                remote: remote, local: localNotebooks, allEntries: allEntries, modelContext: context,
+                fetchStartedAt: fetchStartedAt
             )
             if let active = ActiveNotebookStore.shared.activeNotebookIdIfSet, removed.contains(active) {
                 ActiveNotebookStore.shared.clearStale()
