@@ -17,6 +17,8 @@ struct ReaderNotebookPicker: View {
         sort: \Notebook.sortOrder
     )
     private var notebooks: [Notebook]
+    // 含 tombstone：stale 綁定判定需分辨「已刪除」與「尚未 reconcile 的遠端新建」（#3674）
+    @Query private var allNotebookRows: [Notebook]
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -59,11 +61,12 @@ struct ReaderNotebookPicker: View {
         .enableInjection()
     }
 
-    /// 已刪除 notebook 防護：列表已 settle 且不含綁定 id 時才清除綁定（決策與 ReaderView 共用）。
+    /// 已刪除 notebook 防護：僅有本機刪除證據（tombstone／已回收的 local-*）才清除綁定（決策與 ReaderView 共用）。
     private func sanitizeStaleBoundNotebook() {
         let action = Book.sanitizeAction(
             bound: book.preferredNotebookId,
-            liveNotebookIds: Set(notebooks.map(\.remoteId))
+            localNotebookIds: Set(allNotebookRows.map(\.remoteId)),
+            tombstonedNotebookIds: Set(allNotebookRows.filter(\.isSoftDeleted).map(\.remoteId))
         )
         guard action == .clear else { return }
         book.preferredNotebookId = nil

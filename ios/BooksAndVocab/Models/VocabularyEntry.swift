@@ -223,8 +223,8 @@ extension VocabularyEntry {
     ///
     /// **Cold-start guard**：若 local Notebook 表完全空（首次登入 / 尚未 reconcile），
     /// 直接回原候選值 — 此時無從判斷候選是否合法，誤判 fallback 到 default 會
-    /// 永久污染 outbox。對齊 `ReaderView.sanitizeStaleBoundNotebook` 的「liveNotebooks
-    /// 為空時 bail」契約。
+    /// 永久污染 outbox。與 `Book.sanitizeAction` 同一原則：缺席於本機列表不等於已刪除，
+    /// 無正面證據前不判定候選無效。
     static func resolveNotebookId(
         _ candidate: String,
         in context: ModelContext
