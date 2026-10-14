@@ -212,6 +212,9 @@ extension KGService {
         reporter: SyncProgressReporting?,
         defaults: UserDefaults = .standard
     ) async throws -> KGPullOutcome {
+        // Captured at request time, before queuing behind a predecessor: a logout while this
+        // pull waits in the queue must already make it stale (#3806).
+        let sessionEpoch = await authSession.sessionEpoch
         let task = enqueuePull { predecessor, pullID in
             Task {
                 defer { self.finishPull(id: pullID) }
@@ -222,16 +225,27 @@ extension KGService {
                 if let notebookId {
                     return try await self.performNotebookScopedPull(
                         container: container, progress: progress,
-                        notebookId: notebookId, reporter: reporter, defaults: defaults
+                        notebookId: notebookId, reporter: reporter, defaults: defaults,
+                        sessionEpoch: sessionEpoch
                     )
                 }
                 return try await self.performPullCardsToLocal(
                     container: container, progress: progress,
-                    reporter: reporter, defaults: defaults
+                    reporter: reporter, defaults: defaults,
+                    sessionEpoch: sessionEpoch
                 )
             }
         }
         return try await task.value
+    }
+
+    /// 在途同步輪的 session 守衛（#3806）：session 邊界已換（登出或換帳號）即放棄本輪結果，
+    /// 以 `CancellationError` 回報。同步輪把它歸為取消而非失敗，不會對使用者宣稱錯誤。
+    func ensureSessionUnchanged(since sessionEpoch: Int) async throws {
+        guard await authSession.sessionEpoch == sessionEpoch else {
+            AppLog.kg.info("sync round discarded: session changed since it started")
+            throw CancellationError()
+        }
     }
 
     /// Notebook-scoped projection (#2102): a drained full read of one notebook,
@@ -253,10 +267,12 @@ extension KGService {
         progress: ((String, Int, Int) -> Void)?,
         notebookId: String,
         reporter: SyncProgressReporting?,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        sessionEpoch: Int
     ) async throws -> KGPullOutcome {
         progress?(L10n.string("正在下載單字..."), 0, 0)
         let pages = try await fetchAllVocabPages(query: [URLQueryItem(name: "notebook_id", value: notebookId)])
+        try await ensureSessionUnchanged(since: sessionEpoch)
 
         progress?(L10n.string("解析資料..."), 0, 0)
         let result = try await Self.mergeNotebookScopedCards(
@@ -267,6 +283,7 @@ extension KGService {
                 progress?(detail, current, total)
             }
         )
+        try await ensureSessionUnchanged(since: sessionEpoch)
 
         reporter?(.finished(.pull, status: .done, detail: Self.pullDetail(
             inserted: result.inserted, updated: result.updated, deleted: result.deleted
@@ -283,7 +300,8 @@ extension KGService {
         container: ModelContainer,
         progress: ((String, Int, Int) -> Void)?,
         reporter: SyncProgressReporting?,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        sessionEpoch: Int
     ) async throws -> KGPullOutcome {
         progress?(L10n.string("正在下載單字..."), 0, 0)
 
@@ -327,6 +345,9 @@ extension KGService {
         // cleanup and the boundary below are only sound against the server's
         // complete set (#2101).
         let pages = try await fetchAllVocabPages(query: queryItems)
+        // A logout (or account switch) during the drain makes these cards another account's: drop them
+        // before any merge can write them into the store (#3806).
+        try await ensureSessionUnchanged(since: sessionEpoch)
 
         progress?(L10n.string("解析資料..."), 0, 0)
         let actor = BackgroundSyncActor(modelContainer: container)
@@ -338,6 +359,10 @@ extension KGService {
             },
             notebookId: "default"
         )
+
+        // The merge is an await: a session change while it ran means its rows are already in the store,
+        // but no cursor may be written for them under the new session (#3806).
+        try await ensureSessionUnchanged(since: sessionEpoch)
 
         reporter?(.finished(.pull, status: .done, detail: Self.pullDetail(
             inserted: pullResult.inserted, updated: pullResult.updated, deleted: pullResult.deleted

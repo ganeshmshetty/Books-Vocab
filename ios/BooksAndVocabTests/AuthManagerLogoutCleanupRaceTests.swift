@@ -226,4 +226,12 @@ struct AuthManagerLogoutCleanupRaceTests {
         #expect(!cleaner.events.contains("overlap"),
                 "cleanup 不得並行，實際順序：\(cleaner.events)")
     }
+
+    /// `endSession` 同步遞增 session epoch，在途的同步輪以它判斷帳號已換（#3806）。
+    @Test func logoutAdvancesSessionEpochSynchronously() {
+        let manager = makeManager(priorUserId: "user-a", cleaner: GatedCleaner())
+        let before = manager.sessionEpoch
+        manager.logout(reason: "user_logout")
+        #expect(manager.sessionEpoch == before + 1)
+    }
 }

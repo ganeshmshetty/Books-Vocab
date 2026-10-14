@@ -70,6 +70,8 @@ extension KGService {
         }
         defer { releaseReviewEventPush() }
 
+        // Captured before the payload is built: every batch below belongs to this session only (#3806).
+        let sessionEpoch = await authSession.sessionEpoch
         let actor = BackgroundSyncActor(modelContainer: container)
         let payload = try await actor.buildReviewEventsPushPayload()
         guard !payload.isEmpty else { return (0, 0) }
@@ -84,6 +86,9 @@ extension KGService {
         for batchStart in stride(from: 0, to: payload.count, by: Self.reviewEventPushBatchSize) {
             let batchEnd = min(batchStart + Self.reviewEventPushBatchSize, payload.count)
             let batch = Array(payload[batchStart..<batchEnd])
+            // Re-checked per batch: a session change between batches must stop the drain here, so no
+            // later batch is sent under the new account's token (#3806).
+            try await ensureSessionUnchanged(since: sessionEpoch)
             let result = try await authenticatedDecode(
                 PushResponse.self,
                 path: "api/vocab/review-events",
@@ -105,6 +110,7 @@ extension KGService {
             // (offline, 401, or the 429 this very burst used to provoke) must
             // still leave the landed ones marked — that is what lets a large
             // legacy history drain across syncs instead of restarting each time.
+            try await ensureSessionUnchanged(since: sessionEpoch)
             try await actor.markReviewEventsPushed(eventIDs: batch.map(\.event_id))
             totalInserted += result.inserted
             totalSkipped += result.skipped

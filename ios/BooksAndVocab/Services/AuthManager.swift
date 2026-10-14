@@ -49,6 +49,13 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     // Secure token memory
     var token: String?
 
+    /// Session-boundary counter (#3806). Bumped when a session ends (`endSession`) and when a
+    /// sign-in is admitted (`login`). Sync rounds capture it when they start and discard their
+    /// results if it moved, so an in-flight round cannot write the previous account's rows or
+    /// cursor after the boundary. Not observed by any view, hence `@ObservationIgnored`.
+    @ObservationIgnored
+    private(set) var sessionEpoch: Int = 0
+
     // Auth error to surface in UI
     var authError: String?
 
@@ -139,6 +146,7 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
             refuseSignInUntilLocalWipeSucceeds()
             return
         }
+        sessionEpoch += 1
 
         // Real login replaces demo mode — clean up demo data
         if isDemoMode, let container = modelContainer {
@@ -366,6 +374,8 @@ final class AuthManager: AuthManaging, AuthSessionProviding, SessionInvalidating
     }
 
     private func endSession(modelContainer: ModelContainer?, reason: String, deletedAccountID: String?) {
+        // First statement: any sync round that captured the old epoch is stale from this instant on.
+        sessionEpoch += 1
         AppAnalytics.track(.logoutPerformed(reason: reason))
         let container = modelContainer ?? self.modelContainer
         // Captured before teardown nils userId: the wipe belongs to this account's rows ("" if none).
