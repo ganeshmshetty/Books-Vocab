@@ -207,6 +207,29 @@ struct NotebookCoverCommitTests {
         #expect(state.outcomeForLateWrite() == .discardNewFile)
     }
 
+    // MARK: - 編輯模式 init 與 staged 替換（#3641）
+
+    /// 編輯模式 init（staged == original）換圖：原檔絕不列為 stale，只能由 API 成功後的 coordinator 刪。
+    @Test func editInitReplacingCoverNeverMarksOriginalStale() {
+        let state = NotebookEditPhotoState(staged: "/covers/orig.jpg", original: "/covers/orig.jpg")
+        #expect(state.outcomeForLateWrite() == .adoptStaged(staleStaged: nil))
+    }
+
+    /// 已換過一次的 staged（≠ original）在下一次寫檔收尾列為 stale，由呼叫端清掉，避免 orphan。
+    @Test func replacedStagedIsReturnedAsStale() {
+        var state = NotebookEditPhotoState(staged: "/covers/orig.jpg", original: "/covers/orig.jpg")
+        state.staged = "/covers/staged-1.jpg"
+        #expect(state.outcomeForLateWrite() == .adoptStaged(staleStaged: "/covers/staged-1.jpg"))
+    }
+
+    /// 同一 state 先 commit 後的寫檔收尾：不碰已交給 onSave 的先前 staged，只丟新檔。
+    @Test func committedStateDiscardsLateWriteWithoutTouchingHandedOffStaged() {
+        var state = NotebookEditPhotoState(staged: "/covers/handed-off.jpg", original: nil)
+        state.markCommitted()
+        #expect(state.outcomeForLateWrite() == .discardNewFile)
+        #expect(state.staged == "/covers/handed-off.jpg")
+    }
+
     /// #3498：處理照片中禁止 Save，避免 staged 交接與 processPhoto 寫檔交錯；空白名稱同樣禁止。
     @Test func saveDisabledWhilePhotoProcessing() {
         #expect(!NotebookEditSaveGate.isSaveEnabled(name: "N", isProcessingPhoto: true))
