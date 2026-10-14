@@ -570,7 +570,9 @@ def _batch_apply(
     not_found: list[str] = []
     failed: list[str] = []
 
-    lookup = _build_content_lookup(cards_store, notebook_id=notebook_id)
+    lookup = _build_content_lookup(
+        cards_store, (_normalize_word(_clean_content(word)) for word in words), notebook_id=notebook_id
+    )
     seen_words_by_key: dict[str, set[str]] = {}
     outcome_by_key: dict[str, tuple[str, VocabCard | None]] = {}
 

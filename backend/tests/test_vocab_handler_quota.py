@@ -21,6 +21,9 @@ class _Cards:
     def all(self, include_deleted: bool = False, notebook_id: str | None = None) -> list:
         return []
 
+    def find_by_contents(self, keys, notebook_id: str | None = None) -> dict:
+        return {}
+
     def add(self, **kwargs):
         self.add_calls.append(kwargs)
         return _Card("c1", kwargs["content"], kwargs["meaning"])
@@ -61,8 +64,7 @@ def mock_quota_db():
     )
     conn.commit()
     lock = threading.Lock()
-    with patch("kg.quota_service._get_conn", return_value=conn), \
-         patch("kg.quota_service._lock", lock):
+    with patch("kg.quota_service._get_conn", return_value=conn), patch("kg.quota_service._lock", lock):
         yield conn
     conn.close()
 

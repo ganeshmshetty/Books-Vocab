@@ -391,6 +391,10 @@ class TestVocabIntakeNoN1:
             def all(self, include_deleted=False, notebook_id=None):
                 return list(self._cards)
 
+            def find_by_contents(self, keys, notebook_id=None):
+                wanted = set(keys)
+                return {c.content.lower(): c for c in self._cards if c.content.lower() in wanted}
+
             def find_by_content(self, content, notebook_id=None):
                 db_lookup_calls.append(content)
                 for c in self._cards:
@@ -449,27 +453,33 @@ class TestVocabIntakeNoN1:
 
 
 class TestBuildContentLookupNoFullScan:
-    """Verify _build_content_lookup full-table-scan is not triggered multiple times per request."""
+    """Batch vocab paths resolve only their own request keys, never the whole notebook (#3830)."""
 
-    def test_vocab_crud_batch_delete_single_scan(self):
-        """batch_delete_vocab_words must call cards_store.all() exactly once."""
+    def test_vocab_crud_batch_delete_resolves_keys_only(self):
         from types import SimpleNamespace
 
         from kg.vocab_crud import batch_delete_vocab_words
 
         all_call_count = 0
+        key_batches: list[list[str]] = []
 
-        class CountingCardsStore:
+        class KeyedCardsStore:
             def __init__(self):
                 self._cards = [
                     SimpleNamespace(id="c1", content="evoke", is_deleted=False, is_archived=False),
                     SimpleNamespace(id="c2", content="lucid", is_deleted=False, is_archived=False),
+                    SimpleNamespace(id="c3", content="zephyr", is_deleted=False, is_archived=False),
                 ]
 
             def all(self, include_deleted=False, notebook_id=None):
                 nonlocal all_call_count
                 all_call_count += 1
                 return [c for c in self._cards if not c.is_deleted]
+
+            def find_by_contents(self, keys, notebook_id=None):
+                key_batches.append(list(keys))
+                wanted = set(keys)
+                return {c.content: c for c in self._cards if not c.is_deleted and c.content in wanted}
 
             def delete(self, card_id):
                 for c in self._cards:
@@ -478,30 +488,37 @@ class TestBuildContentLookupNoFullScan:
 
         result = batch_delete_vocab_words(
             ["evoke", "lucid"],
-            cards_store=CountingCardsStore(),
+            cards_store=KeyedCardsStore(),
         )
         assert result["deleted"] == 2
-        assert all_call_count == 1, f"Expected 1 full-scan, got {all_call_count}"
+        assert all_call_count == 0, f"Expected no full-notebook load, got {all_call_count}"
+        assert key_batches == [["evoke", "lucid"]]
 
-    def test_vocab_crud_batch_archive_single_scan(self):
-        """batch_archive_vocab_words must call cards_store.all() exactly once."""
+    def test_vocab_crud_batch_archive_resolves_keys_only(self):
         from types import SimpleNamespace
 
         from kg.vocab_crud import batch_archive_vocab_words
 
         all_call_count = 0
+        key_batches: list[list[str]] = []
 
-        class CountingCardsStore:
+        class KeyedCardsStore:
             def __init__(self):
                 self._cards = [
                     SimpleNamespace(id="c1", content="evoke", is_deleted=False, is_archived=False),
                     SimpleNamespace(id="c2", content="lucid", is_deleted=False, is_archived=False),
+                    SimpleNamespace(id="c3", content="zephyr", is_deleted=False, is_archived=False),
                 ]
 
             def all(self, include_deleted=False, notebook_id=None):
                 nonlocal all_call_count
                 all_call_count += 1
                 return [c for c in self._cards if not c.is_deleted]
+
+            def find_by_contents(self, keys, notebook_id=None):
+                key_batches.append(list(keys))
+                wanted = set(keys)
+                return {c.content: c for c in self._cards if not c.is_deleted and c.content in wanted}
 
             def update(self, card_id, **kwargs):
                 for c in self._cards:
@@ -512,10 +529,104 @@ class TestBuildContentLookupNoFullScan:
         result = batch_archive_vocab_words(
             ["evoke", "lucid"],
             archived=True,
-            cards_store=CountingCardsStore(),
+            cards_store=KeyedCardsStore(),
         )
         assert result["updated"] == 2
-        assert all_call_count == 1, f"Expected 1 full-scan, got {all_call_count}"
+        assert all_call_count == 0, f"Expected no full-notebook load, got {all_call_count}"
+        assert key_batches == [["evoke", "lucid"]]
+
+
+class _NoopEmbeddings:
+    def has(self, card_id):
+        return False
+
+    def add(self, card_id, vec):
+        pass
+
+    def add_batch(self, items):
+        pass
+
+
+class TestVocabBatchPathsOnRealStore:
+    """Real CardStore with a 50-card notebook: add/batch paths must never call cards.all() (#3830)."""
+
+    @pytest.fixture()
+    def seeded(self, store):
+        for i in range(50):
+            store.add(content=f"word{i:02d}", meaning="m", notebook_id="nb1")
+        return store
+
+    @staticmethod
+    def _forbid_full_scan(*args, **kwargs):
+        raise AssertionError("cards.all() loads the whole notebook on a small request")
+
+    def test_add_with_one_new_and_one_duplicate_does_not_scan(self, seeded, monkeypatch):
+        import logging
+        from types import SimpleNamespace
+
+        from kg.api_models import VocabEntry
+        from kg.vocab_intake import add_vocab_entries
+
+        monkeypatch.setattr(seeded, "all", self._forbid_full_scan)
+        entries = [
+            VocabEntry(word="fresh", translation="新的"),
+            VocabEntry(word="word03", translation="m"),
+        ]
+
+        result = add_vocab_entries(
+            entries,
+            user={},
+            cards=seeded,
+            embeddings=_NoopEmbeddings(),
+            graph=SimpleNamespace(find_candidates=lambda *a, **k: [], batch_add_candidates=lambda *a: None),
+            logger=logging.getLogger("test"),
+            notebook_id="nb1",
+        )
+
+        assert result.created == 1
+        assert result.skipped == 1
+        assert result.duplicates == ["word03"]
+        assert result.cardIds["word03"] == seeded.find_by_content("word03", notebook_id="nb1").id
+        assert set(result.cardIds) == {"fresh", "word03"}
+
+    def test_batch_delete_with_hit_and_miss_does_not_scan(self, seeded, monkeypatch):
+        from kg.vocab_crud import batch_delete_vocab_words
+
+        monkeypatch.setattr(seeded, "all", self._forbid_full_scan)
+
+        result = batch_delete_vocab_words(["word01", "nope"], cards_store=seeded, notebook_id="nb1")
+
+        assert result["deleted_words"] == ["word01"]
+        assert result["not_found"] == ["nope"]
+        assert result["failed"] == []
+
+    def test_batch_archive_with_hit_and_miss_does_not_scan(self, seeded, monkeypatch):
+        from kg.vocab_crud import batch_archive_vocab_words
+
+        monkeypatch.setattr(seeded, "all", self._forbid_full_scan)
+
+        result = batch_archive_vocab_words(["word02", "nope"], archived=True, cards_store=seeded, notebook_id="nb1")
+
+        assert result["updated_words"] == ["word02"]
+        assert result["not_found"] == ["nope"]
+        assert result["failed"] == []
+        assert seeded.get(seeded.find_by_content("word02", notebook_id="nb1").id).is_archived is True
+
+
+class TestFindByContents:
+    def test_returns_active_in_scope_matches_for_keys_across_chunks(self, store):
+        live = store.add(content="lucid", meaning="m", notebook_id="nb1")
+        store.add(content="gone", meaning="m", notebook_id="nb1")
+        store.delete(store.find_by_content("gone", notebook_id="nb1").id)
+        store.add(content="lucid", meaning="other", notebook_id="nb2")
+        keys = ["lucid", "gone", "absent"] + [f"pad{i}" for i in range(1200)]
+
+        found = store.find_by_contents(keys, notebook_id="nb1")
+
+        assert set(found) == {"lucid"}
+        assert found["lucid"].id == live.id
+        assert set(store.find_by_contents(keys)) == {"lucid"}
+        assert store.find_by_contents([]) == {}
 
 
 class TestSoftDeleteByNotebook:

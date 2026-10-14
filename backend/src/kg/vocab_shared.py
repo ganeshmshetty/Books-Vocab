@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -81,14 +82,15 @@ def _normalize_word(word: str) -> str:
     return normalize_nfc_lower(word)
 
 
-def _build_content_lookup(cards_store: Any, notebook_id: str | None = None) -> dict[str, VocabCard]:
-    """Build a normalized-content → card dict from all active cards. O(N) single pass."""
-    lookup: dict[str, VocabCard] = {}
-    for card in cards_store.all(include_deleted=False, notebook_id=notebook_id):
-        key = _normalize_word(card.content)
-        if key not in lookup:  # first match wins (same as find_by_content)
-            lookup[key] = card
-    return lookup
+def _build_content_lookup(
+    cards_store: Any, keys: Iterable[str], notebook_id: str | None = None
+) -> dict[str, VocabCard]:
+    """Resolve the request's normalized keys to active cards (first match wins).
+
+    Keyed query on ``content_nfc_lower``: O(request keys), never a notebook scan (#3830).
+    ``keys`` must already be passed through ``_normalize_word``.
+    """
+    return cards_store.find_by_contents(list(keys), notebook_id=notebook_id)
 
 
 def _clean_content(word: str) -> str:

@@ -131,6 +131,32 @@ class CardQueryMixin:
                 stmt = stmt.where(Card.notebook_id == notebook_id)
             return session.exec(stmt).first()
 
+    def find_by_contents(self, keys: Collection[str], notebook_id: str | None = None) -> dict[str, Card]:
+        """Batch form of :meth:`find_by_content` for a request's own keys (#3830).
+
+        ``keys`` must already be ``normalize_nfc_lower``-ed (the same key the
+        ``content_nfc_lower`` index stores). Returns ``{key: card}`` for active
+        cards only; the first match per key wins. Queries run in chunks of
+        ``_GET_BATCH_CHUNK`` to stay under SQLite's bound-parameter cap, so the
+        cost is O(keys) instead of O(notebook).
+        """
+        unique_keys = sorted({key for key in keys if key})
+        found: dict[str, Card] = {}
+        if not unique_keys:
+            return found
+        with Session(self.engine) as session:
+            for start in range(0, len(unique_keys), _GET_BATCH_CHUNK):
+                chunk = unique_keys[start : start + _GET_BATCH_CHUNK]
+                stmt = select(Card).where(
+                    Card.content_nfc_lower.in_(chunk),
+                    Card.is_deleted.is_(False),
+                )
+                if notebook_id is not None:
+                    stmt = stmt.where(Card.notebook_id == notebook_id)
+                for card in session.exec(stmt):
+                    found.setdefault(card.content_nfc_lower, card)
+        return found
+
     def all(self, include_deleted: bool = False, notebook_id: str | None = None) -> Iterator[Card]:
         with Session(self.engine) as session:
             statement = select(Card)
