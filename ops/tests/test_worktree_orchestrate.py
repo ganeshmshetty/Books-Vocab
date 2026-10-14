@@ -1543,16 +1543,19 @@ def test_gate_plan_docs_lint_runs_registry_for_deleted_only_docs(
     assert docs_lint["cmd"] == ["./ops/docs_lint.sh", "--registry"]
 
 
-def test_gate_plan_docs_lint_registry_covers_deleted_doc_in_mixed_change(
+def test_gate_plan_docs_lint_mixed_change_has_no_redundant_registry_pass(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "new.md").write_text("# new\n", encoding="utf-8")
 
     plan = coordinator._plan_checks(["docs/new.md", "docs/old.md"], worktree=tmp_path)
-    registry_lint = next(item for item in plan if item["name"] == "docs-lint-registry")
+    docs_lint = next(item for item in plan if item["name"] == "docs-lint")
 
-    assert registry_lint["cmd"] == ["./ops/docs_lint.sh", "--registry"]
+    # docs_lint.sh runs validate_registry unconditionally, so --files already
+    # covers the registry pass for a mixed change; no extra check is needed.
+    assert not [item for item in plan if item["name"] == "docs-lint-registry"]
+    assert docs_lint["cmd"] == ["./ops/docs_lint.sh", "--files", "docs/new.md"]
 
 
 def test_gate_plan_docs_lint_keeps_unfiltered_docs_without_worktree() -> None:

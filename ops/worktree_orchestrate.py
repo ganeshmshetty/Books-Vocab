@@ -1087,7 +1087,8 @@ def _plan_checks(
         and (worktree is None or (worktree / item).is_file())
     ]
     # A deleted doc leaves a registry entry that only the registry pass can
-    # catch; --files validates present docs only, so a mixed change needs both.
+    # catch; docs_lint.sh always runs validate_registry before its mode branch,
+    # so a --files pass over present docs also covers a deleted doc's entry.
     deleted_docs = [
         item
         for item in files
@@ -1107,16 +1108,6 @@ def _plan_checks(
                     if not docs
                     else ["./ops/docs_lint.sh", "--files", *docs]
                 ),
-                "level": "block",
-            }
-        )
-    if deleted_docs and docs:
-        checks.append(
-            {
-                "name": "docs-lint-registry",
-                "kind": "shell",
-                "cwd": ".",
-                "cmd": ["./ops/docs_lint.sh", "--registry"],
                 "level": "block",
             }
         )
