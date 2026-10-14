@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -163,3 +164,43 @@ def test_card_response_preserves_absent_persisted_source():
     response = _build_card_response(None)
 
     assert response.source is None
+
+
+def test_card_response_exposes_created_at():
+    """CardResponse must carry the card's creation time so iOS can preserve dateAdded (#3801)."""
+    created = datetime(2025, 1, 1, tzinfo=UTC)
+    card = SimpleNamespace(
+        id="c1",
+        content="word",
+        meaning="m",
+        pos=None,
+        difficulty=1.0,
+        note=None,
+        collocations=[],
+        examples=[],
+        mode="recognition",
+        is_deleted=True,
+        is_archived=False,
+        inflections=[],
+        source=None,
+        updated_at=None,
+        created_at=created,
+        review_interval_hours=12,
+        next_review_at=None,
+        last_reviewed_at=None,
+        review_count=0,
+        lapse_count=0,
+        review_streak=0,
+        last_review_feedback=-1,
+        notebook_id="default",
+    )
+    response = card_response(
+        card,
+        graph=None,
+        cards_by_id={},
+        tier_getter=lambda _: SimpleNamespace(tag="A1"),
+        link_kinds=[],
+        link_labels={},
+    )
+
+    assert response.createdAt == "2025-01-01T00:00:00+00:00"

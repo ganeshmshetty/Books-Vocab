@@ -25,6 +25,7 @@ class CardResponse(BaseModel):
     notebookId: str = "default"
     source: VocabSource | None = None
     updatedAt: str | None = None
+    createdAt: str | None = None
     # Review state
     reviewIntervalHours: float = 12.0
     nextReviewAt: str | None = None
