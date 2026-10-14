@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -387,6 +388,48 @@ class TestRestore:
 
         with pytest.raises(EditError):
             user_cmd.cmd_restore(_make_args(uid="u1"))
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+    def test_commit_refused_while_api_holds_worker_lock(self, tmp_path, monkeypatch):
+        # #3823:執行中的 API 持有 .worker.lock 時,restore --commit 不可 rmtree 活體 user_dir。
+        from kg.ops_edit_support import EditError
+        from kg.worker_guard import WORKER_LOCK_FILENAME, hold_worker_lock
+
+        self._create_backup(tmp_path)
+        user_dir = tmp_path / "users" / "u1"
+        (user_dir / "live-state.txt").write_text("live")
+        before = self._snapshot(user_dir)
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        api_fd = hold_worker_lock(tmp_path / WORKER_LOCK_FILENAME)
+        try:
+            with pytest.raises(EditError, match="worker"):
+                user_cmd.cmd_restore(_make_args(uid="u1", commit=True))
+        finally:
+            os.close(api_fd)
+        assert self._snapshot(user_dir) == before
+
+    def test_commit_releases_worker_lock_after_restore(self, tmp_path, monkeypatch):
+        from kg.worker_guard import WORKER_LOCK_FILENAME, hold_worker_lock
+
+        self._create_backup(tmp_path)
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        assert user_cmd.cmd_restore(_make_args(uid="u1", commit=True)) == 0
+        # 還原結束後鎖必須釋放,否則之後的 API 啟動會誤判為有第二個 worker。
+        os.close(hold_worker_lock(tmp_path / WORKER_LOCK_FILENAME))
+
+    def test_dry_run_ignores_worker_lock(self, tmp_path, monkeypatch):
+        from kg.worker_guard import WORKER_LOCK_FILENAME, hold_worker_lock
+
+        self._create_backup(tmp_path)
+        monkeypatch.setenv("KG_DATA_DIR", str(tmp_path))
+        api_fd = hold_worker_lock(tmp_path / WORKER_LOCK_FILENAME)
+        try:
+            assert user_cmd.cmd_restore(_make_args(uid="u1")) == 0
+        finally:
+            os.close(api_fd)
 
 
 # ── mark_destructive 契約(#2312)────────────────────────────────────────
