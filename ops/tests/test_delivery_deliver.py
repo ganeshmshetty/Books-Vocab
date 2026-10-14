@@ -1020,6 +1020,26 @@ def test_a_pr_with_no_checks_registered_yet_is_pending_not_a_failure() -> None:
     assert sum(1 for c in world.calls if c[1:3] == ["pr", "checks"]) == 2
 
 
+def test_a_required_check_that_never_appears_times_out_with_the_last_probe() -> None:
+    """#3883: no check named 'required' must not poll silently to a bare timeout."""
+    world = FakeWorld(checks=[[{"name": "other", "state": "SUCCESS"}]])
+    code, result = ship(world, "--check", "u=good")
+    assert code == 1
+    assert "timed out after 5s waiting for required check" in result["error"]
+    assert "no check named 'required'" in result["error"]
+    assert "other" in result["error"]
+
+
+def test_a_no_checks_yet_probe_keeps_its_gh_reason_at_the_timeout() -> None:
+    """#3883: the gh 'no checks reported' reason survives into the timeout message."""
+    no_checks = deliver.Proc(1, "", "no checks reported on the 'feat/thing' branch\n")
+    world = FakeWorld(check_errors=[no_checks] * 10)
+    code, result = ship(world, "--check", "u=good")
+    assert code == 1
+    assert "timed out after 5s waiting for required check" in result["error"]
+    assert "no checks reported on the 'feat/thing' branch" in result["error"]
+
+
 def test_an_unrelated_checks_read_failure_still_fails_the_run() -> None:
     auth = deliver.Proc(1, "", "HTTP 401: Bad credentials\n")
     world = FakeWorld(check_errors=[auth])

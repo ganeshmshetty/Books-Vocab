@@ -683,6 +683,7 @@ class Delivery:
         self.runner = runner
         self.sleep = sleep
         self.clock = clock
+        self.probe_note = ""  # why the latest wait_for probe is still unsettled
         self.work = Path(args.worktree).resolve()
         self.rest = ConditionalRestCache(runner, github_cache_dir(self.work))
         self.canon: Path | None = None
@@ -1033,13 +1034,15 @@ class Delivery:
 
     def wait_for(self, what: str, probe: Callable[[], str | None]) -> str:
         deadline = self.clock() + self.args.timeout
+        self.probe_note = ""
         while True:
             result = probe()
             if result is not None:
                 return result
             if self.clock() >= deadline:
+                why = f"; last probe: {self.probe_note}" if self.probe_note else ""
                 raise DeliverError(
-                    f"timed out after {self.args.timeout}s waiting for {what}"
+                    f"timed out after {self.args.timeout}s waiting for {what}{why}"
                 )
             self.sleep(self.args.poll)
 
@@ -1502,13 +1505,20 @@ class Delivery:
         if done.returncode != 0:
             detail = failure_detail(done) or "no output"
             if _NO_CHECKS_YET_RE.search(detail):
+                self.probe_note = f"gh: {detail}"
                 return None  # not an error: keep polling until the first run appears
             raise DeliverError(f"read checks failed (rc={done.returncode}): {detail}")
-        state = required_state(json.loads(done.stdout or "[]"))
+        checks = json.loads(done.stdout or "[]")
+        state = required_state(checks)
         if state in SUCCESS_STATES:
             return state
         if state in FAILURE_STATES:
             raise DeliverError(f"required check is {state} on #{number}; see the PR")
+        if any(c.get("name") == "required" for c in checks):
+            self.probe_note = f"required check is {state}"
+        else:
+            names = ", ".join(sorted(str(c.get("name")) for c in checks)) or "none"
+            self.probe_note = f"no check named 'required' on #{number} (reported: {names})"
         return None
 
     def _pr_state(self, repo: str, number: int) -> str:
