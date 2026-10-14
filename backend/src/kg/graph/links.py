@@ -229,18 +229,31 @@ class _LinksMixin:
             for pair in sorted(pair_locks):
                 locks.enter_context(self._pair_thread_lock(pair))
                 locks.enter_context(path_write_lock(self._pair_lock_path(pair)))
-            # A stale instance may already have a provisional link for a pair
-            # that another instance persisted first. Reconcile before flushing
-            # so the stale snapshot cannot put its provisional row first and
-            # accidentally replace the durable winner.
-            # A hard delete skips it: the row is gone locally on purpose, and
-            # adopting the durable copy here would resurrect it.
-            if pre_reconcile:
-                self._reconcile_persisted_pairs(snapshot, pair_locks)
-            with self._lock:
-                snapshot = self._links_to_serializable()
-            self._flush_links(snapshot)
-            return self._reconcile_persisted_pairs(snapshot, pairs, preferred_link=preferred_link)
+            return self._flush_held_links_and_reconcile(
+                snapshot, pair_locks, preferred_link=preferred_link, pre_reconcile=pre_reconcile
+            )
+
+    def _flush_held_links_and_reconcile(
+        self,
+        snapshot: list[dict],
+        pair_locks: set[tuple[str, str]],
+        *,
+        preferred_link: GraphLink | None = None,
+        pre_reconcile: bool = True,
+    ) -> GraphLink | None:
+        """Body of ``_flush_links_and_reconcile``; the caller already holds ``pair_locks``."""
+        # A stale instance may already have a provisional link for a pair
+        # that another instance persisted first. Reconcile before flushing
+        # so the stale snapshot cannot put its provisional row first and
+        # accidentally replace the durable winner.
+        # A hard delete skips it: the row is gone locally on purpose, and
+        # adopting the durable copy here would resurrect it.
+        if pre_reconcile:
+            self._reconcile_persisted_pairs(snapshot, pair_locks)
+        with self._lock:
+            snapshot = self._links_to_serializable()
+        self._flush_links(snapshot)
+        return self._reconcile_persisted_pairs(snapshot, pair_locks, preferred_link=preferred_link)
 
     def _persist_new_link(self, link: GraphLink, snapshot: list[dict]) -> GraphLink | None:
         """Persist a new link and return the durable winner for its pair.
@@ -365,61 +378,76 @@ class _LinksMixin:
         source: str = "auto",
     ) -> list[GraphLink]:
         """Create multiple links with a single disk write. Returns created links."""
+        # Validate every row before the first provisional insert: a raise part-way
+        # through the insert loop would leave earlier rows in _links, where a
+        # concurrent add_link could return them without them ever reaching disk.
+        for from_id, to_id, _kind, confidence, _reason in links:
+            if from_id == to_id:
+                raise ValueError("cannot link a card to itself")
+            if not 0.0 <= confidence <= 1.0:
+                raise ValueError("confidence must be between 0.0 and 1.0")
         created: list[GraphLink] = []
-        with self._lock:
-            for from_id, to_id, kind, confidence, reason in links:
-                if from_id == to_id:
-                    raise ValueError("cannot link a card to itself")
-                if not 0.0 <= confidence <= 1.0:
-                    raise ValueError("confidence must be between 0.0 and 1.0")
-                if self._has_link_unlocked(from_id, to_id):
-                    continue
-                link = GraphLink(
-                    from_id=from_id,
-                    to_id=to_id,
-                    kind=kind,
-                    confidence=confidence,
-                    reason=reason,
-                )
-                self._links[link.id] = link
-                self._index_link(link)
-                created.append(link)
-            self._touch_links(lk.id for lk in created)
-            snapshot = self._links_to_serializable() if created else None
-        if snapshot is not None:
-            self._flush_links_and_reconcile(
-                snapshot,
-                pair_locks={self._normalize_pair(lk.from_id, lk.to_id) for lk in created},
-            )
-            # Reconciliation can discard a provisional link when a stale
-            # GraphStore instance races with another writer for the same pair.
-            # Only links still owned by this instance after reconciliation were
-            # actually created by this batch; reporting the discarded object
-            # would overcount pipeline work and emit an event for a dead ID.
+        persisted_created: list[GraphLink] = []
+        event_snapshot = None
+        # Hold the pair locks from the provisional insert until the batch is
+        # flushed and reconciled, as add_link does. Otherwise a same-pair
+        # add_link can return a provisional link that is not yet persisted (#3617).
+        held_pairs = sorted({self._normalize_pair(from_id, to_id) for from_id, to_id, *_ in links})
+        with ExitStack() as locks:
+            for pair in held_pairs:
+                locks.enter_context(self._pair_thread_lock(pair))
+                locks.enter_context(path_write_lock(self._pair_lock_path(pair)))
             with self._lock:
-                persisted_created = [link for link in created if self._links.get(link.id) is link]
-                event_snapshot = self._links_to_serializable() if persisted_created else None
-            self._emit_graph_events(
-                [
-                    self._build_graph_event_draft(
-                        "link_added",
-                        link_id=lk.id,
-                        from_id=lk.from_id,
-                        to_id=lk.to_id,
-                        kind=str(lk.kind),
-                        source=source,
-                        confidence_before=None,
-                        confidence_after=lk.confidence,
-                        status_before=None,
-                        status_after="active",
-                        reason=lk.reason,
+                for from_id, to_id, kind, confidence, reason in links:
+                    if self._has_link_unlocked(from_id, to_id):
+                        continue
+                    link = GraphLink(
+                        from_id=from_id,
+                        to_id=to_id,
+                        kind=kind,
+                        confidence=confidence,
+                        reason=reason,
                     )
-                    for lk in persisted_created
-                ],
-                links_snapshot=event_snapshot,
-            )
-            created = persisted_created
-        return created
+                    self._links[link.id] = link
+                    self._index_link(link)
+                    created.append(link)
+                self._touch_links(lk.id for lk in created)
+                snapshot = self._links_to_serializable() if created else None
+            if snapshot is not None:
+                self._flush_held_links_and_reconcile(
+                    snapshot,
+                    {self._normalize_pair(lk.from_id, lk.to_id) for lk in created},
+                )
+                # Reconciliation can discard a provisional link when a stale
+                # GraphStore instance races with another writer for the same pair.
+                # Only links still owned by this instance after reconciliation were
+                # actually created by this batch; reporting the discarded object
+                # would overcount pipeline work and emit an event for a dead ID.
+                with self._lock:
+                    persisted_created = [link for link in created if self._links.get(link.id) is link]
+                    event_snapshot = self._links_to_serializable() if persisted_created else None
+        if not created:
+            return created
+        self._emit_graph_events(
+            [
+                self._build_graph_event_draft(
+                    "link_added",
+                    link_id=lk.id,
+                    from_id=lk.from_id,
+                    to_id=lk.to_id,
+                    kind=str(lk.kind),
+                    source=source,
+                    confidence_before=None,
+                    confidence_after=lk.confidence,
+                    status_before=None,
+                    status_after="active",
+                    reason=lk.reason,
+                )
+                for lk in persisted_created
+            ],
+            links_snapshot=event_snapshot,
+        )
+        return persisted_created
 
     def get_links_for(self, card_id: str) -> list[GraphLink]:
         """Get all active and hidden links involving a card."""
