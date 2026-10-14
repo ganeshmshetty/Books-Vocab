@@ -26,11 +26,8 @@ final class LiveSettingsResetStore: SettingsResetStorePort {
         modelContext: ModelContext
     ) -> SettingsResetLifecycle.Snapshot {
         do {
-            let descriptor = FetchDescriptor<VocabularyEntry>(predicate: #Predicate {
-                $0.syncStatus == 1 &&
-                $0.actionType != "delete" &&
-                $0.isArchived == false
-            })
+            // Same knowledge-list criterion as the Settings card count and CSV export (#3812, #3673).
+            let descriptor = FetchDescriptor<VocabularyEntry>(predicate: VocabularyEntry.knowledgeListPredicate())
             let localCardCount = try modelContext.fetch(descriptor).count
             // Every row reset deletes that the server has not confirmed:
             // pending (0) or failed (2), including queued deletes/archives.

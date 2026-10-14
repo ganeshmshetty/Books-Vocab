@@ -25,12 +25,9 @@ struct SettingsView: View {
     @Environment(\.feedbackSettingsStore) var feedbackSettingsStore
     @State var coordinator = SettingsCoordinator()
     @State var exportURL: URL?
-    /// Predicate 對應 shouldAppearInKnowledgeList — 僅用於 displayCardCount
-    @Query(filter: #Predicate<VocabularyEntry> {
-        $0.syncStatus == 1 &&
-        $0.actionType != "delete" &&
-        $0.isArchived == false
-    }) var allEntries: [VocabularyEntry]
+    /// 與知識列表同判準（shouldAppearInKnowledgeList，#3673）— 供卡數顯示與「匯出全部單字 CSV」共用，
+    /// 避免待同步／失敗的 edit 從計數與匯出中消失（#3812）。
+    @Query(filter: VocabularyEntry.knowledgeListPredicate()) var allEntries: [VocabularyEntry]
 
     /// The boolean login flag is not enough here: a manual login can replace
     /// account A with account B while both states remain `true`. The task must

@@ -39,10 +39,16 @@ struct StatsPresenter: View {
 
     let filter: NotebookFilter
 
-    @Query(filter: #Predicate<VocabularyEntry> {
-        $0.syncStatus == 1 &&
-        $0.actionType != "delete"
-    })
+    /// 知識列表判準（#3673：已同步卡，或已有 server 卡的 edit）去掉 `isArchived` 條件：
+    /// 統計保留封存卡的歷史語義（#3812）。必須與 `VocabularyEntry.knowledgeListPredicate` 同步修改。
+    static func syncedEntriesPredicate() -> Predicate<VocabularyEntry> {
+        #Predicate<VocabularyEntry> {
+            ($0.syncStatus == 1 || ($0.actionType == "edit" && $0.kgCardId != nil && $0.kgCardId != "")) &&
+            $0.actionType != "delete"
+        }
+    }
+
+    @Query(filter: StatsPresenter.syncedEntriesPredicate())
     private var syncedEntries: [VocabularyEntry]
 
     /// The projection owns its time-window filtering; keeping the query clock-free

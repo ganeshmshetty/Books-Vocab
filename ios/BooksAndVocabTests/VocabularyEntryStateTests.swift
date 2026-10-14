@@ -285,4 +285,58 @@ struct VocabularyEntryStateTests {
         )
         #expect(rows.map(\.id) == [edited.id])
     }
+
+    @Test("#3812 Settings 卡數、重置快照與 stats 都與知識列表同判準：待同步／失敗的 edit 不被丟掉，pending add 仍排除")
+    func settingsCountStatsAndExportKeepEditedServerCards() throws {
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: VocabularyEntry.self, ReviewRecord.self,
+            configurations: configuration
+        )
+        let context = ModelContext(container)
+
+        let synced = syncedWithServerCard()
+        synced.word = "synced"
+        context.insert(synced)
+
+        let pendingEdit = syncedWithServerCard()
+        pendingEdit.word = "pending-edit"
+        pendingEdit.queueEdit()
+        context.insert(pendingEdit)
+
+        let failedEdit = syncedWithServerCard()
+        failedEdit.word = "failed-edit"
+        failedEdit.syncAction = .edit
+        failedEdit.syncState = .failed
+        context.insert(failedEdit)
+
+        let pendingAdd = VocabularyEntry(word: "pending-add", translation: "翻譯", context: "ctx", bookTitle: "book")
+        pendingAdd.notebookId = "notebook-a"
+        pendingAdd.syncAction = .add
+        pendingAdd.syncState = .pending
+        context.insert(pendingAdd)
+        try context.save()
+
+        // SettingsResetStore.readSnapshot → localCardCount
+        let snapshot = LiveSettingsResetStore().readSnapshot(authManager: LoggedInAuthStub(), modelContext: context)
+        #expect(snapshot.localCardCount == 3)
+
+        // StatsPresenter.syncedEntries
+        let statsRows = try context.fetch(
+            FetchDescriptor<VocabularyEntry>(predicate: StatsPresenter.syncedEntriesPredicate())
+        )
+        #expect(Set(statsRows.map(\.word)) == ["synced", "pending-edit", "failed-edit"])
+
+        // SettingsView.allEntries (count + "Export all words CSV") 與知識列表同源
+        let settingsRows = try context.fetch(
+            FetchDescriptor<VocabularyEntry>(predicate: VocabularyEntry.knowledgeListPredicate())
+        )
+        #expect(settingsRows.count == 3)
+        let csvURL = try VocabularyExporter.export(entries: settingsRows, format: .csv).get()
+        let csv = try String(contentsOf: csvURL, encoding: .utf8)
+        for word in ["synced", "pending-edit", "failed-edit"] {
+            #expect(csv.contains(word))
+        }
+        #expect(!csv.contains("pending-add"))
+    }
 }
