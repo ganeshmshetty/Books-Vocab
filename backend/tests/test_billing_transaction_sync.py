@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -385,7 +386,7 @@ def _grace_state(grace_delta, original="X"):
     }
 
 
-def _grace_sync(tmp_path, users, *, revoked=False):
+def _grace_sync(tmp_path, users, *, revoked=False, writer=_real_write):
     now = _datetime.now(tz=_UTC)
     snapshot = _make_snapshot(transaction_id="X-new", original_transaction_id="X")
     snapshot["status"] = "expired"
@@ -407,7 +408,7 @@ def _grace_sync(tmp_path, users, *, revoked=False):
         load_users=lambda: users,
         save_users=saved,
         decode_signed_transaction_info=lambda _s: snapshot,
-        write_subscription_snapshot=_real_write,
+        write_subscription_snapshot=writer,
         build_entitlements_response=lambda rec: _active_entitlements(),
     )
     return users["P"]["subscription"]
@@ -441,3 +442,35 @@ def test_sync_expired_for_other_original_transaction_writes_expired(tmp_path):
     sub = _grace_sync(tmp_path, users)
     assert sub["status"] == "expired"
     assert sub["is_active"] is False
+
+
+# ── #3966 review (P0): the writer production injects must accept every kwarg the handlers pass ──
+
+
+def test_deps_snapshot_writer_accepts_every_billing_writer_kwarg():
+    """kg.deps._write_subscription_snapshot is what routers/billing.py injects; a kwarg missing
+    from its signature (revoked) raised TypeError on every /sync, /notifications, /reconcile write."""
+    from kg.billing import write_subscription_snapshot as billing_writer
+    from kg.deps import _write_subscription_snapshot as deps_writer
+
+    missing = set(inspect.signature(billing_writer).parameters) - set(inspect.signature(deps_writer).parameters)
+    assert missing == set()
+
+
+def test_sync_through_deps_writer_persists_revocation(tmp_path):
+    from kg.deps import _write_subscription_snapshot as deps_writer
+
+    users = _grace_state(_timedelta(days=5))
+    sub = _grace_sync(tmp_path, users, revoked=True, writer=deps_writer)
+    assert sub["status"] == "expired"
+    assert sub["is_active"] is False
+
+
+def test_sync_through_deps_writer_keeps_active_grace_without_revocation(tmp_path):
+    from kg.deps import _write_subscription_snapshot as deps_writer
+
+    users = _grace_state(_timedelta(days=5))
+    before_deadline = users["P"]["subscription"]["grace_period_expires_at"]
+    sub = _grace_sync(tmp_path, users, writer=deps_writer)
+    assert sub["status"] == "grace_period"
+    assert sub["grace_period_expires_at"] == before_deadline
