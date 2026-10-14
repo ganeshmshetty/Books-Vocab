@@ -44,7 +44,7 @@ struct GraphWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        Self.updateWebView(webView, context: context, nodes: nodes, edges: edges,
+        Self.updateWebView(context: context, nodes: nodes, edges: edges,
                            colorScheme: colorScheme, backgroundHex: backgroundHex,
                            tierHexes: tierHexes, edgeHexes: edgeHexes, labelHex: labelHex,
                            labelShadowHex: labelShadowHex, forces: forces, onNodeTap: onNodeTap)
@@ -77,7 +77,7 @@ extension GraphWebView {
     }
 
     static func updateWebView(
-        _ webView: WKWebView, context: Context,
+        context: Context,
         nodes: [KnowledgeGraphNode], edges: [KnowledgeGraphEdge],
         colorScheme: ColorScheme, backgroundHex: String,
         tierHexes: [String: String], edgeHexes: [String: String],
@@ -104,14 +104,10 @@ extension GraphWebView {
                                         backgroundHex: backgroundHex, tierHexes: tierHexes,
                                         edgeHexes: edgeHexes, labelHex: labelHex,
                                         labelShadowHex: labelShadowHex, forces: forces)
-            coord.sendInitGraph(payload, webView: webView)
+            coord.sendInitGraph(payload)
         }
 
-        if coord.lastForces != forces {
-            coord.lastForces = forces
-            let json = forces.toJSONString()
-            webView.evaluateJavaScript("updateForces(\(json))", completionHandler: nil)
-        }
+        coord.sendForces(forces)
     }
 
     static func dismantleWebView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -230,7 +226,6 @@ extension GraphWebView {
 
     class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var graphBridgeReady = false
-        var pendingPayload: String? = nil
         weak var webView: WKWebView?
         var onNodeTap: ((String) -> Void)?
 
@@ -238,20 +233,65 @@ extension GraphWebView {
         var lastThemeSignature: String? = nil
         var lastForces: GraphForces? = nil
         var lastDataSignature: String? = nil
+        /// Last payload handed to the page. Replayed on every `ready`, because a reloaded
+        /// page starts with no graph state after a WebContent termination (#3817).
+        private(set) var lastPayload: String? = nil
+        /// Test seam: receives each script instead of the live web view. Production leaves it nil.
+        var evaluatedScripts: ((String) -> Void)?
+        /// Web-content terminations since this view was built. Automatic reload stops at
+        /// `maxAutomaticRecoveries`, so a page that dies on load cannot reload forever.
+        private(set) var consecutiveTerminations = 0
+        static let maxAutomaticRecoveries = 3
+
         init(onNodeTap: @escaping (String) -> Void) {
             self.onNodeTap = onNodeTap
         }
 
-        func sendInitGraph(_ json: String, webView: WKWebView) {
-            guard graphBridgeReady else {
-                pendingPayload = json
-                return
-            }
-            evaluateInitGraph(json, in: webView)
+        func sendInitGraph(_ json: String) {
+            lastPayload = json
+            guard graphBridgeReady else { return }
+            evaluate("initGraph('\(json.jsSingleQuoteEscaped)')")
         }
 
-        private func evaluateInitGraph(_ json: String, in webView: WKWebView) {
-            webView.evaluateJavaScript("initGraph('\(json.jsSingleQuoteEscaped)')", completionHandler: nil)
+        /// `updateForces` is never sent before `ready`; the ready replay carries the latest forces (#3817).
+        func sendForces(_ forces: GraphForces) {
+            guard lastForces != forces else { return }
+            lastForces = forces
+            guard graphBridgeReady else { return }
+            evaluate("updateForces(\(forces.toJSONString()))")
+        }
+
+        private func evaluate(_ script: String) {
+            if let evaluatedScripts {
+                evaluatedScripts(script)
+                return
+            }
+            webView?.evaluateJavaScript(script, completionHandler: nil)
+        }
+
+        /// Applies the page's `ready` handshake. Runs on first load and on every reload.
+        func handleBridgeReady() {
+            graphBridgeReady = true
+            if let lastPayload {
+                evaluate("initGraph('\(lastPayload.jsSingleQuoteEscaped)')")
+            }
+            if let lastForces {
+                evaluate("updateForces(\(lastForces.toJSONString()))")
+            }
+        }
+
+        /// The page lost its JS state, so it must handshake again before it can take scripts.
+        func handleContentProcessTerminated() {
+            graphBridgeReady = false
+            guard consecutiveTerminations < Self.maxAutomaticRecoveries else { return }
+            consecutiveTerminations += 1
+            webView?.reload()
+        }
+
+        // MARK: WKNavigationDelegate
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            handleContentProcessTerminated()
         }
 
         // MARK: WKScriptMessageHandler
@@ -263,11 +303,7 @@ extension GraphWebView {
 
             switch type {
             case "ready":
-                graphBridgeReady = true
-                if let pending = pendingPayload, let wv = webView {
-                    pendingPayload = nil
-                    evaluateInitGraph(pending, in: wv)
-                }
+                handleBridgeReady()
             case "nodeClick":
                 if let nodeId = body["nodeId"] as? String {
                     DispatchQueue.main.async { [weak self] in
