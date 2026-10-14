@@ -712,6 +712,79 @@ def test_cleanup_refuses_remote_drift() -> None:
     assert not git.actions
 
 
+def _run_cleanup(
+    flow: str, service: CleanupService, receipt: HandbackReceipt
+) -> object:
+    if flow == "release":
+        return service.release_after_publish(receipt=receipt, pull_request_number=9)
+    return service.finalize_merged(receipt=receipt, pull_request_number=9)
+
+
+@pytest.mark.parametrize("flow", ("release", "finalize"))
+@pytest.mark.parametrize(
+    ("change", "match"),
+    (
+        ({"handback_digest": "e" * 64}, "differs from typed handback"),
+        ({"owner_thread_id": "other"}, "differs from typed handback"),
+        ({"handback_origin_main_sha": "f" * 40}, "differs from typed handback"),
+        ({"base_sha": "f" * 40}, "differs from typed handback"),
+        (
+            {"scope": Scope.from_paths(modify=("ops/b.py",))},
+            "differs from typed handback",
+        ),
+        ({"handback_valid": False}, "differs from typed handback"),
+        ({"handed_back_sha": "f" * 40}, "does not resolve to one exact handback"),
+    ),
+)
+def test_cleanup_refuses_registry_claim_that_is_not_the_typed_handback(
+    flow: str, change: dict[str, object], match: str
+) -> None:
+    receipt = _receipt()
+    status = "active" if flow == "release" else "published"
+    registry = FakeRegistry(replace(_record(receipt, status=status), **change))
+    git = FakeGit(receipt)
+    state = "OPEN" if flow == "release" else "MERGED"
+
+    with pytest.raises(PolicyViolation, match=match):
+        _run_cleanup(
+            flow, _service(receipt, registry=registry, git=git, state=state), receipt
+        )
+
+    assert registry.transitions == []
+    assert git.actions == []
+
+
+@pytest.mark.parametrize("flow", ("release", "finalize"))
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    (
+        ("dirty_worktree", "worktree changed after typed handback"),
+        ("local_branch", "local branch changed after typed handback"),
+    ),
+)
+def test_cleanup_refuses_worktree_or_local_branch_drift_after_handback(
+    flow: str, drift: str, match: str
+) -> None:
+    receipt = _receipt()
+    status = "active" if flow == "release" else "published"
+    registry = FakeRegistry(_record(receipt, status=status))
+    if drift == "dirty_worktree":
+        git = FakeGit(receipt, snapshot=_snapshot(receipt, clean=False))
+    else:
+        git = FakeGit(receipt, local_sha="d" * 40)
+    state = "OPEN" if flow == "release" else "MERGED"
+
+    with pytest.raises(PolicyViolation, match=match):
+        _run_cleanup(
+            flow, _service(receipt, registry=registry, git=git, state=state), receipt
+        )
+
+    # finalize_merged records the durable cleanup_pending pre-state before the
+    # drift check; it must never reach the terminal "merged" transition.
+    assert registry.transitions == ([] if flow == "release" else ["cleanup_pending"])
+    assert git.actions == []
+
+
 @pytest.mark.parametrize("state", ("OPEN", "MERGED"))
 def test_cleanup_refuses_pr_retargeted_away_from_main(state: str) -> None:
     receipt = _receipt()
