@@ -276,11 +276,9 @@ final class TranslationService: Translating {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         // 帶上授權 Header (因為 /api/translate 是受保護的端點)
+        // 不以本地 exp 預先攔截：與 KGService 一致交由伺服器 401 判定（401 分支見下方）。
         guard let token = await authSession.token else {
             throw TranslationError.userRecoverable(L10n.string("未登入，無法調用翻譯 API"))
-        }
-        if JWTExpiry.isExpired(token) {
-            throw TranslationError.userRecoverable(L10n.string("登入已過期，請重新登入"))
         }
         request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 

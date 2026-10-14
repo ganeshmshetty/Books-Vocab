@@ -39,4 +39,40 @@ struct TranslationServiceErrorMappingTests {
         let value = try TranslationService.decodeResponse(Payload.self, from: Data(#"{"t":"x"}"#.utf8))
         #expect(value.t == "x")
     }
+
+    // MARK: - Local token expiry is not a client precheck (#3805)
+
+    /// 本地 exp 已過期的 token 仍應送出請求（帶 Bearer），由伺服器決定是否 401。
+    @Test func locallyExpiredTokenStillSendsRequestAndReturnsServerResult() async throws {
+        let stub = TranslationStubURLProtocol.makeSession(responseBody: Data(#"{"t":"譯"}"#.utf8))
+        let expired = TranslationTestSupport.jwt(expiresAt: Date().addingTimeInterval(-3600))
+        let service = TranslationTestSupport.service(session: stub.session, token: expired)
+
+        let translation = try await service.translatePhrase(phrase: "hello", context: "")
+
+        #expect(translation == "譯")
+        let requests = stub.requests
+        #expect(requests.count == 1)
+        #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer \(expired)")
+    }
+
+    @Test func serverRejectingExpiredTokenMapsTo401Message() async {
+        let stub = TranslationStubURLProtocol.makeSession(statusCode: 401, responseBody: Data())
+        let expired = TranslationTestSupport.jwt(expiresAt: Date().addingTimeInterval(-3600))
+        let service = TranslationTestSupport.service(session: stub.session, token: expired)
+
+        do {
+            _ = try await service.translatePhrase(phrase: "hello", context: "")
+            Issue.record("expected userRecoverable, got success")
+        } catch let error as TranslationError {
+            guard case .userRecoverable(let message) = error else {
+                Issue.record("expected userRecoverable, got \(error)")
+                return
+            }
+            #expect(message == L10n.string("登入憑證已失效，請重新登入"))
+        } catch {
+            Issue.record("raw error leaked: \(error)")
+        }
+        #expect(stub.requests.count == 1)
+    }
 }
