@@ -45,7 +45,8 @@ struct BackgroundSyncActorTests {
         reviewExcluded: Bool? = nil,
         isDeleted: Bool = false,
         reviewStreak: Int? = nil,
-        reviewCount: Int? = nil
+        reviewCount: Int? = nil,
+        lapseCount: Int? = nil
     ) throws -> KGCard {
         let sourceFragment = sourceJSON.map { ",\"source\":\($0)" } ?? ""
         let meaningValue = meaning ?? "meaning-\(content)"
@@ -54,11 +55,12 @@ struct BackgroundSyncActorTests {
         let reviewExcludedFragment = reviewExcluded.map { ",\"isReviewExcluded\":\($0)" } ?? ""
         let streakFragment = reviewStreak.map { ",\"reviewStreak\":\($0)" } ?? ""
         let reviewCountFragment = reviewCount.map { ",\"reviewCount\":\($0)" } ?? ""
+        let lapseCountFragment = lapseCount.map { ",\"lapseCount\":\($0)" } ?? ""
         let json = """
         {"id":"\(id)","content":"\(content)","meaning":"\(meaningValue)",
          "pos":null,"difficulty":null,"difficultyTier":null,"note":null,
          "collocations":[],"examples":["an example"],"mode":"recognition",
-         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)}
+         "isDeleted":\(isDeleted),"notebookId":"default"\(sourceFragment)\(reviewFragment)\(readerHiddenFragment)\(reviewExcludedFragment)\(streakFragment)\(reviewCountFragment)\(lapseCountFragment)}
         """.data(using: .utf8)!
         return try JSONDecoder().decode(KGCard.self, from: json)
     }
@@ -1098,6 +1100,69 @@ struct BackgroundSyncActorTests {
         let entry = try #require(try fetchEntry(container, word: "forgot"))
         #expect(entry.reviewStreak == 0)
         #expect(entry.reviewCount == 6)
+    }
+
+    /// #3663: a progress reset on another device reaches us as a server card with
+    /// counts 0/0 and a newer `lastReviewedAt`. With no unpushed local review the
+    /// server counts must be adopted, not `max`-merged back to the stale 12/3.
+    @Test func pullCardsToLocal_serverResetCountsAdoptedWhenNoUnpushedReview() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let localReviewedAt = try #require(ISO8601DateFormatter().date(from: "2027-01-10T10:00:00Z"))
+        let existing = VocabularyEntry(word: "reset", translation: "meaning-reset", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "c-reset"
+        existing.markSynced()
+        existing.lastReviewedAt = localReviewedAt
+        existing.reviewStateSyncedAt = localReviewedAt
+        existing.reviewCount = 12
+        existing.lapseCount = 3
+        seedContext.insert(existing)
+        try seedContext.save()
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(
+            id: "c-reset", content: "reset", sourceJSON: nil,
+            lastReviewedAt: "2027-01-10T11:00:00Z", reviewStreak: 0, reviewCount: 0, lapseCount: 0
+        )
+
+        _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
+
+        let entry = try #require(try fetchEntry(container, word: "reset"))
+        #expect(entry.reviewCount == 0)
+        #expect(entry.lapseCount == 0)
+    }
+
+    /// #3663 guard: an unpushed local review (`needsReviewStatePush`) must not be
+    /// lost to a server card with lower counts, so counts keep the `max` merge.
+    @Test func pullCardsToLocal_unpushedLocalReviewKeepsMaxCounts() async throws {
+        let container = try makeContainer()
+        let seedContext = ModelContext(container)
+        let localReviewedAt = try #require(ISO8601DateFormatter().date(from: "2027-01-10T10:00:00Z"))
+        let syncedAt = try #require(ISO8601DateFormatter().date(from: "2027-01-09T10:00:00Z"))
+        let existing = VocabularyEntry(word: "unpushed", translation: "meaning-unpushed", context: "an example", bookTitle: "Book")
+        existing.notebookId = "default"
+        existing.kgCardId = "c-unpushed"
+        existing.markSynced()
+        existing.lastReviewedAt = localReviewedAt
+        existing.reviewStateSyncedAt = syncedAt
+        existing.reviewCount = 12
+        existing.lapseCount = 3
+        seedContext.insert(existing)
+        try seedContext.save()
+        #expect(existing.needsReviewStatePush)
+
+        let actor = BackgroundSyncActor(modelContainer: container)
+        let card = try makeCard(
+            id: "c-unpushed", content: "unpushed", sourceJSON: nil,
+            lastReviewedAt: "2027-01-10T11:00:00Z", reviewStreak: 0, reviewCount: 0, lapseCount: 0
+        )
+
+        _ = try await actor.pullCardsToLocal(fetchedCards: [card], isIncremental: true, progress: { _, _, _ in })
+
+        let entry = try #require(try fetchEntry(container, word: "unpushed"))
+        #expect(entry.reviewCount == 12)
+        #expect(entry.lapseCount == 3)
     }
 
     /// A server card that omits `reviewStreak` carries no streak to adopt, so
