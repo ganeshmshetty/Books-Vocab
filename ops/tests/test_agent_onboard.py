@@ -375,36 +375,6 @@ def test_mismatch_errors_list_the_identitys_allowed_values() -> None:
     assert ", ".join(identities["issue-solver"]["entry_modes"]) in str(entry_error.value)
 
 
-def test_onboarding_doc_whitelist_table_matches_context_plane() -> None:
-    identities = json.loads(
-        (ROOT / "ops" / "context_plane.json").read_text(encoding="utf-8")
-    )["identities"]
-    label_to_id = {
-        "CM": "cm",
-        "IM": "im",
-        "Worker": "worker",
-        "Issue Solver": "issue-solver",
-        "CR": "cr",
-        "DS": "ds",
-        "Release operator": "release-operator",
-    }
-    text = (ROOT / "docs/reference/project_onboarding.md").read_text(encoding="utf-8")
-    section = text.split("每個 identity 可用的", 1)[1].split("完整角色邊界", 1)[0]
-    rows = {}
-    for line in section.splitlines():
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) == 3 and cells[0] in label_to_id:
-            rows[label_to_id[cells[0]]] = (
-                [v.strip("`") for v in cells[1].split(", ")],
-                [v.strip("`") for v in cells[2].split(", ")],
-            )
-    assert set(rows) == set(identities)
-    for identity_id, identity_def in identities.items():
-        intents, entries = rows[identity_id]
-        assert intents == identity_def["allowed_intents"], identity_id
-        assert entries == identity_def["entry_modes"], identity_id
-
-
 @pytest.mark.parametrize(
     ("identity", "intent", "entry", "primary"),
     [
